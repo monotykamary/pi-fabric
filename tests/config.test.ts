@@ -1,0 +1,69 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadFabricConfig, normalizeFabricConfig } from "../src/config.js";
+
+const temporaryDirectories: string[] = [];
+
+const temporaryDirectory = (): string => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-config-"));
+  temporaryDirectories.push(directory);
+  return directory;
+};
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe("Fabric configuration", () => {
+  it("normalizes bounds and approval modes", () => {
+    const config = normalizeFabricConfig({
+      executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
+      approvals: { write: "allow", agent: "invalid" },
+      subagents: { maxConcurrent: 100, transport: "localterm" },
+    });
+    expect(config.executor.timeoutMs).toBe(1_000);
+    expect(config.executor.memoryLimitBytes).toBe(1024 * 1024 * 1024);
+    expect(config.approvals.write).toBe("allow");
+    expect(config.approvals.agent).toBe("ask");
+    expect(config.subagents.maxConcurrent).toBe(32);
+    expect(config.subagents.transport).toBe("localterm");
+  });
+
+  it("merges global and trusted project configuration", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentDir, "fabric.json"),
+      JSON.stringify({ approvals: { network: "allow" }, subagents: { maxConcurrent: 2 } }),
+    );
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "fabric.json"),
+      JSON.stringify({ subagents: { transport: "localterm" } }),
+    );
+    const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    expect(config.approvals.network).toBe("allow");
+    expect(config.subagents.maxConcurrent).toBe(2);
+    expect(config.subagents.transport).toBe("localterm");
+  });
+
+  it("ignores project configuration when the project is untrusted", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "fabric.json"),
+      JSON.stringify({ approvals: { execute: "allow" } }),
+    );
+    const config = loadFabricConfig({ cwd, agentDir, projectTrusted: false });
+    expect(config.approvals.execute).toBe("ask");
+  });
+});

@@ -1,0 +1,71 @@
+{
+  "name": "pi-fabric",
+  "version": "0.1.0",
+  "description": "A programmable tool and agent runtime for Pi",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "prepack": "pnpm run check"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "codemode",
+    "mcp",
+    "subagents",
+    "rlm",
+    "orchestration"
+  ],
+  "license": "MIT",
+  "author": "monotykamary",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monotykamary/pi-fabric.git"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "dependencies": {
+    "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
+    "mcporter": "^0.12.3",
+    "quickjs-emscripten-core": "^0.32.0",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.80.6",
+    "typebox": ">=1.1.38"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@types/node": "^25.0.0",
+    "typebox": "1.1.38",
+    "vitest": "^4.1.0"
+  },
+  "packageManager": "pnpm@11.6.0"
+}
