@@ -64,6 +64,20 @@ return { values, spent: budget.spent() };
     expect(calls).toEqual(["fabric.$phase", "agents.run", "agents.run"]);
   });
 
+  it("calls captured extension tools through the lazy proxy", async () => {
+    const result = await new QuickJsRuntime().execute(
+      'return extensions.deploy_release({ environment: "staging" });',
+      async (ref, args) => {
+        expect(ref).toBe("extensions.deploy_release");
+        expect(args).toEqual({ environment: "staging" });
+        return { text: "deployed", content: [], isError: false };
+      },
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({ text: "deployed", isError: false });
+  });
+
   it("exposes durable mesh operations through the host bridge", async () => {
     const result = await new QuickJsRuntime().execute(
       `

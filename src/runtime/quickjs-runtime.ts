@@ -51,6 +51,12 @@ globalThis.pi = new Proxy({}, {
     return (args = {}) => __call("pi." + String(property), args);
   },
 });
+globalThis.extensions = new Proxy({}, {
+  get(_target, property) {
+    if (property === "then") return undefined;
+    return (args = {}) => __call("extensions." + String(property), args);
+  },
+});
 globalThis.agents = Object.freeze({
   run: (args) => __call("agents.run", args),
   spawn: (args) => __call("agents.spawn", args),

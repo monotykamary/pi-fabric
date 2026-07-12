@@ -156,7 +156,10 @@ export class ActionRegistry {
         return { action, score: exactName + startsName + includesName + includesBody };
       })
       .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score || left.action.ref.localeCompare(right.action.ref))
+      .sort(
+        (left, right) =>
+          right.score - left.score || left.action.ref.localeCompare(right.action.ref),
+      )
       .slice(0, Math.max(1, Math.min(limit, 100)))
       .map((entry) => entry.action);
   }
@@ -177,7 +180,13 @@ export class ActionRegistry {
     const descriptor = await provider.describe(actionName, context);
     if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
     const action = resolveDescriptor(provider, descriptor);
-    const invalid = validationMessage(action.inputSchema, args);
+    const preparedArgs = provider.prepareArguments
+      ? await provider.prepareArguments(actionName, args, context)
+      : args;
+    if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
+      throw new Error(`Argument preparation for ${ref} did not return an object`);
+    }
+    const invalid = validationMessage(action.inputSchema, preparedArgs);
     if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
     await context.approve(action);
 
@@ -190,7 +199,7 @@ export class ActionRegistry {
     context.audits.push(audit);
     context.update(`Calling ${ref}`);
     try {
-      const value = await provider.invoke(actionName, args, {
+      const value = await provider.invoke(actionName, preparedArgs, {
         ...context,
         nestedToolCallId,
       });

@@ -2,11 +2,11 @@
 
 A programmable tool and agent runtime for [Pi](https://github.com/earendil-works/pi).
 
-Pi Fabric gives the model one `fabric_exec` tool for type-checked TypeScript programs that can compose Pi's built-in tools, dynamically discovered MCP tools, one-shot child agents, persistent event-driven actors, durable mesh coordination, councils, and bounded recursive queries. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
+Pi Fabric gives the model one `fabric_exec` tool for type-checked TypeScript programs that can compose Pi's built-in tools, lazily invoked tools captured from other extensions, dynamically discovered MCP tools, one-shot child agents, persistent event-driven actors, durable mesh coordination, councils, and bounded recursive queries. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
 
 ## Status
 
-Pi Fabric is an early implementation. The core runtime, built-in tools, MCP provider, provider protocol, approval policies, guarded subagents, dynamic workflow helpers, persistent actors, durable mesh, council helper, and recursive query helper are implemented. Review the security notes before enabling mutating tools or external providers.
+Pi Fabric is an early implementation. The core runtime, built-in tools, registered-extension tool capture, MCP provider, provider protocol, approval policies, guarded subagents, dynamic workflow helpers, persistent actors, durable mesh, council helper, and recursive query helper are implemented. Review the security notes before enabling mutating tools or external providers.
 
 ## Install
 
@@ -66,6 +66,33 @@ const result = await tools.call({
 return result;
 ```
 
+### Captured extension tools
+
+Fabric intercepts Pi's `ExtensionRunner.getAllRegisteredTools()` registry chokepoint. This captures tools registered by other extensions at startup or later through `pi.registerTool()`, regardless of whether those extensions load before or after Fabric.
+
+Captured custom tools are removed from Pi's model-facing registry by default, so their schemas, snippets, and guidelines do not consume the parent model context. The extension itself remains loaded: its commands, event handlers, state, and UI continue to work. Only tool discovery and invocation become lazy.
+
+```ts
+const matches = await tools.search({ query: "deployment status" });
+const schema = await tools.describe({ ref: matches[0].ref });
+const result = await tools.call({
+  ref: schema.ref,
+  args: { environment: "staging" },
+});
+return result;
+```
+
+For tool names valid as JavaScript properties, use the shorter proxy:
+
+```ts
+const result = await extensions.project_status({ verbose: true });
+return result.text;
+```
+
+The result preserves `content`, text content as `text`, `details`, `isError`, `terminate`, and source provenance. Fabric runs the captured definition's `prepareArguments()` and original executor with its owning extension context. Pi's `tool_call`, `tool_result`, and `tool_execution_*` lifecycle handlers are also applied to nested captured calls.
+
+`fabric_exec` and extension overrides of built-ins remain model-visible by default. This preserves direct core tools and wrappers such as code previews or security gates. Inside Fabric, `pi.read`, `pi.bash`, and the other built-ins automatically route through a captured override when one exists; `extensions.read` exposes the override's full native result shape. Configure `capture.keepVisible` to change the model-visible set.
+
 ### MCP through mcporter
 
 Pi Fabric uses the public [`mcporter`](https://github.com/openclaw/mcporter) runtime. It inherits mcporter's config discovery, imports, OAuth cache, and connection pooling.
@@ -117,11 +144,12 @@ const inventory = await agent<{ files: string[] }>(
 
 await phase("Audit");
 const findings = await parallel(
-  inventory.files.map((file) => () =>
-    agent(`Audit ${file} for concrete auth defects.`, {
-      label: `audit ${file}`,
-      tools: ["read", "grep", "find", "ls"],
-    }),
+  inventory.files.map(
+    (file) => () =>
+      agent(`Audit ${file} for concrete auth defects.`, {
+        label: `audit ${file}`,
+        tools: ["read", "grep", "find", "ls"],
+      }),
   ),
   { concurrency: 8 },
 );
@@ -166,13 +194,13 @@ Children inherit the parent model unless `model` is specified. Their tool allowl
 
 Supported transports:
 
-| Transport | Behavior | Attach command |
-| --- | --- | --- |
-| `process` | Detached local worker process; default and lowest overhead | none |
-| `tmux` | One detached tmux session per child | `tmux attach-session -t …` |
-| `screen` | One detached GNU Screen session per child | `screen -r …` |
-| `localterm` | One pinned LocalTerm PTY per child | `localterm session attach …` |
-| `auto` | Tries LocalTerm, tmux, screen, then process | transport-specific |
+| Transport   | Behavior                                                   | Attach command               |
+| ----------- | ---------------------------------------------------------- | ---------------------------- |
+| `process`   | Detached local worker process; default and lowest overhead | none                         |
+| `tmux`      | One detached tmux session per child                        | `tmux attach-session -t …`   |
+| `screen`    | One detached GNU Screen session per child                  | `screen -r …`                |
+| `localterm` | One pinned LocalTerm PTY per child                         | `localterm session attach …` |
+| `auto`      | Tries LocalTerm, tmux, screen, then process                | transport-specific           |
 
 LocalTerm already exposes the needed tmux-parity primitives: detached creation, pinning, listing, capture, exec, attach, and kill. Pi Fabric therefore requires no LocalTerm patch. Start its daemon before selecting it:
 
@@ -266,14 +294,14 @@ return rlm.query({
 
 Pi discovers these package skills automatically:
 
-| Command | Pattern |
-| --- | --- |
-| `/skill:fabric-supervisor <goal>` | Persistent goal watcher driven by `agent_settled` and tool-error events |
-| `/skill:fabric-advisor [focus]` | Turn-by-turn peer reviewer that prefers silence |
-| `/skill:fabric-ambient <role>` | Meta-pattern for custom event-driven ambient actors |
-| `/skill:fabric-workflow <task>` | Code-held phases, fan-out, pipelines, structured output, and synthesis |
-| `/skill:fabric-swarm <objective>` | Persistent actors, durable topics, and CAS-based shared tasks |
-| `/skill:fabric-council <decision>` | Bounded independent perspectives plus synthesis |
+| Command                            | Pattern                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `/skill:fabric-supervisor <goal>`  | Persistent goal watcher driven by `agent_settled` and tool-error events |
+| `/skill:fabric-advisor [focus]`    | Turn-by-turn peer reviewer that prefers silence                         |
+| `/skill:fabric-ambient <role>`     | Meta-pattern for custom event-driven ambient actors                     |
+| `/skill:fabric-workflow <task>`    | Code-held phases, fan-out, pipelines, structured output, and synthesis  |
+| `/skill:fabric-swarm <objective>`  | Persistent actors, durable topics, and CAS-based shared tasks           |
+| `/skill:fabric-council <decision>` | Bounded independent perspectives plus synthesis                         |
 
 Supervisor and advisor are deliberately skills rather than hard-coded host services: the skill writes ordinary Fabric code over the same actor primitive available to every other pattern.
 
@@ -305,6 +333,21 @@ Project values override global values.
     "network": "ask",
     "agent": "ask"
   },
+  "capture": {
+    "enabled": true,
+    "hideFromModel": true,
+    "keepVisible": ["fabric_exec", "read", "bash", "edit", "write", "grep", "find", "ls"],
+    "defaultRisk": "execute",
+    "risks": {
+      "read": "read",
+      "grep": "read",
+      "find": "read",
+      "ls": "read",
+      "edit": "write",
+      "write": "write",
+      "bash": "execute"
+    }
+  },
   "mcp": {
     "enabled": true,
     "disableOAuth": true,
@@ -334,7 +377,7 @@ Project values override global values.
 }
 ```
 
-Approval values are `allow`, `ask`, or `deny`. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
+Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, or `deny`. Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Set `capture.hideFromModel` to `false` to index tools without hiding them. `capture.keepVisible` names stay in both Fabric and Pi's direct registry; be careful when removing built-in override names because doing so exposes Pi's underlying built-in implementation. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
 
 When `mcp.disableOAuth` is true, MCP calls may use cached credentials but cannot launch a new interactive OAuth flow.
 
@@ -342,7 +385,7 @@ Mesh data defaults to `<project>/.pi/fabric/mesh`. Set `mesh.root` to a relative
 
 ## External provider protocol
 
-Pi does not expose other extensions' tool executors. Fabric providers must opt in through the versioned event protocol:
+Normal `pi.registerTool()` tools are captured automatically. Extensions can still opt into the versioned provider protocol when they need to expose non-tool capabilities, richer risk declarations, or a large virtual action catalog without registering one Pi tool per action:
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -357,9 +400,15 @@ export default function extension(pi: ExtensionAPI) {
   const provider: FabricProvider = {
     name: "example",
     description: "Example actions",
-    async list() { return []; },
-    async describe() { return undefined; },
-    async invoke() { return null; },
+    async list() {
+      return [];
+    },
+    async describe() {
+      return undefined;
+    },
+    async invoke() {
+      return null;
+    },
   };
 
   pi.events.emit(FABRIC_PROVIDER_REGISTER_EVENT, {
@@ -382,6 +431,7 @@ Providers own their schemas, state, and execution semantics. Pi Fabric validates
 /fabric status
 /fabric reload
 /fabric providers
+/fabric captured [query]
 /fabric agents
 /fabric actors
 /fabric messages <actor-id>
@@ -399,18 +449,21 @@ TypeScript checker → QuickJS sandbox
     │ JSON-only host bridge
     ▼
 ActionRegistry
-    ├── pi.*       built-in Pi tool definitions
-    ├── mcp.*      pooled mcporter runtime
-    ├── agents.*   one-shot workers + persistent mailbox actors
-    ├── mesh.*     durable topics + compare-and-swap state
-    └── external   explicit pi.events providers
+    ├── pi.*         built-in Pi tool definitions
+    ├── extensions.* captured pi.registerTool definitions
+    ├── mcp.*        pooled mcporter runtime
+    ├── agents.*     one-shot workers + persistent mailbox actors
+    ├── mesh.*       durable topics + compare-and-swap state
+    └── external     explicit pi.events providers
 ```
 
 Guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`.
 
 ## Security and limitations
 
-- Pi Fabric invokes separately constructed Pi built-in tool definitions. Nested calls do not pass through Pi's top-level `tool_call` and `tool_result` extension hooks. Fabric's own approval and audit layer is therefore authoritative for nested calls.
+- Pi Fabric invokes separately constructed Pi built-in definitions when no captured override exists. Those unoverridden built-in calls do not pass through Pi's top-level `tool_call` and `tool_result` hooks. Captured overrides and other extension calls do run those hooks; Fabric's approval and audit layer remains authoritative around every nested call.
+- Captured tools execute with the full privileges of their owning extension. Hiding a tool schema is context optimization, not sandboxing. Captured tools retain their definitions and native renderers, but nested calls render as part of the enclosing Fabric execution rather than as separate native tool rows.
+- Registry interception composes through the public `ExtensionRunner.getAllRegisteredTools()` method. An extension that replaces that method without delegating to the previous implementation can prevent capture.
 - MCP servers and external providers execute with their own host privileges. Review their configuration and code.
 - Type checking improves reliability but is not a security boundary; QuickJS isolation and the host capability bridge are the boundaries.
 - Child Pi processes load normal extensions by default so provider-backed models continue to work. Their active tool list is restricted by `defaultTools`; `fabric_exec` is excluded unless recursion is explicitly requested.
@@ -430,7 +483,7 @@ pnpm test
 pnpm build
 ```
 
-The deterministic test suite covers configuration, schema validation, provider dispatch, QuickJS isolation, Pi built-in invocation, direct-process subagents, workflow helpers, durable mesh state, actor mailboxes, subscriptions, and actor restoration.
+The deterministic test suite covers configuration, schema validation, provider dispatch, registered-tool interception and execution, QuickJS isolation, Pi built-in invocation, direct-process subagents, workflow helpers, durable mesh state, actor mailboxes, subscriptions, and actor restoration.
 
 ## License
 

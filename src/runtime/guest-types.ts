@@ -56,6 +56,18 @@ interface FabricToolsApi {
   call(args: { ref: string; args?: Record<string, unknown> }): Promise<unknown>;
   progress(args: { message: string }): Promise<void>;
 }
+interface FabricCapturedToolResult {
+  content: Array<{ type: string; text?: string; [key: string]: unknown }>;
+  text: string;
+  details?: unknown;
+  isError: boolean;
+  terminate?: boolean;
+  source: { path: string; source: string; scope: string; origin: string; baseDir?: string };
+}
+interface FabricCapturedTool {
+  (args?: Record<string, unknown>): Promise<FabricCapturedToolResult>;
+}
+type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 interface PiToolsApi {
   read(args: { path: string; offset?: number; limit?: number }): Promise<string>;
   bash(args: { command: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
@@ -214,6 +226,7 @@ interface FabricWorkflowApi {
 }
 declare const tools: FabricToolsApi;
 declare const pi: PiToolsApi;
+declare const extensions: FabricExtensionsApi;
 declare const agents: FabricAgentsApi;
 declare const mesh: FabricMeshApi;
 declare const mcp: FabricMcpApi;

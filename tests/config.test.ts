@@ -24,6 +24,11 @@ describe("Fabric configuration", () => {
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
       approvals: { write: "allow", agent: "invalid" },
       subagents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "localterm" },
+      capture: {
+        keepVisible: ["fabric_exec", "custom", "custom"],
+        defaultRisk: "invalid",
+        risks: { inspect: "read", mutate: "invalid" },
+      },
       mesh: { actorQueueLimit: 0, eventContextChars: 5_000_000 },
     });
     expect(config.executor.timeoutMs).toBe(1_000);
@@ -33,6 +38,9 @@ describe("Fabric configuration", () => {
     expect(config.subagents.maxConcurrent).toBe(32);
     expect(config.subagents.maxPerExecution).toBe(1_000);
     expect(config.subagents.transport).toBe("localterm");
+    expect(config.capture.keepVisible).toEqual(["fabric_exec", "custom"]);
+    expect(config.capture.defaultRisk).toBe("execute");
+    expect(config.capture.risks).toMatchObject({ inspect: "read", mutate: "execute" });
     expect(config.mesh.actorQueueLimit).toBe(1);
     expect(config.mesh.eventContextChars).toBe(1_000_000);
   });

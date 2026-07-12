@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { FabricRisk } from "./protocol.js";
 
 export type FabricApprovalMode = "allow" | "ask" | "deny";
 export type FabricSubagentTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
@@ -40,6 +41,14 @@ export interface FabricSubagentConfig {
   notifyOnComplete: boolean;
 }
 
+export interface FabricToolCaptureConfig {
+  enabled: boolean;
+  hideFromModel: boolean;
+  keepVisible: string[];
+  defaultRisk: FabricRisk;
+  risks: Record<string, FabricRisk>;
+}
+
 export interface FabricMeshConfig {
   enabled: boolean;
   root?: string;
@@ -55,6 +64,7 @@ export interface FabricConfig {
   approvals: FabricApprovalConfig;
   mcp: FabricMcpConfig;
   subagents: FabricSubagentConfig;
+  capture: FabricToolCaptureConfig;
   mesh: FabricMeshConfig;
 }
 
@@ -89,6 +99,21 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
     notifyOnComplete: true,
+  },
+  capture: {
+    enabled: true,
+    hideFromModel: true,
+    keepVisible: ["fabric_exec", "read", "bash", "edit", "write", "grep", "find", "ls"],
+    defaultRisk: "execute",
+    risks: {
+      read: "read",
+      grep: "read",
+      find: "read",
+      ls: "read",
+      edit: "write",
+      write: "write",
+      bash: "execute",
+    },
   },
   mesh: {
     enabled: true,
@@ -171,11 +196,21 @@ const objectValue = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
+const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
+  value === "read" ||
+  value === "write" ||
+  value === "execute" ||
+  value === "network" ||
+  value === "agent"
+    ? value
+    : fallback;
+
 export const normalizeFabricConfig = (input: Record<string, unknown>): FabricConfig => {
   const executor = objectValue(input.executor);
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
   const subagents = objectValue(input.subagents);
+  const capture = objectValue(input.capture);
   const mesh = objectValue(input.mesh);
   const configuredTools = Array.isArray(subagents.defaultTools)
     ? subagents.defaultTools.filter(
@@ -184,6 +219,20 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
+  const configuredVisible = Array.isArray(capture.keepVisible)
+    ? capture.keepVisible.filter(
+        (name): name is string => typeof name === "string" && Boolean(name.trim()),
+      )
+    : DEFAULT_FABRIC_CONFIG.capture.keepVisible;
+  const configuredRisks = {
+    ...DEFAULT_FABRIC_CONFIG.capture.risks,
+    ...objectValue(capture.risks),
+  };
+  const risks = Object.fromEntries(
+    Object.entries(configuredRisks)
+      .filter(([name]) => Boolean(name.trim()))
+      .map(([name, risk]) => [name, riskValue(risk, DEFAULT_FABRIC_CONFIG.capture.defaultRisk)]),
+  );
 
   return {
     executor: {
@@ -263,6 +312,16 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         subagents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.subagents.notifyOnComplete,
       ),
+    },
+    capture: {
+      enabled: booleanValue(capture.enabled, DEFAULT_FABRIC_CONFIG.capture.enabled),
+      hideFromModel: booleanValue(
+        capture.hideFromModel,
+        DEFAULT_FABRIC_CONFIG.capture.hideFromModel,
+      ),
+      keepVisible: [...new Set(configuredVisible)],
+      defaultRisk: riskValue(capture.defaultRisk, DEFAULT_FABRIC_CONFIG.capture.defaultRisk),
+      risks,
     },
     mesh: {
       enabled: booleanValue(mesh.enabled, DEFAULT_FABRIC_CONFIG.mesh.enabled),

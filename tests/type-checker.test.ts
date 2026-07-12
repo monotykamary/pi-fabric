@@ -27,6 +27,8 @@ return { mcpResult, review };
   it("accepts workflow, actor, and mesh primitives", () => {
     const result = typeCheckFabricCode(
       `
+const captured = await extensions.project_status({ verbose: true });
+console.log(captured.text);
 const watcher = await agents.create({
   name: "advisor",
   instructions: "Review each turn",

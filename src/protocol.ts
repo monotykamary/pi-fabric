@@ -40,6 +40,11 @@ export interface FabricProvider {
     actionName: string,
     context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined>;
+  prepareArguments?(
+    actionName: string,
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): Record<string, unknown> | Promise<Record<string, unknown>>;
   invoke(
     actionName: string,
     args: Record<string, unknown>,
