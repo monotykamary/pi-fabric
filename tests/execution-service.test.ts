@@ -36,4 +36,56 @@ describe("FabricExecutionService", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("enforces the per-execution agent budget", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "run",
+      description: "fake agent",
+      inputSchema: {
+        type: "object",
+        properties: { task: { type: "string" } },
+        required: ["task"],
+        additionalProperties: true,
+      },
+      risk: "agent" as const,
+    };
+    registry.register({
+      name: "agents",
+      description: "fake agents",
+      async list() {
+        return [descriptor];
+      },
+      async describe(name) {
+        return name === "run" ? descriptor : undefined;
+      },
+      async invoke(_name, args) {
+        return {
+          status: "completed",
+          text: String(args.task),
+          usage: { input: 1, output: 1 },
+        };
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.approvals.agent = "allow";
+    const service = new FabricExecutionService(registry, config);
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+    const result = await service.execute({
+      code: `
+await Promise.all([
+  agents.run({ task: "one" }),
+  agents.run({ task: "two" }),
+]);
+return "unreachable";
+`,
+      signal: undefined,
+      parentToolCallId: "budget-test",
+      context,
+      maxAgentCalls: 1,
+      update() {},
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("agent budget exhausted (1 per execution)");
+  });
 });

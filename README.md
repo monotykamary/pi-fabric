@@ -2,11 +2,11 @@
 
 A programmable tool and agent runtime for [Pi](https://github.com/earendil-works/pi).
 
-Pi Fabric gives the model one `fabric_exec` tool for type-checked TypeScript programs that can compose Pi's built-in tools, dynamically discovered MCP tools, child Pi agents, councils, and bounded recursive queries. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
+Pi Fabric gives the model one `fabric_exec` tool for type-checked TypeScript programs that can compose Pi's built-in tools, dynamically discovered MCP tools, one-shot child agents, persistent event-driven actors, durable mesh coordination, councils, and bounded recursive queries. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
 
 ## Status
 
-Pi Fabric is an early implementation. The core runtime, built-in tools, MCP provider, provider protocol, approval policies, guarded subagents, council helper, and recursive query helper are implemented. Review the security notes before enabling mutating tools or external providers.
+Pi Fabric is an early implementation. The core runtime, built-in tools, MCP provider, provider protocol, approval policies, guarded subagents, dynamic workflow helpers, persistent actors, durable mesh, council helper, and recursive query helper are implemented. Review the security notes before enabling mutating tools or external providers.
 
 ## Install
 
@@ -95,6 +95,48 @@ return mcp.project_docs.search({ query: "authentication" });
 
 HTTP servers use `baseUrl` instead of `command`. Dynamic definitions live until `mcp.reload()` or session shutdown; they are not written to config.
 
+### Dynamic workflows
+
+Fabric programs already keep orchestration and intermediate values in code. The workflow globals add Claude Code-style names and progress phases without introducing a second JavaScript runtime:
+
+```ts
+await phase("Discover");
+const inventory = await agent<{ files: string[] }>(
+  "List source files relevant to authentication.",
+  {
+    label: "auth inventory",
+    tools: ["read", "grep", "find", "ls"],
+    schema: {
+      type: "object",
+      properties: { files: { type: "array", items: { type: "string" } } },
+      required: ["files"],
+      additionalProperties: false,
+    },
+  },
+);
+
+await phase("Audit");
+const findings = await parallel(
+  inventory.files.map((file) => () =>
+    agent(`Audit ${file} for concrete auth defects.`, {
+      label: `audit ${file}`,
+      tools: ["read", "grep", "find", "ls"],
+    }),
+  ),
+  { concurrency: 8 },
+);
+
+await phase("Verify");
+return agent(`Verify and synthesize these findings: ${JSON.stringify(findings)}`, {
+  label: "verify findings",
+  tools: ["read", "grep", "find", "ls"],
+});
+```
+
+Available helpers are `workflow.agent()`, `workflow.parallel()`, `workflow.pipeline()`, `workflow.phase()`, `workflow.log()`, and `workflow.budget`. The shorter `agent()`, `parallel()`, `pipeline()`, `phase()`, `log()`, and `budget` aliases are equivalent. `fabric_exec` accepts optional `agentBudget` and `tokenBudget` limits; configuration supplies a hard per-execution agent cap.
+
+A JSON Schema on an agent request makes the worker return validated structured data through `result.value`. Workflow helpers return that value directly and otherwise return the agent's final text.
+
 ### Subagents
 
 ```ts
@@ -142,19 +184,59 @@ Use `/fabric agents` to list children and `/fabric attach <id>` to display the a
 
 Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called.
 
-### Supervisors
+### Persistent actors and ambient agents
 
-Extensions can expose persistent host-side supervisors through the provider protocol. [`pi-supervisor`](https://github.com/monotykamary/pi-supervisor) registers `supervisor.start` and `supervisor.status` when both packages are loaded:
+`agents.create()` creates a named actor with a persistent Pi session, a serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:
 
 ```ts
-await tools.call({
-  ref: "supervisor.start",
-  args: { outcome: "Complete the auth migration with passing tests" },
+return agents.create({
+  name: "auth-supervisor",
+  instructions: `Watch the main session until the auth migration is complete and tested.
+Prefer silence. Reply with a directive only for material drift, a blocker, or verified completion.`,
+  events: ["agent_settled", "tool_error"],
+  responseMode: "directive",
+  delivery: "steer",
+  triggerTurn: true,
+  tools: ["read", "grep", "find", "ls"],
 });
-return tools.call({ ref: "supervisor.status" });
 ```
 
-Supervisor lifecycle hooks remain outside the guest VM. The model cannot stop or replace active supervision; those controls remain user-only.
+This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, keep model context in their own session file, and resume when the same Pi session is reopened in a trusted project.
+
+Two response modes are available:
+
+- `text`: every non-empty response becomes an actor outbox message.
+- `directive`: validated `{ action: "silent" | "message" | "stop", message?, data? }` output lets the actor decide whether intervention is useful.
+
+Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. The creator fixes delivery policy; an actor cannot escalate it in a response. Use `agents.ask()` for a blocking exchange, `agents.tell()` for fire-and-forget mail, `agents.messages()` for history, and `agents.remove()` for cleanup.
+
+### Durable mesh coordination
+
+The `mesh` API is a project-scoped, event-sourced coordination substrate:
+
+```ts
+const event = await mesh.publish({
+  topic: "team.auth",
+  kind: "finding",
+  text: "Refresh-token rotation is not atomic",
+  data: { path: "src/auth/refresh.ts" },
+});
+
+const task = await mesh.put({
+  key: "tasks/auth-review",
+  value: { status: "ready", owner: null },
+  ifVersion: 0,
+});
+
+const claimed = await mesh.put({
+  key: task.key,
+  value: { status: "claimed", owner: "security-reviewer" },
+  ifVersion: task.version,
+});
+return { event, claimed };
+```
+
+Topics provide durable channel and direct-message semantics with sequence cursors. `mesh.members()` discovers actor presence across live Fabric sessions. Versioned `get`/`put`/`delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. Together with persistent actors, these are sufficient to express messenger-style swarms in Fabric code without a daemon or fixed planner/worker roles.
 
 ### Councils
 
@@ -179,6 +261,25 @@ return rlm.query({
 ```
 
 `rlm.query()` is `agents.run()` with Fabric enabled in the child. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits; a cross-process global budget is planned but not yet implemented.
+
+## Included skills
+
+Pi discovers these package skills automatically:
+
+| Command | Pattern |
+| --- | --- |
+| `/skill:fabric-supervisor <goal>` | Persistent goal watcher driven by `agent_settled` and tool-error events |
+| `/skill:fabric-advisor [focus]` | Turn-by-turn peer reviewer that prefers silence |
+| `/skill:fabric-ambient <role>` | Meta-pattern for custom event-driven ambient actors |
+| `/skill:fabric-workflow <task>` | Code-held phases, fan-out, pipelines, structured output, and synthesis |
+| `/skill:fabric-swarm <objective>` | Persistent actors, durable topics, and CAS-based shared tasks |
+| `/skill:fabric-council <decision>` | Bounded independent perspectives plus synthesis |
+
+Supervisor and advisor are deliberately skills rather than hard-coded host services: the skill writes ordinary Fabric code over the same actor primitive available to every other pattern.
+
+## Visual integration
+
+`fabric_exec` uses the public `pi-code-previews` cooperative shell. It inherits the user's border/background mode, collapsed-result behavior, error styling, and tool-call timing without taking ownership of Pi's built-in tool renderers. Its renderer adds a numbered TypeScript preview, live phase/call activity, and compact phase/nested-call summaries. Users do not need to install `pi-code-previews` separately.
 
 ## Configuration
 
@@ -214,12 +315,21 @@ Project values override global values.
     "enabled": true,
     "transport": "process",
     "maxConcurrent": 4,
+    "maxPerExecution": 100,
     "maxDepth": 2,
     "timeoutMs": 600000,
     "extensions": true,
     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
     "retainRuns": false,
     "notifyOnComplete": true
+  },
+  "mesh": {
+    "enabled": true,
+    "maxEventBytes": 262144,
+    "maxReadEvents": 500,
+    "actorPollMs": 250,
+    "actorQueueLimit": 32,
+    "eventContextChars": 40000
   }
 }
 ```
@@ -227,6 +337,8 @@ Project values override global values.
 Approval values are `allow`, `ask`, or `deny`. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
 
 When `mcp.disableOAuth` is true, MCP calls may use cached credentials but cannot launch a new interactive OAuth flow.
+
+Mesh data defaults to `<project>/.pi/fabric/mesh`. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless the coordination log is intentionally versioned. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
 
 ## External provider protocol
 
@@ -271,8 +383,10 @@ Providers own their schemas, state, and execution semantics. Pi Fabric validates
 /fabric reload
 /fabric providers
 /fabric agents
-/fabric attach <id>
-/fabric stop <id>
+/fabric actors
+/fabric messages <actor-id>
+/fabric attach <subagent-id>
+/fabric stop <actor-or-subagent-id>
 ```
 
 ## Architecture
@@ -287,7 +401,8 @@ TypeScript checker → QuickJS sandbox
 ActionRegistry
     ├── pi.*       built-in Pi tool definitions
     ├── mcp.*      pooled mcporter runtime
-    ├── agents.*   process/tmux/screen/LocalTerm workers
+    ├── agents.*   one-shot workers + persistent mailbox actors
+    ├── mesh.*     durable topics + compare-and-swap state
     └── external   explicit pi.events providers
 ```
 
@@ -300,7 +415,11 @@ Guest code has no `process`, `require`, filesystem, network, or subprocess globa
 - Type checking improves reliability but is not a security boundary; QuickJS isolation and the host capability bridge are the boundaries.
 - Child Pi processes load normal extensions by default so provider-backed models continue to work. Their active tool list is restricted by `defaultTools`; `fabric_exec` is excluded unless recursion is explicitly requested.
 - A Git worktree isolates files, not credentials, network access, processes, or external services.
-- Background children are stopped when the parent Pi session shuts down. A detached `agents.spawn()` sends a follow-up completion message unless the caller later waits for it or `notifyOnComplete` is disabled. Completed worktrees are intentionally retained.
+- Background one-shot children are stopped when the parent Pi session shuts down. A detached `agents.spawn()` sends a follow-up completion message unless the caller later waits for it or `notifyOnComplete` is disabled. Completed worktrees are intentionally retained.
+- Persistent actors are suspended on shutdown and restored for the same Pi session only when project trust is active. Their definitions, mailbox history, and child session files live under `.pi/fabric/mesh/actors/`; mesh topics and shared state are project-scoped. Do not place secrets in actor prompts, messages, or mesh state.
+- Approving `agents.create()` delegates future subscribed events to that actor until it is stopped. Each activation uses the actor's fixed tool allowlist and model settings; review those settings before approving a persistent actor.
+- Actor responses can enter the main context only through the delivery policy fixed at creation. Directive output is schema-validated, but it is still untrusted model output that the main agent should weigh.
+- One Pi process should own a given session's restored actors at a time. Mesh topics are append-only and are not compacted automatically; archive or remove an old mesh root when its history is no longer useful.
 
 ## Development
 
@@ -311,7 +430,7 @@ pnpm test
 pnpm build
 ```
 
-The deterministic test suite covers configuration, schema validation, provider dispatch, QuickJS isolation, Pi built-in invocation, and direct-process subagents.
+The deterministic test suite covers configuration, schema validation, provider dispatch, QuickJS isolation, Pi built-in invocation, direct-process subagents, workflow helpers, durable mesh state, actor mailboxes, subscriptions, and actor restoration.
 
 ## License
 

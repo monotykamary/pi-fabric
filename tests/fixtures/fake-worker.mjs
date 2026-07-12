@@ -7,6 +7,11 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const statusFile = args.get("status-file");
 const taskFile = args.get("task-file");
+const schemaFile = args.get("schema-file");
+const schema = schemaFile ? JSON.parse(fs.readFileSync(schemaFile, "utf8")) : undefined;
+const directive = schema?.properties?.action
+  ? { action: "message", message: "fake actor advice" }
+  : undefined;
 const now = Date.now();
 const record = {
   id: args.get("id"),
@@ -20,7 +25,8 @@ const record = {
   finishedAt: now,
   turns: 1,
   toolCalls: 0,
-  text: "fake worker complete",
+  text: directive ? JSON.stringify(directive) : "fake worker complete",
+  ...(directive ? { value: directive } : {}),
   exitCode: 0,
   usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
 };

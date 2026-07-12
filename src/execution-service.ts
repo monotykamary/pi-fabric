@@ -11,6 +11,7 @@ export interface FabricExecutionResult {
   value: unknown;
   logs: string[];
   audits: FabricCallAudit[];
+  phases: string[];
   elapsedMs: number;
   typeErrors?: FabricTypeError[];
   error?: string;
@@ -22,6 +23,8 @@ export interface FabricExecutionOptions {
   signal: AbortSignal | undefined;
   parentToolCallId: string;
   context: ExtensionContext;
+  tokenBudget?: number;
+  maxAgentCalls?: number;
   update(message: string): void;
 }
 
@@ -42,6 +45,7 @@ export class FabricExecutionService {
         value: undefined,
         logs: [],
         audits: [],
+        phases: [],
         elapsedMs: performance.now() - startedAt,
         typeErrors: checked.errors,
       };
@@ -49,6 +53,22 @@ export class FabricExecutionService {
 
     const approval = new ApprovalController(this.config.approvals, options.context);
     const audits: FabricCallAudit[] = [];
+    const phases: string[] = [];
+    let agentCalls = 0;
+    const maxAgentCalls = Math.max(
+      1,
+      Math.min(
+        options.maxAgentCalls ?? this.config.subagents.maxPerExecution,
+        this.config.subagents.maxPerExecution,
+      ),
+    );
+    const guardAgentCall = (ref: string): void => {
+      if (ref !== "agents.run" && ref !== "agents.spawn" && ref !== "agents.create") return;
+      agentCalls++;
+      if (agentCalls > maxAgentCalls) {
+        throw new Error(`Fabric agent budget exhausted (${maxAgentCalls} per execution)`);
+      }
+    };
     const baseContext = {
       cwd: options.context.cwd,
       signal: options.signal,
@@ -59,7 +79,8 @@ export class FabricExecutionService {
     };
     const sandboxResult = await this.#runtime.execute(
       options.code,
-      async (ref, args) => {
+      async (ref, args, runtimeSignal) => {
+        const callContext = { ...baseContext, signal: runtimeSignal };
         switch (ref) {
           case "fabric.$providers":
             return this.registry.providers();
@@ -71,23 +92,25 @@ export class FabricExecutionService {
                 ...(typeof args.query === "string" ? { query: args.query } : {}),
                 ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
               },
-              baseContext,
+              callContext,
             );
           case "fabric.$search":
             return this.registry.search(
               String(args.query ?? ""),
-              baseContext,
+              callContext,
               typeof args.limit === "number" ? args.limit : undefined,
             );
           case "fabric.$describe":
-            return this.registry.describe(String(args.ref ?? ""), baseContext);
+            return this.registry.describe(String(args.ref ?? ""), callContext);
           case "fabric.$call": {
             const callArgs =
               typeof args.args === "object" && args.args !== null && !Array.isArray(args.args)
                 ? (args.args as Record<string, unknown>)
                 : {};
-            return this.registry.invoke(String(args.ref ?? ""), callArgs, {
-              ...baseContext,
+            const targetRef = String(args.ref ?? "");
+            guardAgentCall(targetRef);
+            return this.registry.invoke(targetRef, callArgs, {
+              ...callContext,
               approve: (action) => approval.approve(action),
               audits,
               maxResultChars: this.config.executor.maxNestedResultChars,
@@ -96,9 +119,17 @@ export class FabricExecutionService {
           case "fabric.$progress":
             options.update(String(args.message ?? "Working"));
             return undefined;
+          case "fabric.$phase": {
+            const name = String(args.name ?? "").trim();
+            if (!name) throw new Error("Workflow phase name must not be empty");
+            if (!phases.includes(name)) phases.push(name);
+            options.update(`Phase: ${name}`);
+            return { name, index: phases.indexOf(name) };
+          }
           default:
+            guardAgentCall(ref);
             return this.registry.invoke(ref, args, {
-              ...baseContext,
+              ...callContext,
               approve: (action) => approval.approve(action),
               audits,
               maxResultChars: this.config.executor.maxNestedResultChars,
@@ -110,6 +141,7 @@ export class FabricExecutionService {
         memoryLimitBytes: this.config.executor.memoryLimitBytes,
         maxLogChars: this.config.executor.maxOutputChars,
         ...(options.strings ? { strings: options.strings } : {}),
+        ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
       },
     );
@@ -119,6 +151,7 @@ export class FabricExecutionService {
       value: sandboxResult.value,
       logs: sandboxResult.logs,
       audits,
+      phases,
       elapsedMs: performance.now() - startedAt,
       ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
     };

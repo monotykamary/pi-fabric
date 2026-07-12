@@ -24,6 +24,34 @@ return { mcpResult, review };
     expect(result.errors).toEqual([]);
   });
 
+  it("accepts workflow, actor, and mesh primitives", () => {
+    const result = typeCheckFabricCode(
+      `
+const watcher = await agents.create({
+  name: "advisor",
+  instructions: "Review each turn",
+  events: ["turn_end"],
+  responseMode: "directive",
+});
+await mesh.publish({ topic: "team.review", to: watcher.id, text: "start" });
+await phase("Review");
+const findings = await parallel([
+  () => agent<{ issues: string[] }>("Find issues", {
+    label: "issue scan",
+    schema: {
+      type: "object",
+      properties: { issues: { type: "array", items: { type: "string" } } },
+      required: ["issues"],
+    },
+  }),
+]);
+return findings;
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
   it("reports user-facing line numbers", () => {
     const result = typeCheckFabricCode(
       'await pi.read({ path: 42 });\nreturn "never";',

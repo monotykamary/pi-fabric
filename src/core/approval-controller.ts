@@ -12,6 +12,7 @@ const inheritedRisks = (): FabricRisk[] => {
 
 export class ApprovalController {
   readonly #approvedRisks = new Set<FabricRisk>(inheritedRisks());
+  readonly #pendingApprovals = new Map<FabricRisk, Promise<void>>();
 
   constructor(
     readonly config: FabricApprovalConfig,
@@ -24,6 +25,18 @@ export class ApprovalController {
     if (mode === "deny") {
       throw new Error(`${action.ref} is denied by the Fabric ${action.risk} policy`);
     }
+    const pending = this.#pendingApprovals.get(action.risk);
+    if (pending) return pending;
+    const approval = this.#requestApproval(action);
+    this.#pendingApprovals.set(action.risk, approval);
+    try {
+      await approval;
+    } finally {
+      this.#pendingApprovals.delete(action.risk);
+    }
+  }
+
+  async #requestApproval(action: ResolvedFabricAction): Promise<void> {
     if (!this.context.hasUI) {
       throw new Error(`${action.ref} requires approval, but no interactive UI is available`);
     }

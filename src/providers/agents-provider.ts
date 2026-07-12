@@ -1,3 +1,5 @@
+import { ActorManager } from "../actors/manager.js";
+import type { FabricActorHostEvent, FabricActorRequest } from "../actors/types.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
@@ -24,6 +26,7 @@ const runProperties = {
   extensions: { type: "boolean" },
   recursive: { type: "boolean" },
   worktree: { type: "boolean" },
+  schema: { type: "object", description: "Optional JSON Schema for validated structured output" },
 };
 
 const runSchema = {
@@ -93,6 +96,92 @@ const descriptors: FabricActionDescriptor[] = [
     },
     risk: "write",
   },
+  {
+    name: "create",
+    description:
+      "Create a persistent actor with a mailbox and optional host-event or mesh-topic subscriptions",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        instructions: { type: "string" },
+        events: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["input", "turn_end", "agent_settled", "tool_error", "session_compact"],
+          },
+        },
+        topics: { type: "array", items: { type: "string" } },
+        delivery: {
+          type: "string",
+          enum: ["mailbox", "steer", "followUp", "nextTurn"],
+        },
+        responseMode: { type: "string", enum: ["text", "directive"] },
+        triggerTurn: { type: "boolean" },
+        coalesce: { type: "boolean" },
+        model: { type: "string" },
+        thinking: runProperties.thinking,
+        tools: runProperties.tools,
+        transport: runProperties.transport,
+        timeoutMs: { type: "number" },
+      },
+      required: ["name", "instructions"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "ask",
+    description: "Send a message to a persistent actor and wait for its next response",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      required: ["id", "message"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "tell",
+    description: "Queue a message for a persistent actor without waiting",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      required: ["id", "message"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "actorStatus",
+    description: "Read one persistent actor's status",
+    inputSchema: idSchema,
+    risk: "read",
+  },
+  {
+    name: "actors",
+    description: "List persistent actors in this Fabric session",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    risk: "read",
+  },
+  {
+    name: "messages",
+    description: "Read a persistent actor's bounded inbox and outbox history",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, limit: { type: "number", minimum: 1 } },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    risk: "read",
+  },
+  {
+    name: "remove",
+    description: "Stop and remove a persistent actor",
+    inputSchema: idSchema,
+    risk: "agent",
+  },
 ];
 
 const stringArray = (value: unknown): string[] | undefined =>
@@ -141,6 +230,70 @@ const runRequest = (
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
+    ...(typeof args.schema === "object" && args.schema !== null && !Array.isArray(args.schema)
+      ? { schema: args.schema as Record<string, unknown> }
+      : {}),
+  };
+};
+
+const actorRequest = (
+  args: Record<string, unknown>,
+  context: FabricInvocationContext,
+): FabricActorRequest => {
+  const events = Array.isArray(args.events)
+    ? args.events.filter(
+        (event): event is FabricActorHostEvent =>
+          event === "input" ||
+          event === "turn_end" ||
+          event === "agent_settled" ||
+          event === "tool_error" ||
+          event === "session_compact",
+      )
+    : undefined;
+  const topics = stringArray(args.topics);
+  const tools = stringArray(args.tools);
+  const inheritedModel = context.extensionContext.model
+    ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
+    : undefined;
+  return {
+    name: String(args.name),
+    instructions: String(args.instructions),
+    ...(events ? { events } : {}),
+    ...(topics ? { topics } : {}),
+    ...(args.delivery === "mailbox" ||
+    args.delivery === "steer" ||
+    args.delivery === "followUp" ||
+    args.delivery === "nextTurn"
+      ? { delivery: args.delivery }
+      : {}),
+    ...(args.responseMode === "text" || args.responseMode === "directive"
+      ? { responseMode: args.responseMode }
+      : {}),
+    ...(typeof args.triggerTurn === "boolean" ? { triggerTurn: args.triggerTurn } : {}),
+    ...(typeof args.coalesce === "boolean" ? { coalesce: args.coalesce } : {}),
+    ...(typeof args.model === "string"
+      ? { model: args.model }
+      : inheritedModel
+        ? { model: inheritedModel }
+        : {}),
+    ...(args.thinking === "off" ||
+    args.thinking === "minimal" ||
+    args.thinking === "low" ||
+    args.thinking === "medium" ||
+    args.thinking === "high" ||
+    args.thinking === "xhigh" ||
+    args.thinking === "max"
+      ? { thinking: args.thinking }
+      : {}),
+    ...(tools ? { tools } : {}),
+    ...(args.transport === "auto" ||
+    args.transport === "process" ||
+    args.transport === "tmux" ||
+    args.transport === "screen" ||
+    args.transport === "localterm"
+      ? { transport: args.transport }
+      : {}),
+    ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {}),
   };
 };
 
@@ -155,25 +308,27 @@ const waitWithProgress = async (
     const settled = await Promise.race([
       result.then((value) => ({ done: true as const, value })),
       new Promise<{ done: false }>((resolve) => {
-        progressTimer = setTimeout(
-          () => resolve({ done: false }),
-          AGENT_PROGRESS_INTERVAL_MS,
-        );
+        progressTimer = setTimeout(() => resolve({ done: false }), AGENT_PROGRESS_INTERVAL_MS);
       }),
     ]);
     if (progressTimer) clearTimeout(progressTimer);
     if (settled.done) return settled.value;
     const status = manager.status(id);
-    const currentTool = "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
+    const currentTool =
+      "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
     context.update(`Agent ${id.slice(0, 8)}: ${status.status}${currentTool}`);
   }
 };
 
 export class AgentsProvider implements FabricProvider {
   readonly name = "agents";
-  readonly description = "Guarded child Pi agents over process, tmux, screen, or LocalTerm";
+  readonly description =
+    "One-shot child Pi agents and persistent mailbox actors over process, tmux, screen, or LocalTerm";
 
-  constructor(readonly manager: SubagentManager) {}
+  constructor(
+    readonly manager: SubagentManager,
+    readonly actorManager: ActorManager,
+  ) {}
 
   async list(
     request: FabricProviderListRequest,
@@ -225,12 +380,35 @@ export class AgentsProvider implements FabricProvider {
         return this.manager.stop(String(args.id));
       case "cleanup":
         return this.manager.cleanup(String(args.id), args.deleteBranch === true);
+      case "create":
+        return this.actorManager.create(actorRequest(args, context));
+      case "ask":
+        return this.actorManager.ask(
+          String(args.id),
+          String(args.message),
+          args.data,
+          context.signal,
+        );
+      case "tell":
+        return this.actorManager.tell(String(args.id), String(args.message), args.data);
+      case "actorStatus":
+        return this.actorManager.status(String(args.id));
+      case "actors":
+        return this.actorManager.list();
+      case "messages":
+        return this.actorManager.messages(
+          String(args.id),
+          typeof args.limit === "number" ? args.limit : 50,
+        );
+      case "remove":
+        return this.actorManager.remove(String(args.id));
       default:
         throw new Error(`Unknown agents action: ${actionName}`);
     }
   }
 
   async close(): Promise<void> {
+    await this.actorManager.close();
     await this.manager.close();
   }
 }

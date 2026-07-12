@@ -24,6 +24,7 @@ interface FabricAgentRequest {
   extensions?: boolean;
   recursive?: boolean;
   worktree?: boolean;
+  schema?: Record<string, unknown>;
 }
 interface FabricAgentHandle {
   id: string;
@@ -43,6 +44,7 @@ interface FabricAgentResult extends FabricAgentHandle {
   turns: number;
   toolCalls: number;
   text: string;
+  value?: unknown;
   error?: string;
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
@@ -63,6 +65,52 @@ interface PiToolsApi {
   find(args: { pattern: string; path?: string; limit?: number }): Promise<string>;
   ls(args?: { path?: string; limit?: number }): Promise<string>;
 }
+type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
+type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
+interface FabricActorRequest {
+  name: string;
+  instructions: string;
+  events?: FabricActorHostEvent[];
+  topics?: string[];
+  delivery?: FabricActorDelivery;
+  responseMode?: "text" | "directive";
+  triggerTurn?: boolean;
+  coalesce?: boolean;
+  model?: string;
+  thinking?: FabricThinking;
+  tools?: string[];
+  transport?: FabricTransport;
+  timeoutMs?: number;
+}
+interface FabricActorInfo {
+  id: string;
+  name: string;
+  status: "idle" | "queued" | "running" | "stopped";
+  events: FabricActorHostEvent[];
+  topics: string[];
+  delivery: FabricActorDelivery;
+  responseMode: "text" | "directive";
+  triggerTurn: boolean;
+  queued: number;
+  messages: number;
+  createdAt: number;
+  updatedAt: number;
+  lastRunId?: string;
+  lastError?: string;
+}
+interface FabricActorMessage {
+  id: string;
+  actorId: string;
+  actorName: string;
+  direction: "in" | "out";
+  source: string;
+  createdAt: number;
+  text?: string;
+  data?: unknown;
+  action?: "silent" | "message" | "stop";
+  runId?: string;
+  error?: string;
+}
 interface FabricAgentsApi {
   run(args: FabricAgentRequest): Promise<FabricAgentResult>;
   spawn(args: FabricAgentRequest): Promise<FabricAgentHandle>;
@@ -71,6 +119,13 @@ interface FabricAgentsApi {
   list(): Promise<Array<FabricAgentResult | FabricAgentHandle>>;
   stop(args: { id: string }): Promise<FabricAgentResult>;
   cleanup(args: { id: string; deleteBranch?: boolean }): Promise<{ cleaned: boolean }>;
+  create(args: FabricActorRequest): Promise<FabricActorInfo>;
+  ask(args: { id: string; message: string; data?: unknown }): Promise<FabricActorMessage>;
+  tell(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string }>;
+  actorStatus(args: { id: string }): Promise<FabricActorInfo>;
+  actors(): Promise<FabricActorInfo[]>;
+  messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;
+  remove(args: { id: string }): Promise<{ removed: boolean }>;
 }
 interface FabricMcpResult {
   text: string;
@@ -112,11 +167,64 @@ interface FabricCouncilApi {
     synthesize?: boolean;
   }): Promise<FabricAgentResult[] | FabricAgentResult>;
 }
+interface FabricMeshIdentity {
+  id: string;
+  name: string;
+  kind: "main" | "actor" | "agent";
+  sessionId?: string;
+}
+interface FabricMeshEvent {
+  id: string;
+  sequence: number;
+  topic: string;
+  kind: string;
+  from: FabricMeshIdentity;
+  to?: string;
+  text?: string;
+  data?: unknown;
+  createdAt: number;
+}
+interface FabricMeshStateEntry<T = unknown> {
+  key: string;
+  value: T;
+  version: number;
+  updatedAt: number;
+  updatedBy: FabricMeshIdentity;
+}
+interface FabricMeshApi {
+  self(): Promise<FabricMeshIdentity>;
+  publish(args: { topic: string; kind?: string; to?: string; text?: string; data?: unknown }): Promise<FabricMeshEvent>;
+  read(args?: { after?: number; topic?: string; to?: string; limit?: number }): Promise<FabricMeshEvent[]>;
+  members(args?: { limit?: number }): Promise<Array<FabricMeshStateEntry<FabricActorInfo>>>;
+  get<T = unknown>(args: { key: string }): Promise<FabricMeshStateEntry<T> | null>;
+  list<T = unknown>(args?: { prefix?: string; limit?: number }): Promise<Array<FabricMeshStateEntry<T>>>;
+  put<T = unknown>(args: { key: string; value: T; ifVersion?: number }): Promise<FabricMeshStateEntry<T>>;
+  delete(args: { key: string; ifVersion?: number }): Promise<{ deleted: boolean; version?: number }>;
+}
+interface FabricWorkflowAgentOptions extends Omit<FabricAgentRequest, "task"> {
+  label?: string;
+}
+interface FabricWorkflowApi {
+  agent<T = string>(prompt: string, options?: FabricWorkflowAgentOptions): Promise<T>;
+  parallel<T>(thunks: Array<() => Promise<T> | T>, options?: { concurrency?: number }): Promise<T[]>;
+  pipeline<T>(items: T[], ...stages: Array<(value: unknown, original: T, index: number) => Promise<unknown> | unknown>): Promise<unknown[]>;
+  phase(name: string): Promise<{ name: string; index: number }>;
+  log(...values: unknown[]): void;
+  budget: { total: number; spent(): number; remaining(): number };
+}
 declare const tools: FabricToolsApi;
 declare const pi: PiToolsApi;
 declare const agents: FabricAgentsApi;
+declare const mesh: FabricMeshApi;
 declare const mcp: FabricMcpApi;
 declare const council: FabricCouncilApi;
+declare const workflow: FabricWorkflowApi;
+declare function agent<T = string>(prompt: string, options?: FabricWorkflowAgentOptions): Promise<T>;
+declare function parallel<T>(thunks: Array<() => Promise<T> | T>, options?: { concurrency?: number }): Promise<T[]>;
+declare function pipeline<T>(items: T[], ...stages: Array<(value: unknown, original: T, index: number) => Promise<unknown> | unknown>): Promise<unknown[]>;
+declare function phase(name: string): Promise<{ name: string; index: number }>;
+declare function log(...values: unknown[]): void;
+declare const budget: FabricWorkflowApi["budget"];
 declare const rlm: { query(args: FabricAgentRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
   log(...args: unknown[]): void;

@@ -1,16 +1,25 @@
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { loadCodePreviewSettings, withCodePreviewShell } from "pi-code-previews";
 import { Type } from "typebox";
 import { FabricState } from "./fabric-state.js";
-import {
-  FABRIC_PROVIDER_REGISTER_EVENT,
-  type FabricProviderRegistration,
-} from "./protocol.js";
+import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricProviderRegistration } from "./protocol.js";
 
 const RESULT_FORMATS = ["auto", "json", "text"] as const;
 type ResultFormat = (typeof RESULT_FORMATS)[number];
+
+const safeTerminalText = (value: string): string =>
+  value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (character) => {
+    const code = character.codePointAt(0)?.toString(16).padStart(2, "0") ?? "00";
+    return `\\x${code}`;
+  });
+
+const countLabel = (count: number, singular: string): string =>
+  `${count} ${count === 1 ? singular : `${singular}s`}`;
 
 const formatValue = (value: unknown, format: ResultFormat): string => {
   if (value === undefined) return "";
@@ -54,7 +63,8 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
   return registration as FabricProviderRegistration;
 };
 
-export default function piFabric(pi: ExtensionAPI): void {
+export default async function piFabric(pi: ExtensionAPI): Promise<void> {
+  await loadCodePreviewSettings(process.cwd());
   const state = new FabricState(pi);
 
   pi.events.on(FABRIC_PROVIDER_REGISTER_EVENT, (value: unknown) => {
@@ -66,76 +76,168 @@ export default function piFabric(pi: ExtensionAPI): void {
     );
   });
 
-  pi.registerTool({
-    name: "fabric_exec",
-    label: "Fabric",
-    description:
-      "Execute type-checked TypeScript in a QuickJS sandbox and compose Pi tools, MCP tools, child agents, councils, and recursive queries. Prefer this for workflows with multiple dependent calls, parallel work, filtering, or large intermediate results.",
-    promptSnippet: "Execute a typed program over Pi tools, MCP, and guarded subagents",
-    promptGuidelines: [
-      "Use fabric_exec for workflows with multiple calls, loops, filtering, aggregation, MCP tools, or subagents; use direct Pi tools for one simple operation.",
-      "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). Call built-ins through pi.*, MCP through mcp.<server>.<tool>(), and child agents through agents.*.",
-      "Use Promise.all for independent calls. Return only the compact final value; intermediate results remain inside the sandbox.",
-      "Use council.run() for bounded multi-perspective review and rlm.query() only when recursive decomposition is genuinely useful.",
-    ],
-    parameters: Type.Object({
-      code: Type.String({
+  pi.registerTool(
+    withCodePreviewShell(
+      defineTool({
+        name: "fabric_exec",
+        label: "Fabric",
         description:
-          "TypeScript function body. Top-level await and return are supported. Available globals: tools, pi, mcp, agents, council, rlm, print, and π.",
-      }),
-      strings: Type.Optional(
-        Type.Record(Type.String(), Type.String(), {
-          description: "Named strings exposed as π.key, useful for content that is awkward to quote",
+          "Execute type-checked TypeScript in a QuickJS sandbox and compose Pi tools, MCP tools, workflows, persistent actors, durable mesh coordination, councils, and recursive queries. Prefer this for multi-step or multi-agent work.",
+        promptSnippet:
+          "Execute a typed program over tools, workflows, persistent actors, and mesh state",
+        promptGuidelines: [
+          "Use fabric_exec for workflows with multiple calls, loops, filtering, aggregation, MCP tools, or subagents; use direct Pi tools for one simple operation.",
+          "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). Call built-ins through pi.*, MCP through mcp.<server>.<tool>(), child agents and persistent actors through agents.*, and coordination through mesh.*.",
+          "For scripted fan-out use workflow.agent(), workflow.parallel(), workflow.pipeline(), and workflow.phase(); the short aliases agent(), parallel(), pipeline(), and phase() are also available.",
+          "Use agents.create() for persistent mailbox actors. Subscribe them to host events for ambient behavior or mesh topics for peer coordination; use directive response mode when silence/intervention is conditional.",
+          "Return only the compact final value; intermediate results remain inside the sandbox. Use council.run() or rlm.query() only when their extra cost is justified.",
+        ],
+        parameters: Type.Object({
+          code: Type.String({
+            description:
+              "TypeScript function body. Top-level await and return are supported. Available globals include tools, pi, mcp, agents, mesh, workflow, agent, parallel, pipeline, phase, council, rlm, print, and π.",
+          }),
+          strings: Type.Optional(
+            Type.Record(Type.String(), Type.String(), {
+              description:
+                "Named strings exposed as π.key, useful for content that is awkward to quote",
+            }),
+          ),
+          resultFormat: Type.Optional(
+            Type.Union(RESULT_FORMATS.map((value) => Type.Literal(value))),
+          ),
+          tokenBudget: Type.Optional(
+            Type.Number({
+              minimum: 1,
+              description: "Optional token budget observed by workflow.agent() calls",
+            }),
+          ),
+          agentBudget: Type.Optional(
+            Type.Number({
+              minimum: 1,
+              description: "Optional agent-call cap, bounded by Fabric configuration",
+            }),
+          ),
         }),
-      ),
-      resultFormat: Type.Optional(Type.Union(RESULT_FORMATS.map((value) => Type.Literal(value)))),
-    }),
-    async execute(toolCallId, params, signal, onUpdate, context) {
-      await state.ensure(context);
-      const result = await state.execution.execute({
-        code: params.code,
-        ...(params.strings ? { strings: params.strings } : {}),
-        signal,
-        parentToolCallId: toolCallId,
-        context,
-        update(message) {
-          onUpdate?.({
-            content: [{ type: "text", text: message }],
-            details: { progress: message },
-          });
+        renderCall(params, theme, context) {
+          const lines = safeTerminalText(params.code).split("\n");
+          const limit = context.expanded ? lines.length : 8;
+          const shown = lines.slice(0, limit);
+          const width = String(Math.max(1, shown.length)).length;
+          const preview = shown
+            .map(
+              (line, index) =>
+                `${theme.fg("dim", String(index + 1).padStart(width, " "))} ${theme.fg("muted", line || " ")}`,
+            )
+            .join("\n");
+          const hidden = lines.length - shown.length;
+          const title = `${theme.fg("toolTitle", theme.bold("fabric"))} ${theme.fg("dim", `TypeScript · ${countLabel(lines.length, "line")}`)}`;
+          return new Text(
+            `${title}${preview ? `\n${preview}` : ""}${hidden > 0 ? `\n${theme.fg("dim", `… ${countLabel(hidden, "line")} hidden`)}` : ""}`,
+            0,
+            0,
+          );
         },
-      });
+        renderResult(result, { expanded, isPartial }, theme) {
+          const details = result.details as
+            | {
+                success?: boolean;
+                progress?: string;
+                audits?: Array<{ ref: string; success?: boolean }>;
+                phases?: string[];
+              }
+            | undefined;
+          if (isPartial) {
+            return new Text(
+              theme.fg(
+                "warning",
+                `◆ ${safeTerminalText(details?.progress ?? "Running Fabric program…")}`,
+              ),
+              0,
+              0,
+            );
+          }
+          const output = result.content
+            .filter((part): part is { type: "text"; text: string } => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+          const lines = safeTerminalText(output).split("\n");
+          const limit = expanded ? lines.length : 12;
+          const shown = lines.slice(0, limit);
+          const audits = details?.audits ?? [];
+          const failedCalls = audits.filter((audit) => audit.success === false).length;
+          const phases = details?.phases ?? [];
+          const status = details?.success === false ? "failed" : "complete";
+          const statusColor = details?.success === false ? "error" : "success";
+          const metadata = [
+            countLabel(audits.length, "nested call"),
+            failedCalls > 0 ? `${failedCalls} failed` : undefined,
+            phases.length > 0 ? countLabel(phases.length, "phase") : undefined,
+          ].filter((value): value is string => Boolean(value));
+          let text = theme.fg(
+            statusColor,
+            `${details?.success === false ? "✗" : "✓"} Fabric ${status}`,
+          );
+          if (metadata.length > 0) text += theme.fg("dim", ` · ${metadata.join(" · ")}`);
+          if (phases.length > 0)
+            text += `\n${theme.fg("dim", phases.map((phase) => `◆ ${phase}`).join("  "))}`;
+          if (shown.length > 0)
+            text += `\n${shown.map((line) => theme.fg("toolOutput", line || " ")).join("\n")}`;
+          if (lines.length > shown.length) {
+            text += `\n${theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")} hidden`)}`;
+          }
+          return new Text(text, 0, 0);
+        },
+        async execute(toolCallId, params, signal, onUpdate, context) {
+          await state.ensure(context);
+          const result = await state.execution.execute({
+            code: params.code,
+            ...(params.strings ? { strings: params.strings } : {}),
+            signal,
+            parentToolCallId: toolCallId,
+            context,
+            ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
+            ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
+            update(message) {
+              onUpdate?.({
+                content: [{ type: "text", text: message }],
+                details: { progress: message },
+              });
+            },
+          });
 
-      if (result.typeErrors) {
-        const text = result.typeErrors
-          .map((error) =>
-            error.line > 0
-              ? `Line ${error.line}:${error.column} — ${error.message}`
-              : error.message,
-          )
-          .join("\n");
-        return {
-          content: [{ type: "text", text: `Type errors; code was not executed:\n${text}` }],
-          details: result,
-          isError: true,
-        };
-      }
+          if (result.typeErrors) {
+            const text = result.typeErrors
+              .map((error) =>
+                error.line > 0
+                  ? `Line ${error.line}:${error.column} — ${error.message}`
+                  : error.message,
+              )
+              .join("\n");
+            return {
+              content: [{ type: "text", text: `Type errors; code was not executed:\n${text}` }],
+              details: result,
+              isError: true,
+            };
+          }
 
-      const sections = [...result.logs];
-      const formattedValue = formatValue(result.value, params.resultFormat ?? "auto");
-      if (formattedValue) sections.push(formattedValue);
-      if (result.error) sections.push(`Runtime error: ${result.error}`);
-      const output = truncateMiddle(
-        sections.join("\n\n") || "(no output)",
-        state.config.executor.maxOutputChars,
-      );
-      return {
-        content: [{ type: "text", text: output }],
-        details: result,
-        ...(result.success ? {} : { isError: true }),
-      };
-    },
-  });
+          const sections = [...result.logs];
+          const formattedValue = formatValue(result.value, params.resultFormat ?? "auto");
+          if (formattedValue) sections.push(formattedValue);
+          if (result.error) sections.push(`Runtime error: ${result.error}`);
+          const output = truncateMiddle(
+            sections.join("\n\n") || "(no output)",
+            state.config.executor.maxOutputChars,
+          );
+          return {
+            content: [{ type: "text", text: output }],
+            details: result,
+            ...(result.success ? {} : { isError: true }),
+          };
+        },
+      }),
+    ),
+  );
 
   pi.on("session_start", async (_event, context) => {
     await state.initialize(context);
@@ -143,6 +245,28 @@ export default function piFabric(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     await state.shutdown();
+  });
+
+  pi.on("input", async (event, context) => {
+    if (state.initialized) state.dispatchHostEvent("input", event, context);
+  });
+
+  pi.on("turn_end", async (event, context) => {
+    if (state.initialized) state.dispatchHostEvent("turn_end", event, context);
+  });
+
+  pi.on("agent_settled", async (event, context) => {
+    if (state.initialized) state.dispatchHostEvent("agent_settled", event, context);
+  });
+
+  pi.on("tool_execution_end", async (event, context) => {
+    if (state.initialized && event.isError) {
+      state.dispatchHostEvent("tool_error", event, context);
+    }
+  });
+
+  pi.on("session_compact", async (event, context) => {
+    if (state.initialized) state.dispatchHostEvent("session_compact", event, context);
   });
 
   pi.on("before_agent_start", async (event) => {
@@ -156,7 +280,10 @@ export default function piFabric(pi: ExtensionAPI): void {
     description: "Inspect or reload Pi Fabric; manage Fabric subagents",
     async handler(argumentsText, context) {
       await state.ensure(context);
-      const [command = "status", ...argumentsList] = argumentsText.trim().split(/\s+/).filter(Boolean);
+      const [command = "status", ...argumentsList] = argumentsText
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
       if (command === "reload") {
         await state.initialize(context);
         context.ui.notify("Pi Fabric reloaded", "info");
@@ -175,13 +302,55 @@ export default function piFabric(pi: ExtensionAPI): void {
         context.ui.notify(
           agents.length > 0
             ? agents
-                .map((agent) =>
-                  `${agent.id.slice(0, 8)} ${agent.status} ${agent.transport} — ${agent.name}`,
+                .map(
+                  (agent) =>
+                    `${agent.id.slice(0, 8)} ${agent.status} ${agent.transport} — ${agent.name}`,
                 )
                 .join("\n")
             : "No Fabric subagents",
           "info",
         );
+        return;
+      }
+      if (command === "actors") {
+        const actors = state.actors.list();
+        context.ui.notify(
+          actors.length > 0
+            ? actors
+                .map(
+                  (actor) =>
+                    `${actor.id.slice(0, 8)} ${actor.status} q:${actor.queued} — ${actor.name}`,
+                )
+                .join("\n")
+            : "No Fabric actors",
+          "info",
+        );
+        return;
+      }
+      if (command === "messages") {
+        const id = argumentsList[0];
+        if (!id) {
+          context.ui.notify("Usage: /fabric messages <actor-id>", "warning");
+          return;
+        }
+        try {
+          const actor = state.actors.status(id);
+          const messages = state.actors.messages(actor.id, 20);
+          context.ui.notify(
+            messages.length > 0
+              ? messages
+                  .map((message) => {
+                    const value = message.text ?? message.action ?? message.error ?? "data";
+                    const summary = truncateMiddle(value.replace(/\s+/g, " "), 500);
+                    return `${message.direction === "in" ? "→" : "←"} ${message.source}: ${summary}`;
+                  })
+                  .join("\n")
+              : `No messages for ${actor.name}`,
+            "info",
+          );
+        } catch (error) {
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        }
         return;
       }
       if (command === "stop") {
@@ -190,9 +359,17 @@ export default function piFabric(pi: ExtensionAPI): void {
           context.ui.notify("Usage: /fabric stop <id>", "warning");
           return;
         }
+        const actor = state.actors
+          .list()
+          .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
+        if (actor) {
+          await state.actors.stop(actor.id);
+          context.ui.notify(`Stopped Fabric actor ${actor.id.slice(0, 8)}`, "info");
+          return;
+        }
         const agent = state.subagents.list().find((candidate) => candidate.id.startsWith(id));
         if (!agent) {
-          context.ui.notify(`Unknown Fabric subagent: ${id}`, "error");
+          context.ui.notify(`Unknown Fabric actor or subagent: ${id}`, "error");
           return;
         }
         await state.subagents.stop(agent.id);
@@ -213,7 +390,7 @@ export default function piFabric(pi: ExtensionAPI): void {
       }
       if (command !== "status") {
         context.ui.notify(
-          "Usage: /fabric [status|reload|providers|agents|attach <id>|stop <id>]",
+          "Usage: /fabric [status|reload|providers|agents|actors|messages <id>|attach <id>|stop <id>]",
           "warning",
         );
         return;
@@ -222,9 +399,13 @@ export default function piFabric(pi: ExtensionAPI): void {
       context.ui.notify(
         [
           `cwd: ${state.cwd}`,
-          `providers: ${state.registry.providers().map((provider) => provider.name).join(", ")}`,
+          `providers: ${state.registry
+            .providers()
+            .map((provider) => provider.name)
+            .join(", ")}`,
           `transport: ${config.subagents.transport}`,
-          `subagent limits: concurrency ${config.subagents.maxConcurrent}, depth ${config.subagents.maxDepth}`,
+          `subagent limits: concurrency ${config.subagents.maxConcurrent}, per execution ${config.subagents.maxPerExecution}, depth ${config.subagents.maxDepth}`,
+          `actors: ${state.actors.list().length} · mesh: ${config.mesh.enabled ? state.mesh.root : "disabled"}`,
           `MCP: ${config.mcp.enabled ? "enabled" : "disabled"}`,
         ].join("\n"),
         "info",

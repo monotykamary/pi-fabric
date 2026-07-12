@@ -48,7 +48,10 @@ const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const safeName = (value: string): string =>
-  value.replace(/[\r\n\t]+/g, " ").trim().slice(0, MAX_NAME_LENGTH) || "Fabric subagent";
+  value
+    .replace(/[\r\n\t]+/g, " ")
+    .trim()
+    .slice(0, MAX_NAME_LENGTH) || "Fabric subagent";
 
 const readRecord = (filePath: string): SubagentRunRecord | undefined => {
   try {
@@ -71,7 +74,10 @@ const writeRecord = (filePath: string, record: SubagentRunRecord): void => {
 };
 
 const failedRecord = (
-  managed: Omit<ManagedSubagent, "result" | "resolve" | "release" | "abortSignal" | "abortHandler" | "settled">,
+  managed: Omit<
+    ManagedSubagent,
+    "result" | "resolve" | "release" | "abortSignal" | "abortHandler" | "settled"
+  >,
   status: "failed" | "stopped" | "timed_out",
   error: string,
 ): SubagentRunResult => {
@@ -154,7 +160,14 @@ export class SubagentManager {
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const logFile = path.join(runDirectory, "events.jsonl");
+    const schemaFile = request.schema ? path.join(runDirectory, "schema.json") : undefined;
     fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
+    if (schemaFile) {
+      fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
 
     let agentCwd = this.cwd;
     let branch: string | undefined;
@@ -208,6 +221,12 @@ export class SubagentManager {
         ...(request.recursive ? ["--fabric-extension", this.#fabricExtensionPath] : []),
         ...(request.model ? ["--model", request.model] : []),
         ...(request.thinking ? ["--thinking", request.thinking] : []),
+        ...(request.systemPrompt ? ["--system-prompt", request.systemPrompt] : []),
+        ...(request.sessionFile ? ["--session-file", request.sessionFile] : []),
+        ...(request.actorId ? ["--actor-id", request.actorId] : []),
+        ...(request.actorName ? ["--actor-name", request.actorName] : []),
+        ...(request.meshRoot ? ["--mesh-root", request.meshRoot] : []),
+        ...(schemaFile ? ["--schema-file", schemaFile] : []),
         ...(branch ? ["--branch", branch] : []),
         ...(worktree ? ["--worktree", worktree] : []),
       ];
@@ -360,7 +379,11 @@ export class SubagentManager {
       if (!alive) {
         firstObservedDeadAt ??= Date.now();
         if (Date.now() - firstObservedDeadAt >= TRANSPORT_EXIT_GRACE_MS) {
-          const failed = failedRecord(managed, "failed", "Subagent transport exited without a result");
+          const failed = failedRecord(
+            managed,
+            "failed",
+            "Subagent transport exited without a result",
+          );
           writeRecord(managed.statusFile, failed);
           this.#settle(managed, failed);
           return;
@@ -400,9 +423,7 @@ export class SubagentManager {
     return [...new Set(tools)];
   }
 
-  async #resolveTransport(
-    requested: FabricSubagentTransport,
-  ): Promise<SubagentTransportAdapter> {
+  async #resolveTransport(requested: FabricSubagentTransport): Promise<SubagentTransportAdapter> {
     if (requested !== "auto") {
       const adapter = this.#transports.get(requested);
       if (!adapter || !(await adapter.available())) {
@@ -439,10 +460,7 @@ export class SubagentManager {
     };
   }
 
-  #withTransportMetadata(
-    record: SubagentRunRecord,
-    managed: ManagedSubagent,
-  ): SubagentRunRecord {
+  #withTransportMetadata(record: SubagentRunRecord, managed: ManagedSubagent): SubagentRunRecord {
     return {
       ...record,
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),

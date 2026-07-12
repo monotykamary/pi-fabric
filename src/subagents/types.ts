@@ -19,6 +19,12 @@ export interface SubagentRunRequest {
   extensions?: boolean;
   recursive?: boolean;
   worktree?: boolean;
+  schema?: Record<string, unknown>;
+  systemPrompt?: string;
+  sessionFile?: string;
+  actorId?: string;
+  actorName?: string;
+  meshRoot?: string;
 }
 
 export interface SubagentUsage {
@@ -43,6 +49,7 @@ export interface SubagentRunRecord {
   turns: number;
   toolCalls: number;
   text: string;
+  value?: unknown;
   error?: string;
   stderr?: string;
   exitCode?: number | null;
@@ -76,6 +83,7 @@ export interface SubagentWorkerOptions {
   taskFile: string;
   statusFile: string;
   logFile: string;
+  schemaFile?: string;
   cwd: string;
   piBinary: string;
   timeoutMs: number;
@@ -86,6 +94,11 @@ export interface SubagentWorkerOptions {
   fabricExtensionPath?: string;
   model?: string;
   thinking?: string;
+  systemPrompt?: string;
+  sessionFile?: string;
+  actorId?: string;
+  actorName?: string;
+  meshRoot?: string;
   transport: FabricSubagentTransport;
   sessionId?: string;
   attachCommand?: string;

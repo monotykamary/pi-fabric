@@ -16,12 +16,14 @@ export interface FabricSandboxOptions {
   memoryLimitBytes: number;
   maxLogChars?: number;
   strings?: Record<string, string>;
+  tokenBudget?: number;
   signal?: AbortSignal;
 }
 
 export type FabricHostCall = (
   ref: string,
   args: Record<string, unknown>,
+  signal: AbortSignal,
 ) => Promise<unknown>;
 
 type QuickJsModule = Awaited<ReturnType<typeof newQuickJSWASMModuleFromVariant>>;
@@ -57,6 +59,23 @@ globalThis.agents = Object.freeze({
   list: () => __call("agents.list", {}),
   stop: (args) => __call("agents.stop", args),
   cleanup: (args) => __call("agents.cleanup", args),
+  create: (args) => __call("agents.create", args),
+  ask: (args) => __call("agents.ask", args),
+  tell: (args) => __call("agents.tell", args),
+  actorStatus: (args) => __call("agents.actorStatus", args),
+  actors: () => __call("agents.actors", {}),
+  messages: (args) => __call("agents.messages", args),
+  remove: (args) => __call("agents.remove", args),
+});
+globalThis.mesh = Object.freeze({
+  self: () => __call("mesh.self", {}),
+  publish: (args) => __call("mesh.publish", args),
+  read: (args = {}) => __call("mesh.read", args),
+  members: (args = {}) => __call("mesh.members", args),
+  get: (args) => __call("mesh.get", args),
+  list: (args = {}) => __call("mesh.list", args),
+  put: (args) => __call("mesh.put", args),
+  delete: (args) => __call("mesh.delete", args),
 });
 globalThis.mcp = new Proxy({}, {
   get(_target, server) {
@@ -73,6 +92,78 @@ globalThis.mcp = new Proxy({}, {
     });
   },
 });
+let __workflowSpentTokens = 0;
+const __workflowBudgetTotal = Number.isFinite(globalThis.__fabricTokenBudget)
+  ? Math.max(0, globalThis.__fabricTokenBudget)
+  : Number.POSITIVE_INFINITY;
+const __recordAgentUsage = (result) => {
+  const usage = result && result.usage;
+  if (usage) __workflowSpentTokens += Number(usage.input || 0) + Number(usage.output || 0);
+  return result;
+};
+const __workflowAgent = async (prompt, options = {}) => {
+  if (__workflowSpentTokens >= __workflowBudgetTotal) {
+    throw new Error("Fabric workflow token budget exhausted");
+  }
+  const { label, ...agentOptions } = options;
+  const result = __recordAgentUsage(await agents.run({
+    ...agentOptions,
+    ...(label && !agentOptions.name ? { name: label } : {}),
+    task: prompt,
+  }));
+  if (!result || result.status !== "completed") {
+    throw new Error(result && result.error ? result.error : "Fabric workflow agent failed");
+  }
+  return result.value !== undefined ? result.value : result.text;
+};
+const __workflowParallel = async (thunks, options = {}) => {
+  if (!Array.isArray(thunks) || thunks.some((thunk) => typeof thunk !== "function")) {
+    throw new TypeError("workflow.parallel expects an array of functions");
+  }
+  if (thunks.length === 0) return [];
+  const requestedConcurrency = Number(options.concurrency ?? thunks.length);
+  if (!Number.isFinite(requestedConcurrency) || requestedConcurrency < 1) {
+    throw new RangeError("workflow.parallel concurrency must be a positive finite number");
+  }
+  const concurrency = Math.max(1, Math.min(thunks.length || 1, Math.floor(requestedConcurrency)));
+  const results = new Array(thunks.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (cursor < thunks.length) {
+      const index = cursor++;
+      results[index] = await thunks[index]();
+    }
+  }));
+  return results;
+};
+const __workflowPipeline = async (items, ...stages) => {
+  if (!Array.isArray(items) || stages.some((stage) => typeof stage !== "function")) {
+    throw new TypeError("workflow.pipeline expects an array followed by stage functions");
+  }
+  return __workflowParallel(items.map((original, index) => async () => {
+    let value = original;
+    for (const stage of stages) value = await stage(value, original, index);
+    return value;
+  }));
+};
+globalThis.workflow = Object.freeze({
+  agent: __workflowAgent,
+  parallel: __workflowParallel,
+  pipeline: __workflowPipeline,
+  phase: (name) => __call("fabric.$phase", { name }),
+  log: (...values) => print(...values),
+  budget: Object.freeze({
+    total: __workflowBudgetTotal,
+    spent: () => __workflowSpentTokens,
+    remaining: () => Math.max(0, __workflowBudgetTotal - __workflowSpentTokens),
+  }),
+});
+globalThis.agent = __workflowAgent;
+globalThis.parallel = __workflowParallel;
+globalThis.pipeline = __workflowPipeline;
+globalThis.phase = workflow.phase;
+globalThis.log = workflow.log;
+globalThis.budget = workflow.budget;
 globalThis.rlm = Object.freeze({
   query: (args) => agents.run({ ...args, recursive: true }),
 });
@@ -170,6 +261,12 @@ export class QuickJsRuntime {
     let activePromiseHandle: any;
     let executionGate: any;
     let pendingResolution: Promise<any> | undefined;
+    const hostAbortController = new AbortController();
+    const abortHostCalls = (reason: string): void => {
+      if (!hostAbortController.signal.aborted) {
+        hostAbortController.abort(new Error(reason));
+      }
+    };
 
     const rejectExecutionGate = (message: string): void => {
       if (!executionGate || executionGate.alive === false) return;
@@ -192,7 +289,7 @@ export class QuickJsRuntime {
           const promise = context.newPromise();
           pendingHostPromises.add(promise);
           void promise.settled.then(() => pendingHostPromises.delete(promise));
-          const task = hostCall(reference, args)
+          const task = hostCall(reference, args, hostAbortController.signal)
             .then((value) => {
               if (closing || promise.alive === false) return;
               const handle = jsonHandle(context, value);
@@ -237,11 +334,15 @@ export class QuickJsRuntime {
       const strings = jsonHandle(context, options.strings ?? {});
       context.setProp(context.global, "π", strings);
       strings.dispose();
+      const tokenBudget = context.newNumber(options.tokenBudget ?? Number.POSITIVE_INFINITY);
+      context.setProp(context.global, "__fabricTokenBudget", tokenBudget);
+      tokenBudget.dispose();
 
       const setupResult = context.evalCode(guestSetup, "pi-fabric-setup.js");
       if (setupResult.error) {
         const error = formatValue(context.dump(setupResult.error));
         setupResult.error.dispose();
+        abortHostCalls(error);
         return { value: undefined, logs, error };
       }
       setupResult.value.dispose();
@@ -254,6 +355,7 @@ export class QuickJsRuntime {
       if (evaluation.error) {
         const error = formatValue(context.dump(evaluation.error));
         evaluation.error.dispose();
+        abortHostCalls(error);
         return { value: undefined, logs, error };
       }
 
@@ -261,16 +363,19 @@ export class QuickJsRuntime {
       const cancellation = new Promise<never>((_resolve, reject) => {
         abortHandler = () => {
           cancelled = true;
+          hostAbortController.abort(options.signal?.reason);
           rejectExecutionGate("Execution cancelled");
           reject(new Error("Execution cancelled"));
         };
-        options.signal?.addEventListener("abort", abortHandler, { once: true });
+        if (options.signal?.aborted) abortHandler();
+        else options.signal?.addEventListener("abort", abortHandler, { once: true });
       });
       void cancellation.catch(() => undefined);
       const deadline = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           timedOut = true;
           const message = `Execution timed out after ${options.timeoutMs}ms`;
+          hostAbortController.abort(new Error(message));
           rejectExecutionGate(message);
           reject(new Error(message));
         }, options.timeoutMs);
@@ -282,12 +387,14 @@ export class QuickJsRuntime {
       if (resolution.error) {
         const error = formatValue(context.dump(resolution.error));
         resolution.error.dispose();
+        abortHostCalls(error);
         return { value: undefined, logs, error };
       }
       const value = context.dump(resolution.value);
       resolution.value.dispose();
       return { value, logs };
     } catch (error) {
+      abortHostCalls(error instanceof Error ? error.message : String(error));
       return {
         value: undefined,
         logs,
@@ -306,6 +413,7 @@ export class QuickJsRuntime {
       }
       closing = true;
       if (timedOut || cancelled) {
+        if (!hostAbortController.signal.aborted) hostAbortController.abort();
         rejectExecutionGate(
           cancelled ? "Execution cancelled" : `Execution timed out after ${options.timeoutMs}ms`,
         );

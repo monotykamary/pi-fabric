@@ -1,10 +1,15 @@
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import path from "node:path";
+import { ActorManager } from "./actors/manager.js";
+import type { FabricActorHostEvent } from "./actors/types.js";
 import { loadFabricConfig, type FabricConfig } from "./config.js";
 import { ActionRegistry } from "./core/action-registry.js";
 import { FabricExecutionService } from "./execution-service.js";
+import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { AgentsProvider } from "./providers/agents-provider.js";
 import { McpProvider } from "./providers/mcp-provider.js";
+import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
 import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
@@ -14,12 +19,18 @@ import {
 import { SubagentManager } from "./subagents/manager.js";
 
 const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
+const ACTOR_DELIVERY_MAX_CHARS = 8_000;
+
+const escapeXmlText = (value: string): string =>
+  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 export class FabricState {
   #registry: ActionRegistry | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #subagents: SubagentManager | undefined;
+  #actors: ActorManager | undefined;
+  #mesh: MeshStore | undefined;
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
 
@@ -53,6 +64,16 @@ export class FabricState {
     return this.#subagents;
   }
 
+  get actors(): ActorManager {
+    if (!this.#actors) throw new Error("Pi Fabric has not initialized");
+    return this.#actors;
+  }
+
+  get mesh(): MeshStore {
+    if (!this.#mesh) throw new Error("Pi Fabric has not initialized");
+    return this.#mesh;
+  }
+
   async initialize(context: ExtensionContext): Promise<void> {
     await this.#closeInternal();
     this.#cwd = context.cwd;
@@ -64,16 +85,42 @@ export class FabricState {
     this.#registry = new ActionRegistry();
     this.#registry.register(new PiToolsProvider(context.cwd));
     this.#registry.register(new McpProvider(context.cwd, this.#config.mcp));
+    const sessionId = context.sessionManager.getSessionId();
+    const actorId = process.env.PI_FABRIC_ACTOR_ID;
+    const identity: MeshIdentity = actorId
+      ? {
+          id: actorId,
+          name: process.env.PI_FABRIC_ACTOR_NAME || actorId.slice(0, 8),
+          kind: "actor",
+          sessionId,
+        }
+      : { id: `session:${sessionId}`, name: "main", kind: "main", sessionId };
+    const configuredMeshRoot = this.#config.mesh.root;
+    const meshRoot =
+      process.env.PI_FABRIC_MESH_ROOT ??
+      (configuredMeshRoot
+        ? path.resolve(context.cwd, configuredMeshRoot)
+        : path.join(context.cwd, ".pi", "fabric", "mesh"));
+    this.#mesh = new MeshStore(
+      meshRoot,
+      this.#config.mesh.maxEventBytes,
+      this.#config.mesh.maxReadEvents,
+    );
+    if (this.#config.mesh.enabled) {
+      this.#registry.register(new MeshProvider(this.#mesh, identity));
+    }
     this.#subagents = new SubagentManager(context.cwd, this.#config.subagents, {
       onBackgroundComplete: (result) => {
         const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
-        const duration = durationMs < 60_000
-          ? `${Math.round(durationMs / 1_000)}s`
-          : `${(durationMs / 60_000).toFixed(1)}m`;
+        const duration =
+          durationMs < 60_000
+            ? `${Math.round(durationMs / 1_000)}s`
+            : `${(durationMs / 60_000).toFixed(1)}m`;
         const summary = result.text || result.error || "no result";
-        const clippedSummary = summary.length > BACKGROUND_COMPLETION_MAX_CHARS
-          ? `${summary.slice(0, BACKGROUND_COMPLETION_MAX_CHARS)}\n[completion truncated]`
-          : summary;
+        const clippedSummary =
+          summary.length > BACKGROUND_COMPLETION_MAX_CHARS
+            ? `${summary.slice(0, BACKGROUND_COMPLETION_MAX_CHARS)}\n[completion truncated]`
+            : summary;
         this.pi.sendMessage(
           {
             customType: "pi-fabric-subagent-complete",
@@ -85,7 +132,37 @@ export class FabricState {
         );
       },
     });
-    this.#registry.register(new AgentsProvider(this.#subagents));
+    this.#actors = new ActorManager(
+      sessionId,
+      identity,
+      this.#mesh,
+      this.#config.mesh,
+      this.#subagents,
+      ({ actor, message, delivery, triggerTurn }) => {
+        const actorText = message.text ?? "";
+        if (!actorText) return;
+        const text =
+          actorText.length > ACTOR_DELIVERY_MAX_CHARS
+            ? `${actorText.slice(0, ACTOR_DELIVERY_MAX_CHARS)}\n[actor delivery truncated]`
+            : actorText;
+        this.pi.sendMessage(
+          {
+            customType: "pi-fabric-actor",
+            content: `<fabric-actor name=${JSON.stringify(actor.name)} id=${JSON.stringify(actor.id)}>\n${escapeXmlText(text)}\n</fabric-actor>`,
+            display: true,
+            details: { actor, message },
+          },
+          { deliverAs: delivery, triggerTurn },
+        );
+      },
+      context.isProjectTrusted() && this.#config.mesh.enabled
+        ? {
+            actorRoot: path.join(meshRoot, "actors", sessionId),
+            persistent: true,
+          }
+        : { persistent: false },
+    );
+    this.#registry.register(new AgentsProvider(this.#subagents, this.#actors));
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);
     }
@@ -101,8 +178,57 @@ export class FabricState {
     if (!this.initialized || this.#cwd !== context.cwd) await this.initialize(context);
   }
 
+  dispatchHostEvent(
+    event: FabricActorHostEvent,
+    payload: unknown,
+    context: ExtensionContext,
+  ): number {
+    if (!this.#actors || !this.#config?.mesh.enabled) return 0;
+    const maxChars = this.#config.mesh.eventContextChars;
+    const bounded = (value: unknown): unknown => {
+      let json: string;
+      try {
+        const serialized = JSON.stringify(value, (_key, nested) => {
+          if (typeof nested === "bigint") return String(nested);
+          if (typeof nested === "function") return undefined;
+          if (
+            typeof nested === "object" &&
+            nested !== null &&
+            "type" in nested &&
+            (nested as { type?: unknown }).type === "image"
+          ) {
+            return { type: "image", redacted: true };
+          }
+          return nested;
+        });
+        if (serialized === undefined) return null;
+        json = serialized;
+      } catch {
+        return String(value);
+      }
+      if (json.length > maxChars) json = json.slice(json.length - maxChars);
+      try {
+        return JSON.parse(json) as unknown;
+      } catch {
+        return json;
+      }
+    };
+    const branch = context.sessionManager.getBranch().slice(-40);
+    return this.#actors.dispatchHostEvent(event, {
+      event,
+      payload: bounded(payload),
+      session: {
+        id: context.sessionManager.getSessionId(),
+        cwd: context.cwd,
+        idle: context.isIdle(),
+        recentEntries: bounded(branch),
+      },
+      observedAt: Date.now(),
+    });
+  }
+
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
-    if (["pi", "mcp", "agents", "fabric"].includes(provider.name)) {
+    if (["pi", "mcp", "agents", "mesh", "fabric"].includes(provider.name)) {
       throw new Error(`Reserved Fabric provider name: ${provider.name}`);
     }
     if (this.#externalProviders.has(provider.name) && !options.overwrite) {
@@ -118,6 +244,8 @@ export class FabricState {
     this.#config = undefined;
     this.#execution = undefined;
     this.#subagents = undefined;
+    this.#actors = undefined;
+    this.#mesh = undefined;
     this.#cwd = undefined;
     this.#externalProviders.clear();
   }
@@ -129,5 +257,7 @@ export class FabricState {
     this.#registry = undefined;
     this.#execution = undefined;
     this.#subagents = undefined;
+    this.#actors = undefined;
+    this.#mesh = undefined;
   }
 }

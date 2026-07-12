@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { Value } from "typebox/value";
 import type {
   SubagentRunRecord,
   SubagentRunStatus,
@@ -41,6 +42,12 @@ const parseOptions = (): SubagentWorkerOptions => {
   const model = optional(args, "model");
   const thinking = optional(args, "thinking");
   const fabricExtensionPath = optional(args, "fabric-extension");
+  const schemaFile = optional(args, "schema-file");
+  const systemPrompt = optional(args, "system-prompt");
+  const sessionFile = optional(args, "session-file");
+  const actorId = optional(args, "actor-id");
+  const actorName = optional(args, "actor-name");
+  const meshRoot = optional(args, "mesh-root");
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   return {
@@ -49,6 +56,7 @@ const parseOptions = (): SubagentWorkerOptions => {
     taskFile: required(args, "task-file"),
     statusFile: required(args, "status-file"),
     logFile: required(args, "log-file"),
+    ...(schemaFile ? { schemaFile } : {}),
     cwd: required(args, "cwd"),
     piBinary: required(args, "pi-binary"),
     timeoutMs: Number(required(args, "timeout-ms")),
@@ -60,6 +68,11 @@ const parseOptions = (): SubagentWorkerOptions => {
     ...(fabricExtensionPath ? { fabricExtensionPath } : {}),
     ...(model ? { model } : {}),
     ...(thinking ? { thinking } : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
+    ...(sessionFile ? { sessionFile } : {}),
+    ...(actorId ? { actorId } : {}),
+    ...(actorName ? { actorName } : {}),
+    ...(meshRoot ? { meshRoot } : {}),
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
   };
@@ -123,6 +136,12 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
   } catch {}
 };
 
+const parseStructuredValue = (text: string): unknown => {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+  return JSON.parse(fenced?.[1]?.trim() ?? trimmed) as unknown;
+};
+
 const main = async (): Promise<void> => {
   const options = parseOptions();
   const task = fs.readFileSync(options.taskFile, "utf8");
@@ -149,12 +168,22 @@ const main = async (): Promise<void> => {
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
   const logStream = fs.createWriteStream(options.logFile, { flags: "a", mode: 0o600 });
 
-  const piArguments = ["--mode", "rpc", "--no-session"];
+  const piArguments = ["--mode", "rpc"];
+  if (options.sessionFile) piArguments.push("--session", options.sessionFile);
+  else piArguments.push("--no-session");
   if (!options.extensions) piArguments.push("--no-extensions");
   if (options.fabricExtensionPath) piArguments.push("-e", options.fabricExtensionPath);
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   if (options.model) piArguments.push("--model", options.model);
   if (options.thinking) piArguments.push("--thinking", options.thinking);
+  if (options.systemPrompt) piArguments.push("--append-system-prompt", options.systemPrompt);
+  if (options.schemaFile) {
+    const schema = fs.readFileSync(options.schemaFile, "utf8");
+    piArguments.push(
+      "--append-system-prompt",
+      `Your final response must contain only JSON matching this schema, without Markdown fences:\n${schema}`,
+    );
+  }
 
   const child = spawn(options.piBinary, piArguments, {
     cwd: options.cwd,
@@ -164,6 +193,9 @@ const main = async (): Promise<void> => {
       PI_FABRIC_DEPTH: String(options.depth),
       PI_FABRIC_PARENT_RUN: options.id,
       PI_FABRIC_GRANTED_RISKS: options.grantedRisks.join(","),
+      ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
+      ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
+      ...(options.meshRoot ? { PI_FABRIC_MESH_ROOT: options.meshRoot } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -307,11 +339,30 @@ const main = async (): Promise<void> => {
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
   record.finishedAt = Date.now();
   record.updatedAt = record.finishedAt;
-  record.status =
-    terminalStatus ?? (exitCode === 0 && !sawAgentError ? "completed" : "failed");
+  record.status = terminalStatus ?? (exitCode === 0 && !sawAgentError ? "completed" : "failed");
   if (terminalError) record.error = terminalError;
   if (record.status === "failed" && !record.error) {
     record.error = stderr.trim() || `Pi exited with code ${exitCode ?? "unknown"}`;
+  }
+  if (record.status === "completed" && options.schemaFile) {
+    try {
+      const schema = JSON.parse(fs.readFileSync(options.schemaFile, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const value = parseStructuredValue(record.text);
+      if (!Value.Check(schema, value)) {
+        const errors = [...Value.Errors(schema, value)]
+          .slice(0, 5)
+          .map((error) => error.message)
+          .join("; ");
+        throw new Error(errors || "value does not match schema");
+      }
+      record.value = value;
+    } catch (error) {
+      record.status = "failed";
+      record.error = `Structured agent output was invalid: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
   delete record.currentTool;
   atomicWrite(options.statusFile, record);
@@ -321,6 +372,6 @@ const main = async (): Promise<void> => {
 };
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exitCode = 1;
 });

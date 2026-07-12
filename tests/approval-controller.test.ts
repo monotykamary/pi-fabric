@@ -37,6 +37,27 @@ describe("ApprovalController", () => {
     expect(confirm).toHaveBeenCalledOnce();
   });
 
+  it("coalesces concurrent approval requests for workflow fan-out", async () => {
+    let release: (() => void) | undefined;
+    const confirm = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          release = () => resolve(true);
+        }),
+    );
+    const controller = new ApprovalController(policies, {
+      hasUI: true,
+      ui: { confirm },
+    } as unknown as ExtensionContext);
+    const approvals = Promise.all([
+      controller.approve(action),
+      controller.approve({ ...action, ref: "demo.parallelWrite" }),
+    ]);
+    expect(confirm).toHaveBeenCalledOnce();
+    release?.();
+    await approvals;
+  });
+
   it("denies actions blocked by policy", async () => {
     const controller = new ApprovalController(policies, { hasUI: true } as ExtensionContext);
     await expect(controller.approve({ ...action, risk: "execute" })).rejects.toThrow(

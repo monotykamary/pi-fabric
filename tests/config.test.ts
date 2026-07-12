@@ -23,14 +23,18 @@ describe("Fabric configuration", () => {
     const config = normalizeFabricConfig({
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
       approvals: { write: "allow", agent: "invalid" },
-      subagents: { maxConcurrent: 100, transport: "localterm" },
+      subagents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "localterm" },
+      mesh: { actorQueueLimit: 0, eventContextChars: 5_000_000 },
     });
     expect(config.executor.timeoutMs).toBe(1_000);
     expect(config.executor.memoryLimitBytes).toBe(1024 * 1024 * 1024);
     expect(config.approvals.write).toBe("allow");
     expect(config.approvals.agent).toBe("ask");
     expect(config.subagents.maxConcurrent).toBe(32);
+    expect(config.subagents.maxPerExecution).toBe(1_000);
     expect(config.subagents.transport).toBe("localterm");
+    expect(config.mesh.actorQueueLimit).toBe(1);
+    expect(config.mesh.eventContextChars).toBe(1_000_000);
   });
 
   it("merges global and trusted project configuration", () => {

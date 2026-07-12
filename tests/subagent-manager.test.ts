@@ -29,6 +29,43 @@ describe("SubagentManager", () => {
     expect(manager.list()).toHaveLength(1);
   });
 
+  it("validates structured output through the real Fabric worker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
+    fs.chmodSync(fakePi, 0o755);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("src/worker.ts"),
+      piBinary: fakePi,
+      runRoot: root,
+    });
+    managers.push(manager);
+    const result = await manager.run({
+      task: "Return a directive",
+      transport: "process",
+      systemPrompt: "You are a test actor.",
+      sessionFile: path.join(root, "actor-session.jsonl"),
+      actorId: "actor-test",
+      actorName: "test-actor",
+      meshRoot: path.join(root, "mesh"),
+      schema: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["message"] },
+          message: { type: "string" },
+        },
+        required: ["action", "message"],
+        additionalProperties: false,
+      },
+    });
+    expect(result.status).toBe("completed");
+    expect(result.value).toEqual({
+      action: "message",
+      message: "validated actor response",
+    });
+    expect(result.usage).toMatchObject({ input: 3, output: 4 });
+  });
+
   it("notifies when a detached background agent completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

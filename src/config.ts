@@ -31,6 +31,7 @@ export interface FabricSubagentConfig {
   enabled: boolean;
   transport: FabricSubagentTransport;
   maxConcurrent: number;
+  maxPerExecution: number;
   maxDepth: number;
   timeoutMs: number;
   extensions: boolean;
@@ -39,11 +40,22 @@ export interface FabricSubagentConfig {
   notifyOnComplete: boolean;
 }
 
+export interface FabricMeshConfig {
+  enabled: boolean;
+  root?: string;
+  maxEventBytes: number;
+  maxReadEvents: number;
+  actorPollMs: number;
+  actorQueueLimit: number;
+  eventContextChars: number;
+}
+
 export interface FabricConfig {
   executor: FabricExecutorConfig;
   approvals: FabricApprovalConfig;
   mcp: FabricMcpConfig;
   subagents: FabricSubagentConfig;
+  mesh: FabricMeshConfig;
 }
 
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
@@ -70,12 +82,21 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     enabled: true,
     transport: "process",
     maxConcurrent: 4,
+    maxPerExecution: 100,
     maxDepth: 2,
     timeoutMs: 600_000,
     extensions: true,
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
     notifyOnComplete: true,
+  },
+  mesh: {
+    enabled: true,
+    maxEventBytes: 256 * 1024,
+    maxReadEvents: 500,
+    actorPollMs: 250,
+    actorQueueLimit: 32,
+    eventContextChars: 40_000,
   },
 };
 
@@ -155,10 +176,14 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
   const subagents = objectValue(input.subagents);
+  const mesh = objectValue(input.mesh);
   const configuredTools = Array.isArray(subagents.defaultTools)
-    ? subagents.defaultTools.filter((tool): tool is string => typeof tool === "string" && Boolean(tool))
+    ? subagents.defaultTools.filter(
+        (tool): tool is string => typeof tool === "string" && Boolean(tool),
+      )
     : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
   const configPath = stringValue(mcp.configPath);
+  const meshRoot = stringValue(mesh.root);
 
   return {
     executor: {
@@ -211,40 +236,66 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     subagents: {
       enabled: booleanValue(subagents.enabled, DEFAULT_FABRIC_CONFIG.subagents.enabled),
-      transport: transportValue(
-        subagents.transport,
-        DEFAULT_FABRIC_CONFIG.subagents.transport,
-      ),
+      transport: transportValue(subagents.transport, DEFAULT_FABRIC_CONFIG.subagents.transport),
       maxConcurrent: boundedInteger(
         subagents.maxConcurrent,
         DEFAULT_FABRIC_CONFIG.subagents.maxConcurrent,
         1,
         32,
       ),
-      maxDepth: boundedInteger(
-        subagents.maxDepth,
-        DEFAULT_FABRIC_CONFIG.subagents.maxDepth,
-        0,
-        8,
+      maxPerExecution: boundedInteger(
+        subagents.maxPerExecution,
+        DEFAULT_FABRIC_CONFIG.subagents.maxPerExecution,
+        1,
+        1_000,
       ),
+      maxDepth: boundedInteger(subagents.maxDepth, DEFAULT_FABRIC_CONFIG.subagents.maxDepth, 0, 8),
       timeoutMs: boundedInteger(
         subagents.timeoutMs,
         DEFAULT_FABRIC_CONFIG.subagents.timeoutMs,
         1_000,
         3_600_000,
       ),
-      extensions: booleanValue(
-        subagents.extensions,
-        DEFAULT_FABRIC_CONFIG.subagents.extensions,
-      ),
+      extensions: booleanValue(subagents.extensions, DEFAULT_FABRIC_CONFIG.subagents.extensions),
       defaultTools: configuredTools,
-      retainRuns: booleanValue(
-        subagents.retainRuns,
-        DEFAULT_FABRIC_CONFIG.subagents.retainRuns,
-      ),
+      retainRuns: booleanValue(subagents.retainRuns, DEFAULT_FABRIC_CONFIG.subagents.retainRuns),
       notifyOnComplete: booleanValue(
         subagents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.subagents.notifyOnComplete,
+      ),
+    },
+    mesh: {
+      enabled: booleanValue(mesh.enabled, DEFAULT_FABRIC_CONFIG.mesh.enabled),
+      ...(meshRoot ? { root: meshRoot } : {}),
+      maxEventBytes: boundedInteger(
+        mesh.maxEventBytes,
+        DEFAULT_FABRIC_CONFIG.mesh.maxEventBytes,
+        1_024,
+        4 * 1024 * 1024,
+      ),
+      maxReadEvents: boundedInteger(
+        mesh.maxReadEvents,
+        DEFAULT_FABRIC_CONFIG.mesh.maxReadEvents,
+        1,
+        10_000,
+      ),
+      actorPollMs: boundedInteger(
+        mesh.actorPollMs,
+        DEFAULT_FABRIC_CONFIG.mesh.actorPollMs,
+        50,
+        10_000,
+      ),
+      actorQueueLimit: boundedInteger(
+        mesh.actorQueueLimit,
+        DEFAULT_FABRIC_CONFIG.mesh.actorQueueLimit,
+        1,
+        1_000,
+      ),
+      eventContextChars: boundedInteger(
+        mesh.eventContextChars,
+        DEFAULT_FABRIC_CONFIG.mesh.eventContextChars,
+        1_000,
+        1_000_000,
       ),
     },
   };
