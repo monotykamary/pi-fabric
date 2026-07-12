@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { SubagentManager } from "../src/subagents/manager.js";
+import type { SubagentRunResult } from "../src/subagents/types.js";
 
 const managers: SubagentManager[] = [];
 const roots: string[] = [];
@@ -20,10 +21,12 @@ describe("SubagentManager", () => {
     const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
+      fullCodeMode: false,
     });
     managers.push(manager);
     const result = await manager.run({ task: "Inspect this repository", transport: "process" });
     expect(result.status).toBe("completed");
+    expect((result as SubagentRunResult & { fullCodeMode?: string }).fullCodeMode).toBe("false");
     expect(result.text).toBe("fake worker complete");
     expect(result.transport).toBe("process");
     expect(manager.list()).toHaveLength(1);
@@ -38,6 +41,7 @@ describe("SubagentManager", () => {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
+      fullCodeMode: false,
     });
     managers.push(manager);
     const result = await manager.run({
@@ -61,7 +65,7 @@ describe("SubagentManager", () => {
     expect(result.status).toBe("completed");
     expect(result.value).toEqual({
       action: "message",
-      message: "validated actor response",
+      message: "validated actor response:false",
     });
     expect(result.usage).toMatchObject({ input: 3, output: 4 });
   });

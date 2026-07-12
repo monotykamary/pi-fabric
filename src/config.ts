@@ -73,6 +73,7 @@ export interface FabricMeshConfig {
 }
 
 export interface FabricConfig {
+  fullCodeMode: boolean;
   executor: FabricExecutorConfig;
   approvals: FabricApprovalConfig;
   mcp: FabricMcpConfig;
@@ -83,6 +84,7 @@ export interface FabricConfig {
 }
 
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
+  fullCodeMode: true,
   executor: {
     timeoutMs: 120_000,
     memoryLimitBytes: 64 * 1024 * 1024,
@@ -269,6 +271,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   );
 
   return {
+    fullCodeMode: booleanValue(input.fullCodeMode, DEFAULT_FABRIC_CONFIG.fullCodeMode),
     executor: {
       timeoutMs: boundedInteger(
         executor.timeoutMs,
@@ -409,6 +412,23 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   };
 };
 
+export const effectiveToolCaptureConfig = (
+  config: Pick<FabricConfig, "fullCodeMode" | "capture">,
+): FabricToolCaptureConfig =>
+  config.fullCodeMode
+    ? {
+        ...config.capture,
+        keepVisible: [...config.capture.keepVisible],
+        risks: { ...config.capture.risks },
+      }
+    : {
+        ...config.capture,
+        enabled: false,
+        hideFromModel: false,
+        keepVisible: [...config.capture.keepVisible],
+        risks: { ...config.capture.risks },
+      };
+
 export const loadFabricConfig = (options: {
   cwd: string;
   agentDir: string;
@@ -420,6 +440,10 @@ export const loadFabricConfig = (options: {
   if (options.projectTrusted) {
     const projectConfig = readJsonObject(path.join(options.cwd, ".pi", "fabric.json"));
     if (projectConfig) merged = mergeObjects(merged, projectConfig);
+  }
+  const inheritedFullCodeMode = process.env.PI_FABRIC_FULL_CODE_MODE;
+  if (inheritedFullCodeMode === "true" || inheritedFullCodeMode === "false") {
+    merged.fullCodeMode = inheritedFullCodeMode === "true";
   }
   return normalizeFabricConfig(merged);
 };

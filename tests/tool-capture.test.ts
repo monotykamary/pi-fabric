@@ -11,7 +11,7 @@ import {
   installRegisteredToolCapture,
   type RegisteredToolCaptureController,
 } from "../src/capture/interceptor.js";
-import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "../src/config.js";
 
 const controllers: RegisteredToolCaptureController[] = [];
 
@@ -125,6 +125,19 @@ describe("registered extension tool capture", () => {
       ...structuredClone(DEFAULT_FABRIC_CONFIG.capture),
       hideFromModel: false,
     });
+    expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
+      "fabric_exec",
+      "first_tool",
+      "second_tool",
+    ]);
+
+    controller.setPolicy(
+      effectiveToolCaptureConfig({
+        fullCodeMode: false,
+        capture: DEFAULT_FABRIC_CONFIG.capture,
+      }),
+    );
+    expect(catalog.size).toBe(0);
     expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
       "fabric_exec",
       "first_tool",

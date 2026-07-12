@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadFabricConfig, normalizeFabricConfig } from "../src/config.js";
+import {
+  DEFAULT_FABRIC_CONFIG,
+  effectiveToolCaptureConfig,
+  loadFabricConfig,
+  normalizeFabricConfig,
+} from "../src/config.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -21,6 +26,7 @@ afterEach(() => {
 describe("Fabric configuration", () => {
   it("normalizes bounds and approval modes", () => {
     const config = normalizeFabricConfig({
+      fullCodeMode: false,
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
       approvals: { write: "allow", agent: "invalid" },
       subagents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "localterm" },
@@ -39,6 +45,7 @@ describe("Fabric configuration", () => {
       },
       mesh: { actorQueueLimit: 0, eventContextChars: 5_000_000 },
     });
+    expect(config.fullCodeMode).toBe(false);
     expect(config.executor.timeoutMs).toBe(1_000);
     expect(config.executor.memoryLimitBytes).toBe(1024 * 1024 * 1024);
     expect(config.approvals.write).toBe("allow");
@@ -59,6 +66,15 @@ describe("Fabric configuration", () => {
     });
     expect(config.mesh.actorQueueLimit).toBe(1);
     expect(config.mesh.eventContextChars).toBe(1_000_000);
+  });
+
+  it("preserves native tool registration in orchestration-only mode", () => {
+    const capture = effectiveToolCaptureConfig({
+      fullCodeMode: false,
+      capture: DEFAULT_FABRIC_CONFIG.capture,
+    });
+    expect(capture).toMatchObject({ enabled: false, hideFromModel: false });
+    expect(DEFAULT_FABRIC_CONFIG.capture).toMatchObject({ enabled: true, hideFromModel: true });
   });
 
   it("merges global and trusted project configuration", () => {

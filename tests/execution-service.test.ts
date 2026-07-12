@@ -38,6 +38,70 @@ describe("FabricExecutionService", () => {
     }
   });
 
+  it("keeps Pi core tools outside Fabric in orchestration-only mode", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-native-tools-"));
+    try {
+      fs.writeFileSync(path.join(cwd, "sample.txt"), "native\n", "utf8");
+      const registry = new ActionRegistry();
+      registry.register(new PiToolsProvider(cwd));
+      const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+      config.fullCodeMode = false;
+      config.approvals.read = "allow";
+      const service = new FabricExecutionService(registry, config);
+      const context = { cwd, hasUI: false } as ExtensionContext;
+
+      const metadata = await service.execute({
+        code: `
+return {
+  providers: await tools.providers(),
+  search: await tools.search({ query: "read" }),
+};
+`,
+        signal: undefined,
+        parentToolCallId: "native-metadata",
+        context,
+        update() {},
+      });
+      expect(metadata.success).toBe(true);
+      expect(metadata.value).toEqual({ providers: [], search: [] });
+
+      const direct = await service.execute({
+        code: 'return pi.read({ path: "sample.txt" });',
+        signal: undefined,
+        parentToolCallId: "native-direct",
+        context,
+        update() {},
+      });
+      expect(direct.typeErrors?.map((error) => error.message).join(" ")).toContain(
+        "Cannot find name 'pi'",
+      );
+
+      const indirect = await service.execute({
+        code: 'return tools.call({ ref: "pi.read", args: { path: "sample.txt" } });',
+        signal: undefined,
+        parentToolCallId: "native-indirect",
+        context,
+        update() {},
+      });
+      expect(indirect.success).toBe(false);
+      expect(indirect.error).toContain("full code mode is disabled");
+      expect(indirect.audits).toEqual([]);
+
+      const extension = await service.execute({
+        code: 'return tools.call({ ref: "extensions.project_status", args: {} });',
+        signal: undefined,
+        parentToolCallId: "native-extension",
+        context,
+        update() {},
+      });
+      expect(extension.success).toBe(false);
+      expect(extension.error).toContain("registered extension tools directly outside fabric_exec");
+      expect(extension.audits).toEqual([]);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("publishes declarative workflow activity for the dynamic TUI", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-activity-"));
     try {
@@ -111,6 +175,7 @@ return text.trim();
       },
     });
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = false;
     config.approvals.agent = "allow";
     const service = new FabricExecutionService(registry, config);
     const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;

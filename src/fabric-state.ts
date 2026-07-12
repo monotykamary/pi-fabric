@@ -91,10 +91,13 @@ export class FabricState {
       projectTrusted: context.isProjectTrusted(),
     });
     this.#registry = new ActionRegistry();
-    const capturedToolsProvider = this.#config.capture.enabled
-      ? new CapturedToolsProvider(this.capturedTools)
-      : undefined;
-    this.#registry.register(new PiToolsProvider(context.cwd, capturedToolsProvider));
+    const capturedToolsProvider =
+      this.#config.fullCodeMode && this.#config.capture.enabled
+        ? new CapturedToolsProvider(this.capturedTools)
+        : undefined;
+    if (this.#config.fullCodeMode) {
+      this.#registry.register(new PiToolsProvider(context.cwd, capturedToolsProvider));
+    }
     this.#registry.register(new McpProvider(context.cwd, this.#config.mcp));
     if (capturedToolsProvider) this.#registry.register(capturedToolsProvider);
     const sessionId = context.sessionManager.getSessionId();
@@ -122,6 +125,7 @@ export class FabricState {
       this.#registry.register(new MeshProvider(this.#mesh, identity));
     }
     this.#subagents = new SubagentManager(context.cwd, this.#config.subagents, {
+      fullCodeMode: this.#config.fullCodeMode,
       onBackgroundComplete: (result) => {
         const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
         const duration =

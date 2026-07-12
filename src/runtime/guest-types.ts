@@ -281,3 +281,16 @@ declare const console: FabricConsole;
 declare const π: Readonly<Record<string, string>>;
 declare function print(...args: unknown[]): void;
 `;
+
+const FULL_CODE_GLOBAL_DECLARATIONS = [
+  "declare const pi: PiToolsApi;\n",
+  "declare const extensions: FabricExtensionsApi;\n",
+];
+
+export const guestTypeDeclarations = (fullCodeMode: boolean): string =>
+  fullCodeMode
+    ? GUEST_TYPE_DECLARATIONS
+    : FULL_CODE_GLOBAL_DECLARATIONS.reduce(
+        (declarations, declaration) => declarations.replace(declaration, ""),
+        GUEST_TYPE_DECLARATIONS,
+      );

@@ -32,7 +32,7 @@ pi install npm:pi-fabric
 
 ## Code API
 
-The tool accepts a TypeScript function body with top-level `await` and `return`:
+With the default full code mode, the tool accepts a TypeScript function body with top-level `await` and `return` and can call Pi core tools:
 
 ```ts
 const files = await pi.find({ pattern: "**/*.ts", path: "src" });
@@ -53,6 +53,26 @@ return {
 };
 ```
 
+### Orchestration-only mode
+
+Users who want Fabric for MCP, agents, ambient actors, parallel workflows, councils, and recursive delegation—but want Pi's core tools to remain entirely native—can opt out of full code mode:
+
+```json
+{
+  "fullCodeMode": false
+}
+```
+
+In orchestration-only mode:
+
+- Pi's `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` tools stay on Pi's normal model-facing and execution paths.
+- Registered extension tools also remain in Pi's native registry; Fabric does not hide, wrap, or expose them through `extensions.*`.
+- `pi.*`, `extensions.*`, and equivalent `tools.call()` references are unavailable inside `fabric_exec`, including when TypeScript checks are bypassed.
+- MCP providers, one-shot and recursive agents, persistent ambient actors, dynamic workflows, mesh coordination, councils, explicit Fabric providers, and the Fabric TUI remain available.
+- Child agents continue using their allowed Pi tools directly, so parallel and ambient setups do not route their coding operations back through Fabric code mode.
+
+The default is `true` for backward compatibility. A project can set the flag in `.pi/fabric.json`, or a user can set it globally in `~/.pi/agent/fabric.json`.
+
 ### Discovery and generic calls
 
 ```ts
@@ -68,7 +88,7 @@ return result;
 
 ### Captured extension tools
 
-Fabric intercepts Pi's `ExtensionRunner.getAllRegisteredTools()` registry chokepoint. This captures tools registered by other extensions at startup or later through `pi.registerTool()`, regardless of whether those extensions load before or after Fabric.
+When `fullCodeMode` is enabled, Fabric intercepts Pi's `ExtensionRunner.getAllRegisteredTools()` registry chokepoint. This captures tools registered by other extensions at startup or later through `pi.registerTool()`, regardless of whether those extensions load before or after Fabric.
 
 Captured custom tools are removed from Pi's model-facing registry by default, so their schemas, snippets, and guidelines do not consume the parent model context. The extension itself remains loaded: its commands, event handlers, state, and UI continue to work. Only tool discovery and invocation become lazy.
 
@@ -349,6 +369,7 @@ Project values override global values.
 
 ```json
 {
+  "fullCodeMode": true,
   "executor": {
     "timeoutMs": 120000,
     "memoryLimitBytes": 67108864,
@@ -415,6 +436,8 @@ Project values override global values.
   }
 }
 ```
+
+`fullCodeMode` defaults to `true`. When false, Fabric uses orchestration-only mode: native Pi and registered extension tools remain direct, capture is disabled, and Fabric's internal registry omits the `pi` and `extensions` providers.
 
 Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, or `deny`. Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Set `capture.hideFromModel` to `false` to index tools without hiding them. `capture.keepVisible` names stay in both Fabric and Pi's direct registry; be careful when removing built-in override names because doing so exposes Pi's underlying built-in implementation. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
 

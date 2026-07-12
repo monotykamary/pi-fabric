@@ -13,7 +13,7 @@ import {
   type FabricRegistryActivityEvent,
 } from "./core/action-registry.js";
 import { ApprovalController } from "./core/approval-controller.js";
-import { GUEST_TYPE_DECLARATIONS } from "./runtime/guest-types.js";
+import { guestTypeDeclarations } from "./runtime/guest-types.js";
 import { QuickJsRuntime, type FabricSandboxResult } from "./runtime/quickjs-runtime.js";
 import { typeCheckFabricCode, type FabricTypeError } from "./runtime/type-checker.js";
 
@@ -52,7 +52,10 @@ export class FabricExecutionService {
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
     const startedAt = performance.now();
     this.activity?.start(options.parentToolCallId, options.display);
-    const checked = typeCheckFabricCode(options.code, GUEST_TYPE_DECLARATIONS);
+    const checked = typeCheckFabricCode(
+      options.code,
+      guestTypeDeclarations(this.config.fullCodeMode),
+    );
     if (checked.errors.length > 0) {
       this.activity?.finish(options.parentToolCallId, false, "Type checking failed");
       return {
@@ -84,6 +87,19 @@ export class FabricExecutionService {
         throw new Error(`Fabric agent budget exhausted (${maxAgentCalls} per execution)`);
       }
     };
+    const fullCodeProvider = (value: string): "pi" | "extensions" | undefined => {
+      const separator = value.indexOf(".");
+      const provider = separator > 0 ? value.slice(0, separator) : value;
+      return provider === "pi" || provider === "extensions" ? provider : undefined;
+    };
+    const guardFullCodeRef = (ref: string): void => {
+      if (this.config.fullCodeMode) return;
+      const provider = fullCodeProvider(ref);
+      if (!provider) return;
+      throw new Error(
+        `Fabric full code mode is disabled; call ${provider === "pi" ? "Pi core" : "registered extension"} tools directly outside fabric_exec`,
+      );
+    };
     const observeInvocation = (event: FabricRegistryActivityEvent): void => {
       if (!this.activity) return;
       if (event.type === "call_start") {
@@ -110,9 +126,14 @@ export class FabricExecutionService {
           const callContext = { ...baseContext, signal: runtimeSignal };
           switch (ref) {
             case "fabric.$providers":
-              return this.registry.providers();
-            case "fabric.$list":
-              return this.registry.list(
+              return this.registry
+                .providers()
+                .filter(
+                  (provider) => this.config.fullCodeMode || !fullCodeProvider(provider.name),
+                );
+            case "fabric.$list": {
+              if (typeof args.provider === "string") guardFullCodeRef(`${args.provider}.*`);
+              const actions = await this.registry.list(
                 {
                   ...(typeof args.provider === "string" ? { provider: args.provider } : {}),
                   ...(typeof args.namespace === "string" ? { namespace: args.namespace } : {}),
@@ -121,20 +142,32 @@ export class FabricExecutionService {
                 },
                 callContext,
               );
-            case "fabric.$search":
-              return this.registry.search(
+              return actions.filter(
+                (action) => this.config.fullCodeMode || !fullCodeProvider(action.provider),
+              );
+            }
+            case "fabric.$search": {
+              const actions = await this.registry.search(
                 String(args.query ?? ""),
                 callContext,
                 typeof args.limit === "number" ? args.limit : undefined,
               );
-            case "fabric.$describe":
-              return this.registry.describe(String(args.ref ?? ""), callContext);
+              return actions.filter(
+                (action) => this.config.fullCodeMode || !fullCodeProvider(action.provider),
+              );
+            }
+            case "fabric.$describe": {
+              const targetRef = String(args.ref ?? "");
+              guardFullCodeRef(targetRef);
+              return this.registry.describe(targetRef, callContext);
+            }
             case "fabric.$call": {
               const callArgs =
                 typeof args.args === "object" && args.args !== null && !Array.isArray(args.args)
                   ? (args.args as Record<string, unknown>)
                   : {};
               const targetRef = String(args.ref ?? "");
+              guardFullCodeRef(targetRef);
               guardAgentCall(targetRef);
               return this.registry.invoke(targetRef, callArgs, {
                 ...callContext,
@@ -182,6 +215,7 @@ export class FabricExecutionService {
               return undefined;
             }
             default:
+              guardFullCodeRef(ref);
               guardAgentCall(ref);
               return this.registry.invoke(ref, args, {
                 ...callContext,

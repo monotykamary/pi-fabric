@@ -96,6 +96,7 @@ export interface SubagentWorkerOptions {
   piBinary: string;
   timeoutMs: number;
   depth: number;
+  fullCodeMode: boolean;
   extensions: boolean;
   tools: string[];
   grantedRisks: string[];

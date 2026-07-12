@@ -121,6 +121,7 @@ export class SubagentManager {
   readonly #fabricExtensionPath: string;
   readonly #piBinary: string;
   readonly #currentDepth: number;
+  readonly #fullCodeMode: boolean;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
   #closing = false;
@@ -133,6 +134,7 @@ export class SubagentManager {
       fabricExtensionPath?: string;
       piBinary?: string;
       runRoot?: string;
+      fullCodeMode?: boolean;
       onBackgroundComplete?: (result: SubagentRunResult) => void;
     } = {},
   ) {
@@ -145,6 +147,7 @@ export class SubagentManager {
     this.#piBinary = options.piBinary ?? process.env.PI_FABRIC_PI_BINARY ?? "pi";
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
+    this.#fullCodeMode = options.fullCodeMode ?? true;
     const adapters: SubagentTransportAdapter[] = [
       new ProcessTransport(),
       new TmuxTransport(),
@@ -218,6 +221,8 @@ export class SubagentManager {
         String(timeoutMs),
         "--depth",
         String(this.#currentDepth + 1),
+        "--full-code-mode",
+        String(this.#fullCodeMode),
         "--extensions",
         String(request.recursive ? true : (request.extensions ?? this.config.extensions)),
         "--tools",

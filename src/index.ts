@@ -8,6 +8,7 @@ import { loadCodePreviewSettings, withCodePreviewShell } from "pi-code-previews"
 import { Type } from "typebox";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
+import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "./config.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
@@ -86,12 +87,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       name: "fabric_exec",
       label: "Fabric",
       description:
-        "Execute type-checked TypeScript in a QuickJS sandbox and lazily compose Pi tools, captured extension tools, MCP tools, workflows, persistent actors, durable mesh coordination, councils, and recursive queries. Prefer this for multi-step or multi-agent work.",
-      promptSnippet:
-        "Discover and compose captured extension tools, workflows, persistent actors, and mesh state",
+        "Execute type-checked TypeScript in a QuickJS sandbox for MCP, agent, actor, workflow, mesh, council, and recursive orchestration. Full code mode can also compose Pi core and registered extension tools.",
+      promptSnippet: "Compose MCP tools, workflows, persistent actors, agents, and mesh state",
       promptGuidelines: [
         "Use fabric_exec for workflows with multiple calls, loops, filtering, aggregation, MCP tools, or subagents; use direct Pi tools for one simple operation.",
-        "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). Call built-ins through pi.*, captured extension tools through extensions.* or tools.call(), MCP through mcp.<server>.<tool>(), child agents and persistent actors through agents.*, and coordination through mesh.*.",
+        "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). MCP uses mcp.<server>.<tool>(), child agents and persistent actors use agents.*, and coordination uses mesh.*. In full code mode, Pi built-ins also use pi.* and captured extension tools use extensions.* or tools.call().",
         "For scripted fan-out use workflow.agent(), workflow.parallel(), workflow.pipeline(), and workflow.phase(); the short aliases agent(), parallel(), pipeline(), and phase() are also available. Use workflow.configure(), workflow.item(), and workflow.event() to give a long-running setup a useful dynamic dashboard.",
         "Use agents.create() for persistent mailbox actors. Subscribe them to host events for ambient behavior or mesh topics for peer coordination; use directive response mode when silence/intervention is conditional.",
         "Return only the compact final value; intermediate results remain inside the sandbox. Use council.run() or rlm.query() only when their extra cost is justified.",
@@ -99,7 +99,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       parameters: Type.Object({
         code: Type.String({
           description:
-            "TypeScript function body. Top-level await and return are supported. Available globals include tools, pi, extensions, mcp, agents, mesh, workflow, agent, parallel, pipeline, phase, council, rlm, print, and π.",
+            "TypeScript function body. Top-level await and return are supported. Available globals include tools, mcp, agents, mesh, workflow, agent, parallel, pipeline, phase, council, rlm, print, and π. Full code mode also enables pi and extensions.",
         }),
         strings: Type.Optional(
           Type.Record(Type.String(), Type.String(), {
@@ -263,19 +263,29 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       },
     }),
   );
+  const inactiveCapturePolicy = {
+    ...structuredClone(DEFAULT_FABRIC_CONFIG.capture),
+    enabled: false,
+    hideFromModel: false,
+  };
   const toolCapture = await installRegisteredToolCapture({
     anchorDefinition: fabricTool,
     catalog: capturedTools,
+    initialPolicy: inactiveCapturePolicy,
   });
   pi.registerTool(fabricTool);
 
   const refreshToolCapture = (): void => {
-    toolCapture.setPolicy(state.config.capture);
+    toolCapture.setPolicy(effectiveToolCaptureConfig(state.config));
     pi.registerTool(fabricTool);
+  };
+  const suspendToolCapture = (): void => {
+    toolCapture.setPolicy(inactiveCapturePolicy);
   };
 
   pi.on("session_start", async (_event, context) => {
     fabricUi.stop();
+    suspendToolCapture();
     await state.initialize(context);
     refreshToolCapture();
     fabricUi.start(context);
@@ -314,8 +324,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("before_agent_start", async (event) => {
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    const fullCodeMode = state.initialized
+      ? state.config.fullCodeMode
+      : DEFAULT_FABRIC_CONFIG.fullCodeMode;
+    const guidance = fullCodeMode
+      ? "Pi Fabric full code mode is enabled. Extension tools hidden from the top-level schema remain discoverable through tools.search()/tools.describe() and callable through extensions.* or tools.call(). Keep simple one-call tasks on visible direct tools; do not guess captured tool schemas."
+      : "Pi Fabric is in orchestration-only mode. Keep Pi core and registered extension tools on their native direct execution path. Inside fabric_exec, use only MCP, agents, actors, workflows, mesh coordination, councils, recursive queries, and explicit Fabric providers; pi.* and extensions.* are unavailable.";
     return {
-      systemPrompt: `${event.systemPrompt}\n\nPi Fabric is available for programmatic composition. Extension tools hidden from the top-level schema remain discoverable through tools.search()/tools.describe() and callable through extensions.* or tools.call(). Keep simple one-call tasks on visible direct tools; do not guess captured tool schemas.`,
+      systemPrompt: `${event.systemPrompt}\n\n${guidance}`,
     };
   });
 
@@ -329,6 +345,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         .filter(Boolean);
       if (command === "reload") {
         fabricUi.stop();
+        suspendToolCapture();
         await state.initialize(context);
         refreshToolCapture();
         fabricUi.start(context);
@@ -476,15 +493,16 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       context.ui.notify(
         [
           `cwd: ${state.cwd}`,
+          `mode: ${config.fullCodeMode ? "full code" : "orchestration-only (native Pi tools)"}`,
           `providers: ${state.registry
             .providers()
             .map((provider) => provider.name)
             .join(", ")}`,
           `transport: ${config.subagents.transport}`,
           `subagent limits: concurrency ${config.subagents.maxConcurrent}, per execution ${config.subagents.maxPerExecution}, depth ${config.subagents.maxDepth}`,
-          config.capture.enabled
+          config.fullCodeMode && config.capture.enabled
             ? `captured tools: ${capturedTools.size} · model visibility: ${config.capture.hideFromModel ? "hidden" : "visible"}`
-            : "captured tools: disabled",
+            : "captured tools: disabled (native registry preserved)",
           `actors: ${state.actors.list().length} · mesh: ${config.mesh.enabled ? state.mesh.root : "disabled"}`,
           `MCP: ${config.mcp.enabled ? "enabled" : "disabled"}`,
           `UI: ${config.ui.enabled ? `${config.ui.widget} widget · ${config.ui.placement}` : "disabled"}`,

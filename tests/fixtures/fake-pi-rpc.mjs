@@ -3,7 +3,7 @@
 process.stdin.once("data", () => {
   const value = {
     action: "message",
-    message: "validated actor response",
+    message: `validated actor response:${process.env.PI_FABRIC_FULL_CODE_MODE ?? "missing"}`,
   };
   const message = {
     role: "assistant",

@@ -153,6 +153,7 @@ export const installRegisteredToolCapture = async (options: {
   return {
     setPolicy(config) {
       policy = clonePolicy(config);
+      if (!policy.enabled) options.catalog.clear();
     },
     dispose() {
       if (disposed) return;

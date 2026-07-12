@@ -19,6 +19,7 @@ const record = {
   task: fs.readFileSync(taskFile, "utf8"),
   status: "completed",
   transport: args.get("transport"),
+  fullCodeMode: args.get("full-code-mode"),
   cwd: args.get("cwd"),
   startedAt: now,
   updatedAt: now,
