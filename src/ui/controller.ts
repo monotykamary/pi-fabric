@@ -102,6 +102,11 @@ export class FabricUiController {
     return structuredClone(this.#snapshot);
   }
 
+  dismissOnSettle(): void {
+    this.state.widgetDismissedAt = Date.now();
+    this.#scheduleRefresh();
+  }
+
   #scheduleRefresh(): void {
     if (this.#scheduledRefresh || !this.#context) return;
     this.#scheduledRefresh = setTimeout(() => {

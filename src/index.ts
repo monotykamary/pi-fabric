@@ -435,6 +435,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     if (!state.initialized) return;
     toolOwnership.apply(state.config.fullCodeMode);
     state.dispatchHostEvent("agent_settled", event, context);
+    fabricUi.dismissOnSettle();
   });
 
   pi.on("tool_execution_end", async (event, context) => {
