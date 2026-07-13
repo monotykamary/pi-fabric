@@ -45,10 +45,13 @@ globalThis.tools = Object.freeze({
   call: (args) => __call("fabric.$call", args),
   progress: (args) => __call("fabric.$progress", args),
 });
+const __piStringFields = { bash: "command", read: "path", ls: "path", grep: "pattern", find: "pattern" };
 globalThis.pi = new Proxy({}, {
   get(_target, property) {
     if (property === "then") return undefined;
-    return (args = {}) => __call("pi." + String(property), args);
+    const name = String(property);
+    const field = __piStringFields[name];
+    return (args = {}) => __call("pi." + name, typeof args === "string" && field ? { [field]: args } : args);
   },
 });
 const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};

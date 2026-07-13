@@ -72,14 +72,17 @@ interface FabricCapturedTool {
   (args?: Record<string, unknown>): Promise<FabricCapturedToolResult>;
 }
 type FabricExtensionsApi = Record<string, FabricCapturedTool>;
+// String-primary tools (read/bash/grep/find/ls) accept a bare string; the
+// runtime proxy coerces it to { <primaryField>: string }. Lets the model write
+// the natural form (pi.bash("ls")) instead of pi.bash({ command: "ls" }).
 interface PiToolsApi {
-  read(args: { path: string; offset?: number; limit?: number }): Promise<string>;
-  bash(args: { command: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
+  read(args: string | { path: string; offset?: number; limit?: number }): Promise<string>;
+  bash(args: string | { command: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
   edit(args: { path: string; edits: Array<{ oldText: string; newText: string }> }): Promise<{ ok: true; output: string; details: unknown }>;
   write(args: { path: string; content: string }): Promise<{ ok: true; output: string; details: unknown }>;
-  grep(args: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }): Promise<string>;
-  find(args: { pattern: string; path?: string; limit?: number }): Promise<string>;
-  ls(args?: { path?: string; limit?: number }): Promise<string>;
+  grep(args: string | { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }): Promise<string>;
+  find(args: string | { pattern: string; path?: string; limit?: number }): Promise<string>;
+  ls(args?: string | { path?: string; limit?: number }): Promise<string>;
 }
 type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
