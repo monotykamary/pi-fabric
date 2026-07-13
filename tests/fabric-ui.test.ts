@@ -202,6 +202,7 @@ describe("Fabric dynamic UI", () => {
     const widget = new FabricWidget(theme, () => current, 8, 10_000);
     const first = widget.render(72);
     expect(first.length).toBe(3);
+    expect(first[0]).toContain("0/2");
     expect(first.some((line) => line.includes("bash one"))).toBe(true);
     expect(first.some((line) => line.includes("bash two"))).toBe(true);
 
@@ -209,6 +210,7 @@ describe("Fabric dynamic UI", () => {
     run.calls[0]!.finishedAt = current.now;
     const second = widget.render(72);
     expect(second.length).toBe(3);
+    expect(second[0]).toContain("1/2");
     expect(second.some((line) => line.includes("bash one"))).toBe(true);
     expect(second.some((line) => line.includes("bash two"))).toBe(true);
 
@@ -216,6 +218,7 @@ describe("Fabric dynamic UI", () => {
     run.calls[1]!.finishedAt = current.now;
     const third = widget.render(72);
     expect(third.length).toBe(3);
+    expect(third[0]).toContain("2/2");
 
     run.id = "run-stable-2";
     run.calls = [
@@ -223,6 +226,7 @@ describe("Fabric dynamic UI", () => {
     ];
     const fourth = widget.render(72);
     expect(fourth.length).toBe(2);
+    expect(fourth[0]).toContain("0/1");
   });
 
   it("renders a responsive two-pane dashboard and agent details", () => {
