@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe("registered extension tool capture", () => {
-  it("captures every extension tool while retaining configured model-visible tools", async () => {
+  it("captures every extension tool while hiding core overrides from the model", async () => {
     const fabricTool = tool("fabric_exec");
     const customTool = tool("deploy_release");
     const readOverride = tool("read");
@@ -62,7 +62,6 @@ describe("registered extension tool capture", () => {
 
     expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
       "fabric_exec",
-      "read",
     ]);
     expect(catalog.list().map((entry) => entry.name)).toEqual(["deploy_release", "read"]);
     expect(catalog.require("deploy_release").risk).toBe("execute");

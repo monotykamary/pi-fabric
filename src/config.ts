@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import type { FabricRisk } from "./protocol.js";
 
 export type FabricApprovalMode = "allow" | "ask" | "deny";
@@ -119,7 +120,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   capture: {
     enabled: true,
     hideFromModel: true,
-    keepVisible: ["fabric_exec", "read", "bash", "edit", "write", "grep", "find", "ls"],
+    keepVisible: ["fabric_exec"],
     defaultRisk: "execute",
     risks: {
       read: "read",
@@ -418,7 +419,9 @@ export const effectiveToolCaptureConfig = (
   config.fullCodeMode
     ? {
         ...config.capture,
-        keepVisible: [...config.capture.keepVisible],
+        keepVisible: config.capture.keepVisible.filter(
+          (name) => !PI_CORE_TOOL_NAME_SET.has(name),
+        ),
         risks: { ...config.capture.risks },
       }
     : {

@@ -32,7 +32,7 @@ pi install npm:pi-fabric
 
 ## Code API
 
-With the default full code mode, the tool accepts a TypeScript function body with top-level `await` and `return` and can call Pi core tools:
+With the default full code mode, `fabric_exec` exclusively owns Pi core tool execution. The parent model sees one programmable tool instead of direct `read`, `bash`, `edit`, `write`, `grep`, `find`, and `ls` schemas. Fabric programs use those capabilities through `pi.*`:
 
 ```ts
 const files = await pi.find({ pattern: "**/*.ts", path: "src" });
@@ -53,6 +53,12 @@ return {
 };
 ```
 
+### Full code mode
+
+`fullCodeMode: true` is the default. Fabric removes active Pi core tools from the parent model and exposes their implementations only inside `fabric_exec` through `pi.*`. Registered overrides such as security gates and code previews are captured too, so `pi.read()` continues to route through the override rather than bypassing it.
+
+Fabric remembers which native core tools were active before taking ownership. Switching to orchestration-only mode or unloading Fabric restores that selection. Full-mode ownership is reasserted before user input and agent startup, so tools manually re-enabled during the session do not leak back into the parent schema.
+
 ### Orchestration-only mode
 
 Users who want Fabric for MCP, agents, ambient actors, parallel workflows, councils, and recursive delegation—but want Pi's core tools to remain entirely native—can opt out of full code mode:
@@ -71,7 +77,7 @@ In orchestration-only mode:
 - MCP providers, one-shot and recursive agents, persistent ambient actors, dynamic workflows, mesh coordination, councils, explicit Fabric providers, and the Fabric TUI remain available.
 - Child agents continue using their allowed Pi tools directly, so parallel and ambient setups do not route their coding operations back through Fabric code mode.
 
-The default is `true` for backward compatibility. A project can set the flag in `.pi/fabric.json`, or a user can set it globally in `~/.pi/agent/fabric.json`.
+The default is `true`. A project can set the flag in `.pi/fabric.json`, or a user can set it globally in `~/.pi/agent/fabric.json`.
 
 ### Discovery and generic calls
 
@@ -111,7 +117,7 @@ return result.text;
 
 The result preserves `content`, text content as `text`, `details`, `isError`, `terminate`, and source provenance. Fabric runs the captured definition's `prepareArguments()` and original executor with its owning extension context. Pi's `tool_call`, `tool_result`, and `tool_execution_*` lifecycle handlers are also applied to nested captured calls.
 
-`fabric_exec` and extension overrides of built-ins remain model-visible by default. This preserves direct core tools and wrappers such as code previews or security gates. Inside Fabric, `pi.read`, `pi.bash`, and the other built-ins automatically route through a captured override when one exists; `extensions.read` exposes the override's full native result shape. Configure `capture.keepVisible` to change the model-visible set.
+Extension overrides of core tools are captured and hidden with their built-in counterparts in full code mode. Inside Fabric, `pi.read`, `pi.bash`, and the other built-ins automatically route through a captured override when one exists; `extensions.read` exposes the override's full native result shape. `capture.keepVisible` can retain non-core extension tools in Pi's direct registry, but core tool names are always excluded while full code mode owns them.
 
 ### MCP through mcporter
 
@@ -386,7 +392,7 @@ Project values override global values.
   "capture": {
     "enabled": true,
     "hideFromModel": true,
-    "keepVisible": ["fabric_exec", "read", "bash", "edit", "write", "grep", "find", "ls"],
+    "keepVisible": ["fabric_exec"],
     "defaultRisk": "execute",
     "risks": {
       "read": "read",
@@ -437,9 +443,9 @@ Project values override global values.
 }
 ```
 
-`fullCodeMode` defaults to `true`. When false, Fabric uses orchestration-only mode: native Pi and registered extension tools remain direct, capture is disabled, and Fabric's internal registry omits the `pi` and `extensions` providers.
+`fullCodeMode` defaults to `true`. Full mode deactivates native core tools in the parent session and makes `fabric_exec` their exclusive model-facing owner. When false, Fabric uses orchestration-only mode: native Pi and registered extension tools remain direct, capture is disabled, and Fabric's internal registry omits the `pi` and `extensions` providers.
 
-Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, or `deny`. Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Set `capture.hideFromModel` to `false` to index tools without hiding them. `capture.keepVisible` names stay in both Fabric and Pi's direct registry; be careful when removing built-in override names because doing so exposes Pi's underlying built-in implementation. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
+Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, or `deny`. Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`. Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them. `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode. An `ask` policy is fail-closed in headless modes without interactive UI. Approval is cached by risk class for one `fabric_exec` execution.
 
 When `mcp.disableOAuth` is true, MCP calls may use cached credentials but cannot launch a new interactive OAuth flow.
 

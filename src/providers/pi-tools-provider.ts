@@ -8,6 +8,7 @@ import {
   createWriteToolDefinition,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
@@ -17,12 +18,10 @@ import type {
 } from "../protocol.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
 
-type PiToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
+const readTools = new Set<PiCoreToolName>(["read", "grep", "find", "ls"]);
+const writeTools = new Set<PiCoreToolName>(["edit", "write"]);
 
-const readTools = new Set<PiToolName>(["read", "grep", "find", "ls"]);
-const writeTools = new Set<PiToolName>(["edit", "write"]);
-
-const riskForTool = (name: PiToolName): FabricRisk => {
+const riskForTool = (name: PiCoreToolName): FabricRisk => {
   if (readTools.has(name)) return "read";
   if (writeTools.has(name)) return "write";
   return "execute";
@@ -35,7 +34,7 @@ const textContent = (content: Array<{ type: string; text?: string }>): string =>
     .join("\n");
 
 const normalizeResult = (
-  name: PiToolName,
+  name: PiCoreToolName,
   result: {
     content: Array<{ type: string; text?: string }>;
     details?: unknown;
@@ -57,7 +56,7 @@ const normalizeResult = (
 export class PiToolsProvider implements FabricProvider {
   readonly name = "pi";
   readonly description = "Pi's built-in coding tools";
-  readonly #tools: Record<PiToolName, ToolDefinition<any, any, any>>;
+  readonly #tools: Record<PiCoreToolName, ToolDefinition<any, any, any>>;
 
   constructor(
     cwd: string,
@@ -80,7 +79,7 @@ export class PiToolsProvider implements FabricProvider {
   ): Promise<FabricActionDescriptor[]> {
     const query = request.query?.toLowerCase();
     const descriptors = await Promise.all(
-      Object.keys(this.#tools).map((name) => this.describe(name, _context)),
+      PI_CORE_TOOL_NAMES.map((name) => this.describe(name, _context)),
     );
     return descriptors
       .filter((descriptor): descriptor is FabricActionDescriptor => descriptor !== undefined)
@@ -94,7 +93,7 @@ export class PiToolsProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     if (!(actionName in this.#tools)) return undefined;
-    const name = actionName as PiToolName;
+    const name = actionName as PiCoreToolName;
     const override = await this.capturedTools?.describe(name, _context);
     if (override) return { ...override, namespace: "extension-override" };
     const tool = this.#tools[name];
@@ -106,7 +105,7 @@ export class PiToolsProvider implements FabricProvider {
       return this.capturedTools.prepareArguments(actionName, args);
     }
     if (!(actionName in this.#tools)) return args;
-    const prepare = this.#tools[actionName as PiToolName].prepareArguments;
+    const prepare = this.#tools[actionName as PiCoreToolName].prepareArguments;
     if (!prepare) return args;
     const prepared = prepare(args);
     if (typeof prepared !== "object" || prepared === null || Array.isArray(prepared)) {
@@ -121,7 +120,7 @@ export class PiToolsProvider implements FabricProvider {
     context: FabricInvocationContext,
   ): Promise<unknown> {
     if (!(actionName in this.#tools)) throw new Error(`Unknown Pi tool: ${actionName}`);
-    const name = actionName as PiToolName;
+    const name = actionName as PiCoreToolName;
     if (this.capturedTools?.catalog.get(name)) {
       const result = await this.capturedTools.invoke(name, args, context);
       return normalizeResult(name, result);
@@ -137,7 +136,10 @@ export class PiToolsProvider implements FabricProvider {
     return normalizeResult(name, result);
   }
 
-  #descriptor(name: PiToolName, tool: ToolDefinition<any, any, any>): FabricActionDescriptor {
+  #descriptor(
+    name: PiCoreToolName,
+    tool: ToolDefinition<any, any, any>,
+  ): FabricActionDescriptor {
     return {
       name,
       description: tool.description,

@@ -77,6 +77,18 @@ describe("Fabric configuration", () => {
     expect(DEFAULT_FABRIC_CONFIG.capture).toMatchObject({ enabled: true, hideFromModel: true });
   });
 
+  it("never leaves Pi core tools model-visible in full code mode", () => {
+    expect(DEFAULT_FABRIC_CONFIG.capture.keepVisible).toEqual(["fabric_exec"]);
+    const capture = effectiveToolCaptureConfig({
+      fullCodeMode: true,
+      capture: {
+        ...DEFAULT_FABRIC_CONFIG.capture,
+        keepVisible: ["fabric_exec", "read", "bash", "custom"],
+      },
+    });
+    expect(capture.keepVisible).toEqual(["fabric_exec", "custom"]);
+  });
+
   it("merges global and trusted project configuration", () => {
     const root = temporaryDirectory();
     const cwd = path.join(root, "project");

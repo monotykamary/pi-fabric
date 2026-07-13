@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "./config.js";
+import { FabricToolOwnership } from "./core/tool-ownership.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
@@ -71,6 +72,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   await loadCodePreviewSettings(process.cwd());
   const capturedTools = new CapturedToolCatalog();
   const state = new FabricState(pi, capturedTools);
+  const toolOwnership = new FabricToolOwnership(pi);
   const fabricUi = new FabricUiController(state);
 
   pi.events.on(FABRIC_PROVIDER_REGISTER_EVENT, (value: unknown) => {
@@ -87,10 +89,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       name: "fabric_exec",
       label: "Fabric",
       description:
-        "Execute type-checked TypeScript in a QuickJS sandbox for MCP, agent, actor, workflow, mesh, council, and recursive orchestration. Full code mode can also compose Pi core and registered extension tools.",
-      promptSnippet: "Compose MCP tools, workflows, persistent actors, agents, and mesh state",
+        "Execute type-checked TypeScript in a QuickJS sandbox for Pi core tools, MCP, agents, actors, workflows, mesh coordination, councils, and recursive orchestration. In full code mode, this is the exclusive path to Pi core tools.",
+      promptSnippet:
+        "Compose Pi core tools, MCP tools, workflows, persistent actors, agents, and mesh state",
       promptGuidelines: [
-        "Use fabric_exec for workflows with multiple calls, loops, filtering, aggregation, MCP tools, or subagents; use direct Pi tools for one simple operation.",
+        "In full code mode, use fabric_exec for all Pi core operations as well as workflows, loops, filtering, aggregation, MCP tools, and agents. In orchestration-only mode, use direct Pi tools normally and Fabric for orchestration.",
         "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). MCP uses mcp.<server>.<tool>(), child agents and persistent actors use agents.*, and coordination uses mesh.*. In full code mode, Pi built-ins also use pi.* and captured extension tools use extensions.* or tools.call().",
         "For scripted fan-out use workflow.agent(), workflow.parallel(), workflow.pipeline(), and workflow.phase(); the short aliases agent(), parallel(), pipeline(), and phase() are also available. Use workflow.configure(), workflow.item(), and workflow.event() to give a long-running setup a useful dynamic dashboard.",
         "Use agents.create() for persistent mailbox actors. Subscribe them to host events for ambient behavior or mesh topics for peer coordination; use directive response mode when silence/intervention is conditional.",
@@ -275,9 +278,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
   pi.registerTool(fabricTool);
 
-  const refreshToolCapture = (): void => {
+  const applyFabricMode = (): void => {
     toolCapture.setPolicy(effectiveToolCaptureConfig(state.config));
     pi.registerTool(fabricTool);
+    toolOwnership.apply(state.config.fullCodeMode);
   };
   const suspendToolCapture = (): void => {
     toolCapture.setPolicy(inactiveCapturePolicy);
@@ -287,13 +291,15 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     fabricUi.stop();
     suspendToolCapture();
     await state.initialize(context);
-    refreshToolCapture();
+    applyFabricMode();
     fabricUi.start(context);
   });
 
   pi.on("session_shutdown", async () => {
     try {
       fabricUi.stop();
+      suspendToolCapture();
+      toolOwnership.release();
       await state.shutdown();
     } finally {
       toolCapture.dispose();
@@ -301,15 +307,21 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("input", async (event, context) => {
-    if (state.initialized) state.dispatchHostEvent("input", event, context);
+    if (!state.initialized) return;
+    toolOwnership.apply(state.config.fullCodeMode);
+    state.dispatchHostEvent("input", event, context);
   });
 
   pi.on("turn_end", async (event, context) => {
-    if (state.initialized) state.dispatchHostEvent("turn_end", event, context);
+    if (!state.initialized) return;
+    toolOwnership.apply(state.config.fullCodeMode);
+    state.dispatchHostEvent("turn_end", event, context);
   });
 
   pi.on("agent_settled", async (event, context) => {
-    if (state.initialized) state.dispatchHostEvent("agent_settled", event, context);
+    if (!state.initialized) return;
+    toolOwnership.apply(state.config.fullCodeMode);
+    state.dispatchHostEvent("agent_settled", event, context);
   });
 
   pi.on("tool_execution_end", async (event, context) => {
@@ -323,12 +335,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("before_agent_start", async (event) => {
-    if (!pi.getActiveTools().includes("fabric_exec")) return;
     const fullCodeMode = state.initialized
       ? state.config.fullCodeMode
       : DEFAULT_FABRIC_CONFIG.fullCodeMode;
+    toolOwnership.apply(fullCodeMode);
+    if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = fullCodeMode
-      ? "Pi Fabric full code mode is enabled. Extension tools hidden from the top-level schema remain discoverable through tools.search()/tools.describe() and callable through extensions.* or tools.call(). Keep simple one-call tasks on visible direct tools; do not guess captured tool schemas."
+      ? "Pi Fabric full code mode is enabled and Fabric exclusively owns Pi core tool execution. Use fabric_exec for every read, search, shell command, and file mutation through pi.*; direct core tools are intentionally unavailable. Extension tools hidden from the top-level schema remain discoverable through tools.search()/tools.describe() and callable through extensions.* or tools.call()."
       : "Pi Fabric is in orchestration-only mode. Keep Pi core and registered extension tools on their native direct execution path. Inside fabric_exec, use only MCP, agents, actors, workflows, mesh coordination, councils, recursive queries, and explicit Fabric providers; pi.* and extensions.* are unavailable.";
     return {
       systemPrompt: `${event.systemPrompt}\n\n${guidance}`,
@@ -347,7 +360,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         fabricUi.stop();
         suspendToolCapture();
         await state.initialize(context);
-        refreshToolCapture();
+        applyFabricMode();
         fabricUi.start(context);
         context.ui.notify("Pi Fabric reloaded", "info");
         return;
@@ -493,7 +506,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       context.ui.notify(
         [
           `cwd: ${state.cwd}`,
-          `mode: ${config.fullCodeMode ? "full code" : "orchestration-only (native Pi tools)"}`,
+          `mode: ${config.fullCodeMode ? "full code (Fabric-owned core tools)" : "orchestration-only (native Pi tools)"}`,
           `providers: ${state.registry
             .providers()
             .map((provider) => provider.name)
