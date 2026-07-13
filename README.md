@@ -346,6 +346,7 @@ Fabric also owns a general-purpose, theme-aware activity surface for any agent s
 
 - A compact widget above the chat (like `pi-supervisor`) follows the current phase and shows active agents, actors, tools, custom items, shared tasks, token use, and elapsed time. It disappears after ordinary runs become quiet, while persistent actors remain visible as a compact ambient row.
 - `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use a Claude-workflow-style phase pane beside agents and work items; narrow terminals stack the same panels. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Actor mailboxes, mesh state, and recent mesh events use the same view rather than role-specific screens.
+- `/fabric settings` opens an inline settings view that mirrors Pi core's `/settings` (top and bottom borders, fuzzy search, section submenus) and writes changes to `fabric.json`. Trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`. Full code mode, capture, executor, approvals, and UI changes apply immediately; mesh, subagent, and MCP changes persist and take effect on the next `/fabric reload`. List editors for `subagents.defaultTools` and `capture.keepVisible` toggle known tools on and off; `keepVisible` candidates include `fabric_exec` plus every captured extension tool.
 - `↑`/`↓` or `j`/`k` select, `←`/`→` or Tab switch panes, Enter drills into details, `f` cycles status filters, `[`/`]` switches retained runs, and Esc backs out or closes.
 
 The surface is data-driven. Fabric automatically instruments nested provider calls, subagents, persistent actors, and task-shaped mesh entries. A workflow can add domain-specific labels and arbitrary progress without adding extension UI code:
@@ -508,6 +509,7 @@ async invoke(actionName, args, context) {
 ```text
 /fabric status
 /fabric dashboard
+/fabric settings
 /fabric reload
 /fabric providers
 /fabric captured [query]

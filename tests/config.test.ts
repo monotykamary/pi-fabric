@@ -7,6 +7,7 @@ import {
   effectiveToolCaptureConfig,
   loadFabricConfig,
   normalizeFabricConfig,
+  saveFabricConfig,
 } from "../src/config.js";
 
 const temporaryDirectories: string[] = [];
@@ -117,5 +118,87 @@ describe("Fabric configuration", () => {
     );
     const config = loadFabricConfig({ cwd, agentDir, projectTrusted: false });
     expect(config.approvals.execute).toBe("allow");
+  });
+
+  it("saves partial overrides into the project fabric.json when trusted", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "fabric.json"),
+      JSON.stringify({ subagents: { transport: "localterm" } }),
+    );
+
+    const result = saveFabricConfig(
+      { cwd, agentDir, projectTrusted: true },
+      { subagents: { maxConcurrent: 8 }, fullCodeMode: false },
+    );
+
+    expect(result.scope).toBe("project");
+    expect(result.path).toBe(path.join(cwd, ".pi", "fabric.json"));
+    const saved = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"));
+    expect(saved).toEqual({
+      subagents: { transport: "localterm", maxConcurrent: 8 },
+      fullCodeMode: false,
+    });
+    const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    expect(config.subagents.maxConcurrent).toBe(8);
+    expect(config.subagents.transport).toBe("localterm");
+    expect(config.fullCodeMode).toBe(false);
+  });
+
+  it("saves into the global fabric.json when the project is untrusted", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+
+    const result = saveFabricConfig(
+      { cwd, agentDir, projectTrusted: false },
+      { executor: { timeoutMs: 30_000 } },
+    );
+
+    expect(result.scope).toBe("global");
+    expect(result.path).toBe(path.join(agentDir, "fabric.json"));
+    expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
+    const saved = JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8"));
+    expect(saved).toEqual({ executor: { timeoutMs: 30_000 } });
+  });
+
+  it("saves array overrides by replacing the array while preserving siblings", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, ".pi", "fabric.json"),
+      JSON.stringify({
+        subagents: { transport: "tmux", defaultTools: ["read", "bash"] },
+        capture: { defaultRisk: "read", keepVisible: ["fabric_exec"] },
+      }),
+    );
+
+    saveFabricConfig(
+      { cwd, agentDir, projectTrusted: true },
+      {
+        subagents: { defaultTools: ["read", "edit", "grep"] },
+        capture: { keepVisible: ["fabric_exec", "custom-tool"] },
+      },
+    );
+
+    const saved = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"));
+    // Arrays are replaced, not concatenated; sibling object keys are preserved.
+    expect(saved.subagents).toEqual({ transport: "tmux", defaultTools: ["read", "edit", "grep"] });
+    expect(saved.capture).toEqual({
+      defaultRisk: "read",
+      keepVisible: ["fabric_exec", "custom-tool"],
+    });
+    const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
+    expect(config.subagents.defaultTools).toEqual(["read", "edit", "grep"]);
+    expect(config.capture.keepVisible).toEqual(["fabric_exec", "custom-tool"]);
+    expect(config.subagents.transport).toBe("tmux");
   });
 });

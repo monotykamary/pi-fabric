@@ -204,6 +204,16 @@ export class FabricState {
     if (!this.initialized || this.#cwd !== context.cwd) await this.initialize(context);
   }
 
+  reloadConfig(context: ExtensionContext): void {
+    if (!this.#config || !this.#cwd) return;
+    const next = loadFabricConfig({
+      cwd: context.cwd,
+      agentDir: getAgentDir(),
+      projectTrusted: context.isProjectTrusted(),
+    });
+    deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+  }
+
   dispatchHostEvent(
     event: FabricActorHostEvent,
     payload: unknown,
@@ -290,3 +300,20 @@ export class FabricState {
     this.#mesh = undefined;
   }
 }
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const deepAssign = (
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): void => {
+  for (const [key, value] of Object.entries(source)) {
+    const targetValue = target[key];
+    if (isPlainObject(value) && isPlainObject(targetValue)) {
+      deepAssign(targetValue, value);
+    } else {
+      target[key] = value;
+    }
+  }
+};

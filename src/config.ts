@@ -442,3 +442,18 @@ export const loadFabricConfig = (options: {
   }
   return normalizeFabricConfig(merged);
 };
+
+export const saveFabricConfig = (
+  options: { cwd: string; agentDir: string; projectTrusted: boolean },
+  partial: Record<string, unknown>,
+): { scope: "global" | "project"; path: string } => {
+  const targetPath = options.projectTrusted
+    ? path.join(options.cwd, ".pi", "fabric.json")
+    : path.join(options.agentDir, "fabric.json");
+  const existing = readJsonObject(targetPath) ?? {};
+  const merged = mergeObjects(existing, partial) as Record<string, unknown>;
+  const directory = path.dirname(targetPath);
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  return { scope: options.projectTrusted ? "project" : "global", path: targetPath };
+};

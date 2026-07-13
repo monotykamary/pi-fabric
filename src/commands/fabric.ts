@@ -4,6 +4,7 @@ import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricState } from "../fabric-state.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
+import { openFabricSettings } from "../ui/settings.js";
 
 interface FabricCommandDeps {
   state: FabricState;
@@ -21,6 +22,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       const subcommands = [
         "status",
         "dashboard",
+        "settings",
         "reload",
         "providers",
         "agents",
@@ -81,6 +83,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         applyFabricMode();
         fabricUi.start(context);
         context.ui.notify("Pi Fabric reloaded", "info");
+        return;
+      }
+      if (command === "settings") {
+        await openFabricSettings(context, { state, applyFabricMode, capturedTools });
         return;
       }
       if (command === "dashboard" || command === "ui") {
