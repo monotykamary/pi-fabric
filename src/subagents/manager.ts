@@ -10,6 +10,7 @@ import { ProcessTransport } from "./transports/process-transport.js";
 import { ScreenTransport } from "./transports/screen-transport.js";
 import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
+  FabricBudgetSummary,
   SubagentHandleInfo,
   SubagentRunRecord,
   SubagentRunRequest,
@@ -18,6 +19,14 @@ import type {
   SubagentTransportHandle,
 } from "./types.js";
 import { WorktreeManager } from "./worktree-manager.js";
+import {
+  activeBudgetState,
+  appendBudgetLedger,
+  clearOwnedBudgetEnv,
+  initBudgetLedger,
+  readBudgetLedger,
+} from "./budget-ledger.js";
+import type { BudgetLedgerState } from "./budget-ledger.js";
 
 const STATUS_POLL_MS = 100;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
@@ -140,6 +149,8 @@ export class SubagentManager {
   readonly #fullCodeMode: boolean;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
+  readonly #budget: BudgetLedgerState | undefined;
+  readonly #budgetOwned: boolean;
   #closing = false;
 
   constructor(
@@ -165,6 +176,14 @@ export class SubagentManager {
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
+    const inheritedBudget = activeBudgetState();
+    this.#budget =
+      inheritedBudget ??
+      (this.#currentDepth === 0 && config.budgetUsd > 0
+        ? initBudgetLedger(config.budgetUsd)
+        : undefined);
+    this.#budgetOwned =
+      !inheritedBudget && this.#currentDepth === 0 && config.budgetUsd > 0;
     const adapters: SubagentTransportAdapter[] = [
       new ProcessTransport(),
       new TmuxTransport(),
@@ -180,6 +199,14 @@ export class SubagentManager {
       throw new Error(`Fabric subagent depth limit reached (${this.config.maxDepth})`);
     }
     if (!request.task.trim()) throw new Error("Subagent task must not be empty");
+    if (this.#budget) {
+      const spent = readBudgetLedger(this.#budget.file).cost;
+      if (spent >= this.#budget.budget) {
+        throw new Error(
+          `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase subagents.budgetUsd or simplify the task.`,
+        );
+      }
+    }
     const release = await this.#semaphore.acquire(signal);
     const id = randomUUID().replaceAll("-", "");
     const name = safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric subagent");
@@ -382,6 +409,10 @@ export class SubagentManager {
     if (!this.config.retainRuns) {
       fs.rmSync(this.#runRoot, { recursive: true, force: true });
     }
+    if (this.#budgetOwned && this.#budget) {
+      fs.rmSync(path.dirname(this.#budget.file), { recursive: true, force: true });
+      clearOwnedBudgetEnv();
+    }
   }
 
   async #waitForTransportExit(managed: ManagedSubagent): Promise<void> {
@@ -438,6 +469,21 @@ export class SubagentManager {
       managed.abortSignal.removeEventListener("abort", managed.abortHandler);
     }
     managed.release();
+    if (this.#budget) {
+      appendBudgetLedger(this.#budget.file, {
+        id: result.id,
+        depth: this.#currentDepth + 1,
+        cost: result.usage.cost,
+        tokens:
+          result.usage.input +
+          result.usage.output +
+          result.usage.cacheRead +
+          result.usage.cacheWrite,
+        ts: Date.now(),
+      });
+      const summary = this.#budgetSummary();
+      if (summary) result.budget = summary;
+    }
     managed.resolve(result);
     if (
       managed.background &&
@@ -457,6 +503,17 @@ export class SubagentManager {
     );
     if (request.recursive) tools.push("fabric_exec");
     return [...new Set(tools)];
+  }
+
+  #budgetSummary(): FabricBudgetSummary | undefined {
+    if (!this.#budget) return undefined;
+    const { cost, tokens } = readBudgetLedger(this.#budget.file);
+    return {
+      limit: this.#budget.budget,
+      spent: cost,
+      remaining: Math.max(0, this.#budget.budget - cost),
+      tokens,
+    };
   }
 
   async #resolveTransport(requested: FabricSubagentTransport): Promise<SubagentTransportAdapter> {
@@ -502,9 +559,11 @@ export class SubagentManager {
 
   #withTransportMetadata(record: SubagentRunRecord, managed: ManagedSubagent): SubagentRunRecord {
     const nestedAgents = readNestedAgents(managed.runDirectory);
+    const budget = this.#budgetSummary();
     return {
       ...record,
       ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
+      ...(budget ? { budget } : {}),
       ...(managed.model ? { model: managed.model } : {}),
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),

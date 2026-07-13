@@ -33,6 +33,7 @@ const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;
 const CORE_DEFAULT_TOOL_CANDIDATES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const BUDGET_VALUES = [0, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10];
 const ROOT_ITEM_IDS = [
   "fullCodeMode",
   "executor",
@@ -75,6 +76,9 @@ const formatMs = (ms: number): string =>
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 ? `${bytes / (1024 * 1024)} MB` : `${bytes / 1024} KB`;
 
+const formatUsd = (value: number): string =>
+  value <= 0 ? "Off" : `$${value.toFixed(2)}`;
+
 const formatToolCount = (count: number): string =>
   `${count} ${count === 1 ? "tool" : "tools"}`;
 
@@ -103,10 +107,21 @@ const getPath = (config: FabricConfig, id: string): unknown => {
   return current;
 };
 
+export const parseBudgetValue = (value: string): number => {
+  if (value === "Off") return 0;
+  const digits = Number.parseFloat(value.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(digits) ? digits : 0;
+};
+
 const coerceValue = (id: string, value: string, config: FabricConfig): unknown => {
   const current = getPath(config, id);
   if (typeof current === "boolean") return value === "true";
-  if (typeof current === "number") return Number(value);
+  if (typeof current === "number") {
+    // budgetUsd is the only currency field; its submenu values are formatted
+    // as "$0.10" / "Off", so strip the currency formatting before coercing.
+    if (id === "subagents.budgetUsd") return parseBudgetValue(value);
+    return Number(value);
+  }
   return value;
 };
 
@@ -542,6 +557,17 @@ export const buildFabricSettingsItems = (
               String,
               "Subagent depth",
               "Maximum nesting depth for recursive subagent calls.",
+            ),
+          }),
+          setting("subagents.budgetUsd", "Recursion budget", formatUsd(config.subagents.budgetUsd), {
+            description:
+              "Maximum USD spend for subagent work across the whole recursion tree. 0 disables the budget.",
+            submenu: numericSubmenu(
+              theme,
+              BUDGET_VALUES,
+              formatUsd,
+              "Recursion budget",
+              "Maximum USD spend for subagent work across the whole recursion tree. 0 disables the budget.",
             ),
           }),
           setting("subagents.timeoutMs", "Timeout", formatMs(config.subagents.timeoutMs), {

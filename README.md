@@ -319,7 +319,7 @@ return rlm.query({
 });
 ```
 
-`rlm.query()` is `agents.run()` with Fabric enabled in the child. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits; a cross-process global budget is planned but not yet implemented.
+`rlm.query()` is `agents.run()` with Fabric enabled in the child. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits. When `subagents.budgetUsd` is set, a shared append-only cost ledger bounds total spend across the whole recursion tree: every node records the cost of the children it spawns into one ledger file inherited via environment, and each node rejects a new child when the accumulated spend reaches the budget. The check is best-effort (concurrent children can each pass before any cost lands, so a tree may slightly overshoot); the race-free ceiling remains `subagents.maxPerExecution`. The result and live status of every recursive child carry a `budget` summary (`limit`, `spent`, `remaining`, `tokens`).
 
 ## Included skills
 
@@ -422,7 +422,8 @@ Project values override global values.
     "extensions": true,
     "defaultTools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
     "retainRuns": false,
-    "notifyOnComplete": true
+    "notifyOnComplete": true,
+    "budgetUsd": 0
   },
   "ui": {
     "enabled": true,

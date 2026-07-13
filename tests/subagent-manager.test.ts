@@ -98,4 +98,63 @@ describe("SubagentManager", () => {
     managers.push(manager);
     await expect(manager.spawn({ task: "" })).rejects.toThrow("must not be empty");
   });
+
+  it("enforces a cross-process cost budget across spawned agents", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, budgetUsd: 0.1 };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const first = await manager.run({ task: "COST 0.06", transport: "process" });
+    expect(first.status).toBe("completed");
+    expect(first.usage.cost).toBeCloseTo(0.06);
+    expect(first.budget).toBeDefined();
+    expect(first.budget?.limit).toBe(0.1);
+    expect(first.budget?.spent).toBeCloseTo(0.06);
+    expect(first.budget?.remaining).toBeCloseTo(0.04);
+
+    // The check runs before the child lands its cost, so a tree may slightly
+    // overshoot (matching ypi's best-effort RLM_BUDGET semantics).
+    const second = await manager.run({ task: "COST 0.06", transport: "process" });
+    expect(second.status).toBe("completed");
+    expect(second.budget?.spent).toBeCloseTo(0.12);
+    expect(second.budget?.remaining).toBe(0);
+
+    // A third call is rejected because the accumulated spend now meets the budget.
+    await expect(manager.spawn({ task: "COST 0.06", transport: "process" })).rejects.toThrow(
+      /budget exceeded/,
+    );
+  });
+
+  it("inherits a budget ledger from the environment for recursive children", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
+    roots.push(root);
+    process.env.PI_FABRIC_BUDGET = "0.05";
+    process.env.PI_FABRIC_BUDGET_FILE = path.join(root, "tree-cost.jsonl");
+    process.env.PI_FABRIC_BUDGET_ID = "inherited-tree";
+    fs.writeFileSync(process.env.PI_FABRIC_BUDGET_FILE, "", { mode: 0o600 });
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"),
+        runRoot: root,
+      });
+      managers.push(manager);
+
+      const result = await manager.run({ task: "COST 0.02", transport: "process" });
+      expect(result.budget?.limit).toBe(0.05);
+      expect(result.budget?.spent).toBeCloseTo(0.02);
+      expect(result.budget?.remaining).toBeCloseTo(0.03);
+
+      const ledger = fs.readFileSync(process.env.PI_FABRIC_BUDGET_FILE, "utf8");
+      expect(ledger).toContain("\"cost\":0.02");
+    } finally {
+      delete process.env.PI_FABRIC_BUDGET;
+      delete process.env.PI_FABRIC_BUDGET_FILE;
+      delete process.env.PI_FABRIC_BUDGET_ID;
+    }
+  });
 });

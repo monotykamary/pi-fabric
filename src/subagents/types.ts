@@ -35,6 +35,13 @@ export interface SubagentUsage {
   cost: number;
 }
 
+export interface FabricBudgetSummary {
+  limit: number;
+  spent: number;
+  remaining: number;
+  tokens: number;
+}
+
 export interface SubagentRunRecord {
   id: string;
   name: string;
@@ -58,6 +65,7 @@ export interface SubagentRunRecord {
   stderr?: string;
   exitCode?: number | null;
   usage: SubagentUsage;
+  budget?: FabricBudgetSummary;
   sessionId?: string;
   attachCommand?: string;
   branch?: string;

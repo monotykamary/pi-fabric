@@ -65,6 +65,16 @@ describe("Fabric configuration", () => {
     expect(config.mesh.eventContextChars).toBe(1_000_000);
   });
 
+  it("normalizes the subagent cost budget", () => {
+    const enabled = normalizeFabricConfig({ subagents: { budgetUsd: 0.42 } });
+    expect(enabled.subagents.budgetUsd).toBe(0.42);
+    const negative = normalizeFabricConfig({ subagents: { budgetUsd: -5 } });
+    expect(negative.subagents.budgetUsd).toBe(0);
+    const huge = normalizeFabricConfig({ subagents: { budgetUsd: Number.MAX_VALUE } });
+    expect(huge.subagents.budgetUsd).toBe(1_000_000);
+    expect(DEFAULT_FABRIC_CONFIG.subagents.budgetUsd).toBe(0);
+  });
+
   it("preserves native tool registration in orchestration-only mode", () => {
     const capture = effectiveToolCaptureConfig({
       fullCodeMode: false,

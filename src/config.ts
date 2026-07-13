@@ -41,6 +41,7 @@ export interface FabricSubagentConfig {
   defaultTools: string[];
   retainRuns: boolean;
   notifyOnComplete: boolean;
+  budgetUsd: number;
 }
 
 export interface FabricToolCaptureConfig {
@@ -113,6 +114,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
     notifyOnComplete: true,
+    budgetUsd: 0,
   },
   capture: {
     enabled: true,
@@ -195,6 +197,11 @@ const booleanValue = (value: unknown, fallback: boolean): boolean =>
 
 const boundedInteger = (value: unknown, fallback: number, min: number, max: number): number =>
   typeof value === "number" && Number.isInteger(value)
+    ? Math.max(min, Math.min(max, value))
+    : fallback;
+
+const boundedFloat = (value: unknown, fallback: number, min: number, max: number): number =>
+  typeof value === "number" && Number.isFinite(value)
     ? Math.max(min, Math.min(max, value))
     : fallback;
 
@@ -338,6 +345,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       notifyOnComplete: booleanValue(
         subagents.notifyOnComplete,
         DEFAULT_FABRIC_CONFIG.subagents.notifyOnComplete,
+      ),
+      budgetUsd: boundedFloat(
+        subagents.budgetUsd,
+        DEFAULT_FABRIC_CONFIG.subagents.budgetUsd,
+        0,
+        1_000_000,
       ),
     },
     capture: {

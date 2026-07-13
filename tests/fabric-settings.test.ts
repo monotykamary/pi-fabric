@@ -1,7 +1,7 @@
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { buildFabricSettingsItems, FabricSettingsComponent } from "../src/ui/settings.js";
+import { buildFabricSettingsItems, FabricSettingsComponent, parseBudgetValue } from "../src/ui/settings.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -55,6 +55,36 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("Timeout");
     expect(lines).toContain("Memory limit");
     expect(lines).toContain("Max output chars");
+  });
+
+  it("surfaces the recursion budget in the Subagents section", () => {
+    const items = buildItems();
+    const subagents = items.find((item) => item.id === "subagents");
+    expect(subagents?.submenu).toBeDefined();
+    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Recursion budget");
+    expect(lines).toContain("Off");
+  });
+
+  it("shows the configured budget as a currency value", () => {
+    const items = buildFabricSettingsItems(
+      theme,
+      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, budgetUsd: 0.25 } },
+      () => {},
+      { keepVisibleCandidates: ["fabric_exec"] },
+    );
+    const subagents = items.find((item) => item.id === "subagents")!;
+    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Recursion budget");
+    expect(lines).toContain("$0.25");
+  });
+
+  it("parses currency-formatted budget values back to numbers", () => {
+    expect(parseBudgetValue("$0.25")).toBe(0.25);
+    expect(parseBudgetValue("$0.10")).toBe(0.1);
+    expect(parseBudgetValue("Off")).toBe(0);
+    expect(parseBudgetValue("0.5")).toBe(0.5);
+    expect(parseBudgetValue("$5.00")).toBe(5);
   });
 
   it("renders the list-editor rows with counts in their sections", () => {
