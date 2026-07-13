@@ -287,9 +287,9 @@ interface FabricConsole {
 declare const console: FabricConsole;
 declare const π: Readonly<Record<string, string>>;
 declare function print(...args: unknown[]): void;
-declare function setTimeout(handler: () => void, timeout?: number): number;
+declare function setTimeout(handler: (...args: any[]) => void, timeout?: number): number;
 declare function clearTimeout(handle: number): void;
-declare function setInterval(handler: () => void, timeout?: number): number;
+declare function setInterval(handler: (...args: any[]) => void, timeout?: number): number;
 declare function clearInterval(handle: number): void;
 `;
 
