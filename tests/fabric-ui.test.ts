@@ -249,7 +249,7 @@ describe("Fabric dynamic UI", () => {
     expect(lines.some((line) => line.includes("ENOENT"))).toBe(true);
   });
 
-  it("persists while the agent is active and shows finished runs", () => {
+  it("hides lingering runs once a new turn dismisses them", () => {
     const current = snapshot();
     const run = current.runs[0];
     if (!run) throw new Error("missing fixture run");
@@ -261,13 +261,20 @@ describe("Fabric dynamic UI", () => {
     current.actors = [];
     current.state = [];
     run.status = "completed";
-    run.finishedAt = current.now - 60_000;
-    current.agentActive = true;
+    run.finishedAt = current.now;
+    current.widgetDismissedAt = 0;
+    // a freshly-finished run shows while lingering
     expect(shouldShowFabricWidget(current, "auto", 10_000)).toBe(true);
     const lines = new FabricWidget(theme, () => current, 8, 10_000).render(72);
     expect(lines.some((line) => line.includes("pi.bash") && line.includes("done"))).toBe(true);
-    current.agentActive = false;
+    // a new prompt dismisses the run (it finished before the prompt) -> hidden
+    current.widgetDismissedAt = current.now + 1;
     expect(shouldShowFabricWidget(current, "auto", 10_000)).toBe(false);
+    // a later run that finishes after the dismiss shows again
+    run.finishedAt = current.now + 2000;
+    run.updatedAt = run.finishedAt;
+    current.now = run.finishedAt;
+    expect(shouldShowFabricWidget(current, "auto", 10_000)).toBe(true);
   });
 
   it("renders a responsive two-pane dashboard and agent details", () => {

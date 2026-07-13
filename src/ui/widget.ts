@@ -96,12 +96,11 @@ export const shouldShowFabricWidget = (
   if (snapshot.agents.some((agent) => isActiveStatus(agent.status))) return true;
   if (snapshot.actors.some((actor) => actor.status !== "stopped")) return true;
   if (snapshot.state.some((entry) => isActiveStatus(entry.status))) return true;
-  if (snapshot.agentActive) return true;
   const run = snapshot.runs[0];
-  return Boolean(
-    run &&
-      (run.status === "running" || snapshot.now - (run.finishedAt ?? run.updatedAt) <= lingerMs),
-  );
+  if (!run) return false;
+  if (run.status === "running") return true;
+  const finishedAt = run.finishedAt ?? run.updatedAt;
+  return snapshot.now - finishedAt <= lingerMs && finishedAt >= (snapshot.widgetDismissedAt ?? 0);
 };
 
 export class FabricWidget implements Component {
@@ -116,11 +115,12 @@ export class FabricWidget implements Component {
     if (width <= 0) return [];
     const snapshot = this.snapshot();
     const candidateRun = snapshot.runs[0];
+    const candidateFinishedAt = candidateRun?.finishedAt ?? candidateRun?.updatedAt ?? 0;
     const run =
       candidateRun &&
       (candidateRun.status === "running" ||
-        snapshot.agentActive ||
-        snapshot.now - (candidateRun.finishedAt ?? candidateRun.updatedAt) <= this.lingerMs)
+        (snapshot.now - candidateFinishedAt <= this.lingerMs &&
+          candidateFinishedAt >= (snapshot.widgetDismissedAt ?? 0)))
         ? candidateRun
         : undefined;
     const activeAgents = snapshot.agents.filter((agent) => isActiveStatus(agent.status));
@@ -167,13 +167,25 @@ export class FabricWidget implements Component {
 
     for (const agent of activeAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
     for (const actor of activeActors) lines.push(actorLine(this.theme, actor));
-    // Show every nested call in the run (most recent first), each with a
-    // status glyph and a short metadata tail: in-flight progress while
-    // running, the error message on failure, or a result summary (e.g. bash
-    // stdout, read content) once completed. Listing all calls — not just the
-    // in-flight one — makes a multi-call run legible at a glance.
-    const displayCalls = [...nestedCalls].reverse();
-    for (const call of displayCalls) {
+    // Show nested calls in the order they were made (oldest first). Each line
+    // carries a status glyph and a short metadata tail: in-flight progress
+    // while running, the error on failure, or a result summary (bash stdout,
+    // read content, etc.) once completed. When a run has more calls than fit,
+    // keep the most recent so the current activity stays visible and fold the
+    // older ones into a "+N older" marker on the first shown line.
+    const reservedLines =
+      1 +
+      activeAgents.length +
+      activeActors.length +
+      runningItems.length +
+      activeState.length;
+    const callBudget = Math.max(0, this.maxRows - reservedLines);
+    const olderCalls = Math.max(0, nestedCalls.length - callBudget);
+    const displayCalls = olderCalls > 0 ? nestedCalls.slice(olderCalls) : nestedCalls;
+    for (let index = 0; index < displayCalls.length; index++) {
+      const call = displayCalls[index]!;
+      const folded =
+        index === 0 && olderCalls > 0 ? this.theme.fg("dim", ` (+${olderCalls} older)`) : "";
       const meta =
         call.status === "running"
           ? call.progress
@@ -189,7 +201,7 @@ export class FabricWidget implements Component {
       lines.push(
         `  ${colorStatus(this.theme, call.status, statusGlyph(call.status))} ${safeText(
           call.label,
-        )}${this.theme.fg("dim", meta)}`,
+        )}${this.theme.fg("dim", meta)}${folded}`,
       );
     }
     for (const item of runningItems) {
