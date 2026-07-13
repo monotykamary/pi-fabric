@@ -15,7 +15,7 @@ describe("FabricExecutionService", () => {
     try {
       fs.writeFileSync(path.join(cwd, "sample.txt"), "fabric works\n", "utf8");
       const registry = new ActionRegistry();
-      registry.register(new PiToolsProvider(cwd));
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
       const config = structuredClone(DEFAULT_FABRIC_CONFIG);
       config.approvals.read = "allow";
       const service = new FabricExecutionService(registry, config);
@@ -47,7 +47,7 @@ describe("FabricExecutionService", () => {
     try {
       fs.writeFileSync(path.join(cwd, "sample.txt"), "native\n", "utf8");
       const registry = new ActionRegistry();
-      registry.register(new PiToolsProvider(cwd));
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
       const config = structuredClone(DEFAULT_FABRIC_CONFIG);
       config.fullCodeMode = false;
       config.approvals.read = "allow";
@@ -111,7 +111,7 @@ return {
     try {
       fs.writeFileSync(path.join(cwd, "sample.txt"), "dashboard\n", "utf8");
       const registry = new ActionRegistry();
-      registry.register(new PiToolsProvider(cwd));
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
       const config = structuredClone(DEFAULT_FABRIC_CONFIG);
       config.approvals.read = "allow";
       const activity = new FabricActivityStore();

@@ -146,7 +146,7 @@ describe("CapturedToolsProvider", () => {
     );
     const capturedProvider = new CapturedToolsProvider(catalog);
     const registry = new ActionRegistry();
-    registry.register(new PiToolsProvider(process.cwd(), capturedProvider));
+    registry.register(new PiToolsProvider(process.cwd(), catalog, capturedProvider));
 
     await expect(registry.invoke("pi.read", { path: "README.md" }, context)).resolves.toBe(
       "override:README.md",

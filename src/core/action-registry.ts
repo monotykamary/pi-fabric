@@ -55,6 +55,17 @@ export interface FabricRegistryInvocationContext extends FabricInvocationContext
   observeInvocation?(event: FabricRegistryActivityEvent): void;
 }
 
+/**
+ * Prefix pi-fabric prepends to every nested tool-call id it generates inside a
+ * fabric_exec run (one per pi., mcp., or agents. invocation). Extensions can
+ * detect that a tool_call/tool_result event came from a nested fabric call —
+ * rather than a top-level call the LLM made directly — by checking
+ * `event.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)`. The LLM's own
+ * tool-call ids (e.g. openai "call_…", anthropic "toolu_…") never use this
+ * prefix, so the signal is unambiguous.
+ */
+export const NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
+
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
 
 const PREVIEW_ARG_CHARS = 2_000;
@@ -245,7 +256,7 @@ export class ActionRegistry {
     if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
     await context.approve(action);
 
-    const nestedToolCallId = `fabric_${randomUUID()}`;
+    const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
     const audit: FabricCallAudit = {
       ref,
       nestedToolCallId,

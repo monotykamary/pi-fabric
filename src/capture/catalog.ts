@@ -20,6 +20,16 @@ export interface CapturedToolEntry {
 
 export class CapturedToolCatalog {
   readonly #tools = new Map<string, CapturedToolEntry>();
+  // The ExtensionRunner observed during the last tool refresh. Stored even
+  // when capture is disabled so PiToolsProvider can replay the tool-execution
+  // lifecycle (tool_call/tool_result/tool_execution_*) for nested pi.* calls
+  // in full-code mode — without it, extensions that hook those events
+  // (pi-vision-handoff, auditors, etc.) would never fire for pi core tools.
+  #runner: ExtensionRunner | undefined;
+
+  get runner(): ExtensionRunner | undefined {
+    return this.#runner;
+  }
 
   replace(
     registeredTools: RegisteredTool[],
@@ -27,6 +37,8 @@ export class CapturedToolCatalog {
     config: FabricToolCaptureConfig,
     ownSourcePath: string,
   ): void {
+    // Always remember the runner (see field comment) before the enabled gate.
+    this.#runner = runner;
     this.#tools.clear();
     if (!config.enabled) return;
 

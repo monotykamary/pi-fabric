@@ -106,7 +106,9 @@ export class FabricState {
         ? new CapturedToolsProvider(this.capturedTools)
         : undefined;
     if (this.#config.fullCodeMode) {
-      this.#registry.register(new PiToolsProvider(context.cwd, capturedToolsProvider));
+      this.#registry.register(
+        new PiToolsProvider(context.cwd, this.capturedTools, capturedToolsProvider),
+      );
     }
     this.#registry.register(new McpProvider(context.cwd, this.#config.mcp));
     if (capturedToolsProvider) this.#registry.register(capturedToolsProvider);

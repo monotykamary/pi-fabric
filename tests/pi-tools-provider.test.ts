@@ -1,0 +1,126 @@
+import {
+  type ExtensionContext,
+  type ExtensionRunner,
+} from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import { CapturedToolCatalog } from "../src/capture/catalog.js";
+import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { ActionRegistry } from "../src/core/action-registry.js";
+import { NESTED_TOOL_CALL_ID_PREFIX } from "../src/core/action-registry.js";
+import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
+
+const baseContext = {
+  cwd: process.cwd(),
+  signal: new AbortController().signal,
+  parentToolCallId: "parent",
+  nestedToolCallId: "fabric_test-nested",
+  extensionContext: { cwd: process.cwd() } as ExtensionContext,
+  update: vi.fn(),
+  approve: vi.fn(async () => {}),
+  audits: [],
+  maxResultChars: 100_000,
+};
+
+const makeRunner = (overrides: Record<string, unknown> = {}): ExtensionRunner =>
+  ({
+    createContext: () => ({ cwd: process.cwd() }),
+    emit: vi.fn(async () => {}),
+    emitToolCall: vi.fn(async () => undefined),
+    emitToolResult: vi.fn(async () => undefined),
+    ...overrides,
+  }) as unknown as ExtensionRunner;
+
+const registerWithRunner = (runner: ExtensionRunner) => {
+  const catalog = new CapturedToolCatalog();
+  catalog.replace(
+    [],
+    runner,
+    DEFAULT_FABRIC_CONFIG.capture,
+    "/extensions/pi-fabric/index.ts",
+  );
+  const registry = new ActionRegistry();
+  registry.register(new PiToolsProvider(process.cwd(), catalog, undefined));
+  return registry;
+};
+
+describe("PiToolsProvider lifecycle", () => {
+  it("fires the full tool-execution lifecycle for a pi core tool", async () => {
+    const events: string[] = [];
+    const runner = makeRunner({
+      emit: vi.fn(async (event: { type: string }) => {
+        events.push(event.type);
+      }),
+    });
+    const registry = registerWithRunner(runner);
+
+    await registry.invoke("pi.ls", { path: process.cwd() }, baseContext);
+
+    expect(events).toEqual(["tool_execution_start", "tool_execution_end"]);
+    expect(runner.emitToolCall).toHaveBeenCalledOnce();
+    expect(runner.emitToolResult).toHaveBeenCalledOnce();
+    const toolResult = (runner.emitToolResult as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as { toolName: string; toolCallId: string; isError: boolean };
+    expect(toolResult).toMatchObject({ toolName: "ls", isError: false });
+    // ActionRegistry rewrites nestedToolCallId to fabric_<uuid>.
+    expect(toolResult.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)).toBe(true);
+  });
+
+  it("applies a tool_result content patch so descriptions replace image blocks", async () => {
+    const runner = makeRunner({
+      emitToolResult: vi.fn(async () => ({
+        content: [{ type: "text" as const, text: "[Image: a sample image, fully described.]" }],
+      })),
+    });
+    const registry = registerWithRunner(runner);
+
+    // pi.read of an image normally drops the image block and returns only the
+    // dimension note. A tool_result patch (e.g. pi-vision-handoff swapping the
+    // image for a description) must flow through normalizeResult as the text.
+    const result = await registry.invoke(
+      "pi.read",
+      { path: "tests/fixtures/images/sample.jpg" },
+      baseContext,
+    );
+
+    expect(result).toBe("[Image: a sample image, fully described.]");
+  });
+
+  it("passes the raw tool result content (with image blocks) to tool_result", async () => {
+    const seen: { content: unknown } = { content: undefined };
+    const runner = makeRunner({
+      emitToolResult: vi.fn(async (event: { content: unknown }) => {
+        seen.content = event.content;
+        return undefined;
+      }),
+    });
+    const registry = registerWithRunner(runner);
+
+    await registry.invoke(
+      "pi.read",
+      { path: "tests/fixtures/images/sample.jpg" },
+      baseContext,
+    );
+
+    const content = seen.content as Array<{ type: string }>;
+    expect(content.some((block) => block.type === "image")).toBe(true);
+  });
+
+  it("honors a tool_call block by throwing without executing", async () => {
+    const runner = makeRunner({
+      emitToolCall: vi.fn(async () => ({ block: true, reason: "denied by gate" })),
+    });
+    const registry = registerWithRunner(runner);
+
+    await expect(
+      registry.invoke("pi.ls", { path: process.cwd() }, baseContext),
+    ).rejects.toThrow("denied by gate");
+  });
+
+  it("falls back to a direct execute (no events) when no runner is bound", async () => {
+    const registry = new ActionRegistry();
+    registry.register(new PiToolsProvider(process.cwd(), undefined, undefined));
+    const result = await registry.invoke("pi.ls", { path: process.cwd() }, baseContext);
+    expect(typeof result).toBe("string");
+    expect((result as string).length).toBeGreaterThan(0);
+  });
+});
