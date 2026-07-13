@@ -66,12 +66,15 @@ return out;
     expect(result.errors).toEqual([]);
   });
 
-  it("reports user-facing line numbers", () => {
+  it("reports user-facing line numbers for functional errors", () => {
+    // Wrong arg type (path: 42) is now deferred to runtime (functional-errors-only);
+    // an undefined name is a genuine breakage still caught at type-check.
     const result = typeCheckFabricCode(
-      'await pi.read({ path: 42 });\nreturn "never";',
+      'await pi.read({ path: missingFile });\nreturn "never";',
       GUEST_TYPE_DECLARATIONS,
     );
+    expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]?.line).toBe(1);
-    expect(result.errors[0]?.message).toContain("number");
+    expect(result.errors[0]?.message).toContain("Cannot find name");
   });
 });

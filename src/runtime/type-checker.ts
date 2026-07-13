@@ -18,11 +18,23 @@ export const typeCheckFabricCode = (
   const virtualFile = path.resolve("/__pi_fabric_guest__.ts");
   const declarationLineCount = declarations.split("\n").length;
   const sourceText = `${declarations}\nasync function __piFabricMain() {\n${code}\n}\n`;
+  // Functional-errors-only: disable strict type-correctness (null-safety,
+  // union narrowing, implicit any, strict function types) so valid code isn't
+  // blocked. Genuine breakage still fails fast at type-check (syntax, undefined
+  // names, wrong arity); the rest surfaces as a runtime error from the sandbox.
   const compilerOptions: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    strict: true,
+    strict: false,
+    noImplicitAny: false,
+    strictNullChecks: false,
+    strictFunctionTypes: false,
+    strictBindCallApply: false,
+    alwaysStrict: false,
+    strictPropertyInitialization: false,
+    noImplicitThis: false,
+    useUnknownInCatchVariables: false,
     noEmit: true,
     skipLibCheck: true,
     lib: ["lib.es2022.d.ts"],
@@ -44,9 +56,23 @@ export const typeCheckFabricCode = (
           ),
   };
   const program = ts.createProgram([virtualFile], compilerOptions, host);
+  // Pure type-correctness codes — drop so only functional errors reach the
+  // model. Property-access/assignability/narrowing fall through to a runtime
+  // error; undefined-name (2304) and wrong-arity (2554) are kept (real breakage).
+  // Excess-property (2350/2561) is deliberately KEPT — it catches typo'd
+  // argument keys, which are functional (wrong tool shape). Only pure
+  // type-correctness (narrowing/assignability/null/any) is dropped below.
+  const TYPE_CORRECTNESS_CODES = new Set<number>([
+    2339, 2551,                               // property access / union narrowing -> runtime
+    2322, 2345, 2367,                         // not-assignable -> runtime
+    2531, 2532, 18047, 18048,                 // possibly null/undefined
+    7006, 7008, 7019, 7031, 7032, 7033, 7034, // implicit any
+  ]);
   const diagnostics = [
     ...program.getSyntacticDiagnostics(sourceFile),
-    ...program.getSemanticDiagnostics(sourceFile),
+    ...program.getSemanticDiagnostics(sourceFile).filter(
+      (diagnostic) => !TYPE_CORRECTNESS_CODES.has(diagnostic.code),
+    ),
   ];
   return {
     errors: diagnostics.map((diagnostic) => {

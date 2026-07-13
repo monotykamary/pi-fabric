@@ -14,13 +14,14 @@ describe("pi bare-string shorthand", () => {
     expect(result.errors).toEqual([]);
   });
 
-  it("rejects non-string scalars and keeps object-only tools rejecting bare strings", () => {
+  it("defers non-string scalars and bare strings to object-only tools to runtime", () => {
+    // Functional-errors-only: wrong arg type and bare strings to object-only
+    // tools are no longer type-check errors — they surface at runtime instead.
     const bad = typeCheckFabricCode('await pi.bash(123); return "never";', GUEST_TYPE_DECLARATIONS);
-    expect(bad.errors.length).toBeGreaterThan(0);
-    expect(bad.errors[0]?.message).toContain("number");
+    expect(bad.errors).toEqual([]);
 
     const editBad = typeCheckFabricCode('await pi.edit("/x"); return "never";', GUEST_TYPE_DECLARATIONS);
-    expect(editBad.errors.length).toBeGreaterThan(0);
+    expect(editBad.errors).toEqual([]);
   });
 
   it("coerces bare-string calls at runtime and passes object form through", async () => {
