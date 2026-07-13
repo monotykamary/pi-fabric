@@ -117,7 +117,7 @@ export class FabricUiController {
       this.#pollMesh();
       this.#snapshot = createDashboardSnapshot(this.state, this.#events);
       this.#renderWidget(context);
-      this.#widgetTui?.requestRender();
+      if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();
     } catch {
       return;
     }

@@ -123,8 +123,35 @@ export class FabricWidget implements Component {
     readonly maxRows: number,
   ) {}
 
+  #lastWidth: number | undefined;
+  #lastLines: string[] | undefined;
+  #reservedRunId: string | undefined;
+  #reservedRows = 0;
+
   render(width: number): string[] {
     if (width <= 0) return [];
+    const { runId, lines: content } = this.#buildContent(width);
+    if (runId !== this.#reservedRunId) {
+      this.#reservedRunId = runId;
+      this.#reservedRows = 0;
+    }
+    this.#reservedRows = Math.max(this.#reservedRows, Math.min(content.length, this.maxRows));
+    const lines = this.#applyReserve(runId, content, width);
+    this.#lastWidth = width;
+    this.#lastLines = lines;
+    return lines;
+  }
+
+  hasChanged(): boolean {
+    if (this.#lastWidth === undefined || this.#lastLines === undefined) return true;
+    const { runId, lines: content } = this.#buildContent(this.#lastWidth);
+    const lines = this.#applyReserve(runId, content, this.#lastWidth);
+    return JSON.stringify(lines) !== JSON.stringify(this.#lastLines);
+  }
+
+  invalidate(): void {}
+
+  #buildContent(width: number): { runId: string | undefined; lines: string[] } {
     const snapshot = this.snapshot();
     const candidateRun = snapshot.runs[0];
     const candidateFinishedAt = candidateRun?.finishedAt ?? candidateRun?.updatedAt ?? 0;
@@ -174,7 +201,7 @@ export class FabricWidget implements Component {
       "text",
       safeText(title),
     )}${parts.length > 0 ? this.theme.fg("dim", ` · ${parts.join(" · ")}`) : ""}`;
-    const lines = [truncateToWidth(header, width)];
+    const lines = [header];
 
     for (const agent of activeAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
     for (const actor of visibleActors) lines.push(actorLine(this.theme, actor));
@@ -199,7 +226,14 @@ export class FabricWidget implements Component {
         )}${this.theme.fg("dim", ` · ${entry.owner ?? entry.status}`)}`,
       );
     }
+    return { runId: run?.id, lines };
+  }
 
+  #applyReserve(runId: string | undefined, content: string[], width: number): string[] {
+    const baseReserved = runId === this.#reservedRunId ? this.#reservedRows : 0;
+    const peak = Math.max(baseReserved, Math.min(content.length, this.maxRows));
+    const lines = [...content];
+    while (lines.length < peak) lines.push("");
     const bounded = lines.slice(0, Math.max(1, this.maxRows));
     if (lines.length > bounded.length && bounded.length > 0) {
       bounded[bounded.length - 1] = `${bounded[bounded.length - 1]} ${this.theme.fg(
@@ -209,6 +243,4 @@ export class FabricWidget implements Component {
     }
     return bounded.map((line) => truncateToWidth(line, width));
   }
-
-  invalidate(): void {}
 }

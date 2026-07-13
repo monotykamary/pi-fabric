@@ -219,6 +219,50 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("preserves widget height across a run as agents complete", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.state = [];
+    current.runs[0]!.items = [];
+    current.runs[0]!.calls = [];
+    current.agents = [
+      { ...snapshot().agents[0]!, id: "agent-1", name: "alpha", status: "running" },
+      { ...snapshot().agents[0]!, id: "agent-2", name: "beta", status: "running" },
+    ];
+    const widget = new FabricWidget(theme, () => current, 8);
+    const first = widget.render(72);
+    expect(first.length).toBe(3); // header + alpha + beta
+    // one agent completing must not shrink the widget (content swap, not height change)
+    current.agents[1]!.status = "completed";
+    const second = widget.render(72);
+    expect(second.length).toBe(3);
+    expect(visibleWidth(second[2]!)).toBe(0); // blank pad line holds the height
+    expect(second.join("\n")).toContain("alpha");
+    // a new run resets the reserve so the widget collapses to actual content
+    current.runs[0]!.id = "run-2";
+    const third = widget.render(72);
+    expect(third.length).toBe(2); // header + alpha
+  });
+
+  it("reports whether the rendered output changed", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.state = [];
+    current.runs[0]!.items = [];
+    current.runs[0]!.calls = [];
+    current.runs[0]!.status = "completed";
+    current.runs[0]!.finishedAt = current.now;
+    current.agents = [];
+    const widget = new FabricWidget(theme, () => current, 8);
+    expect(widget.hasChanged()).toBe(true); // never rendered
+    widget.render(72);
+    expect(widget.hasChanged()).toBe(false); // identical
+    current.runs[0]!.name = "Changed title";
+    expect(widget.hasChanged()).toBe(true); // content changed
+    widget.render(72);
+    expect(widget.hasChanged()).toBe(false); // re-rendered, now identical
+  });
+
   it("renders a responsive two-pane dashboard and agent details", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
     const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn());
