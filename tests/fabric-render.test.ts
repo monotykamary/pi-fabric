@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { initHighlighting } from "../src/ui/highlight.js";
-import { nestedCallTitle, nestedEditDiff } from "../src/ui/fabric-render.js";
+import { modelReadHint, nestedCallTitle, nestedEditDiff } from "../src/ui/fabric-render.js";
 
 const theme = {
   fg: (color: string, text: string) => `\x1b[${color}]${text}\x1b[0m`,
@@ -70,4 +70,41 @@ describe("fabric nested rendering", () => {
     // shiki truecolor escapes on the highlighted code content
     expect(joined).toContain("\x1b[38;2;");
   }, 15_000);
+
+  it("modelReadHint reports model lines vs read lines for a sliced read", () => {
+    expect(
+      modelReadHint(
+        [{ ref: "pi.read", tool: "read", result: `a
+b
+c
+d
+e
+f
+g
+h` }],
+        `b
+c
+d`,
+        theme,
+      ),
+    ).toContain("→ 3 of 8 lines to model");
+  });
+
+  it("modelReadHint is empty when the full read went to the model", () => {
+    expect(modelReadHint([{ ref: "pi.read", tool: "read", result: `a
+b
+c` }], `x
+y
+z`, theme)).toBe("");
+  });
+
+  it("modelReadHint ignores non-read audits", () => {
+    expect(modelReadHint([{ ref: "pi.bash", tool: "bash", result: `a
+b
+c
+d
+e
+f` }], `a
+b`, theme)).toBe("");
+  });
 });

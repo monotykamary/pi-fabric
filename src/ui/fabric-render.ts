@@ -275,3 +275,37 @@ export function nestedEditDiff(
   }
   return lines.length > 0 ? lines : null;
 }
+
+const lineCountTrimmed = (value: string): number => {
+  const lines = value.split("\n");
+  let end = lines.length;
+  while (end > 0) {
+    const last = lines[end - 1];
+    if (last === undefined || last.trim() === "") end--;
+    else break;
+  }
+  return end;
+};
+
+// Mirrors pi core's read range notice: surface how many lines a fabric_exec
+// program sent to the model vs. how many its nested read(s) returned, so
+// sliced reads don't look like full-file reads. The audited body is unchanged.
+export function modelReadHint(
+  audits: FabricRenderAudit[],
+  output: string,
+  theme: Theme,
+): string {
+  if (!output) return "";
+  const modelLines = lineCountTrimmed(output);
+  let readLines = 0;
+  let sawRead = false;
+  for (const audit of audits) {
+    if (audit.tool !== "read") continue;
+    const body = nestedCallBody(audit);
+    if (typeof body !== "string") continue;
+    sawRead = true;
+    readLines += lineCountTrimmed(body);
+  }
+  if (!sawRead || modelLines >= readLines) return "";
+  return theme.fg("warning", "→ " + modelLines + " of " + readLines + " lines to model");
+}

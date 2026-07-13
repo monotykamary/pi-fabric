@@ -17,6 +17,7 @@ import { FabricUiController } from "./ui/controller.js";
 import {
   expandHint,
   isNumberedTool,
+  modelReadHint,
   nestedCallBody,
   nestedCallCode,
   nestedCallTitle,
@@ -347,6 +348,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               text += nl + theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`);
               if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
             }
+            const readHint = modelReadHint(audits, output, theme);
+            if (readHint) text += nl + readHint;
           } else if (output) {
             const lines = safeTerminalText(output).split(nl);
             const outLimit = expanded ? Math.min(lines.length, 200) : 12;
@@ -406,6 +409,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           text += nl + theme.fg("dim", `… ${countLabel(callsHidden, "nested call")} hidden`);
           if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
         }
+        const readHint = modelReadHint(audits, output, theme);
+        if (readHint) text += nl + readHint;
 
         const showOutput = failed || expanded;
         if (showOutput && output) {
