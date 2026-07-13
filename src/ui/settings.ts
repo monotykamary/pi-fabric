@@ -237,7 +237,9 @@ const listSubmenu = (
 // obvious which rows drill in (vs. inline value cycling). Mutates in place to
 // preserve the shared item references that listSubmenu updates live.
 const markDrillIn = (items: SettingItem[]): SettingItem[] => {
-  for (const item of items) if (item.submenu) item.label = `${item.label} ›`;
+  for (const item of items) {
+    if (item.submenu && !item.label.endsWith("›")) item.label = `${item.label} ›`;
+  }
   return items;
 };
 

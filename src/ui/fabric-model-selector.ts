@@ -70,7 +70,6 @@ export class FabricModelSelector extends Container implements Focusable {
     const current = this.allEntries.findIndex((entry) => entry.value === this.currentValue);
     this.selectedIndex = current >= 0 ? current : 0;
 
-    this.addChild(new Spacer(1));
     this.addChild(
       new Text(
         this.theme.fg(
