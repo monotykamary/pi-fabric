@@ -37,8 +37,10 @@ export interface FabricActorInfo {
   delivery: FabricActorDelivery;
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
+  coalesce: boolean;
   model?: string;
   thinking?: FabricActorRequest["thinking"];
+  tools?: string[];
   queued: number;
   messages: number;
   createdAt: number;

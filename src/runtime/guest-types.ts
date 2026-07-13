@@ -78,14 +78,17 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // Return shapes differ by tool: read/grep/find/ls return their text as a bare
 // string (e.g. const src: string = await pi.read({ path })); bash/edit/write
 // return { ok, output, details } (e.g. const { output } = await pi.bash(...)).
+// Common alias keys (cmd→command, query→pattern, file→path, dir→path) and a
+// flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
+// proxy normalizes them to the canonical form before the host validates args.
 interface PiToolsApi {
-  read(args: string | { path: string; offset?: number; limit?: number }): Promise<string>;
-  bash(args: string | { command: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
-  edit(args: { path: string; edits: Array<{ oldText: string; newText: string }> }): Promise<{ ok: true; output: string; details: unknown }>;
-  write(args: { path: string; content: string }): Promise<{ ok: true; output: string; details: unknown }>;
-  grep(args: string | { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }): Promise<string>;
-  find(args: string | { pattern: string; path?: string; limit?: number }): Promise<string>;
-  ls(args?: string | { path?: string; limit?: number }): Promise<string>;
+  read(args: string | { path: string; offset?: number; limit?: number } | { file: string; offset?: number; limit?: number }): Promise<string>;
+  bash(args: string | { command: string; timeout?: number } | { cmd: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
+  edit(args: { path: string; edits: Array<{ oldText: string; newText: string }> } | { file: string; edits: Array<{ oldText: string; newText: string }> } | { path: string; oldText: string; newText: string } | { file: string; oldText: string; newText: string }): Promise<{ ok: true; output: string; details: unknown }>;
+  write(args: { path: string; content: string } | { file: string; content: string }): Promise<{ ok: true; output: string; details: unknown }>;
+  grep(args: string | { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number } | { query: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }): Promise<string>;
+  find(args: string | { pattern: string; path?: string; limit?: number } | { query: string; path?: string; limit?: number }): Promise<string>;
+  ls(args?: string | { path?: string; limit?: number } | { dir?: string; limit?: number } | { file?: string; limit?: number }): Promise<string>;
 }
 type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
@@ -113,8 +116,10 @@ interface FabricActorInfo {
   delivery: FabricActorDelivery;
   responseMode: "text" | "directive";
   triggerTurn: boolean;
+  coalesce: boolean;
   model?: string;
   thinking?: FabricThinking;
+  tools?: string[];
   queued: number;
   messages: number;
   createdAt: number;

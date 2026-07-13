@@ -46,12 +46,47 @@ globalThis.tools = Object.freeze({
   progress: (args) => __call("fabric.$progress", args),
 });
 const __piStringFields = { bash: "command", read: "path", ls: "path", grep: "pattern", find: "pattern" };
+const __piArgAliases = {
+  bash: { cmd: "command" },
+  find: { query: "pattern" },
+  grep: { query: "pattern" },
+  read: { file: "path" },
+  ls: { dir: "path", file: "path" },
+  edit: { file: "path" },
+  write: { file: "path" },
+};
+const __normalizePiArgs = (name, args) => {
+  const field = __piStringFields[name];
+  if (typeof args === "string" && field) return { [field]: args };
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return args;
+  const aliases = __piArgAliases[name];
+  let out = args;
+  if (aliases) {
+    for (const alias in aliases) {
+      const canonical = aliases[alias];
+      if (alias in out) {
+        if (out === args) out = Object.assign({}, args);
+        if (!(canonical in out)) out[canonical] = out[alias];
+        delete out[alias];
+      }
+    }
+  }
+  if (name === "edit" && !Array.isArray(out.edits) && ("oldText" in out || "newText" in out)) {
+    if (out === args) out = Object.assign({}, args);
+    const edit = {};
+    if ("oldText" in out) edit.oldText = out.oldText;
+    if ("newText" in out) edit.newText = out.newText;
+    out.edits = [edit];
+    delete out.oldText;
+    delete out.newText;
+  }
+  return out;
+};
 globalThis.pi = new Proxy({}, {
   get(_target, property) {
     if (property === "then") return undefined;
     const name = String(property);
-    const field = __piStringFields[name];
-    return (args = {}) => __call("pi." + name, typeof args === "string" && field ? { [field]: args } : args);
+    return (args = {}) => __call("pi." + name, __normalizePiArgs(name, args));
   },
 });
 const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};

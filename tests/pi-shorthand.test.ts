@@ -44,3 +44,50 @@ describe("pi bare-string shorthand", () => {
     expect(result.value).toEqual({ a: "echo hi", b: "ls", c: "/x" });
   });
 });
+
+describe("pi argument alias flattening", () => {
+  it("type-checks common alias keys and the flat edit shape", () => {
+    const result = typeCheckFabricCode(
+      'const a = await pi.bash({ cmd: "echo hi" });' +
+        'const b = await pi.find({ query: "*.ts" });' +
+        'const c = await pi.read({ file: "/x" });' +
+        'const d = await pi.write({ file: "/y", content: "z" });' +
+        'const e = await pi.edit({ file: "/x", oldText: "a", newText: "b" });' +
+        'const f = await pi.ls({ dir: "/s" });' +
+        'return { a: a.output, b, c, d: d.output, e: e.output, f };',
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
+  it("normalizes alias keys and the flat edit shape at runtime", async () => {
+    const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => {
+      if (ref === "pi.bash") return { ok: true, output: String(args.command), details: null };
+      if (ref === "pi.find") return "found";
+      if (ref === "pi.read") return "read";
+      if (ref === "pi.write") return { ok: true, output: "wrote", details: null };
+      if (ref === "pi.edit") return { ok: true, output: "edited", details: null };
+      if (ref === "pi.ls") return "listed";
+      throw new Error("Unexpected call: " + ref);
+    });
+    const result = await new QuickJsRuntime().execute(
+      'const a = await pi.bash({ cmd: "echo hi" });' +
+        'const b = await pi.find({ query: "*.ts" });' +
+        'const c = await pi.read({ file: "/x" });' +
+        'const d = await pi.write({ file: "/y", content: "z" });' +
+        'const e = await pi.edit({ file: "/x", oldText: "a", newText: "b" });' +
+        'const f = await pi.ls({ dir: "/s" });' +
+        'return { a: a.output, b, c, d: d.output, e: e.output, f };',
+      hostCall,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ command: "echo hi" });
+    expect(hostCall.mock.calls[1]?.[1]).toEqual({ pattern: "*.ts" });
+    expect(hostCall.mock.calls[2]?.[1]).toEqual({ path: "/x" });
+    expect(hostCall.mock.calls[3]?.[1]).toEqual({ path: "/y", content: "z" });
+    expect(hostCall.mock.calls[4]?.[1]).toEqual({ path: "/x", edits: [{ oldText: "a", newText: "b" }] });
+    expect(hostCall.mock.calls[5]?.[1]).toEqual({ path: "/s" });
+    expect(result.value).toEqual({ a: "echo hi", b: "found", c: "read", d: "wrote", e: "edited", f: "listed" });
+  });
+});

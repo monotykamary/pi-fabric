@@ -119,6 +119,7 @@ const snapshot = (): FabricDashboardSnapshot => {
         delivery: "mailbox",
         responseMode: "directive",
         triggerTurn: false,
+        coalesce: true,
         model: "anthropic/claude-sonnet-4-6",
         queued: 0,
         messages: 2,
