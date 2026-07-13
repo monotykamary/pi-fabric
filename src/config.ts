@@ -3,11 +3,11 @@ import path from "node:path";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import type { FabricRisk } from "./protocol.js";
 
-export type FabricApprovalMode = "allow" | "ask" | "deny";
+type FabricApprovalMode = "allow" | "ask" | "deny";
 export type FabricSubagentTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 
-export interface FabricExecutorConfig {
+interface FabricExecutorConfig {
   timeoutMs: number;
   memoryLimitBytes: number;
   maxOutputChars: number;
@@ -51,7 +51,7 @@ export interface FabricToolCaptureConfig {
   risks: Record<string, FabricRisk>;
 }
 
-export interface FabricUiConfig {
+interface FabricUiConfig {
   enabled: boolean;
   widget: FabricUiWidgetMode;
   maxRows: number;

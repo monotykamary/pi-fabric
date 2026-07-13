@@ -40,7 +40,7 @@ export const commandAvailable = async (command: string): Promise<boolean> => {
   }
 };
 
-export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 export const workerCommand = (workerPath: string, workerArguments: string[]): string =>
   [process.execPath, workerPath, ...workerArguments].map(shellQuote).join(" ");

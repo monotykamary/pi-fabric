@@ -26,7 +26,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "lint:dead": "knip --no-gitignore",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint:dead && pnpm run build",
     "prepack": "pnpm run check"
   },
   "keywords": [
@@ -79,6 +80,7 @@
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "^25.0.0",
+    "knip": "^6.26.0",
     "typebox": "1.1.38",
     "vitest": "^4.1.0"
   },

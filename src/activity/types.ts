@@ -1,4 +1,4 @@
-export type FabricRunStatus = "running" | "completed" | "failed" | "cancelled";
+type FabricRunStatus = "running" | "completed" | "failed" | "cancelled";
 export type FabricActivityStatus =
   | "pending"
   | "running"
@@ -99,7 +99,7 @@ export interface FabricActivityItem {
   finishedAt?: number;
 }
 
-export interface FabricActivityEvent {
+interface FabricActivityEvent {
   id: string;
   message: string;
   level: "info" | "success" | "warning" | "error";
