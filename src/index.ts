@@ -111,6 +111,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         "Use agents.create() for persistent mailbox actors; subscribe to host events for ambient behavior or mesh topics for peer coordination; directive response mode when silence/intervention is conditional.",
         "Return only the compact final value; intermediate results stay in the sandbox. Use council.run()/rlm.query() only when their cost is justified.",
       ],
+      // The model-facing schema is intentionally flat: one large `code` string
+      // plus scalar/optional params. Do not add nested arrays-of-objects with
+      // escaped content here. SOTA models are post-trained on one dominant
+      // harness's flat tool shapes and can invent trailing keys at the
+      // highest-entropy point of a nested escaped-JSON field, which a strict
+      // schema hard-rejects. Keep this surface string/scalar-heavy; the only
+      // nested field (display) ignores unknown keys. See
+      // lucumr.pocoo.org/2026/7/4/better-models-worse-tools/ and pi-tool-repair.
       parameters: Type.Object({
         code: Type.String({
           description:
@@ -145,7 +153,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
                 Type.String({ description: "Compact objective shown in the Fabric dashboard" }),
               ),
             },
-            { additionalProperties: false },
           ),
         ),
       }),
@@ -318,7 +325,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           context,
           ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
           ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
-          ...(params.display ? { display: params.display } : {}),
+          ...(params.display
+            ? {
+                display: {
+                  ...(params.display.name !== undefined && { name: params.display.name }),
+                  ...(params.display.description !== undefined && { description: params.display.description }),
+                },
+              }
+            : {}),
           update(message) {
             onUpdate?.({
               content: [{ type: "text", text: message }],

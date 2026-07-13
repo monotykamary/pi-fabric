@@ -538,6 +538,16 @@ ActivityStore → compact widget + footer status + interactive dashboard
 
 Guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`; accessing a key that was not provided throws a clear, actionable error listing the provided keys rather than silently returning `undefined`.
 
+## Tool-call robustness
+
+The model-facing `fabric_exec` schema is intentionally flat — one large `code` string plus scalar/optional parameters — with no nested arrays-of-objects containing escaped content. Newer SOTA models are post-trained on one dominant harness's flat tool shapes and can invent trailing keys at the highest-entropy point of a nested escaped-JSON field (e.g. right after closing a long multiline string), which a strict schema rejects. The only nested field, `display`, ignores unknown keys: extras are accepted by the schema and filtered to `{ name, description }` before execution, mirroring the silent-filter behavior the dominant harness's client is trained against.
+
+fabric's architecture is itself a mitigation for this class of bug. The model authors TypeScript that calls tools, so it never has to faithfully emit an alternative tool schema under sampling pressure; nested object construction happens in deterministic, type-checked code. The residual failure mode is incorrect TypeScript, caught by the QuickJS type-checker with an actionable, line-numbered error — the validate/report/retry loop at the code level rather than the JSON-schema level.
+
+For sessions that also call pi tools directly (`read`/`write`/`edit`/`grep`/`find`/`ls`/`bash`), install [pi-tool-repair](https://github.com/monotykamary/pi-tool-repair) as a companion. It validates-then-repairs the finite set of tool-call mistakes those direct calls make — invented keys, wrong field names, stringified arrays, anchor bleed, and leaked tool-call grammars — before tools execute. It hooks `before_provider_request`/`message_end`/`tool_call`; fabric registers a tool, so the two do not conflict.
+
+An external lever outside fabric's control is enabling Anthropic strict tool use at the provider, which prevents the server from sampling keys not in the schema. It is the strongest mitigation for schema drift but trades against Anthropic's complexity limits on strict tool definitions.
+
 ## Security and limitations
 
 - Pi Fabric invokes separately constructed Pi built-in definitions when no captured override exists. Those unoverridden built-in calls do not pass through Pi's top-level `tool_call` and `tool_result` hooks. Captured overrides and other extension calls do run those hooks; Fabric's approval and audit layer remains authoritative around every nested call.
