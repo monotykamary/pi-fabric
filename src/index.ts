@@ -572,7 +572,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     state.widgetDismissedAt = Date.now();
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = (fullCodeMode
-      ? "Pi Fabric full code mode is on: fabric_exec is the only path to Pi core tools — call them as `pi.<tool>(options)`, a single options object (read, bash, edit, write, grep, find, ls); direct core tools are unavailable. `π.<key>` is only for named strings from the `strings` parameter. Hidden extension tools are discoverable via `tools.search({ query })`/`tools.describe({ ref })` and callable via `extensions.<tool>(options)` or `tools.call({ ref, args })`. The `fabric-exec` skill has the full reference, with reference files for MCP, agents/rlm, and mesh."
+      ? "Pi Fabric full code mode is on: fabric_exec is the only path to Pi core tools (read, bash, edit, write, grep, find, ls); direct core tools are unavailable. `π.<key>` is only for named strings from the `strings` parameter. Hidden extension tools are discoverable via `tools.search({ query })`/`tools.describe({ ref })` and callable via `extensions.<tool>(options)` or `tools.call({ ref, args })`."
       : "Pi Fabric is in orchestration-only mode. Keep Pi core and registered extension tools on their native direct execution path. Inside fabric_exec, use only MCP, agents, actors, workflows, mesh coordination, councils, recursive queries, and explicit Fabric providers; pi.* and extensions.* are unavailable.")
       + "\n\n" + FABRIC_TEMPLATE_LITERAL_CAVEAT;
     return {
