@@ -111,6 +111,7 @@ export const createDashboardSnapshot = (
   return {
     now: Date.now(),
     runs,
+    agentActive: state.agentActive,
     agents: agents.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;

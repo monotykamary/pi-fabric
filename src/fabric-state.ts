@@ -37,6 +37,7 @@ export class FabricState {
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly activity = new FabricActivityStore();
+  #agentActive = false;
 
   constructor(
     readonly pi: ExtensionAPI,
@@ -45,6 +46,14 @@ export class FabricState {
 
   get initialized(): boolean {
     return Boolean(this.#execution);
+  }
+
+  get agentActive(): boolean {
+    return this.#agentActive;
+  }
+
+  set agentActive(value: boolean) {
+    this.#agentActive = value;
   }
 
   get cwd(): string | undefined {
@@ -264,6 +273,7 @@ export class FabricState {
     this.#mesh = undefined;
     this.#cwd = undefined;
     this.activity.reset();
+    this.#agentActive = false;
     this.#externalProviders.clear();
   }
 

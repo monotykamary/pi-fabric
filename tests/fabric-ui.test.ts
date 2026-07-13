@@ -186,7 +186,7 @@ describe("Fabric dynamic UI", () => {
     expect(lines.join("\n")).toContain("advisor");
   });
 
-  it("keeps a stable height as nested calls complete", () => {
+  it("shows all nested calls and keeps a stable height as they complete", () => {
     const current = snapshot();
     const run = current.runs[0];
     if (!run) throw new Error("missing fixture run");
@@ -219,6 +219,8 @@ describe("Fabric dynamic UI", () => {
     const third = widget.render(72);
     expect(third.length).toBe(3);
     expect(third[0]).toContain("2/2");
+    expect(third.some((line) => line.includes("bash one"))).toBe(true);
+    expect(third.some((line) => line.includes("bash two"))).toBe(true);
 
     run.id = "run-stable-2";
     run.calls = [
@@ -226,6 +228,46 @@ describe("Fabric dynamic UI", () => {
     ];
     const fourth = widget.render(72);
     expect(fourth.length).toBe(2);
+  });
+
+  it("shows result metadata for completed calls and progress for running calls", () => {
+    const current = snapshot();
+    const run = current.runs[0];
+    if (!run) throw new Error("missing fixture run");
+    run.calls = [
+      { id: "c1", ref: "pi.bash", label: "pi.bash", kind: "tool", status: "completed", phaseId: "audit", startedAt: run.startedAt, updatedAt: current.now, finishedAt: current.now, detail: "stdout one two three" },
+      { id: "c2", ref: "pi.bash", label: "pi.bash", kind: "tool", status: "running", phaseId: "audit", startedAt: run.startedAt, updatedAt: current.now, progress: "Calling pi.bash" },
+      { id: "c3", ref: "pi.read", label: "pi.read · /src/x.ts", kind: "tool", status: "failed", phaseId: "audit", startedAt: run.startedAt, updatedAt: current.now, finishedAt: current.now, error: "ENOENT" },
+    ];
+    run.items = [];
+    current.agents = [];
+    current.actors = [];
+    current.state = [];
+    const lines = new FabricWidget(theme, () => current, 8, 10_000).render(72);
+    expect(lines.some((line) => line.includes("✓") && line.includes("stdout one two three"))).toBe(true);
+    expect(lines.some((line) => line.includes("Calling pi.bash"))).toBe(true);
+    expect(lines.some((line) => line.includes("ENOENT"))).toBe(true);
+  });
+
+  it("persists while the agent is active and shows finished runs", () => {
+    const current = snapshot();
+    const run = current.runs[0];
+    if (!run) throw new Error("missing fixture run");
+    run.calls = [
+      { id: "c1", ref: "pi.bash", label: "pi.bash", kind: "tool", status: "completed", phaseId: "audit", startedAt: run.startedAt, updatedAt: current.now, finishedAt: current.now, detail: "done" },
+    ];
+    run.items = [];
+    current.agents = [];
+    current.actors = [];
+    current.state = [];
+    run.status = "completed";
+    run.finishedAt = current.now - 60_000;
+    current.agentActive = true;
+    expect(shouldShowFabricWidget(current, "auto", 10_000)).toBe(true);
+    const lines = new FabricWidget(theme, () => current, 8, 10_000).render(72);
+    expect(lines.some((line) => line.includes("pi.bash") && line.includes("done"))).toBe(true);
+    current.agentActive = false;
+    expect(shouldShowFabricWidget(current, "auto", 10_000)).toBe(false);
   });
 
   it("renders a responsive two-pane dashboard and agent details", () => {

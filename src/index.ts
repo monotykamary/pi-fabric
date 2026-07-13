@@ -434,6 +434,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("agent_settled", async (event, context) => {
     if (!state.initialized) return;
     toolOwnership.apply(state.config.fullCodeMode);
+    state.agentActive = false;
     state.dispatchHostEvent("agent_settled", event, context);
   });
 
@@ -452,6 +453,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       ? state.config.fullCodeMode
       : DEFAULT_FABRIC_CONFIG.fullCodeMode;
     toolOwnership.apply(fullCodeMode);
+    state.agentActive = true;
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = fullCodeMode
       ? "Pi Fabric full code mode is on: fabric_exec is the only path to Pi core tools — call them as `pi.<tool>(args)` (read, bash, edit, write, grep, find, ls); direct core tools are unavailable. `π.<key>` is only for named strings from the `strings` parameter. Hidden extension tools are discoverable via `tools.search({ query })`/`tools.describe({ ref })` and callable via `extensions.<tool>(args)` or `tools.call({ ref, args })`."

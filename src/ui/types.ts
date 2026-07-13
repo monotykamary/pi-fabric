@@ -48,6 +48,7 @@ export interface FabricUiStateEntry {
 
 export interface FabricDashboardSnapshot {
   now: number;
+  agentActive?: boolean;
   runs: FabricActivityRun[];
   agents: FabricUiAgent[];
   actors: FabricUiActor[];

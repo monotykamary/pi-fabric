@@ -22,6 +22,7 @@ const MAX_NAME_CHARS = 120;
 const MAX_DESCRIPTION_CHARS = 500;
 const MAX_DETAIL_CHARS = 1_000;
 const MAX_DATA_CHARS = 8_000;
+const MAX_CALL_SUMMARY_CHARS = 120;
 
 const terminalStatuses = new Set<FabricActivityStatus>([
   "completed",
@@ -71,6 +72,19 @@ const kindForRef = (ref: string): FabricActivityKind => {
   if (ref.startsWith("extensions.")) return "extension";
   if (ref.startsWith("mesh.")) return ref === "mesh.put" ? "task" : "mesh";
   return "tool";
+};
+
+const summarizeCallResult = (result: unknown): string | undefined => {
+  let text: string | undefined;
+  if (typeof result === "string") text = result;
+  else if (result !== null && typeof result === "object" && !Array.isArray(result)) {
+    const record = result as Record<string, unknown>;
+    if (typeof record.output === "string") text = record.output;
+    else if (typeof record.content === "string") text = record.content;
+    else if (typeof record.text === "string") text = record.text;
+  }
+  if (!text) return undefined;
+  return cleanText(text.replace(/\s+/g, " "), MAX_CALL_SUMMARY_CHARS);
 };
 
 const labelForCall = (ref: string, args: Record<string, unknown>): string => {
@@ -362,6 +376,10 @@ export class FabricActivityStore {
     if (error) call.error = error;
     const metrics = metricsFrom(input.result);
     if (metrics) call.metrics = { ...(call.metrics ?? {}), ...metrics };
+    if (call.status === "completed") {
+      const detail = summarizeCallResult(input.result);
+      if (detail) call.detail = detail;
+    }
     if (typeof input.result === "object" && input.result !== null && !Array.isArray(input.result)) {
       const record = input.result as Record<string, unknown>;
       if (typeof record.id === "string") call.entityId = cleanId(record.id, record.id);

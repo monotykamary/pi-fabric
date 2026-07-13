@@ -96,6 +96,7 @@ export const shouldShowFabricWidget = (
   if (snapshot.agents.some((agent) => isActiveStatus(agent.status))) return true;
   if (snapshot.actors.some((actor) => actor.status !== "stopped")) return true;
   if (snapshot.state.some((entry) => isActiveStatus(entry.status))) return true;
+  if (snapshot.agentActive) return true;
   const run = snapshot.runs[0];
   return Boolean(
     run &&
@@ -104,9 +105,6 @@ export const shouldShowFabricWidget = (
 };
 
 export class FabricWidget implements Component {
-  #reservedCallRows = 0;
-  #reservedRunId: string | undefined;
-
   constructor(
     readonly theme: Theme,
     readonly snapshot: () => FabricDashboardSnapshot,
@@ -121,6 +119,7 @@ export class FabricWidget implements Component {
     const run =
       candidateRun &&
       (candidateRun.status === "running" ||
+        snapshot.agentActive ||
         snapshot.now - (candidateRun.finishedAt ?? candidateRun.updatedAt) <= this.lingerMs)
         ? candidateRun
         : undefined;
@@ -129,7 +128,6 @@ export class FabricWidget implements Component {
     const activeState = snapshot.state.filter((entry) => isActiveStatus(entry.status));
     const nestedCalls =
       run?.calls.filter((call) => call.kind !== "agent" && call.kind !== "actor") ?? [];
-    const runningCalls = nestedCalls.filter((call) => call.status === "running");
     const runningItems = run?.items.filter((item) => isActiveStatus(item.status)) ?? [];
     const title = run?.name ?? "Fabric session";
     const headerStatus = run?.status ?? (activeAgents.length > 0 ? "running" : "idle");
@@ -169,36 +167,29 @@ export class FabricWidget implements Component {
 
     for (const agent of activeAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
     for (const actor of activeActors) lines.push(actorLine(this.theme, actor));
-    // Stabilize the widget height across a run: remember the peak number of
-    // nested-call lines shown and keep recently-finished calls visible to
-    // fill back up to it. Without this, a call completing drops its line
-    // instantly and the editor/input placed below the widget jumps. Running
-    // calls are always shown first; the most recently finished calls fill the
-    // remaining reserved slots. The reserve resets when the run changes.
-    const runId = run?.id;
-    if (runId !== this.#reservedRunId) {
-      this.#reservedRunId = runId;
-      this.#reservedCallRows = 0;
-    }
-    this.#reservedCallRows = Math.max(
-      this.#reservedCallRows,
-      Math.min(runningCalls.length, this.maxRows),
-    );
-    const finishedCalls = nestedCalls
-      .filter((call) => call.status === "completed" || call.status === "failed")
-      .sort((a, b) => (b.finishedAt ?? b.updatedAt) - (a.finishedAt ?? a.updatedAt));
-    const displayCalls = [...runningCalls];
-    for (const call of finishedCalls) {
-      if (displayCalls.length >= this.#reservedCallRows) break;
-      displayCalls.push(call);
-    }
+    // Show every nested call in the run (most recent first), each with a
+    // status glyph and a short metadata tail: in-flight progress while
+    // running, the error message on failure, or a result summary (e.g. bash
+    // stdout, read content) once completed. Listing all calls — not just the
+    // in-flight one — makes a multi-call run legible at a glance.
+    const displayCalls = [...nestedCalls].reverse();
     for (const call of displayCalls) {
-      const progress =
-        call.status === "running" && call.progress ? ` · ${safeText(call.progress)}` : "";
+      const meta =
+        call.status === "running"
+          ? call.progress
+            ? ` · ${safeText(call.progress)}`
+            : ""
+          : call.status === "failed"
+            ? call.error
+              ? ` · ${safeText(call.error)}`
+              : ""
+            : call.detail
+              ? ` · ${safeText(call.detail)}`
+              : "";
       lines.push(
         `  ${colorStatus(this.theme, call.status, statusGlyph(call.status))} ${safeText(
           call.label,
-        )}${this.theme.fg("dim", progress)}`,
+        )}${this.theme.fg("dim", meta)}`,
       );
     }
     for (const item of runningItems) {

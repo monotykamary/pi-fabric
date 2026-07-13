@@ -76,6 +76,7 @@ export interface FabricActivityCall {
   entityKind?: FabricActivityKind;
   progress?: string;
   error?: string;
+  detail?: string;
   metrics?: FabricActivityMetrics;
   startedAt: number;
   updatedAt: number;

@@ -81,6 +81,25 @@ describe("FabricActivityStore", () => {
     expect(listener).toHaveBeenCalled();
   });
 
+  it("summarizes finished call results into a detail field", () => {
+    const store = new FabricActivityStore();
+    store.start("run-d");
+    store.beginCall("run-d", { callId: "bash-1", ref: "pi.bash", args: { command: "seq 1 3" } });
+    store.finishCall("run-d", "bash-1", { success: true, result: { ok: true, output: "line1\nline2" } });
+    store.beginCall("run-d", { callId: "read-1", ref: "pi.read", args: { path: "/a.ts" } });
+    store.finishCall("run-d", "read-1", { success: true, result: "export const x = 1;" });
+    store.beginCall("run-d", { callId: "fail-1", ref: "pi.bash", args: {} });
+    store.finishCall("run-d", "fail-1", { success: false, error: "boom" });
+
+    const run = store.get("run-d");
+    expect(run?.calls.find((c) => c.id === "bash-1")?.detail).toBe("line1 line2");
+    expect(run?.calls.find((c) => c.id === "read-1")?.detail).toBe("export const x = 1;");
+    const failed = run?.calls.find((c) => c.id === "fail-1");
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe("boom");
+    expect(failed?.detail).toBeUndefined();
+  });
+
   it("marks failed calls and cancelled executions", () => {
     const store = new FabricActivityStore();
     store.start("run-2");
