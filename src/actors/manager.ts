@@ -459,7 +459,7 @@ export class ActorManager {
               delivery: actor.delivery,
               triggerTurn: actor.triggerTurn,
             });
-          } catch {}
+          } catch { /* skip non-cloneable or undeliverable message */ }
         }
         item.resolve?.(structuredClone(message));
         if (message.action === "stop") {
@@ -590,7 +590,7 @@ export class ActorManager {
       if (event.from.id === actor.id && !addressed) continue;
       try {
         this.#enqueue(actor, `mesh:${event.topic}`, event);
-      } catch {}
+      } catch { /* skip event for a full or stopped actor */ }
     }
   }
 

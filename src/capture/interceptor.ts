@@ -88,7 +88,7 @@ const hostPackageRoot = (): string | undefined => {
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
         if (manifest.name === "@earendil-works/pi-coding-agent") return directory;
-      } catch {}
+      } catch { /* unreadable or invalid manifest; keep searching */ }
     }
     directory = path.dirname(directory);
   }
@@ -109,7 +109,7 @@ const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor
         ExtensionRunner?: ExtensionRunnerConstructor;
       };
       if (hostModule.ExtensionRunner) constructors.add(hostModule.ExtensionRunner);
-    } catch {}
+    } catch { /* host entry not importable; skip */ }
   }
   return [...constructors];
 };

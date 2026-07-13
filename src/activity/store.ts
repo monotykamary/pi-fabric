@@ -467,7 +467,7 @@ export class FabricActivityStore {
     for (const listener of this.#listeners) {
       try {
         listener();
-      } catch {}
+      } catch { /* a listener throwing must not break the others */ }
     }
   }
 }

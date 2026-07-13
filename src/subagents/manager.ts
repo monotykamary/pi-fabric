@@ -428,7 +428,7 @@ export class SubagentManager {
     ) {
       try {
         this.#onBackgroundComplete(result);
-      } catch {}
+      } catch { /* completion callback must not break the manager */ }
     }
   }
 

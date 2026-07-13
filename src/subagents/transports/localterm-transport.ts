@@ -57,7 +57,7 @@ export class LocaltermTransport implements SubagentTransportAdapter {
       async stop() {
         try {
           await executeFile("localterm", ["session", "kill", session.id]);
-        } catch {}
+        } catch { /* session already exited */ }
       },
     };
   }

@@ -230,7 +230,7 @@ export class MeshStore {
           try {
             const event = JSON.parse(line) as MeshEvent;
             if (typeof event.sequence === "number") events.push(event);
-          } catch {}
+          } catch { /* skip malformed mesh log line */ }
         }
         if (events.length >= boundedLimit) break;
       }
@@ -343,7 +343,7 @@ export class MeshStore {
             fs.rmSync(this.#lockPath, { recursive: true, force: true });
             continue;
           }
-        } catch {}
+        } catch { /* stale lock already gone or unreadable; retry */ }
         if (Date.now() >= deadline) throw new Error("Timed out waiting for the Fabric mesh lock");
         await delay(10);
       }
@@ -394,7 +394,7 @@ export class MeshStore {
           if (typeof parsed.sequence === "number" && Number.isSafeInteger(parsed.sequence)) {
             return parsed.sequence;
           }
-        } catch {}
+        } catch { /* skip malformed sequence line */ }
       }
       return 0;
     } catch (error) {

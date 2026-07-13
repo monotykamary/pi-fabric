@@ -134,7 +134,7 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
   if (!child.pid) return;
   try {
     process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
-  } catch {}
+  } catch { /* child process group already exited */ }
 };
 
 const parseStructuredValue = (text: string): unknown => {

@@ -63,7 +63,7 @@ export const spawnDetached = (
     async stop() {
       try {
         process.kill(process.platform === "win32" ? pid : -pid, "SIGTERM");
-      } catch {}
+      } catch { /* process group already exited */ }
     },
     async isAlive() {
       try {

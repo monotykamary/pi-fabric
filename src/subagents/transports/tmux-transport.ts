@@ -44,7 +44,7 @@ export class TmuxTransport implements SubagentTransportAdapter {
       async stop() {
         try {
           await executeFile("tmux", ["kill-session", "-t", session]);
-        } catch {}
+        } catch { /* session already exited */ }
       },
     };
   }

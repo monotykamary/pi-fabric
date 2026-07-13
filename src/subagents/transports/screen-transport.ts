@@ -36,7 +36,7 @@ export class ScreenTransport implements SubagentTransportAdapter {
       async stop() {
         try {
           await executeFile("screen", ["-S", session, "-X", "quit"]);
-        } catch {}
+        } catch { /* session already exited */ }
       },
     };
   }
