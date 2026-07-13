@@ -52,12 +52,18 @@ globalThis.pi = new Proxy({}, {
   },
 });
 const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};
+const __piToolNames = ["read","bash","edit","write","grep","find","ls"];
 globalThis["π"] = new Proxy(__piStrings, {
   get(target, property) {
     if (typeof property === "symbol") return undefined;
     const name = String(property);
     if (name === "then" || name === "toJSON" || name === "constructor") return undefined;
     if (Object.prototype.hasOwnProperty.call(target, name)) return target[name];
+    if (__piToolNames.indexOf(name) >= 0) {
+      throw new Error(
+        "π." + name + " is the strings accessor, not a tool. For the Pi core tool, call pi." + name + "(args)."
+      );
+    }
     const provided = Object.keys(target);
     throw new Error(
       "π." + name + " is not defined. π only exposes keys from the fabric_exec strings parameter" +

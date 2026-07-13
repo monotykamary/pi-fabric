@@ -107,16 +107,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       promptSnippet:
         "Compose Pi core tools, MCP tools, workflows, persistent actors, agents, and mesh state",
       promptGuidelines: [
-        "In full code mode, use fabric_exec for all Pi core operations as well as workflows, loops, filtering, aggregation, MCP tools, and agents. In orchestration-only mode, use direct Pi tools normally and Fabric for orchestration.",
-        "Inside Fabric, discover capabilities with tools.providers(), tools.search(), and tools.describe(). MCP uses mcp.<server>.<tool>(), child agents and persistent actors use agents.*, and coordination uses mesh.*. In full code mode, Pi built-ins also use pi.* and captured extension tools use extensions.* or tools.call().",
-        "For scripted fan-out use workflow.agent(), workflow.parallel(), workflow.pipeline(), and workflow.phase(); the short aliases agent(), parallel(), pipeline(), and phase() are also available. Use workflow.configure(), workflow.item(), and workflow.event() to give a long-running setup a useful dynamic dashboard.",
-        "Use agents.create() for persistent mailbox actors. Subscribe them to host events for ambient behavior or mesh topics for peer coordination; use directive response mode when silence/intervention is conditional.",
-        "Return only the compact final value; intermediate results remain inside the sandbox. Use council.run() or rlm.query() only when their extra cost is justified.",
+        "Inside fabric_exec, route by surface: MCP is mcp.<server>.<tool>(args); subagents and persistent actors are agents.*; mesh coordination is mesh.*; scripted fan-out is workflow.agent()/parallel()/pipeline()/phase() (aliases agent/parallel/pipeline/phase), with workflow.configure()/item()/event() for a live dashboard on long setups.",
+        "Use agents.create() for persistent mailbox actors; subscribe to host events for ambient behavior or mesh topics for peer coordination; directive response mode when silence/intervention is conditional.",
+        "Return only the compact final value; intermediate results stay in the sandbox. Use council.run()/rlm.query() only when their cost is justified.",
       ],
       parameters: Type.Object({
         code: Type.String({
           description:
-            "TypeScript function body. Top-level await and return are supported. Available globals include tools, mcp, agents, mesh, workflow, agent, parallel, pipeline, phase, council, rlm, print, and π. Full code mode also enables pi and extensions.",
+            "TypeScript function body. Top-level await and return are supported. Globals: tools, mcp, agents, mesh, workflow, agent, parallel, pipeline, phase, council, rlm, print, π (named strings via the `strings` param). In full code mode, also pi (Pi core tools) and extensions.",
         }),
         strings: Type.Optional(
           Type.Record(Type.String(), Type.String(), {
@@ -431,7 +429,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     toolOwnership.apply(fullCodeMode);
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = fullCodeMode
-      ? "Pi Fabric full code mode is enabled and Fabric exclusively owns Pi core tool execution. Use fabric_exec for every read, search, shell command, and file mutation through pi.*; direct core tools are intentionally unavailable. Extension tools hidden from the top-level schema remain discoverable through tools.search()/tools.describe() and callable through extensions.* or tools.call()."
+      ? "Pi Fabric full code mode is on: fabric_exec is the only path to Pi core tools — call them as `pi.<tool>(args)` (read, bash, edit, write, grep, find, ls); direct core tools are unavailable. `π.<key>` is only for named strings from the `strings` parameter. Hidden extension tools are discoverable via `tools.search({ query })`/`tools.describe({ ref })` and callable via `extensions.<tool>(args)` or `tools.call({ ref, args })`."
       : "Pi Fabric is in orchestration-only mode. Keep Pi core and registered extension tools on their native direct execution path. Inside fabric_exec, use only MCP, agents, actors, workflows, mesh coordination, councils, recursive queries, and explicit Fabric providers; pi.* and extensions.* are unavailable.";
     return {
       systemPrompt: `${event.systemPrompt}\n\n${guidance}`,
