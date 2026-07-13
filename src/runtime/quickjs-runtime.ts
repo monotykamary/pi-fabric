@@ -51,6 +51,24 @@ globalThis.pi = new Proxy({}, {
     return (args = {}) => __call("pi." + String(property), args);
   },
 });
+const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};
+globalThis["π"] = new Proxy(__piStrings, {
+  get(target, property) {
+    if (typeof property === "symbol") return undefined;
+    const name = String(property);
+    if (name === "then" || name === "toJSON" || name === "constructor") return undefined;
+    if (Object.prototype.hasOwnProperty.call(target, name)) return target[name];
+    const provided = Object.keys(target);
+    throw new Error(
+      "π." + name + " is not defined. π only exposes keys from the fabric_exec strings parameter" +
+      (provided.length ? " (provided: " + provided.join(", ") + ")" : " (none provided)") +
+      ". Pass strings: { " + name + ": '...' } to use π." + name + "."
+    );
+  },
+  ownKeys(target) { return Reflect.ownKeys(target); },
+  getOwnPropertyDescriptor(target, prop) { return Reflect.getOwnPropertyDescriptor(target, prop); },
+  has(target, prop) { return Object.prototype.hasOwnProperty.call(target, prop); }
+});
 globalThis.extensions = new Proxy({}, {
   get(_target, property) {
     if (property === "then") return undefined;
@@ -229,6 +247,7 @@ const resolveQuickJsPromise = async (
   context: any,
   runtime: any,
   promiseHandle: any,
+  hardDeadlineMs: number,
 ): Promise<any> => {
   const resolution = context.resolvePromise(promiseHandle);
   let settled = false;
@@ -236,6 +255,7 @@ const resolveQuickJsPromise = async (
     settled = true;
   });
   while (!settled) {
+    if (Date.now() > hardDeadlineMs) break;
     runtime.executePendingJobs();
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -389,7 +409,12 @@ export class QuickJsRuntime {
           reject(new Error(message));
         }, options.timeoutMs);
       });
-      pendingResolution = resolveQuickJsPromise(context, runtime, activePromiseHandle);
+      pendingResolution = resolveQuickJsPromise(
+        context,
+        runtime,
+        activePromiseHandle,
+        Date.now() + options.timeoutMs + 5_000,
+      );
       const resolution = await Promise.race([pendingResolution, deadline, cancellation]);
       activePromiseHandle.dispose();
       activePromiseHandle = undefined;
@@ -433,7 +458,13 @@ export class QuickJsRuntime {
         errorHandle.dispose();
         runtime.executePendingJobs();
         await new Promise((resolve) => setImmediate(resolve));
-        const settled = await pendingResolution?.catch(() => undefined);
+        const settled = await Promise.race<any>([
+          pendingResolution ? pendingResolution.catch(() => undefined) : Promise.resolve(undefined),
+          new Promise<undefined>((resolve) => {
+            const timer = setTimeout(() => resolve(undefined), 1_000);
+            timer.unref?.();
+          }),
+        ]);
         if (settled?.error) settled.error.dispose();
         if (settled?.value) settled.value.dispose();
         for (const promise of pendingHostPromises) {

@@ -3,13 +3,11 @@ import type { TUI } from "@earendil-works/pi-tui";
 import type { FabricState } from "../fabric-state.js";
 import type { MeshEvent } from "../mesh/store.js";
 import { FabricDashboard } from "./dashboard.js";
-import { formatTokens, safeText } from "./format.js";
 import { createDashboardSnapshot } from "./snapshot.js";
-import { isActiveStatus, type FabricDashboardSnapshot } from "./types.js";
+import { type FabricDashboardSnapshot } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
 
 const WIDGET_ID = "pi-fabric";
-const STATUS_ID = "pi-fabric";
 
 const emptySnapshot = (): FabricDashboardSnapshot => ({
   now: Date.now(),
@@ -56,7 +54,6 @@ export class FabricUiController {
     this.#activityUnsubscribe = undefined;
     if (this.#context?.mode === "tui") {
       this.#context.ui.setWidget(WIDGET_ID, undefined);
-      this.#context.ui.setStatus(STATUS_ID, undefined);
     }
     this.#context = undefined;
     this.#widgetTui = undefined;
@@ -112,7 +109,6 @@ export class FabricUiController {
     try {
       this.#pollMesh();
       this.#snapshot = createDashboardSnapshot(this.state, this.#events);
-      this.#renderStatus(context);
       this.#renderWidget(context);
       this.#widgetTui?.requestRender();
     } catch {
@@ -128,59 +124,6 @@ export class FabricUiController {
     this.#events.push(...result.events);
     const limit = this.state.config.ui.eventHistory;
     if (this.#events.length > limit) this.#events.splice(0, this.#events.length - limit);
-  }
-
-  #renderStatus(context: ExtensionContext): void {
-    if (!this.state.config.ui.status || context.mode !== "tui") {
-      context.ui.setStatus(STATUS_ID, undefined);
-      return;
-    }
-    const candidateRun = this.#snapshot.runs[0];
-    const run =
-      candidateRun &&
-      (candidateRun.status === "running" ||
-        this.#snapshot.now - (candidateRun.finishedAt ?? candidateRun.updatedAt) <=
-          this.state.config.ui.lingerMs)
-        ? candidateRun
-        : undefined;
-    const runningAgents = this.#snapshot.agents.filter((agent) => isActiveStatus(agent.status));
-    const activeActors = this.#snapshot.actors.filter((actor) => isActiveStatus(actor.status));
-    const activeState = this.#snapshot.state.filter((entry) => isActiveStatus(entry.status));
-    if (!run && runningAgents.length === 0 && this.#snapshot.actors.length === 0 && activeState.length === 0) {
-      context.ui.setStatus(STATUS_ID, undefined);
-      return;
-    }
-
-    const theme = context.ui.theme;
-    const parts: string[] = [];
-    if (run) {
-      const phase = run.phases.find((candidate) => candidate.id === run.currentPhaseId);
-      parts.push(
-        theme.fg(
-          run.status === "failed" ? "error" : run.status === "running" ? "accent" : "success",
-          safeText(phase?.name ?? run.name),
-        ),
-      );
-    }
-    if (runningAgents.length > 0) parts.push(theme.fg("accent", `⚡${runningAgents.length}`));
-    if (this.#snapshot.actors.length > 0) {
-      const actorErrors = this.#snapshot.actors.filter((actor) => actor.lastError).length;
-      parts.push(
-        theme.fg(
-          actorErrors > 0 ? "error" : activeActors.length > 0 ? "warning" : "dim",
-          `◉${this.#snapshot.actors.length}${actorErrors > 0 ? `!${actorErrors}` : ""}`,
-        ),
-      );
-    }
-    if (activeState.length > 0) parts.push(theme.fg("dim", `◆${activeState.length}`));
-    const tokens = this.#snapshot.agents
-      .filter((agent) => (run ? agent.runId === run.id : isActiveStatus(agent.status)))
-      .reduce(
-        (sum, agent) => sum + (agent.usage ? agent.usage.input + agent.usage.output : 0),
-        0,
-      );
-    if (tokens > 0) parts.push(theme.fg("dim", `${formatTokens(tokens)}t`));
-    context.ui.setStatus(STATUS_ID, `fabric: ${parts.join(theme.fg("dim", " · "))}`);
   }
 
   #renderWidget(context: ExtensionContext): void {
@@ -202,7 +145,7 @@ export class FabricUiController {
         this.#widgetTui = tui;
         return new FabricWidget(theme, () => this.#snapshot, config.maxRows, config.lingerMs);
       },
-      { placement: config.placement },
+      { placement: "aboveEditor" },
     );
   }
 }

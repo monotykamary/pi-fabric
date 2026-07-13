@@ -37,7 +37,6 @@ describe("Fabric configuration", () => {
       },
       ui: {
         widget: "always",
-        placement: "aboveEditor",
         maxRows: 100,
         refreshMs: 1,
         lingerMs: 5_000_000,
@@ -49,7 +48,7 @@ describe("Fabric configuration", () => {
     expect(config.executor.timeoutMs).toBe(1_000);
     expect(config.executor.memoryLimitBytes).toBe(1024 * 1024 * 1024);
     expect(config.approvals.write).toBe("allow");
-    expect(config.approvals.agent).toBe("ask");
+    expect(config.approvals.agent).toBe("allow");
     expect(config.subagents.maxConcurrent).toBe(32);
     expect(config.subagents.maxPerExecution).toBe(1_000);
     expect(config.subagents.transport).toBe("localterm");
@@ -58,7 +57,6 @@ describe("Fabric configuration", () => {
     expect(config.capture.risks).toMatchObject({ inspect: "read", mutate: "execute" });
     expect(config.ui).toMatchObject({
       widget: "always",
-      placement: "aboveEditor",
       maxRows: 20,
       refreshMs: 100,
       lingerMs: 300_000,
@@ -117,9 +115,9 @@ describe("Fabric configuration", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "fabric.json"),
-      JSON.stringify({ approvals: { execute: "allow" } }),
+      JSON.stringify({ approvals: { execute: "deny" } }),
     );
     const config = loadFabricConfig({ cwd, agentDir, projectTrusted: false });
-    expect(config.approvals.execute).toBe("ask");
+    expect(config.approvals.execute).toBe("allow");
   });
 });

@@ -338,12 +338,11 @@ Supervisor and advisor are deliberately skills rather than hard-coded host servi
 
 ## Visual integration
 
-`fabric_exec` uses the public `pi-code-previews` cooperative shell. It inherits the user's border/background mode, collapsed-result behavior, error styling, and tool-call timing without taking ownership of Pi's built-in tool renderers. Its renderer adds a numbered TypeScript preview, live phase/call activity, and compact phase/nested-call summaries. Users do not need to install `pi-code-previews` separately.
+`fabric_exec` uses the public `pi-code-previews` cooperative shell. It inherits the user's border/background mode, collapsed-result behavior, error styling, and tool-call timing without taking ownership of Pi's built-in tool renderers. Its renderer adds a numbered TypeScript preview, live phase/call activity, and compact phase/nested-call summaries. Nested `pi.read`/`pi.bash`/`pi.grep`/`pi.find`/`pi.ls`/`pi.write`/`pi.edit` calls render as structured previews (path/command headers, numbered content) instead of raw JSON, and collapsed previews show the configured expand keybinding (e.g. `Ctrl-O`) to expand, matching Pi's built-in tool previews. Users do not need to install `pi-code-previews` separately.
 
 Fabric also owns a general-purpose, theme-aware activity surface for any agent setup:
 
-- A compact widget below the editor follows the current phase and shows active agents, actors, tools, custom items, shared tasks, token use, and elapsed time. It disappears after ordinary runs become quiet, while persistent actors remain visible as a compact ambient row.
-- The footer status condenses the same state without replacing Pi's footer.
+- A compact widget above the chat (like `pi-supervisor`) follows the current phase and shows active agents, actors, tools, custom items, shared tasks, token use, and elapsed time. It disappears after ordinary runs become quiet, while persistent actors remain visible as a compact ambient row.
 - `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use a Claude-workflow-style phase pane beside agents and work items; narrow terminals stack the same panels. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Actor mailboxes, mesh state, and recent mesh events use the same view rather than role-specific screens.
 - `↑`/`↓` or `j`/`k` select, `←`/`→` or Tab switch panes, Enter drills into details, `f` cycles status filters, `[`/`]` switches retained runs, and Esc backs out or closes.
 
@@ -384,10 +383,10 @@ Project values override global values.
   },
   "approvals": {
     "read": "allow",
-    "write": "ask",
-    "execute": "ask",
-    "network": "ask",
-    "agent": "ask"
+    "write": "allow",
+    "execute": "allow",
+    "network": "allow",
+    "agent": "allow"
   },
   "capture": {
     "enabled": true,
@@ -424,9 +423,7 @@ Project values override global values.
   },
   "ui": {
     "enabled": true,
-    "status": true,
     "widget": "auto",
-    "placement": "belowEditor",
     "maxRows": 6,
     "refreshMs": 500,
     "lingerMs": 10000,
@@ -449,7 +446,7 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; appr
 
 When `mcp.disableOAuth` is true, MCP calls may use cached credentials but cannot launch a new interactive OAuth flow.
 
-The UI `widget` mode is `auto`, `always`, or `hidden`. `auto` shows active work, recent completion, and live persistent actors. Set `ui.enabled` to `false` to disable both the widget and dashboard controller, or disable only `ui.status`. Widget placement is `aboveEditor` or `belowEditor`.
+The UI `widget` mode is `auto`, `always`, or `hidden`. `auto` shows active work, recent completion, and live persistent actors. The widget renders above the chat (like `pi-supervisor`); set `ui.enabled` to `false` to disable both the widget and dashboard controller.
 
 Mesh data defaults to `<project>/.pi/fabric/mesh`. Set `mesh.root` to a relative or absolute path to relocate durable topics, shared state, and actor sessions. Add `.pi/fabric/mesh/` to the project's ignore file unless the coordination log is intentionally versioned. Set `mesh.enabled` to `false` to disable both mesh actions and ambient actor restoration.
 
@@ -539,7 +536,7 @@ ActionRegistry
 ActivityStore → compact widget + footer status + interactive dashboard
 ```
 
-Guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`.
+Guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`; accessing a key that was not provided throws a clear, actionable error listing the provided keys rather than silently returning `undefined`.
 
 ## Security and limitations
 

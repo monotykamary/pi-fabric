@@ -32,7 +32,11 @@ describe("FabricExecutionService", () => {
       });
       expect(result.success).toBe(true);
       expect(result.value).toBe("fabric works");
-      expect(result.audits).toMatchObject([{ ref: "pi.read", success: true }]);
+      expect(result.audits).toMatchObject([
+        { ref: "pi.read", success: true, tool: "read", provider: "pi" },
+      ]);
+      expect(result.audits[0]?.args).toMatchObject({ path: "sample.txt" });
+      expect(result.audits[0]?.result).toBe("fabric works\n");
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }

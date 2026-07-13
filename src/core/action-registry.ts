@@ -22,6 +22,10 @@ export interface FabricCallAudit {
   error?: string;
   resultChars?: number;
   resultTruncated?: boolean;
+  tool?: string;
+  provider?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
 }
 
 export type FabricRegistryActivityEvent =
@@ -52,6 +56,35 @@ export interface FabricRegistryInvocationContext extends FabricInvocationContext
 }
 
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
+
+const PREVIEW_ARG_CHARS = 2_000;
+const PREVIEW_ARG_KEYS = 32;
+const PREVIEW_RESULT_CHARS = 16_000;
+
+const truncateString = (value: string, max: number): string =>
+  value.length <= max ? value : `${value.slice(0, max)}…`;
+
+const previewArgs = (args: Record<string, unknown>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  let count = 0;
+  for (const [key, value] of Object.entries(args)) {
+    if (count++ >= PREVIEW_ARG_KEYS) break;
+    out[key] = typeof value === "string" ? truncateString(value, PREVIEW_ARG_CHARS) : value;
+  }
+  return out;
+};
+
+const previewResult = (value: unknown): unknown => {
+  if (typeof value === "string") return truncateString(value, PREVIEW_RESULT_CHARS);
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = typeof val === "string" ? truncateString(val, PREVIEW_RESULT_CHARS) : val;
+    }
+    return out;
+  }
+  return value;
+};
 
 const boundedResult = (
   value: unknown,
@@ -251,6 +284,10 @@ export class ActionRegistry {
       audit.success = true;
       audit.resultChars = bounded.chars;
       audit.resultTruncated = bounded.truncated;
+      audit.tool = action.name;
+      audit.provider = action.provider;
+      audit.args = previewArgs(preparedArgs);
+      audit.result = previewResult(bounded.value);
       context.observeInvocation?.({
         type: "call_end",
         callId: nestedToolCallId,

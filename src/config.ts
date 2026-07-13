@@ -6,7 +6,6 @@ import type { FabricRisk } from "./protocol.js";
 export type FabricApprovalMode = "allow" | "ask" | "deny";
 export type FabricSubagentTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
-export type FabricUiWidgetPlacement = "aboveEditor" | "belowEditor";
 
 export interface FabricExecutorConfig {
   timeoutMs: number;
@@ -54,9 +53,7 @@ export interface FabricToolCaptureConfig {
 
 export interface FabricUiConfig {
   enabled: boolean;
-  status: boolean;
   widget: FabricUiWidgetMode;
-  placement: FabricUiWidgetPlacement;
   maxRows: number;
   refreshMs: number;
   lingerMs: number;
@@ -94,10 +91,10 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   },
   approvals: {
     read: "allow",
-    write: "ask",
-    execute: "ask",
-    network: "ask",
-    agent: "ask",
+    write: "allow",
+    execute: "allow",
+    network: "allow",
+    agent: "allow",
   },
   mcp: {
     enabled: true,
@@ -134,9 +131,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   },
   ui: {
     enabled: true,
-    status: true,
     widget: "auto",
-    placement: "belowEditor",
     maxRows: 6,
     refreshMs: 500,
     lingerMs: 10_000,
@@ -225,12 +220,6 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 
 const widgetModeValue = (value: unknown, fallback: FabricUiWidgetMode): FabricUiWidgetMode =>
   value === "auto" || value === "always" || value === "hidden" ? value : fallback;
-
-const widgetPlacementValue = (
-  value: unknown,
-  fallback: FabricUiWidgetPlacement,
-): FabricUiWidgetPlacement =>
-  value === "aboveEditor" || value === "belowEditor" ? value : fallback;
 
 const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
   value === "read" ||
@@ -363,9 +352,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     ui: {
       enabled: booleanValue(ui.enabled, DEFAULT_FABRIC_CONFIG.ui.enabled),
-      status: booleanValue(ui.status, DEFAULT_FABRIC_CONFIG.ui.status),
       widget: widgetModeValue(ui.widget, DEFAULT_FABRIC_CONFIG.ui.widget),
-      placement: widgetPlacementValue(ui.placement, DEFAULT_FABRIC_CONFIG.ui.placement),
       maxRows: boundedInteger(ui.maxRows, DEFAULT_FABRIC_CONFIG.ui.maxRows, 1, 20),
       refreshMs: boundedInteger(ui.refreshMs, DEFAULT_FABRIC_CONFIG.ui.refreshMs, 100, 10_000),
       lingerMs: boundedInteger(ui.lingerMs, DEFAULT_FABRIC_CONFIG.ui.lingerMs, 0, 300_000),

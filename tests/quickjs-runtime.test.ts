@@ -170,4 +170,22 @@ await Promise.all([
     });
     expect(result.error).toBeDefined();
   });
+
+  it("exposes named strings via π and throws a clear error for unprovided keys", async () => {
+    const provided = await new QuickJsRuntime().execute(
+      `return { value: π.content, keys: Object.keys(π).join(",") };`,
+      async () => undefined,
+      { ...options, strings: { content: "hello" } },
+    );
+    expect(provided.error).toBeUndefined();
+    expect(provided.value).toEqual({ value: "hello", keys: "content" });
+
+    const failed = await new QuickJsRuntime().execute(
+      `return π.previewFile;`,
+      async () => undefined,
+      { ...options, strings: { content: "hello" } },
+    );
+    expect(failed.error).toContain("π.previewFile is not defined");
+    expect(failed.error).toContain("provided: content");
+  });
 });
