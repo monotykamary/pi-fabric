@@ -40,6 +40,10 @@ interface FabricAgentHandle {
   attachCommand?: string;
   branch?: string;
   worktree?: string;
+  text?: string;
+  value?: unknown;
+  error?: string;
+  logFile?: string;
 }
 interface FabricAgentResult extends FabricAgentHandle {
   task: string;

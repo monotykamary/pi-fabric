@@ -91,3 +91,14 @@ describe("pi argument alias flattening", () => {
     expect(result.value).toEqual({ a: "echo hi", b: "found", c: "read", d: "wrote", e: "edited", f: "listed" });
   });
 });
+
+describe("agents.status debug fields", () => {
+  it("type-checks text/value/error/logFile on the status union without narrowing", () => {
+    const result = typeCheckFabricCode(
+      'const s = await agents.status({ id: "x" });' +
+        'return { error: s.error, text: s.text, value: s.value, log: s.logFile };',
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+});
