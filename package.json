@@ -61,7 +61,8 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/cover.jpg"
   },
   "dependencies": {
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",

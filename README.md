@@ -1,16 +1,52 @@
-# pi-fabric
+<div align="center">
 
-A programmable tool and agent runtime for [Pi](https://github.com/earendil-works/pi).
+# 🧵 pi-fabric
 
-Pi Fabric gives the model one `fabric_exec` tool for type-checked TypeScript programs that can compose Pi's built-in tools, lazily invoked tools captured from other extensions, dynamically discovered MCP tools, one-shot child agents, persistent event-driven actors, durable mesh coordination, councils, and bounded recursive queries. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
+**A programmable tool and agent runtime for [Pi](https://github.com/earendil-works/pi-coding-agent)**
 
-## Status
+_One type-checked program for tools, MCP, agents, workflows, actors, mesh, councils, and recursion._
 
-Pi Fabric is an early implementation. The core runtime, built-in tools, registered-extension tool capture, MCP provider, provider protocol, approval policies, guarded subagents, dynamic workflow helpers, persistent actors, durable mesh, general-purpose activity TUI, council helper, and recursive query helper are implemented. Review the security notes before enabling mutating tools or external providers.
+<p>
+  <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/cover.jpg" alt="Pi Fabric composing tools and agents in the Pi TUI" width="1100">
+</p>
+
+[![npm version](https://img.shields.io/npm/v/pi-fabric?style=for-the-badge&logo=npm&color=cb3837)](https://www.npmjs.com/package/pi-fabric)
+[![checks](https://img.shields.io/github/actions/workflow/status/monotykamary/pi-fabric/test.yml?branch=main&style=for-the-badge&label=checks)](https://github.com/monotykamary/pi-fabric/actions/workflows/test.yml)
+[![pi extension](https://img.shields.io/badge/pi-extension-8b5cf6?style=for-the-badge)](https://github.com/earendil-works/pi-coding-agent)
+[![license](https://img.shields.io/badge/license-MIT-f4c430?style=for-the-badge)](LICENSE)
+
+</div>
+
+---
+
+Pi Fabric turns tool use into code. The model sees one `fabric_exec` tool and writes type-checked TypeScript that can compose Pi's core tools, lazily captured extension tools, MCP servers, child agents, persistent actors, and durable coordination. Intermediate values stay inside a QuickJS sandbox; only the final result returns to the model context.
+
+## Why Fabric?
+
+|     | Capability | What it unlocks |
+| :-: | ---------- | --------------- |
+| ⚡ | **Code mode** | One flat tool schema; branching, loops, fan-out, and data flow live in checked TypeScript. |
+| 🧰 | **Capability routing** | Call Pi core tools, captured extension tools, MCP servers, or explicit Fabric providers through one runtime. |
+| 🧑‍🤝‍🧑 | **Agent runtime** | Run one-shot workers, persistent event-driven actors, councils, and bounded recursive queries. |
+| 🕸️ | **Workflows + mesh** | Track phases and progress while coordinating durable topics, shared tasks, and compare-and-swap state. |
+| 🛡️ | **Guardrails** | Enforce approvals, isolation, timeouts, concurrency, recursion depth, and shared cost budgets at the host bridge. |
+| 🎛️ | **Native TUI** | See structured nested previews, live activity, an interactive dashboard, and settings without leaving Pi. |
 
 ## Install
 
-From a checkout:
+From npm:
+
+```bash
+pi install npm:pi-fabric
+```
+
+From GitHub:
+
+```bash
+pi install git:github.com/monotykamary/pi-fabric
+```
+
+From a local checkout:
 
 ```bash
 pnpm install
@@ -21,14 +57,28 @@ pi install /absolute/path/to/pi-fabric
 For one development run:
 
 ```bash
-pi -e /absolute/path/to/pi-fabric/dist/index.js
+pi -e /absolute/path/to/pi-fabric
 ```
 
-Once published:
+Requires Node.js 24 or newer and Pi 0.80.6 or newer.
 
-```bash
-pi install npm:pi-fabric
+## Quick start
+
+Ask Fabric to compose multiple operations in one call:
+
+```ts
+const [manifest, sources] = await Promise.all([
+  pi.read({ path: "package.json" }),
+  pi.find({ pattern: "**/*.ts", path: "src" }),
+]);
+
+return {
+  package: JSON.parse(manifest).name,
+  sourceCount: sources.split("\n").filter(Boolean).length,
+};
 ```
+
+Only the returned value enters the parent model's context. Everything else stays inside the execution.
 
 ## Code API
 
