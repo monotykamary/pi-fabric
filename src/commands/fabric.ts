@@ -259,7 +259,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             .providers()
             .map((provider) => provider.name)
             .join(", ")}`,
-          `transport: ${config.subagents.transport}`,
+          `transport: ${config.subagents.transport} · model: ${config.subagents.model || "inherit"}`,
           `subagent limits: concurrency ${config.subagents.maxConcurrent}, per execution ${config.subagents.maxPerExecution}, depth ${config.subagents.maxDepth}`,
           config.fullCodeMode && config.capture.enabled
             ? `captured tools: ${capturedTools.size} · model visibility: ${config.capture.hideFromModel ? "hidden" : "visible"}`

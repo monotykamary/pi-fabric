@@ -75,6 +75,16 @@ describe("Fabric configuration", () => {
     expect(DEFAULT_FABRIC_CONFIG.subagents.budgetUsd).toBe(0);
   });
 
+  it("normalizes the subagent default model and drops empty values", () => {
+    expect(DEFAULT_FABRIC_CONFIG.subagents.model).toBeUndefined();
+    const set = normalizeFabricConfig({ subagents: { model: "claude-sonnet-4-5" } });
+    expect(set.subagents.model).toBe("claude-sonnet-4-5");
+    const blank = normalizeFabricConfig({ subagents: { model: "  " } });
+    expect(blank.subagents.model).toBeUndefined();
+    const nonString = normalizeFabricConfig({ subagents: { model: 42 } });
+    expect(nonString.subagents.model).toBeUndefined();
+  });
+
   it("preserves native tool registration in orchestration-only mode", () => {
     const capture = effectiveToolCaptureConfig({
       fullCodeMode: false,

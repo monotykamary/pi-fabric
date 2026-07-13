@@ -2,6 +2,7 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { buildFabricSettingsItems, FabricSettingsComponent, parseBudgetValue } from "../src/ui/settings.js";
+import type { ModelSource } from "../src/ui/model-picker.js";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -11,8 +12,19 @@ const theme = {
 
 const borderLine = (width: number): string => "─".repeat(width);
 
+const fakeModelSource: ModelSource = {
+  models: [
+    { provider: "anthropic", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+    { provider: "openai", id: "gpt-5.5", name: "GPT 5.5" },
+  ],
+  lastUsed: { "anthropic/claude-sonnet-4-5": 200, "openai/gpt-5.5": 100 },
+};
+
 const buildItems = (keepVisibleCandidates: string[] = ["fabric_exec"]) =>
-  buildFabricSettingsItems(theme, DEFAULT_FABRIC_CONFIG, () => {}, { keepVisibleCandidates });
+  buildFabricSettingsItems(theme, DEFAULT_FABRIC_CONFIG, () => {}, {
+    keepVisibleCandidates,
+    modelSource: fakeModelSource,
+  });
 
 describe("FabricSettingsComponent", () => {
   it("renders the pi-core style top and bottom borders with search", () => {
@@ -46,6 +58,29 @@ describe("FabricSettingsComponent", () => {
     expect(items.length).toBe(8);
   });
 
+  it("marks submenu rows with a drill-in marker and leaves inline toggles plain", () => {
+    const items = buildItems();
+    const labels = items.map((item) => item.label);
+    // Top-level sections open a submenu.
+    expect(labels).toContain("Executor ›");
+    expect(labels).toContain("Subagents ›");
+    // Full code mode cycles values inline; no drill-in marker.
+    expect(labels).toContain("Full code mode");
+    expect(labels).not.toContain("Full code mode ›");
+
+    // Inside a section, submenu fields are marked but inline value toggles are not.
+    const subagents = items.find((item) => item.id === "subagents")!;
+    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Default model ›");
+    expect(lines).toContain("Max concurrent ›");
+    expect(lines).toContain("Default tools ›");
+    // Inline value-cycle rows stay plain.
+    expect(lines).toContain("Transport");
+    expect(lines).not.toContain("Transport ›");
+    expect(lines).toContain("Enabled");
+    expect(lines).not.toContain("Enabled ›");
+  });
+
   it("opening a section submenu renders its fields", () => {
     const items = buildItems();
     const executor = items.find((item) => item.id === "executor");
@@ -71,7 +106,7 @@ describe("FabricSettingsComponent", () => {
       theme,
       { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, budgetUsd: 0.25 } },
       () => {},
-      { keepVisibleCandidates: ["fabric_exec"] },
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
     const subagents = items.find((item) => item.id === "subagents")!;
     const lines = subagents.submenu!("", () => {}).render(80).join("\n");
@@ -85,6 +120,29 @@ describe("FabricSettingsComponent", () => {
     expect(parseBudgetValue("Off")).toBe(0);
     expect(parseBudgetValue("0.5")).toBe(0.5);
     expect(parseBudgetValue("$5.00")).toBe(5);
+  });
+
+  it("surfaces the default model in the Subagents section as Inherit by default", () => {
+    const items = buildItems();
+    const subagents = items.find((item) => item.id === "subagents");
+    expect(subagents?.submenu).toBeDefined();
+    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Default model");
+    expect(lines).toContain("Inherit");
+  });
+
+  it("shows the configured default model value in the Subagents section", () => {
+    const items = buildFabricSettingsItems(
+      theme,
+      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" } },
+      () => {},
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const subagents = items.find((item) => item.id === "subagents")!;
+    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Default model");
+    expect(lines).toContain("claude-sonnet-4-5");
+    expect(lines).not.toContain("Inherit");
   });
 
   it("renders the list-editor rows with counts in their sections", () => {

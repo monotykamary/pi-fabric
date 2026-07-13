@@ -33,6 +33,7 @@ export interface FabricMcpConfig {
 export interface FabricSubagentConfig {
   enabled: boolean;
   transport: FabricSubagentTransport;
+  model?: string;
   maxConcurrent: number;
   maxPerExecution: number;
   maxDepth: number;
@@ -252,6 +253,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
+  const subagentModel = stringValue(subagents.model);
   const configuredVisible = Array.isArray(capture.keepVisible)
     ? capture.keepVisible.filter(
         (name): name is string => typeof name === "string" && Boolean(name.trim()),
@@ -320,6 +322,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     subagents: {
       enabled: booleanValue(subagents.enabled, DEFAULT_FABRIC_CONFIG.subagents.enabled),
       transport: transportValue(subagents.transport, DEFAULT_FABRIC_CONFIG.subagents.transport),
+      ...(subagentModel ? { model: subagentModel } : {}),
       maxConcurrent: boundedInteger(
         subagents.maxConcurrent,
         DEFAULT_FABRIC_CONFIG.subagents.maxConcurrent,

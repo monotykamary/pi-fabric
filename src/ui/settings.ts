@@ -17,6 +17,8 @@ import {
   Spacer,
   Text,
 } from "@earendil-works/pi-tui";
+import { FabricModelSelector } from "./fabric-model-selector.js";
+import { buildModelSource, INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import { saveFabricConfig, type FabricConfig } from "../config.js";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricState } from "../fabric-state.js";
@@ -122,6 +124,10 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
     if (id === "subagents.budgetUsd") return parseBudgetValue(value);
     return Number(value);
   }
+  // The model picker stores the canonical "provider/id" string, or "Inherit"
+  // for no override; persist an empty string so normalizeFabricConfig drops it
+  // and the subagent inherits the host's default model.
+  if (id === "subagents.model") return value === INHERIT_VALUE ? "" : value;
   return value;
 };
 
@@ -227,6 +233,14 @@ const listSubmenu = (
   };
 };
 
+// Append a › to the label of every item that opens a submenu, so it is
+// obvious which rows drill in (vs. inline value cycling). Mutates in place to
+// preserve the shared item references that listSubmenu updates live.
+const markDrillIn = (items: SettingItem[]): SettingItem[] => {
+  for (const item of items) if (item.submenu) item.label = `${item.label} ›`;
+  return items;
+};
+
 const sectionSubmenu = (
   theme: Theme,
   title: string,
@@ -234,7 +248,7 @@ const sectionSubmenu = (
   items: SettingItem[],
   persist: (id: string, value: string) => void,
 ): SettingsSubmenu => (_currentValue, done) =>
-  new SectionSubmenu(theme, title, description, items, persist, () => done());
+  new SectionSubmenu(theme, title, description, markDrillIn(items), persist, () => done());
 
 class SelectSubmenu extends Container {
   readonly selectList: SelectList;
@@ -274,6 +288,19 @@ class SelectSubmenu extends Container {
     this.selectList.handleInput(data);
   }
 }
+
+const modelPickerSubmenu = (
+  theme: Theme,
+  source: ModelSource,
+  currentValue: string,
+): SettingsSubmenu => (_currentValue, done) =>
+  new FabricModelSelector({
+    theme,
+    source,
+    currentValue,
+    onSelect: (value) => done(value),
+    onCancel: () => done(),
+  });
 
 class SectionSubmenu extends Container {
   readonly settingsList: SettingsList;
@@ -337,7 +364,7 @@ export const buildFabricSettingsItems = (
   theme: Theme,
   config: FabricConfig,
   apply: (id: string, value: unknown) => void,
-  options: { keepVisibleCandidates: readonly string[] },
+  options: { keepVisibleCandidates: readonly string[]; modelSource: ModelSource },
 ): SettingItem[] => {
   const persist = (id: string, newValue: string): void =>
     apply(id, coerceValue(id, newValue, config));
@@ -384,7 +411,7 @@ export const buildFabricSettingsItems = (
     },
   );
 
-  return [
+  const items = [
     setting("fullCodeMode", "Full code mode", config.fullCodeMode ? "true" : "false", {
       description: fullCodeDescription,
       values: BOOLEANS,
@@ -528,6 +555,15 @@ export const buildFabricSettingsItems = (
           setting("subagents.transport", "Transport", config.subagents.transport, {
             description: "Preferred transport for spawned subagents.",
             values: TRANSPORTS,
+          }),
+          setting("subagents.model", "Default model", config.subagents.model || INHERIT_VALUE, {
+            description:
+              "Model forwarded to spawned subagents and actors when a call does not specify one. Pick Inherit to use the host session's default. Order matches pi-model-sort (most recently used first).",
+            submenu: modelPickerSubmenu(
+              theme,
+              options.modelSource,
+              config.subagents.model || INHERIT_VALUE,
+            ),
           }),
           setting("subagents.maxConcurrent", "Max concurrent", String(config.subagents.maxConcurrent), {
             description: "Maximum number of subagents that may run at the same time.",
@@ -742,6 +778,7 @@ export const buildFabricSettingsItems = (
       ),
     }),
   ];
+  return markDrillIn(items);
 };
 
 export interface FabricSettingsDeps {
@@ -797,11 +834,13 @@ export async function openFabricSettings(
     "fabric_exec",
     ...deps.capturedTools.list().map((tool) => tool.name),
   ]);
+  const modelSource = buildModelSource(context.modelRegistry);
 
   await context.ui.custom<void>(
     (_tui, theme, _keybindings, done) => {
       const items = buildFabricSettingsItems(theme, deps.state.config, apply, {
         keepVisibleCandidates,
+        modelSource,
       });
       const component = new FabricSettingsComponent(theme, items, persist, () => done());
       rootList = component.settingsList;

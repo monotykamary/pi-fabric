@@ -154,6 +154,54 @@ describe("SubagentManager", () => {
     expect(result.error).not.toContain("exited with code 0");
   });
 
+  it("forwards the configured default model when a call omits one", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "Use the default model", transport: "process" });
+    expect(result.status).toBe("completed");
+    expect(result.model).toBe("claude-sonnet-4-5");
+  });
+
+  it("lets a per-call model override the configured default", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({
+      task: "Override the model",
+      transport: "process",
+      model: "gpt-override",
+    });
+    expect(result.status).toBe("completed");
+    expect(result.model).toBe("gpt-override");
+  });
+
+  it("inherits the host model when neither config nor call set one", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "Inherit the host model", transport: "process" });
+    expect(result.status).toBe("completed");
+    expect(result.model).toBeUndefined();
+  });
+
   it("notifies when a detached background agent completes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
