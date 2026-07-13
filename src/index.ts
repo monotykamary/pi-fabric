@@ -19,6 +19,7 @@ import {
   nestedCallBody,
   nestedCallCode,
   nestedCallTitle,
+  nestedEditDiff,
   type FabricRenderAudit,
 } from "./ui/fabric-render.js";
 import { highlightCode, initHighlighting } from "./ui/highlight.js";
@@ -222,40 +223,49 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           for (const audit of callsShown) {
             const glyph =
               audit.success === false ? theme.fg("error", "✗") : theme.fg("dim", "›");
-            text += `\n${glyph} ${nestedCallTitle(audit, theme)}`;
+            text += `\n${glyph} ${nestedCallTitle(audit, theme, context?.invalidate)}`;
             if (audit.success === false && audit.error) {
               text += `\n  ${theme.fg("error", safeTerminalText(audit.error))}`;
             } else if (expanded) {
               const bodyLimit = 40;
               let bodyLines: string[] | null = null;
               let numbered = false;
-              const codeInfo = nestedCallCode(audit);
-              if (codeInfo) {
-                const highlighted = highlightCode(
-                  codeInfo.code,
-                  codeInfo.lang,
-                  context?.invalidate,
-                );
-                if (highlighted) {
-                  bodyLines = highlighted.map((line) => line || " ");
-                  numbered = true;
+              let raw = false;
+              const editDiff = nestedEditDiff(audit, theme, context?.invalidate);
+              if (editDiff) {
+                bodyLines = editDiff;
+                raw = true;
+              } else {
+                const codeInfo = nestedCallCode(audit);
+                if (codeInfo) {
+                  const highlighted = highlightCode(
+                    codeInfo.code,
+                    codeInfo.lang,
+                    context?.invalidate,
+                  );
+                  if (highlighted) {
+                    bodyLines = highlighted.map((line) => line || " ");
+                    numbered = true;
+                    raw = true;
+                  }
                 }
-              }
-              if (!bodyLines) {
-                const body = nestedCallBody(audit);
-                if (body) {
-                  bodyLines = safeTerminalText(body).split("\n");
-                  numbered = isNumberedTool(audit);
+                if (!bodyLines) {
+                  const body = nestedCallBody(audit);
+                  if (body) {
+                    bodyLines = safeTerminalText(body).split("\n");
+                    numbered = isNumberedTool(audit);
+                  }
                 }
               }
               if (bodyLines) {
                 const bodyShown = bodyLines.slice(0, bodyLimit);
                 text += `\n${bodyShown
-                  .map((line, index) =>
-                    numbered
-                      ? `${theme.fg("dim", String(index + 1).padStart(3, " "))} ${line}`
-                      : theme.fg("toolOutput", line || " "),
-                  )
+                  .map((line, index) => {
+                    const content = raw ? line : theme.fg("toolOutput", line || " ");
+                    return numbered
+                      ? `${theme.fg("dim", String(index + 1).padStart(3, " "))} ${content}`
+                      : content;
+                  })
                   .join("\n")}`;
                 if (bodyLines.length > bodyShown.length) {
                   text += `\n${theme.fg("dim", `… ${countLabel(bodyLines.length - bodyShown.length, "line")}`)}`;
