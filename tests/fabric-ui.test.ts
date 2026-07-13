@@ -226,7 +226,6 @@ describe("Fabric dynamic UI", () => {
     ];
     const fourth = widget.render(72);
     expect(fourth.length).toBe(2);
-    expect(fourth[0]).toContain("0/1");
   });
 
   it("renders a responsive two-pane dashboard and agent details", () => {

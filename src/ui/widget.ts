@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
 import type { FabricActivityRun, FabricActivityStatus } from "../activity/types.js";
@@ -135,6 +135,13 @@ export class FabricWidget implements Component {
     const headerStatus = run?.status ?? (activeAgents.length > 0 ? "running" : "idle");
     const parts: string[] = [];
 
+    const callTotal = nestedCalls.length;
+    if (callTotal > 1) {
+      const callDone = nestedCalls.filter(
+        (call) => call.status === "completed" || call.status === "failed",
+      ).length;
+      parts.push(`${callDone}/${callTotal} calls`);
+    }
     if (run?.currentPhaseId) {
       const phaseIndex = run.phases.findIndex((phase) => phase.id === run.currentPhaseId);
       const phase = run.phases[phaseIndex];
@@ -154,34 +161,10 @@ export class FabricWidget implements Component {
     if (run) parts.push(formatDuration((run.finishedAt ?? snapshot.now) - run.startedAt));
 
     const glyph = colorStatus(this.theme, headerStatus, statusGlyph(headerStatus));
-    const leftHeader = `${glyph} ${this.theme.fg("accent", "Fabric")} ${this.theme.fg(
+    const header = `${glyph} ${this.theme.fg("accent", "Fabric")} ${this.theme.fg(
       "text",
       safeText(title),
     )}${parts.length > 0 ? this.theme.fg("dim", ` · ${parts.join(" · ")}`) : ""}`;
-    const callTotal = nestedCalls.length;
-    let header = leftHeader;
-    if (callTotal > 0) {
-      const callDone = nestedCalls.filter(
-        (call) => call.status === "completed" || call.status === "failed",
-      ).length;
-      const count = `${callDone}/${callTotal}`;
-      const room = width - visibleWidth(leftHeader) - visibleWidth(count);
-      if (room >= 6) {
-        const leaderLen = room - 2;
-        const filled = Math.max(
-          0,
-          Math.min(leaderLen, Math.round((callDone / callTotal) * leaderLen)),
-        );
-        const leader =
-          colorStatus(this.theme, headerStatus, "·").repeat(filled) +
-          this.theme.fg("dim", "·").repeat(leaderLen - filled);
-        header = `${leftHeader} ${leader} ${this.theme.fg("dim", count)}`;
-      } else if (room >= 2) {
-        header = `${leftHeader}${this.theme.fg("dim", "·".repeat(room - 1))} ${this.theme.fg("dim", count)}`;
-      } else {
-        header = `${leftHeader} ${this.theme.fg("dim", count)}`;
-      }
-    }
     const lines = [truncateToWidth(header, width)];
 
     for (const agent of activeAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
