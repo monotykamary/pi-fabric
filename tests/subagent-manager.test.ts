@@ -290,6 +290,20 @@ describe("SubagentManager", () => {
     await expect(completion).resolves.toBe("fake worker complete");
   });
 
+  it("surfaces the run-log tail when a worker exits without a terminal result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-crash.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+    const result = await manager.run({ task: "crash test", transport: "process" });
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("exited without a result");
+    expect(result.error).toContain("model rate limit exceeded");
+  });
+
   it("rejects empty tasks", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

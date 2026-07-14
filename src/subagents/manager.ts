@@ -116,6 +116,25 @@ const readJsonlTail = (filePath: string, lines: number): FabricLogLine[] => {
   });
 };
 
+const summarizeRunLog = (runDirectory: string, lines: number): string => {
+  const tail = readJsonlTail(path.join(runDirectory, "events.jsonl"), lines);
+  const summary: string[] = [];
+  for (const entry of tail) {
+    const parsed = entry.parsed as Record<string, unknown> | undefined;
+    if (!parsed || typeof parsed.type !== "string") continue;
+    const detail =
+      typeof parsed.error === "string"
+        ? parsed.error
+        : typeof parsed.message === "string"
+          ? parsed.message
+          : typeof parsed.toolName === "string"
+            ? parsed.toolName
+            : "";
+    summary.push(detail ? `${parsed.type}: ${detail}` : parsed.type);
+  }
+  return summary.join(" | ");
+};
+
 const writeRecord = (filePath: string, record: SubagentRunRecord): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
@@ -486,10 +505,13 @@ export class SubagentManager {
       if (!alive) {
         firstObservedDeadAt ??= Date.now();
         if (Date.now() - firstObservedDeadAt >= TRANSPORT_EXIT_GRACE_MS) {
+          const logSummary = summarizeRunLog(managed.runDirectory, 8);
           const failed = failedRecord(
             managed,
             "failed",
-            "Subagent transport exited without a result",
+            logSummary
+              ? `Subagent transport exited without a result; last run log: ${logSummary}`
+              : "Subagent transport exited without a result",
           );
           writeRecord(managed.statusFile, failed);
           this.#settle(managed, failed);
