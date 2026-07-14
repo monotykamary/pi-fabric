@@ -214,6 +214,37 @@ const parseStructuredValue = (text: string): unknown => {
   return JSON.parse(trimmed);
 };
 
+let crashContext: { statusFile: string; record: SubagentRunRecord } | undefined;
+let terminalWritten = false;
+const writeCrashStatus = (error: unknown): void => {
+  if (!crashContext || terminalWritten) return;
+  const reason = error instanceof Error ? error.message : String(error);
+  const crashed: SubagentRunRecord = {
+    ...crashContext.record,
+    status: "failed",
+    error: `Worker crashed before reporting a result: ${reason}`.slice(0, MAX_STDERR_CHARS),
+    finishedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  delete crashed.currentTool;
+  try {
+    atomicWrite(crashContext.statusFile, crashed);
+  } catch {
+    // Best effort: if the crash-status write itself fails, #monitor falls back
+    // to "Subagent transport exited without a result".
+  }
+};
+process.on("uncaughtException", (error) => {
+  writeCrashStatus(error);
+  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : error}\n`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (error) => {
+  writeCrashStatus(error);
+  process.stderr.write(`Unhandled rejection: ${error instanceof Error ? error.stack ?? error.message : error}\n`);
+  process.exit(1);
+});
+
 const main = async (): Promise<void> => {
   const options = parseOptions();
   const thinking =
@@ -250,9 +281,11 @@ const main = async (): Promise<void> => {
     ...(options.worktree ? { worktree: options.worktree } : {}),
   };
   atomicWrite(options.statusFile, record);
+  crashContext = { statusFile: options.statusFile, record };
   process.stdout.write(`[pi-fabric] ${options.name}\n${task}\n\n`);
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
   const logStream = fs.createWriteStream(options.logFile, { flags: "a", mode: 0o600 });
+  logStream.on("error", () => {});
 
   const piArguments = ["--mode", "rpc"];
   if (options.sessionFile) piArguments.push("--session", options.sessionFile);
@@ -301,6 +334,7 @@ const main = async (): Promise<void> => {
   };
 
   const processEvent = (line: string): void => {
+    if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
     if (!line.trim()) return;
     logStream.write(`${line}\n`);
     let event: Record<string, unknown>;
@@ -409,6 +443,7 @@ const main = async (): Promise<void> => {
     process.stderr.write(text);
     stderr = `${stderr}${text}`.slice(-MAX_STDERR_CHARS);
   });
+  child.stderr?.on("error", () => {});
 
   const timeout = setTimeout(() => {
     terminalStatus = "timed_out";
@@ -439,6 +474,7 @@ const main = async (): Promise<void> => {
   });
 
   clearTimeout(timeout);
+  if (process.env.PI_FABRIC_INJECT_CRASH === "close") throw new Error("simulated close crash");
   if (outputBuffer.trim()) processEvent(outputBuffer);
   record.exitCode = exitCode;
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
@@ -478,6 +514,7 @@ const main = async (): Promise<void> => {
   }
   delete record.currentTool;
   atomicWrite(options.statusFile, record);
+  terminalWritten = true;
   process.stdout.write(`\n[pi-fabric] ${record.status}\n`);
   await new Promise<void>((resolve) => logStream.end(resolve));
   process.exitCode = record.status === "completed" ? 0 : 1;
@@ -485,5 +522,6 @@ const main = async (): Promise<void> => {
 
 main().catch((error) => {
   console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
-  process.exitCode = 1;
+  writeCrashStatus(error);
+  process.exit(1);
 });

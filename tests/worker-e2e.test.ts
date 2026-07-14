@@ -95,4 +95,47 @@ describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
       );
     }
   });
+
+  it("aborts a hanging run as stopped, not exited-without-a-result", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "hang";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, timeoutMs: 30_000, maxConcurrent: 1 };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath,
+      piBinary,
+      runRoot: root,
+    });
+    managers.push(manager);
+    const ac = new AbortController();
+    const handle = await manager.spawn({ task: "hang", transport: "process" }, ac.signal);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    ac.abort();
+    const result = await manager.wait(handle.id);
+    expect(result.status).toBe("stopped");
+  });
+
+  it("reports a terminal failure (not exited-without-a-result) when the worker crashes mid-stream", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "success";
+    process.env.PI_FABRIC_INJECT_CRASH = "stream";
+    try {
+      const result = await run();
+      expect(result.status).toBe("failed");
+      expect(result.error ?? "").toMatch(/simulated stream crash/);
+    } finally {
+      delete process.env.PI_FABRIC_INJECT_CRASH;
+    }
+  });
+
+  it("reports a terminal failure when the worker crashes while finalizing", async () => {
+    process.env.FAKE_PI_BEHAVIOR = "success";
+    process.env.PI_FABRIC_INJECT_CRASH = "close";
+    try {
+      const result = await run();
+      expect(result.status).toBe("failed");
+      expect(result.error ?? "").toMatch(/simulated close crash/);
+    } finally {
+      delete process.env.PI_FABRIC_INJECT_CRASH;
+    }
+  });
 });
