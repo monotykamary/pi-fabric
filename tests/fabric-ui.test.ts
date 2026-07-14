@@ -501,4 +501,104 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
+
+  it("offers a per-actor host-event picker from the actor detail view", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const onActorEvents = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      modelSource: actorModelSource,
+      onActorEvents,
+    });
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(120);
+      expect(detail.join("\n")).toContain("v events");
+      // clear is offered by its own callback, not wired in this test.
+      expect(detail.join("\n")).not.toContain("c clear");
+
+      // Open the events picker. The fixture actor subscribes to turn_end only.
+      dashboard.handleInput("v");
+      const picker = dashboard.render(120);
+      const pickerText = picker.join("\n");
+      expect(pickerText).toContain('Host events for actor "advisor"');
+      expect(pickerText).toContain("[x] turn_end");
+      expect(pickerText).toContain("[ ] input");
+      expect(picker.every((line) => visibleWidth(line) <= 120)).toBe(true);
+
+      // Toggle input on (index 0), move down to turn_end, toggle it off, apply.
+      dashboard.handleInput(" ");
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput(" ");
+      dashboard.handleInput("\r");
+      expect(onActorEvents).toHaveBeenCalledWith("actor-1", ["input"]);
+
+      const after = dashboard.render(120);
+      expect(after.join("\n")).toContain("advisor");
+      expect(after.join("\n")).not.toContain('Host events for actor "advisor"');
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("canceling the events picker returns to the detail without changing events", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const onActorEvents = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      modelSource: actorModelSource,
+      onActorEvents,
+    });
+    try {
+      openActorDetail(dashboard);
+      dashboard.handleInput("v");
+      dashboard.handleInput("\x1b");
+      expect(onActorEvents).not.toHaveBeenCalled();
+      const after = dashboard.render(120);
+      expect(after.join("\n")).toContain("advisor");
+      expect(after.join("\n")).not.toContain('Host events for actor "advisor"');
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("clearing the mailbox invokes onClearMessages without leaving the detail", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const onClearMessages = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      modelSource: actorModelSource,
+      onClearMessages,
+    });
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(120);
+      expect(detail.join("\n")).toContain("c clear");
+
+      dashboard.handleInput("c");
+      expect(onClearMessages).toHaveBeenCalledWith("actor-1");
+
+      const after = dashboard.render(120);
+      expect(after.join("\n")).toContain("advisor");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("does not offer the events or clear actions when not wired", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      modelSource: actorModelSource,
+    });
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(120);
+      expect(detail.join("\n")).not.toContain("v events");
+      expect(detail.join("\n")).not.toContain("c clear");
+      // Pressing v/c is a no-op: still in the actor detail.
+      dashboard.handleInput("v");
+      dashboard.handleInput("c");
+      const after = dashboard.render(120);
+      expect(after.join("\n")).toContain("advisor");
+    } finally {
+      dashboard.dispose();
+    }
+  });
 });

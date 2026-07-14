@@ -9,9 +9,11 @@ import type {
 } from "../activity/types.js";
 import { formatClock, formatDuration, formatTokens, padToWidth, safeText, wrapPlainText } from "./format.js";
 import { FabricModelSelector } from "./fabric-model-selector.js";
+import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
 import { FabricThinkingSelector } from "./fabric-thinking-selector.js";
 import { INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
+import type { FabricActorHostEvent } from "../actors/types.js";
 import type {
   FabricDashboardSnapshot,
   FabricUiActor,
@@ -266,8 +268,17 @@ export class FabricDashboard implements Component, Focusable {
   private detailId: string | undefined;
   private detailScroll = 0;
   private readonly refreshTimer: NodeJS.Timeout;
-  private mode: "overview" | "detail" | "modelPicker" | "thinkingPicker" = "overview";
-  private picker: FabricModelSelector | FabricThinkingSelector | undefined;
+  private mode:
+    | "overview"
+    | "detail"
+    | "modelPicker"
+    | "thinkingPicker"
+    | "eventsPicker" = "overview";
+  private picker:
+    | FabricModelSelector
+    | FabricThinkingSelector
+    | FabricHostEventSelector
+    | undefined;
   private readonly modelSource: ModelSource | undefined;
   private readonly onActorModel:
     | ((actorId: string, model: string | undefined) => void)
@@ -275,6 +286,10 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onActorThinking:
     | ((actorId: string, thinking: FabricThinking | undefined) => void)
     | undefined;
+  private readonly onActorEvents:
+    | ((actorId: string, events: FabricActorHostEvent[]) => void)
+    | undefined;
+  private readonly onClearMessages: ((actorId: string) => void) | undefined;
   private pickerActorName: string | undefined;
 
   constructor(
@@ -286,18 +301,27 @@ export class FabricDashboard implements Component, Focusable {
       modelSource?: ModelSource;
       onActorModel?: (actorId: string, model: string | undefined) => void;
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
+      onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
+      onClearMessages?: (actorId: string) => void;
     } = {},
   ) {
     this.focused = true;
     this.modelSource = options.modelSource;
     this.onActorModel = options.onActorModel;
     this.onActorThinking = options.onActorThinking;
+    this.onActorEvents = options.onActorEvents;
+    this.onClearMessages = options.onClearMessages;
     this.refreshTimer = setInterval(() => this.tui.requestRender(), 500);
     this.refreshTimer.unref();
   }
 
   handleInput(data: string): void {
-    if ((this.mode === "modelPicker" || this.mode === "thinkingPicker") && this.picker) {
+    if (
+      (this.mode === "modelPicker" ||
+        this.mode === "thinkingPicker" ||
+        this.mode === "eventsPicker") &&
+      this.picker
+    ) {
       this.picker.handleInput(data);
       this.tui.requestRender();
       return;
@@ -336,6 +360,21 @@ export class FabricDashboard implements Component, Focusable {
         const detail = entities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
           this.openThinkingPicker(detail);
+        }
+      } else if (data === "v") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (detail && detail.kind === "actor" && detail.status !== "stopped") {
+          this.openEventsPicker(detail);
+        }
+      } else if (data === "c") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          this.onClearMessages
+        ) {
+          this.onClearMessages(detail.value.id);
         }
       }
       this.tui.requestRender();
@@ -401,7 +440,12 @@ export class FabricDashboard implements Component, Focusable {
 
   render(width: number): string[] {
     if (width <= 0) return [];
-    if ((this.mode === "modelPicker" || this.mode === "thinkingPicker") && this.picker) {
+    if (
+      (this.mode === "modelPicker" ||
+        this.mode === "thinkingPicker" ||
+        this.mode === "eventsPicker") &&
+      this.picker
+    ) {
       return this.renderPicker(width);
     }
     const snapshot = this.snapshot();
@@ -471,6 +515,24 @@ export class FabricDashboard implements Component, Focusable {
     this.mode = "thinkingPicker";
   }
 
+  private openEventsPicker(entity: Entity): void {
+    if (entity.kind !== "actor" || !this.onActorEvents) return;
+    const actor = entity.value;
+    this.pickerActorName = actor.name;
+    this.picker = new FabricHostEventSelector({
+      theme: this.theme,
+      currentValue: actor.events,
+      headerText: `Host events for actor "${actor.name}". Toggle with space, Enter to apply, Esc to cancel.`,
+      onSelect: (events) => {
+        this.onActorEvents!(actor.id, events);
+        this.closeModelPicker();
+      },
+      onCancel: () => this.closeModelPicker(),
+    });
+    this.picker.focused = true;
+    this.mode = "eventsPicker";
+  }
+
   private closeModelPicker(): void {
     this.picker = undefined;
     this.pickerActorName = undefined;
@@ -479,14 +541,20 @@ export class FabricDashboard implements Component, Focusable {
 
   private renderPicker(width: number): string[] {
     if (width < 24 || !this.picker) return [];
-    const kind = this.mode === "thinkingPicker" ? "thinking" : "model";
+    const kind =
+      this.mode === "thinkingPicker"
+        ? "thinking"
+        : this.mode === "eventsPicker"
+          ? "events"
+          : "model";
     const lines = [
       this.topBorder(width, `actor · ${this.pickerActorName ?? ""} · ${kind}`),
     ];
     const inner = this.picker.render(width - 2);
     for (const line of inner) lines.push(this.row(width, line));
     lines.push(this.middleBorder(width));
-    const filterHint = this.mode === "thinkingPicker" ? "" : " · type to filter";
+    const filterHint =
+      this.mode === "thinkingPicker" || this.mode === "eventsPicker" ? "" : " · type to filter";
     lines.push(
       this.row(
         width,
@@ -739,12 +807,20 @@ export class FabricDashboard implements Component, Focusable {
       entity.kind === "actor" && entity.status !== "stopped" && this.onActorThinking
         ? " · e thinking"
         : "";
+    const actorEventsHint =
+      entity.kind === "actor" && entity.status !== "stopped" && this.onActorEvents
+        ? " · v events"
+        : "";
+    const actorClearHint =
+      entity.kind === "actor" && entity.status !== "stopped" && this.onClearMessages
+        ? " · c clear"
+        : "";
     lines.push(
       this.row(
         width,
         this.theme.fg(
           "dim",
-          `j/k scroll · esc back${content.length > maxBody ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}` : ""}${actorModelHint}${actorThinkingHint}`,
+          `j/k scroll · esc back${content.length > maxBody ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}` : ""}${actorModelHint}${actorThinkingHint}${actorEventsHint}${actorClearHint}`,
         ),
       ),
     );

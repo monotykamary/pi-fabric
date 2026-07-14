@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
 import type { FabricThinking } from "../thinking.js";
 import type { MeshEvent } from "../mesh/store.js";
@@ -85,11 +86,20 @@ export class FabricUiController {
     const onActorThinking = (actorId: string, thinking: FabricThinking | undefined): void => {
       this.state.actors.setThinking(actorId, thinking).catch(() => undefined);
     };
+    const onActorEvents = (actorId: string, events: FabricActorHostEvent[]): void => {
+      this.state.actors.setEvents(actorId, events).catch(() => undefined);
+    };
+    const onClearMessages = (actorId: string): void => {
+      this.state.actors.clearMessages(actorId).catch(() => undefined);
+    };
     await context.ui.custom<void>(
       (tui, theme, _keybindings, done) =>
         new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
           modelSource,
           onActorModel,
+          onActorThinking,
+          onActorEvents,
+          onClearMessages,
         }),
       {
         overlay: true,
