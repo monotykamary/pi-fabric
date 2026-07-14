@@ -70,19 +70,18 @@
     "pi-code-previews": "^0.1.35",
     "quickjs-emscripten-core": "^0.32.0",
     "shiki": "^4.3.1",
+    "typebox": "1.1.38",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.6",
-    "@earendil-works/pi-tui": ">=0.80.6",
-    "typebox": ">=1.1.38"
+    "@earendil-works/pi-tui": ">=0.80.6"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.80.6",
     "@earendil-works/pi-tui": "0.80.6",
     "@types/node": "^25.0.0",
     "knip": "^6.26.0",
-    "typebox": "1.1.38",
     "vitest": "^4.1.0"
   },
   "packageManager": "pnpm@11.6.0"

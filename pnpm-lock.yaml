@@ -23,6 +23,9 @@ importers:
       shiki:
         specifier: ^4.3.1
         version: 4.3.1
+      typebox:
+        specifier: 1.1.38
+        version: 1.1.38
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -39,9 +42,6 @@ importers:
       knip:
         specifier: ^6.26.0
         version: 6.26.0
-      typebox:
-        specifier: 1.1.38
-        version: 1.1.38
       vitest:
         specifier: ^4.1.0
         version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@25.9.5)(vite@8.1.4(@types/node@25.9.5)(jiti@2.7.0)(yaml@2.9.0))
