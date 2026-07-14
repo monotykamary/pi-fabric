@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FabricSubagentConfig, FabricSubagentTransport } from "../config.js";
 import { Semaphore } from "./semaphore.js";
+import { removeTree } from "./rm.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
 import { ProcessTransport } from "./transports/process-transport.js";
 import { ScreenTransport } from "./transports/screen-transport.js";
@@ -424,7 +425,7 @@ export class SubagentManager {
     if (!managed.settled) throw new Error("Cannot clean up a running subagent");
     const cleaned = await this.#worktrees.cleanup(id, deleteBranch);
     if (!this.config.retainRuns) {
-      fs.rmSync(managed.runDirectory, { recursive: true, force: true });
+      await removeTree(managed.runDirectory);
     }
     this.#runs.delete(id);
     return { cleaned: cleaned || !fs.existsSync(managed.runDirectory) };
@@ -446,10 +447,10 @@ export class SubagentManager {
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
     await Promise.allSettled(running.map((managed) => this.#waitForTransportExit(managed)));
     if (!this.config.retainRuns) {
-      fs.rmSync(this.#runRoot, { recursive: true, force: true });
+      await removeTree(this.#runRoot);
     }
     if (this.#budgetOwned && this.#budget) {
-      fs.rmSync(path.dirname(this.#budget.file), { recursive: true, force: true });
+      await removeTree(path.dirname(this.#budget.file));
       clearOwnedBudgetEnv();
     }
   }
