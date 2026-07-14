@@ -135,9 +135,11 @@ const snapshot = (): FabricDashboardSnapshot => {
         messages: 2,
         createdAt: now - 120_000,
         updatedAt: now,
+        instructions: "Advise only when useful.",
         recentMessages: [],
       },
     ],
+    globalActors: [],
     state: [
       {
         key: "tasks/package-a",
@@ -597,6 +599,122 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("c");
       const after = dashboard.render(120);
       expect(after.join("\n")).toContain("advisor");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+});
+
+describe("Fabric dashboard global actors and instructions editor", () => {
+  const baseSnapshot = (): FabricDashboardSnapshot => {
+    const now = Date.now();
+    return {
+      now,
+      runs: [],
+      agents: [],
+      actors: [
+        {
+          id: "actor-1",
+          name: "advisor",
+          status: "idle",
+          events: [],
+          topics: [],
+          delivery: "mailbox",
+          responseMode: "text",
+          triggerTurn: false,
+          coalesce: true,
+          queued: 0,
+          messages: 0,
+          createdAt: now,
+          updatedAt: now,
+          instructions: "Advise only when useful.",
+          recentMessages: [],
+        },
+      ],
+      globalActors: [
+        {
+          id: "g-actor-1",
+          name: "global-reviewer",
+          instructions: "You are a global reviewer template.",
+          events: ["turn_end"],
+          topics: [],
+          delivery: "mailbox",
+          responseMode: "directive",
+          triggerTurn: false,
+          coalesce: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      state: [],
+      events: [],
+    };
+  };
+
+  it("lists global templates and offers import/instructions/delete in their detail", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI;
+    const onImportActor = vi.fn();
+    const onGlobalInstructions = vi.fn();
+    const onRemoveGlobalActor = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, baseSnapshot, vi.fn(), {
+      onGlobalInstructions,
+      onImportActor,
+      onRemoveGlobalActor,
+    });
+    try {
+      const overview = dashboard.render(120).join("\n");
+      expect(overview).toContain("global-reviewer");
+      expect(overview).toContain("global template");
+
+      // entities pane → down to the global template → open its detail
+      dashboard.handleInput("l");
+      dashboard.handleInput("j");
+      dashboard.handleInput("\r");
+      const detail = dashboard.render(120).join("\n");
+      expect(detail).toContain("Instructions");
+      expect(detail).toContain("i instructions");
+      expect(detail).toContain("p import");
+      expect(detail).toContain("d delete");
+
+      dashboard.handleInput("p");
+      expect(onImportActor).toHaveBeenCalledWith("g-actor-1");
+      dashboard.handleInput("d");
+      expect(onRemoveGlobalActor).toHaveBeenCalledWith("g-actor-1");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("exports a project actor and edits its instructions in the embedded editor", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI;
+    const onActorInstructions = vi.fn();
+    const onExportActor = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, baseSnapshot, vi.fn(), {
+      onActorInstructions,
+      onExportActor,
+    });
+    try {
+      // entities pane → open the project actor detail (entity index 0)
+      dashboard.handleInput("l");
+      dashboard.handleInput("\r");
+      const detail = dashboard.render(120).join("\n");
+      expect(detail).toContain("x export→global");
+      expect(detail).toContain("i instructions");
+
+      dashboard.handleInput("x");
+      expect(onExportActor).toHaveBeenCalledWith("actor-1");
+
+      // open the embedded instructions editor
+      dashboard.handleInput("i");
+      const editor = dashboard.render(120).join("\n");
+      expect(editor).toContain("instructions · advisor");
+      expect(editor).toContain("enter submit");
+
+      // Enter submits the (unchanged) text to the actor callback and returns to detail
+      dashboard.handleInput("\r");
+      expect(onActorInstructions).toHaveBeenCalledWith("actor-1", "Advise only when useful.");
+      const after = dashboard.render(120).join("\n");
+      expect(after).toContain("advisor");
     } finally {
       dashboard.dispose();
     }

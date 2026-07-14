@@ -17,6 +17,7 @@ const emptySnapshot = (): FabricDashboardSnapshot => ({
   runs: [],
   agents: [],
   actors: [],
+  globalActors: [],
   state: [],
   events: [],
 });
@@ -92,6 +93,48 @@ export class FabricUiController {
     const onClearMessages = (actorId: string): void => {
       this.state.actors.clearMessages(actorId).catch(() => undefined);
     };
+    const onActorInstructions = (actorId: string, instructions: string): void => {
+      this.state.actors.setInstructions(actorId, instructions).catch(() => undefined);
+    };
+    const onGlobalInstructions = (globalActorId: string, instructions: string): void => {
+      try {
+        this.state.globalActors.update(globalActorId, { instructions });
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    };
+    const onImportActor = (globalActorId: string): void => {
+      const def = this.state.globalActors.resolve(globalActorId);
+      if (!def) return;
+      this.state.actors
+        .create(this.state.globalActors.toRequest(def))
+        .then((actor) =>
+          context.ui.notify(`Imported global actor "${def.name}" as ${actor.name}`, "info"),
+        )
+        .catch((error) =>
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error"),
+        );
+    };
+    const onExportActor = (actorId: string): void => {
+      try {
+        const def = this.state.actors.definition(actorId);
+        const template = this.state.globalActors.create(def);
+        context.ui.notify(`Exported "${template.name}" to global actors`, "info");
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    };
+    const onRemoveGlobalActor = (globalActorId: string): void => {
+      try {
+        const result = this.state.globalActors.remove(globalActorId);
+        context.ui.notify(
+          result.removed ? "Removed global actor template" : "Global actor not found",
+          result.removed ? "info" : "warning",
+        );
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    };
     await context.ui.custom<void>(
       (tui, theme, _keybindings, done) =>
         new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
@@ -100,6 +143,11 @@ export class FabricUiController {
           onActorThinking,
           onActorEvents,
           onClearMessages,
+          onActorInstructions,
+          onGlobalInstructions,
+          onImportActor,
+          onExportActor,
+          onRemoveGlobalActor,
         }),
       {
         overlay: true,

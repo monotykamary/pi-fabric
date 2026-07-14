@@ -1,4 +1,5 @@
 import { ActorManager } from "../actors/manager.js";
+import { GlobalActorRegistry } from "../actors/global-registry.js";
 import type { FabricActorHostEvent, FabricActorRequest } from "../actors/types.js";
 import type {
   FabricActionDescriptor,
@@ -100,7 +101,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "create",
     description:
-      "Create a persistent actor with a mailbox and optional host-event or mesh-topic subscriptions",
+      'Create a persistent actor with a mailbox and optional host-event or mesh-topic subscriptions. Use scope "global" to save a reusable project-independent template to the global registry instead of a live project actor; global templates are not live and carry no history.',
     inputSchema: {
       type: "object",
       properties: {
@@ -126,6 +127,7 @@ const descriptors: FabricActionDescriptor[] = [
         tools: runProperties.tools,
         transport: runProperties.transport,
         timeoutMs: { type: "number" },
+        scope: { type: "string", enum: ["project", "global"] },
       },
       required: ["name", "instructions"],
       additionalProperties: false,
@@ -162,8 +164,13 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "actors",
-    description: "List persistent actors in this Fabric session",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    description:
+      'List persistent actors. Default scope "project" lists live actors in this Fabric session; scope "global" lists project-independent templates in the global registry.',
+    inputSchema: {
+      type: "object",
+      properties: { scope: { type: "string", enum: ["project", "global"] } },
+      additionalProperties: false,
+    },
     risk: "read",
   },
   {
@@ -205,9 +212,64 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "remove",
-    description: "Stop and remove a persistent actor",
-    inputSchema: idSchema,
+    description:
+      'Stop and remove a persistent actor. Default scope "project" removes a live project actor; scope "global" removes a project-independent template from the global registry.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        scope: { type: "string", enum: ["project", "global"] },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
     risk: "agent",
+  },
+  {
+    name: "setInstructions",
+    description:
+      'Replace an actor\'s default instruction (its persona / system-prompt body). Default scope "project" edits a live project actor; scope "global" edits a project-independent template. Takes effect on the actor\'s next queued message.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        instructions: { type: "string" },
+        scope: { type: "string", enum: ["project", "global"] },
+      },
+      required: ["id", "instructions"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "import",
+    description:
+      "Import a project-independent template from the global registry into the current project as a fresh live actor with no inherited history (no messages, session, or run logs). Identify the template by id or name; optionally rename the imported actor with \"as\" to avoid colliding with a live actor.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Template id or name (one of id/name required)" },
+        name: { type: "string", description: "Template name (one of id/name required)" },
+        as: { type: "string", description: "Optional new name for the imported live actor" },
+      },
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "export",
+    description:
+      "Export a live project actor's definition to the global registry as a project-independent template, without any history (no messages, session, or run logs). Throws on a name collision unless overwrite is true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        overwrite: { type: "boolean" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    risk: "write",
   },
   {
     name: "log",
@@ -279,6 +341,7 @@ const runRequest = (
 const actorRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
+  inheritModel = true,
 ): FabricActorRequest => {
   const events = Array.isArray(args.events)
     ? args.events.filter(
@@ -292,9 +355,10 @@ const actorRequest = (
     : undefined;
   const topics = stringArray(args.topics);
   const tools = stringArray(args.tools);
-  const inheritedModel = context.extensionContext.model
-    ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
-    : undefined;
+  const inheritedModel =
+    inheritModel && context.extensionContext.model
+      ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
+      : undefined;
   return {
     name: String(args.name),
     instructions: String(args.instructions),
@@ -376,6 +440,7 @@ export class AgentsProvider implements FabricProvider {
   constructor(
     readonly manager: SubagentManager,
     readonly actorManager: ActorManager,
+    readonly globalActors: GlobalActorRegistry,
   ) {}
 
   async list(
@@ -445,6 +510,9 @@ export class AgentsProvider implements FabricProvider {
       case "cleanup":
         return this.manager.cleanup(String(args.id), args.deleteBranch === true);
       case "create": {
+        if (args.scope === "global") {
+          return this.globalActors.create(actorRequest(args, context, false));
+        }
         const actor = await this.actorManager.create(actorRequest(args, context));
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return actor;
@@ -462,7 +530,7 @@ export class AgentsProvider implements FabricProvider {
       case "actorStatus":
         return this.actorManager.status(String(args.id));
       case "actors":
-        return this.actorManager.list();
+        return args.scope === "global" ? this.globalActors.list() : this.actorManager.list();
       case "messages":
         return this.actorManager.messages(
           String(args.id),
@@ -484,7 +552,39 @@ export class AgentsProvider implements FabricProvider {
       case "clearMessages":
         return this.actorManager.clearMessages(String(args.id));
       case "remove":
-        return this.actorManager.remove(String(args.id));
+        return args.scope === "global"
+          ? this.globalActors.remove(String(args.id))
+          : this.actorManager.remove(String(args.id));
+      case "setInstructions": {
+        const id = String(args.id);
+        const instructions = String(args.instructions);
+        if (args.scope === "global") {
+          return this.globalActors.update(id, { instructions });
+        }
+        return this.actorManager.setInstructions(id, instructions);
+      }
+      case "import": {
+        const key =
+          typeof args.id === "string" && args.id.trim()
+            ? args.id.trim()
+            : typeof args.name === "string" && args.name.trim()
+              ? args.name.trim()
+              : "";
+        if (!key) throw new Error("Import requires a template id or name");
+        const def = this.globalActors.resolve(key);
+        if (!def) throw new Error(`Unknown global actor: ${key}`);
+        const as =
+          typeof args.as === "string" && args.as.trim() ? args.as.trim() : undefined;
+        const actor = await this.actorManager.create(this.globalActors.toRequest(def, as));
+        context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
+        return actor;
+      }
+      case "export": {
+        const id = String(args.id);
+        const overwrite = args.overwrite === true;
+        const def = this.actorManager.definition(id);
+        return this.globalActors.create(def, overwrite);
+      }
       case "log": {
         const id = String(args.id);
         const type = args.type === "run" || args.type === "all" ? args.type : "session";

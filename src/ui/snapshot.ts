@@ -106,6 +106,7 @@ export const createDashboardSnapshot = (
     const worker = allAgents.find((agent) => agent.actorId === actor.id);
     return {
       ...actor,
+      instructions: state.actors.instructions(actor.id),
       recentMessages: state.actors.messages(actor.id, 12),
       ...(worker ? { worker } : {}),
     };
@@ -127,6 +128,7 @@ export const createDashboardSnapshot = (
     now: Date.now(),
     runs,
     widgetDismissedAt: state.widgetDismissedAt,
+    globalActors: state.globalActors.list(),
     agents: agents.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;

@@ -1,4 +1,4 @@
-import type { FabricActorInfo, FabricActorMessage } from "../actors/types.js";
+import type { FabricActorInfo, FabricActorMessage, GlobalActorDefinition } from "../actors/types.js";
 import type { FabricActivityRun } from "../activity/types.js";
 import type { MeshEvent } from "../mesh/store.js";
 import type { SubagentUsage } from "../subagents/types.js";
@@ -32,6 +32,8 @@ export interface FabricUiAgent {
 }
 
 export interface FabricUiActor extends FabricActorInfo {
+  /** The actor's default instruction (persona text); shown and edited in the dashboard. */
+  instructions: string;
   recentMessages: FabricActorMessage[];
   worker?: FabricUiAgent;
 }
@@ -53,6 +55,8 @@ export interface FabricDashboardSnapshot {
   runs: FabricActivityRun[];
   agents: FabricUiAgent[];
   actors: FabricUiActor[];
+  /** Project-independent actor templates from the global registry. */
+  globalActors: GlobalActorDefinition[];
   state: FabricUiStateEntry[];
   events: MeshEvent[];
 }

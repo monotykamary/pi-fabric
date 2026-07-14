@@ -94,3 +94,27 @@ export interface FabricActorDeliveryRequest {
   delivery: Exclude<FabricActorDelivery, "mailbox">;
   triggerTurn: boolean;
 }
+
+/**
+ * A project-independent actor template stored in the global registry
+ * (the user's agent dir, not a project mesh). It carries only the actor
+ * definition (the same fields as FabricActorRequest) plus identity and
+ * timestamps — never any history (messages, session transcript, or run logs).
+ * Global actors are not live: they are stamped into a project via import,
+ * which creates a fresh live actor with no inherited history.
+ */
+export interface GlobalActorDefinition extends FabricActorRequest {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  // Redeclared required: the registry always materializes these (defaults
+  // applied on create and load), so they are never undefined on a stored
+  // template. Keeping them required avoids undefined creeping into merges and
+  // spreads under exactOptionalPropertyTypes.
+  events: FabricActorHostEvent[];
+  topics: string[];
+  delivery: FabricActorDelivery;
+  responseMode: FabricActorResponseMode;
+  triggerTurn: boolean;
+  coalesce: boolean;
+}

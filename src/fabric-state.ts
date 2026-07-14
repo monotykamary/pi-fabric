@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
+import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
@@ -34,6 +35,7 @@ export class FabricState {
   #execution: FabricExecutionService | undefined;
   #subagents: SubagentManager | undefined;
   #actors: ActorManager | undefined;
+  #globalActors: GlobalActorRegistry | undefined;
   #mesh: MeshStore | undefined;
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
@@ -84,6 +86,11 @@ export class FabricState {
   get actors(): ActorManager {
     if (!this.#actors) throw new Error("Pi Fabric has not initialized");
     return this.#actors;
+  }
+
+  get globalActors(): GlobalActorRegistry {
+    if (!this.#globalActors) throw new Error("Pi Fabric has not initialized");
+    return this.#globalActors;
   }
 
   get mesh(): MeshStore {
@@ -193,7 +200,8 @@ export class FabricState {
           }
         : { persistent: false },
     );
-    this.#registry.register(new AgentsProvider(this.#subagents, this.#actors));
+    this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
+    this.#registry.register(new AgentsProvider(this.#subagents, this.#actors, this.#globalActors));
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);
     }
@@ -287,6 +295,7 @@ export class FabricState {
     this.#execution = undefined;
     this.#subagents = undefined;
     this.#actors = undefined;
+    this.#globalActors = undefined;
     this.#mesh = undefined;
     this.#cwd = undefined;
     this.activity.reset();

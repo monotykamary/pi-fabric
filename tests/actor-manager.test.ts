@@ -651,4 +651,41 @@ describe("ActorManager", () => {
     expect(deliveries.length).toBe(2);
     expect(actors.status(actor.id).queued).toBe(0);
   });
+
+  it("exposes the portable definition without history", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "reviewer",
+      instructions: "Review code.",
+      events: ["turn_end"],
+      topics: ["team.review"],
+      delivery: "steer",
+      model: "anthropic/sonnet",
+    });
+    const def = actors.definition(actor.id);
+    expect(def).toEqual({
+      name: "reviewer",
+      instructions: "Review code.",
+      events: ["turn_end"],
+      topics: ["team.review"],
+      delivery: "steer",
+      responseMode: "text",
+      triggerTurn: false,
+      coalesce: true,
+      model: "anthropic/sonnet",
+    });
+    // history never crosses the global⇄project boundary
+    expect(def).not.toHaveProperty("id");
+    expect(def).not.toHaveProperty("sessionFile");
+    expect(def).not.toHaveProperty("messages");
+  });
+
+  it("reads and updates the default instruction", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({ name: "advisor", instructions: "Advise." });
+    expect(actors.instructions(actor.id)).toBe("Advise.");
+    await actors.setInstructions(actor.id, "Advise only when useful.");
+    expect(actors.instructions(actor.id)).toBe("Advise only when useful.");
+    await expect(actors.setInstructions(actor.id, "   ")).rejects.toThrow(/empty/);
+  });
 });

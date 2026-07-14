@@ -80,6 +80,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         "attach",
         "stop",
         "remove",
+        "global",
+        "import",
+        "export",
         "kill",
       ];
       const idCommands = new Set([
@@ -99,9 +102,43 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         return matches.length > 0 ? matches.map((name) => ({ value: name, label: name })) : null;
       }
       const subcommand = argumentPrefix.slice(0, firstSpace);
-      if (!idCommands.has(subcommand)) return null;
       const idPrefix = argumentPrefix.slice(firstSpace + 1);
       if (!state.initialized) return null;
+      if (subcommand === "import") {
+        const items: AutocompleteItem[] = [];
+        try {
+          for (const template of state.globalActors.list()) {
+            items.push({
+              value: template.name,
+              label: template.name,
+              description: `global template · ${template.id.slice(0, 8)}`,
+            });
+          }
+        } catch {
+          /* global registry not initialized */
+        }
+        const filtered = items.filter((item) => item.value.startsWith(idPrefix));
+        return filtered.length > 0 ? filtered : null;
+      }
+      if (!idCommands.has(subcommand)) {
+        if (subcommand === "export") {
+          const items: AutocompleteItem[] = [];
+          try {
+            for (const actor of state.actors.list()) {
+              items.push({
+                value: actor.name,
+                label: actor.name,
+                description: `${actor.status} actor · ${actor.id.slice(0, 8)}`,
+              });
+            }
+          } catch {
+            /* actors not initialized */
+          }
+          const filtered = items.filter((item) => item.value.startsWith(idPrefix));
+          return filtered.length > 0 ? filtered : null;
+        }
+        return null;
+      }
       const items: AutocompleteItem[] = [];
       try {
         for (const actor of state.actors.list()) {
@@ -438,9 +475,66 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         context.ui.notify(agent.attachCommand, "info");
         return;
       }
+      if (command === "global") {
+        const templates = state.globalActors.list();
+        context.ui.notify(
+          templates.length > 0
+            ? templates
+                .map((template) => `${template.id.slice(0, 8)} global — ${template.name}`)
+                .join("\n")
+            : "No global Fabric actor templates",
+          "info",
+        );
+        return;
+      }
+      if (command === "import") {
+        const key = argumentsList[0];
+        if (!key) {
+          context.ui.notify("Usage: /fabric import <global-actor-name-or-id> [as <new-name>]", "warning");
+          return;
+        }
+        try {
+          const def = state.globalActors.resolve(key);
+          if (!def) {
+            context.ui.notify(`Unknown global actor: ${key}`, "error");
+            return;
+          }
+          const asIndex = argumentsList.indexOf("as");
+          const as =
+            asIndex >= 0 && argumentsList[asIndex + 1] ? argumentsList[asIndex + 1] : undefined;
+          const actor = await state.actors.create(state.globalActors.toRequest(def, as));
+          context.ui.notify(`Imported global actor "${def.name}" as ${actor.name}`, "info");
+        } catch (error) {
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        }
+        return;
+      }
+      if (command === "export") {
+        const id = argumentsList[0];
+        const overwrite = argumentsList.includes("--overwrite") || argumentsList.includes("-f");
+        if (!id) {
+          context.ui.notify("Usage: /fabric export <actor-id> [--overwrite]", "warning");
+          return;
+        }
+        try {
+          const actor = state.actors
+            .list()
+            .find((candidate) => candidate.id.startsWith(id) || candidate.name === id);
+          if (!actor) {
+            context.ui.notify(`Unknown Fabric actor: ${id}`, "error");
+            return;
+          }
+          const def = state.actors.definition(actor.id);
+          const template = state.globalActors.create(def, overwrite);
+          context.ui.notify(`Exported "${template.name}" to global actors`, "info");
+        } catch (error) {
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        }
+        return;
+      }
       if (command !== "status") {
         context.ui.notify(
-          "Usage: /fabric [status|dashboard|reload|providers|agents|actors|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
+          "Usage: /fabric [status|dashboard|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>]",
           "warning",
         );
         return;

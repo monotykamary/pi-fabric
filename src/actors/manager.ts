@@ -325,6 +325,26 @@ export class ActorManager {
     return this.#publicInfo(actor);
   }
 
+  /**
+   * Replace an existing actor's default instruction (its persona / system-prompt
+   * body). Takes effect on the actor's next queued message: #runRequest builds
+   * the system prompt from actor.instructions at run start, so an in-flight run
+   * keeps the instructions it was launched with. Lets a steering user refine an
+   * actor's role from the dashboard without recreating it.
+   */
+  async setInstructions(id: string, instructions: string): Promise<FabricActorInfo> {
+    const actor = this.#requireActor(id);
+    if (!instructions.trim()) throw new Error("Actor instructions must not be empty");
+    if (Buffer.byteLength(instructions, "utf8") > this.meshConfig.maxEventBytes) {
+      throw new Error(`Actor instructions exceed ${this.meshConfig.maxEventBytes} bytes`);
+    }
+    actor.instructions = instructions;
+    actor.updatedAt = Date.now();
+    this.#saveActors();
+    await this.#publishPresence(actor);
+    return this.#publicInfo(actor);
+  }
+
   tell(id: string, message: string, data?: unknown): { queued: true; messageId: string } {
     this.#validateDirectMessage(message, data);
     const actor = this.#requireActiveActor(id);
@@ -397,6 +417,41 @@ export class ActorManager {
     const actor = this.#requireActor(id);
     const bounded = Math.max(1, Math.min(Math.floor(limit), MESSAGE_HISTORY_LIMIT));
     return actor.messages.slice(-bounded).map((message) => structuredClone(message));
+  }
+
+  /**
+   * Read an actor's default instruction (its persona / system-prompt body).
+   * Used by the dashboard to prefill the instructions editor; deliberately not
+   * part of the mesh-presence FabricActorInfo to keep the persona text off the
+   * shared mesh state.
+   */
+  instructions(id: string): string {
+    return this.#requireActor(id).instructions;
+  }
+
+  /**
+   * Read an actor's portable definition — the fields that cross the
+   * global⇄project boundary (name, instructions, subscriptions, run settings).
+   * Excludes all history (messages, session transcript, run logs) so export
+   * can save a project actor to the global registry with a clean slate.
+   */
+  definition(id: string): FabricActorRequest {
+    const actor = this.#requireActor(id);
+    return {
+      name: actor.name,
+      instructions: actor.instructions,
+      events: [...actor.events],
+      topics: [...actor.topics],
+      delivery: actor.delivery,
+      responseMode: actor.responseMode,
+      triggerTurn: actor.triggerTurn,
+      coalesce: actor.coalesce,
+      ...(actor.model ? { model: actor.model } : {}),
+      ...(actor.thinking ? { thinking: actor.thinking } : {}),
+      ...(actor.tools ? { tools: [...actor.tools] } : {}),
+      ...(actor.transport ? { transport: actor.transport } : {}),
+      ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
+    };
   }
 
   readLog(

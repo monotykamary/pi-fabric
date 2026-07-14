@@ -1,6 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
-import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+  Editor,
+  getKeybindings,
+  Key,
+  matchesKey,
+  truncateToWidth,
+  type EditorTheme,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import type {
   FabricActivityCall,
   FabricActivityItem,
@@ -13,7 +21,7 @@ import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
 import { FabricThinkingSelector } from "./fabric-thinking-selector.js";
 import { INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
-import type { FabricActorHostEvent } from "../actors/types.js";
+import type { FabricActorHostEvent, GlobalActorDefinition } from "../actors/types.js";
 import type {
   FabricDashboardSnapshot,
   FabricUiActor,
@@ -35,6 +43,13 @@ interface PhasePanel {
 type Entity =
   | { id: string; kind: "agent"; label: string; status: string; value: FabricUiAgent }
   | { id: string; kind: "actor"; label: string; status: string; value: FabricUiActor }
+  | {
+      id: string;
+      kind: "globalActor";
+      label: string;
+      status: string;
+      value: GlobalActorDefinition;
+    }
   | { id: string; kind: "call"; label: string; status: string; value: FabricActivityCall }
   | { id: string; kind: "item"; label: string; status: string; value: FabricActivityItem }
   | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry };
@@ -52,6 +67,7 @@ const statusGlyph = (status: string): string => {
   if (status === "stopped" || status === "cancelled") return "■";
   if (status === "queued" || status === "pending" || status === "ready") return "○";
   if (status === "idle" || status === "state") return "·";
+  if (status === "global") return "◇";
   return spinnerFrames[Math.floor(Date.now() / 250) % spinnerFrames.length] ?? "●";
 };
 
@@ -62,8 +78,20 @@ const colorStatus = (theme: Theme, status: string, value: string): string => {
   }
   if (status === "blocked" || status === "warning") return theme.fg("warning", value);
   if (status === "running" || status === "in_progress") return theme.fg("accent", value);
+  if (status === "global") return theme.fg("muted", value);
   return theme.fg("dim", value);
 };
+
+const editorTheme = (theme: Theme): EditorTheme => ({
+  borderColor: (value: string) => theme.fg("borderMuted", value),
+  selectList: {
+    selectedPrefix: (text: string) => theme.fg("accent", text),
+    selectedText: (text: string) => theme.fg("accent", text),
+    description: (text: string) => theme.fg("muted", text),
+    scrollInfo: (text: string) => theme.fg("muted", text),
+    noMatch: (text: string) => theme.fg("muted", text),
+  },
+});
 
 const phaseWork = (
   run: FabricActivityRun,
@@ -144,7 +172,14 @@ const entitiesFor = (
         status: agent.status,
         value: agent,
       }));
-    return [...unlinkedAgents, ...actors, ...state];
+    const globalActors: Entity[] = snapshot.globalActors.map((def) => ({
+      id: `globalActor:${def.id}`,
+      kind: "globalActor",
+      label: def.name,
+      status: "global",
+      value: def,
+    }));
+    return [...unlinkedAgents, ...actors, ...globalActors, ...state];
   }
 
   const calls = run?.calls.filter((call) => call.phaseId === panel.id) ?? [];
@@ -231,6 +266,17 @@ const entityTail = (entity: Entity, now: number): string => {
       .filter((value): value is string => Boolean(value))
       .join(" · ");
   }
+  if (entity.kind === "globalActor") {
+    const def = entity.value;
+    return [
+      "global template",
+      def.model ?? "inherit",
+      def.responseMode === "directive" ? "directive" : undefined,
+      def.delivery !== "mailbox" ? def.delivery : undefined,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" · ");
+  }
   if (entity.kind === "call") {
     const call = entity.value;
     return [
@@ -273,12 +319,15 @@ export class FabricDashboard implements Component, Focusable {
     | "detail"
     | "modelPicker"
     | "thinkingPicker"
-    | "eventsPicker" = "overview";
+    | "eventsPicker"
+    | "instructionsEditor" = "overview";
   private picker:
     | FabricModelSelector
     | FabricThinkingSelector
     | FabricHostEventSelector
     | undefined;
+  private editor: Editor | undefined;
+  private editorActorName: string | undefined;
   private readonly modelSource: ModelSource | undefined;
   private readonly onActorModel:
     | ((actorId: string, model: string | undefined) => void)
@@ -290,6 +339,15 @@ export class FabricDashboard implements Component, Focusable {
     | ((actorId: string, events: FabricActorHostEvent[]) => void)
     | undefined;
   private readonly onClearMessages: ((actorId: string) => void) | undefined;
+  private readonly onActorInstructions:
+    | ((actorId: string, instructions: string) => void)
+    | undefined;
+  private readonly onGlobalInstructions:
+    | ((globalActorId: string, instructions: string) => void)
+    | undefined;
+  private readonly onImportActor: ((globalActorId: string) => void) | undefined;
+  private readonly onExportActor: ((actorId: string) => void) | undefined;
+  private readonly onRemoveGlobalActor: ((globalActorId: string) => void) | undefined;
   private pickerActorName: string | undefined;
 
   constructor(
@@ -303,6 +361,11 @@ export class FabricDashboard implements Component, Focusable {
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
       onClearMessages?: (actorId: string) => void;
+      onActorInstructions?: (actorId: string, instructions: string) => void;
+      onGlobalInstructions?: (globalActorId: string, instructions: string) => void;
+      onImportActor?: (globalActorId: string) => void;
+      onExportActor?: (actorId: string) => void;
+      onRemoveGlobalActor?: (globalActorId: string) => void;
     } = {},
   ) {
     this.focused = true;
@@ -311,11 +374,25 @@ export class FabricDashboard implements Component, Focusable {
     this.onActorThinking = options.onActorThinking;
     this.onActorEvents = options.onActorEvents;
     this.onClearMessages = options.onClearMessages;
+    this.onActorInstructions = options.onActorInstructions;
+    this.onGlobalInstructions = options.onGlobalInstructions;
+    this.onImportActor = options.onImportActor;
+    this.onExportActor = options.onExportActor;
+    this.onRemoveGlobalActor = options.onRemoveGlobalActor;
     this.refreshTimer = setInterval(() => this.tui.requestRender(), 500);
     this.refreshTimer.unref();
   }
 
   handleInput(data: string): void {
+    if (this.mode === "instructionsEditor" && this.editor) {
+      if (getKeybindings().matches(data, "tui.select.cancel")) {
+        this.closeInstructionsEditor();
+      } else {
+        this.editor.handleInput(data);
+      }
+      this.tui.requestRender();
+      return;
+    }
     if (
       (this.mode === "modelPicker" ||
         this.mode === "thinkingPicker" ||
@@ -375,6 +452,31 @@ export class FabricDashboard implements Component, Focusable {
           this.onClearMessages
         ) {
           this.onClearMessages(detail.value.id);
+        }
+      } else if (data === "i") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (detail && (detail.kind === "actor" || detail.kind === "globalActor")) {
+          this.openInstructionsEditor(detail);
+        }
+      } else if (data === "x") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (
+          detail &&
+          detail.kind === "actor" &&
+          detail.status !== "stopped" &&
+          this.onExportActor
+        ) {
+          this.onExportActor(detail.value.id);
+        }
+      } else if (data === "p") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (detail && detail.kind === "globalActor" && this.onImportActor) {
+          this.onImportActor(detail.value.id);
+        }
+      } else if (data === "d") {
+        const detail = entities.find((entity) => entity.id === this.detailId);
+        if (detail && detail.kind === "globalActor" && this.onRemoveGlobalActor) {
+          this.onRemoveGlobalActor(detail.value.id);
         }
       }
       this.tui.requestRender();
@@ -440,6 +542,9 @@ export class FabricDashboard implements Component, Focusable {
 
   render(width: number): string[] {
     if (width <= 0) return [];
+    if (this.mode === "instructionsEditor") {
+      return this.renderInstructionsEditor(width);
+    }
     if (
       (this.mode === "modelPicker" ||
         this.mode === "thinkingPicker" ||
@@ -471,6 +576,8 @@ export class FabricDashboard implements Component, Focusable {
   dispose(): void {
     clearInterval(this.refreshTimer);
     this.picker = undefined;
+    this.editor = undefined;
+    this.editorActorName = undefined;
     this.mode = "overview";
   }
 
@@ -539,6 +646,52 @@ export class FabricDashboard implements Component, Focusable {
     this.mode = "detail";
   }
 
+  /**
+   * Open the embedded multi-line editor for an actor's default instruction.
+   * Matches Pi's editor dialog convention (Enter submit, Shift+Enter newline,
+   * Esc/Ctrl+C cancel) so a steering user edits the persona with the same
+   * muscle memory as the chat input. Works for both live project actors and
+   * global templates; the submit routes to the scope-appropriate callback.
+   */
+  private openInstructionsEditor(entity: Entity): void {
+    let kind: "actor" | "globalActor";
+    let id: string;
+    let name: string;
+    let instructions: string;
+    if (entity.kind === "actor") {
+      if (entity.status === "stopped" || !this.onActorInstructions) return;
+      kind = "actor";
+      id = entity.value.id;
+      name = entity.value.name;
+      instructions = entity.value.instructions;
+    } else if (entity.kind === "globalActor") {
+      if (!this.onGlobalInstructions) return;
+      kind = "globalActor";
+      id = entity.value.id;
+      name = entity.value.name;
+      instructions = entity.value.instructions;
+    } else {
+      return;
+    }
+    const editor = new Editor(this.tui, editorTheme(this.theme));
+    editor.focused = true;
+    editor.setText(instructions);
+    editor.onSubmit = (text) => {
+      if (kind === "actor") this.onActorInstructions?.(id, text);
+      else this.onGlobalInstructions?.(id, text);
+      this.closeInstructionsEditor();
+    };
+    this.editor = editor;
+    this.editorActorName = name;
+    this.mode = "instructionsEditor";
+  }
+
+  private closeInstructionsEditor(): void {
+    this.editor = undefined;
+    this.editorActorName = undefined;
+    this.mode = "detail";
+  }
+
   private renderPicker(width: number): string[] {
     if (width < 24 || !this.picker) return [];
     const kind =
@@ -559,6 +712,24 @@ export class FabricDashboard implements Component, Focusable {
       this.row(
         width,
         this.theme.fg("dim", `  Enter to select · Esc to cancel${filterHint}`),
+      ),
+    );
+    lines.push(this.bottomBorder(width));
+    return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  private renderInstructionsEditor(width: number): string[] {
+    if (width < 24 || !this.editor) return [];
+    const innerWidth = width - 2;
+    const lines = [this.topBorder(width, `instructions · ${this.editorActorName ?? ""}`)];
+    for (const line of this.editor.render(innerWidth)) {
+      lines.push(this.row(width, line));
+    }
+    lines.push(this.middleBorder(width));
+    lines.push(
+      this.row(
+        width,
+        this.theme.fg("dim", "  enter submit · shift+enter newline · esc cancel"),
       ),
     );
     lines.push(this.bottomBorder(width));
@@ -815,12 +986,25 @@ export class FabricDashboard implements Component, Focusable {
       entity.kind === "actor" && entity.status !== "stopped" && this.onClearMessages
         ? " · c clear"
         : "";
+    const actorInstructionsHint =
+      entity.kind === "actor" && entity.status !== "stopped" && this.onActorInstructions
+        ? " · i instructions"
+        : "";
+    const actorExportHint =
+      entity.kind === "actor" && entity.status !== "stopped" && this.onExportActor
+        ? " · x export→global"
+        : "";
+    const globalInstructionsHint =
+      entity.kind === "globalActor" && this.onGlobalInstructions ? " · i instructions" : "";
+    const globalImportHint = entity.kind === "globalActor" && this.onImportActor ? " · p import" : "";
+    const globalDeleteHint =
+      entity.kind === "globalActor" && this.onRemoveGlobalActor ? " · d delete" : "";
     lines.push(
       this.row(
         width,
         this.theme.fg(
           "dim",
-          `j/k scroll · esc back${content.length > maxBody ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}` : ""}${actorModelHint}${actorThinkingHint}${actorEventsHint}${actorClearHint}`,
+          `j/k scroll · esc back${content.length > maxBody ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}` : ""}${actorModelHint}${actorThinkingHint}${actorEventsHint}${actorClearHint}${actorInstructionsHint}${actorExportHint}${globalInstructionsHint}${globalImportHint}${globalDeleteHint}`,
         ),
       ),
     );
@@ -875,6 +1059,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Topics", actor.topics.join(", "));
       field("Queue", actor.queued);
       field("Last error", actor.lastError);
+      field("Instructions", actor.instructions);
       if (actor.recentMessages.length > 0) {
         lines.push("");
         lines.push(this.theme.fg("accent", "Recent mailbox"));
@@ -906,6 +1091,20 @@ export class FabricDashboard implements Component, Focusable {
       field("Current", item.current);
       field("Detail", item.detail);
       field("Data", item.data === undefined ? undefined : JSON.stringify(item.data));
+    } else if (entity.kind === "globalActor") {
+      const def = entity.value;
+      field("Scope", "global template");
+      field("ID", def.id);
+      field("Delivery", `${def.delivery} · ${def.responseMode}`);
+      field("Model", def.model ?? "inherit");
+      field("Thinking", def.thinking ?? "inherit");
+      field("Host events", def.events.join(", "));
+      field("Topics", def.topics.join(", "));
+      field("Trigger turn", def.triggerTurn ? "yes" : "no");
+      field("Coalesce", def.coalesce ? "yes" : "no");
+      field("Created", new Date(def.createdAt).toLocaleString());
+      field("Updated", new Date(def.updatedAt).toLocaleString());
+      field("Instructions", def.instructions);
     } else {
       const entry = entity.value;
       field("Key", entry.key);

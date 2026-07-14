@@ -320,6 +320,34 @@ Two response modes are available:
 
 Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. The creator fixes delivery policy; an actor cannot escalate it in a response. Use `agents.ask()` for a blocking exchange, `agents.tell()` for fire-and-forget mail, `agents.messages()` for history, and `agents.remove()` for cleanup.
 
+### Global actor templates
+
+Persistent actors live in a project mesh, but a persona worth reusing across projects belongs in a project-independent **template library** stored in your agent dir (`~/.pi/agent/fabric/actors/`). Templates carry only an actor definition — name, instructions, subscriptions, and run settings — never any history (mailbox, session transcript, or run logs). They are not live; you stamp one into a project to make it run.
+
+```ts
+// Save a reusable persona to the global registry (not a live actor).
+return agents.create({
+  name: "security-reviewer",
+  instructions: "Review changes for security defects. Reply with a directive only for material drift.",
+  events: ["agent_settled"],
+  responseMode: "directive",
+  scope: "global",
+});
+
+// List templates, then stamp one into the current project as a fresh actor.
+const [template] = agents.actors({ scope: "global" });
+return agents.import({ name: template.name });                       // fresh: no inherited history
+return agents.import({ name: "security-reviewer", as: "security-reviewer-2" }); // rename on collision
+
+// Promote a tuned project actor back to the global library (no history).
+return agents.export({ id: actorId, overwrite: true });
+
+// Refine a template's default instruction (the persona / system-prompt body).
+return agents.setInstructions({ id: template.id, instructions: "Be brief.", scope: "global" });
+```
+
+`agents.setInstructions` also edits a live project actor (`scope: "project"`, the default); the new instruction takes effect on the actor's next queued message. History never crosses the project⇄global boundary — import and export move only the definition. Slash commands mirror the API: `/fabric global` lists templates, `/fabric import <name> [as <new>]` stamps one into the project, and `/fabric export <id> [--overwrite]` promotes a project actor. The dashboard lists global templates alongside live actors and lets you import, export, delete, and edit instructions without writing code.
+
 ### Durable mesh coordination
 
 The `mesh` API is a project-scoped, event-sourced coordination substrate:
@@ -397,9 +425,9 @@ Supervisor and advisor are deliberately skills rather than hard-coded host servi
 Fabric also owns a general-purpose, theme-aware activity surface for any agent setup:
 
 - A compact widget above the chat (like `pi-supervisor`) follows the current phase and shows active agents, actors, tools, custom items, shared tasks, token use, and elapsed time. It disappears after ordinary runs become quiet, while persistent actors remain visible as a compact ambient row.
-- `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use a Claude-workflow-style phase pane beside agents and work items; narrow terminals stack the same panels. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Actor mailboxes, mesh state, and recent mesh events use the same view rather than role-specific screens. In an actor's detail view, press `m` to open the model picker and change that actor's model, or press `e` to open the thinking (reasoning effort) picker and change that actor's `thinking` level (or pick Inherit to fall back to the Fabric default); both changes persist to the actor registry and take effect on the actor's next run.
+- `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use a Claude-workflow-style phase pane beside agents and work items; narrow terminals stack the same panels. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Actor mailboxes, mesh state, and recent mesh events use the same view rather than role-specific screens. In an actor's detail view, press `m` to open the model picker and change that actor's model, or press `e` to open the thinking (reasoning effort) picker and change that actor's `thinking` level (or pick Inherit to fall back to the Fabric default); both changes persist to the actor registry and take effect on the actor's next run. Global actor templates (project-independent personas) appear in the same view; in any actor's detail, press `i` to edit its default instruction (Enter submits, Shift+Enter inserts a line), `x` to export a project actor to the global library, `p` to import a global template as a fresh project actor, and `d` to delete a global template.
 - `/fabric settings` opens an inline settings view that mirrors Pi core's `/settings` (top and bottom borders, fuzzy search, section submenus) and writes changes to `fabric.json`. Trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`. Full code mode, capture, executor, approvals, and UI changes apply immediately; mesh, subagent, and MCP changes persist and take effect on the next `/fabric reload`. List editors for `subagents.defaultTools` and `capture.keepVisible` toggle known tools on and off; `keepVisible` candidates include `fabric_exec` plus every captured extension tool.
-- `↑`/`↓` or `j`/`k` select, `←`/`→` or Tab switch panes, Enter drills into details, `f` cycles status filters, `[`/`]` switches retained runs, `m` changes an actor's model and `e` its thinking level from the detail view, and Esc backs out or closes.
+- `↑`/`↓` or `j`/`k` select, `←`/`→` or Tab switch panes, Enter drills into details, `f` cycles status filters, `[`/`]` switches retained runs, `m` changes an actor's model, `e` its thinking level, `i` its default instruction, `x` exports to global, `p` imports from global, and `d` deletes a global template from the detail view, and Esc backs out or closes.
 
 The surface is data-driven. Fabric automatically instruments nested provider calls, subagents, persistent actors, and task-shaped mesh entries. A workflow can add domain-specific labels and arbitrary progress without adding extension UI code:
 
