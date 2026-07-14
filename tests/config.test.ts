@@ -85,6 +85,14 @@ describe("Fabric configuration", () => {
     expect(nonString.subagents.model).toBeUndefined();
   });
 
+  it("normalizes the ESC halt toggle for actors", () => {
+    expect(DEFAULT_FABRIC_CONFIG.ui.haltOnEscape).toBe(true);
+    const disabled = normalizeFabricConfig({ ui: { haltOnEscape: false } });
+    expect(disabled.ui.haltOnEscape).toBe(false);
+    const invalid = normalizeFabricConfig({ ui: { haltOnEscape: "off" } });
+    expect(invalid.ui.haltOnEscape).toBe(true);
+  });
+
   it("preserves native tool registration in orchestration-only mode", () => {
     const capture = effectiveToolCaptureConfig({
       fullCodeMode: false,

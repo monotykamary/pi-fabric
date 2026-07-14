@@ -551,16 +551,73 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     toolCapture.setPolicy(inactiveCapturePolicy);
   };
 
+  // ESC interrupt: a lone Escape (debounced to ignore escape sequences such as
+  // arrow keys) halts every persistent actor — aborting in-flight runs and
+  // cancelling queued work — without tearing the actors down. Escape is
+  // observed but not consumed, so Pi's native cancel-streaming still fires;
+  // single ESC therefore stops the current turn and the advisor/supervisor
+  // actors at once. Disabled when mesh/actors are off or ui.haltOnEscape is
+  // false.
+  let haltOnEscapeUnsubscribe: (() => void) | undefined;
+  const uninstallHaltOnEscape = (): void => {
+    haltOnEscapeUnsubscribe?.();
+    haltOnEscapeUnsubscribe = undefined;
+  };
+  const installHaltOnEscape = (context: ExtensionContext): void => {
+    uninstallHaltOnEscape();
+    if (context.mode !== "tui") return;
+    if (!state.config.ui.haltOnEscape || !state.config.mesh.enabled) return;
+    if (typeof context.ui.onTerminalInput !== "function") return;
+    const ESC = "\x1b";
+    const DEBOUNCE_MS = 60;
+    let escTimer: NodeJS.Timeout | undefined;
+    const trigger = (): void => {
+      if (!state.initialized || !state.config.mesh.enabled) return;
+      let halted = 0;
+      try {
+        halted = state.actors.haltAll().halted;
+      } catch {
+        return;
+      }
+      if (halted > 0) {
+        context.ui.notify(
+          `Fabric: halted ${halted} actor${halted === 1 ? "" : "s"} (Esc)`,
+          "warning",
+        );
+      }
+    };
+    haltOnEscapeUnsubscribe = context.ui.onTerminalInput((data: string) => {
+      if (data === ESC) {
+        if (escTimer) clearTimeout(escTimer);
+        escTimer = setTimeout(() => {
+          escTimer = undefined;
+          trigger();
+        }, DEBOUNCE_MS);
+        escTimer.unref?.();
+        return undefined;
+      }
+      // Any other input cancels a pending lone-Esc debounce — the Esc byte was
+      // most likely the start of an escape sequence that arrived split.
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = undefined;
+      }
+      return undefined;
+    });
+  };
+
   pi.on("session_start", async (_event, context) => {
     fabricUi.stop();
     suspendToolCapture();
     await state.initialize(context);
     applyFabricMode();
     fabricUi.start(context);
+    installHaltOnEscape(context);
   });
 
   pi.on("session_shutdown", async () => {
     try {
+      uninstallHaltOnEscape();
       fabricUi.stop();
       suspendToolCapture();
       toolOwnership.release();

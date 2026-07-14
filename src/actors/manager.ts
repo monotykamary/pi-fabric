@@ -66,6 +66,10 @@ const HOST_EVENTS = new Set<FabricActorHostEvent>([
   "session_compact",
 ]);
 const MESSAGE_HISTORY_LIMIT = 100;
+// After a user-triggered halt (ESC), ignore host-event dispatches for a short
+// window so the interrupt's own turn_end / agent_settled events do not
+// immediately re-arm the actors that were just stopped.
+const HOST_EVENT_HALT_COOLDOWN_MS = 1_000;
 
 const atomicWrite = (filePath: string, value: unknown): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -154,6 +158,7 @@ export class ActorManager {
   #meshOffset: number;
   #polling = false;
   #closing = false;
+  #haltedAt = 0;
 
   constructor(
     readonly sessionId: string,
@@ -376,6 +381,9 @@ export class ActorManager {
 
   dispatchHostEvent(event: FabricActorHostEvent, payload: unknown): number {
     if (this.#closing || !this.meshConfig.enabled) return 0;
+    if (this.#haltedAt > 0 && Date.now() - this.#haltedAt < HOST_EVENT_HALT_COOLDOWN_MS) {
+      return 0;
+    }
     let delivered = 0;
     for (const actor of this.#actors.values()) {
       if (actor.status === "stopped" || !actor.events.includes(event)) continue;
@@ -411,6 +419,42 @@ export class ActorManager {
       })
       .catch(() => undefined);
     return this.#publicInfo(actor);
+  }
+
+  /**
+   * Interrupt every non-stopped actor: abort its in-flight run (if any) and
+   * reject every queued message so subsequent execution is cancelled. Unlike
+   * stop(), actors stay alive and idle — they keep their identity, session,
+   * and subscriptions, and resume responding to future events. Returns the
+   * number of actors that had work to cancel. Also arms a short cooldown that
+   * suppresses host-event dispatch so the interrupt's own turn_end /
+   * agent_settled events do not immediately re-enqueue the actors.
+   */
+  haltAll(): { halted: number } {
+    if (!this.meshConfig.enabled) return { halted: 0 };
+    let halted = 0;
+    this.#haltedAt = Date.now();
+    for (const actor of this.#actors.values()) {
+      if (actor.status === "stopped") continue;
+      const inFlight = actor.abortController !== undefined;
+      if (!inFlight && actor.queue.length === 0) continue;
+      // Abort the in-flight run; the drain loop's finally block resets the
+      // actor to idle once the aborted subagent settles.
+      actor.abortController?.abort();
+      // Reject every queued item so subsequent execution is cancelled.
+      for (const item of actor.queue.splice(0)) {
+        item.reject?.(new Error("Fabric actor halted by user interrupt"));
+      }
+      actor.updatedAt = Date.now();
+      // If no run is in flight, settle the status now; otherwise the drain
+      // loop's finally block owns the transition once the run settles.
+      if (!inFlight) {
+        actor.status = actor.queue.length > 0 ? "queued" : "idle";
+      }
+      halted++;
+      void this.#publishPresence(actor);
+    }
+    return { halted };
   }
 
   async remove(id: string): Promise<{ removed: boolean }> {

@@ -59,6 +59,7 @@ interface FabricUiConfig {
   maxRows: number;
   refreshMs: number;
   eventHistory: number;
+  haltOnEscape: boolean;
 }
 
 export interface FabricMeshConfig {
@@ -138,6 +139,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxRows: 6,
     refreshMs: 500,
     eventHistory: 80,
+    haltOnEscape: true,
   },
   mesh: {
     enabled: true,
@@ -377,6 +379,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         1,
         500,
       ),
+      haltOnEscape: booleanValue(ui.haltOnEscape, DEFAULT_FABRIC_CONFIG.ui.haltOnEscape),
     },
     mesh: {
       enabled: booleanValue(mesh.enabled, DEFAULT_FABRIC_CONFIG.mesh.enabled),

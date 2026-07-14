@@ -303,4 +303,84 @@ describe("ActorManager", () => {
 
     expect(restored.status(actor.id).model).toBe("anthropic/claude-sonnet-4-5");
   });
+
+  it("haltAll aborts an in-flight run and cancels queued work without tearing actors down", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "supervisor",
+      instructions: "Watch and steer only when needed.",
+      responseMode: "text",
+    });
+
+    // Start a long-running ask (the fake worker hangs until killed). Wait until
+    // the run is in flight before queueing a second message, since enqueueing
+    // resets the actor status to "queued".
+    const askPromise = actors.ask(actor.id, "HANG");
+    await waitFor(() => actors.status(actor.id).status === "running");
+    actors.tell(actor.id, "queued behind the hanging run");
+    expect(actors.status(actor.id).queued).toBe(1);
+
+    expect(actors.haltAll()).toEqual({ halted: 1 });
+
+    // The abort can land before or after the subagent process spawns, so the
+    // rejection reason is either the semaphore's "Operation aborted" or the
+    // transport's "Subagent stopped" — both are valid interrupt outcomes.
+    await expect(askPromise).rejects.toThrow(/Subagent stopped|Operation aborted/);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    expect(actors.status(actor.id).queued).toBe(0);
+
+    // The actor is interrupted, not destroyed: it keeps its identity and can
+    // process new messages immediately.
+    const reply = await actors.ask(actor.id, "Inspect auth");
+    expect(reply.text).toBe("fake worker complete");
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    expect(actors.status(actor.id)).toMatchObject({ status: "idle", name: "supervisor" });
+  });
+
+  it("haltAll skips idle and stopped actors and leaves them usable", async () => {
+    const { actors } = setup();
+    const idle = await actors.create({
+      name: "idle-advisor",
+      instructions: "Advise only when useful.",
+      responseMode: "text",
+    });
+    const stopped = await actors.create({
+      name: "stopped-advisor",
+      instructions: "Advise only when useful.",
+      responseMode: "text",
+    });
+    await actors.stop(stopped.id);
+
+    // An idle actor with no queued work is not counted as halted.
+    expect(actors.haltAll()).toEqual({ halted: 0 });
+    expect(actors.status(idle.id)).toMatchObject({ status: "idle" });
+    expect(actors.status(stopped.id)).toMatchObject({ status: "stopped" });
+
+    // The idle actor is still responsive after a no-op halt.
+    const reply = await actors.ask(idle.id, "Inspect auth");
+    expect(reply.text).toBe("fake worker complete");
+  });
+
+  it("haltAll arms a cooldown that suppresses host-event dispatch then resumes", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({
+      name: "watcher",
+      instructions: "Watch parent events.",
+      events: ["agent_settled"],
+      responseMode: "text",
+    });
+
+    // Before any halt, host events are delivered normally.
+    expect(actors.dispatchHostEvent("agent_settled", { turn: 1 })).toBe(1);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+
+    // A halt (even with no active work) arms the cooldown.
+    actors.haltAll();
+    expect(actors.dispatchHostEvent("agent_settled", { turn: 2 })).toBe(0);
+
+    // After the cooldown window, host-event dispatch resumes.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(actors.dispatchHostEvent("agent_settled", { turn: 3 })).toBe(1);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+  });
 });
