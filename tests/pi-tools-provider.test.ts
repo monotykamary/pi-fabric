@@ -143,12 +143,20 @@ describe("PiToolsProvider lifecycle", () => {
     expect(media![0]?.mimeType).toMatch(/^image\//);
     expect(typeof media![0]?.data).toBe("string");
     expect(media![0]?.data!.length).toBeGreaterThan(0);
+    expect(typeof audits[0]?.mediaNote).toBe("string");
+    expect(audits[0]?.mediaNote).toMatch(/^Read image file/);
   });
 
-  it("does not attach media when a tool_result patch replaces image blocks", async () => {
+  it("attaches the pre-patch image and clean note when a tool_result patch replaces image blocks", async () => {
+    // pi-vision-handoff keeps the read note and swaps the image for a
+    // description. The provider captures the image BEFORE the patch (so the
+    // single-call kitty preview still shows it) and the clean note AFTER.
     const runner = makeRunner({
       emitToolResult: vi.fn(async () => ({
-        content: [{ type: "text" as const, text: "[Image: a described image.]" }],
+        content: [
+          { type: "text" as const, text: "Read image file [image/png]" },
+          { type: "text" as const, text: "[Image: a described image.]" },
+        ],
       })),
     });
     const registry = registerWithRunner(runner);
@@ -161,6 +169,11 @@ describe("PiToolsProvider lifecycle", () => {
     );
 
     expect(audits).toHaveLength(1);
-    expect(audits[0]?.media).toBeUndefined();
+    const media = audits[0]?.media;
+    expect(media).toBeDefined();
+    expect(media!.length).toBeGreaterThan(0);
+    expect(media![0]?.type).toBe("image");
+    expect(media![0]?.mimeType).toMatch(/^image\//);
+    expect(audits[0]?.mediaNote).toBe("Read image file [image/png]");
   });
 });

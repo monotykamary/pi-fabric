@@ -52,7 +52,11 @@ export interface FabricInvocationContext {
   // image file) wants attached to the call audit, so the single-call render can
   // re-attach them to the fabric_exec result content for pi core's kitty image
   // preview. Bypasses the result char bound that would truncate the base64.
-  attachMedia?(blocks: FabricMediaBlock[]): void;
+  // `note` is the read tool's own text output (e.g. "Read image file [image/png]"),
+  // captured after any tool_result patch so a handoff that strips pi's
+  // non-vision note has run; used as the single-call body + content text so the
+  // preview shows the clean note instead of the swapped description.
+  attachMedia?(blocks: FabricMediaBlock[], note?: string): void;
 }
 
 export interface FabricProvider {

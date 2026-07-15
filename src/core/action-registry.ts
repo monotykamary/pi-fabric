@@ -28,6 +28,7 @@ export interface FabricCallAudit {
   args?: Record<string, unknown>;
   result?: unknown;
   media?: FabricMediaBlock[];
+  mediaNote?: string;
 }
 
 export type FabricRegistryActivityEvent =
@@ -304,9 +305,10 @@ export class ActionRegistry {
             update,
           });
         },
-        attachMedia(blocks) {
+        attachMedia(blocks, note) {
           if (!audit.media) audit.media = [];
           for (const block of blocks) audit.media.push(block);
+          if (note) audit.mediaNote = note;
         },
       });
       const bounded = boundedResult(value, context.maxResultChars);

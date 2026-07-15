@@ -527,15 +527,32 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         // placeholder when images carry the result.
         const singleAudit = result.audits.length === 1 ? result.audits[0] : undefined;
         const media = singleAudit?.media ?? [];
+        // The read tool's own text note (e.g. "Read image file [image/png]"),
+        // captured after the handoff stripped pi's non-vision note and swapped
+        // the image for a description. Used as the body and content text so the
+        // single-call preview shows the kitty image + the clean note (like pi
+        // core) instead of the handoff's verbose description.
+        const mediaNote = singleAudit?.mediaNote;
         // The base64 payload now lives in the result content for the single-call
         // case; the audit media copy (and any from a multitool run, which never
         // reaches content) would otherwise persist in the stored details.
-        for (const audit of result.audits) delete audit.media;
+        for (const audit of result.audits) {
+          delete audit.media;
+          delete audit.mediaNote;
+        }
         const content: Array<{ type: "text"; text: string } | FabricMediaBlock> = [];
         if (media.length > 0) {
-          const textOutput = output === "(no output)" ? "" : output;
+          // Mirror a native `read`: keep the image block for pi core's kitty
+          // render alongside the short note — not the swapped description
+          // (which is what `output` holds after the inline tool_result swap).
+          // The handoff's `context` hook swaps the image for the description on
+          // the LLM-bound clone, so the text-only model still receives it.
+          const textOutput = mediaNote ?? (output === "(no output)" ? "" : output);
           if (textOutput) content.push({ type: "text", text: textOutput });
           for (const block of media) content.push(block);
+          if (singleAudit && mediaNote) {
+            singleAudit.result = mediaNote;
+          }
         } else {
           content.push({ type: "text", text: output });
         }

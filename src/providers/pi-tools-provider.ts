@@ -165,6 +165,7 @@ export class PiToolsProvider implements FabricProvider {
     if (this.#catalog?.get(name)) {
       const result = await this.#capturedTools!.invoke(name, args, context);
       this.#attachReadMedia(name, result, context);
+      this.#attachReadNote(name, result, context);
       return normalizeResult(name, result);
     }
     const tool = this.#tools[name];
@@ -181,6 +182,7 @@ export class PiToolsProvider implements FabricProvider {
         context.extensionContext,
       );
       this.#attachReadMedia(name, result, context);
+      this.#attachReadNote(name, result, context);
       return normalizeResult(name, result);
     }
     return this.#invokeWithEvents(name, tool, args, context, runner);
@@ -258,6 +260,11 @@ export class PiToolsProvider implements FabricProvider {
 
     await updateTail;
 
+    // Capture the read's image blocks BEFORE any tool_result patch —
+    // pi-vision-handoff swaps image→description here, which would leave
+    // nothing to re-attach for the kitty preview.
+    this.#attachReadMedia(name, result, context);
+
     const patch = await runner.emitToolResult({
       type: "tool_result",
       toolName: name,
@@ -276,7 +283,10 @@ export class PiToolsProvider implements FabricProvider {
       isError = patch.isError ?? isError;
     }
 
-    this.#attachReadMedia(name, result, context);
+    // Capture the read's clean text note AFTER the patch — the handoff strips
+    // pi's non-vision note and swaps the image for a description, so the first
+    // surviving text block is the short read note (not the verbose description).
+    this.#attachReadNote(name, result, context);
 
     await runner.emit({
       type: "tool_execution_end",
@@ -300,8 +310,13 @@ export class PiToolsProvider implements FabricProvider {
   // path a native `read` takes. Hand them out-of-band via context.attachMedia,
   // which the ActionRegistry stashes on the call audit; this bypasses the
   // result char bound that would otherwise truncate the base64 payload.
-  // Called after any tool_result patch so an override that replaces images
-  // with text (e.g. pi-vision-handoff) is honored.
+  //
+  // Must run BEFORE any tool_result patch: pi-vision-handoff SWAPS image blocks
+  // for text descriptions here (so the description becomes the sandbox value),
+  // which would leave no image to capture. Capturing the original blocks lets
+  // the single-call render show the kitty image, and the handoff's `context`
+  // hook supplies the description to the model — exactly how a native `read`
+  // keeps its image for kitty and swaps it only on the LLM-bound clone.
   #attachReadMedia(
     name: PiCoreToolName,
     result: { content?: unknown },
@@ -310,6 +325,34 @@ export class PiToolsProvider implements FabricProvider {
     if (name !== "read") return;
     const blocks = imageBlocks(result?.content);
     if (blocks.length > 0) context.attachMedia?.(blocks);
+  }
+
+  // The read tool's own text note (e.g. "Read image file [image/png]"), captured
+  // AFTER any tool_result patch — pi-vision-handoff swaps image→description and
+  // strips pi's "[Current model does not support images…]" note there, so the
+  // first surviving text block is the clean note. Used as the single-call body
+  // and content text so the preview shows the kitty image + the clean note
+  // instead of the handoff's verbose description; the model still receives the
+  // description via the handoff's `context` hook swapping the image block.
+  #attachReadNote(
+    name: PiCoreToolName,
+    result: { content?: unknown },
+    context: FabricInvocationContext,
+  ): void {
+    if (name !== "read") return;
+    const content = result?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      if (
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string"
+      ) {
+        context.attachMedia?.([], (block as { text: string }).text);
+        return;
+      }
+    }
   }
 
   #descriptor(
