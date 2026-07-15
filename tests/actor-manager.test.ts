@@ -689,3 +689,123 @@ describe("ActorManager", () => {
     await expect(actors.setInstructions(actor.id, "   ")).rejects.toThrow(/empty/);
   });
 });
+
+describe("ActorManager steering relay", () => {
+  const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
+
+  const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for steer relay");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
+  it("steerRemote throws when the mesh is disabled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-relay-"));
+    roots.push(root);
+    const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
+    const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: fakeWorker,
+      runRoot: path.join(root, "runs"),
+    });
+    subagentManagers.push(subagents);
+    const disabledConfig = { ...DEFAULT_FABRIC_CONFIG.mesh, enabled: false, actorPollMs: 20 };
+    const actors = new ActorManager(
+      "test",
+      { id: "session:t", name: "main", kind: "main" },
+      mesh,
+      disabledConfig,
+      subagents,
+      () => {},
+      { actorRoot: path.join(root, "actors") },
+    );
+    actorManagers.push(actors);
+    await expect(actors.steerRemote("anyone", "hi", "steer")).rejects.toThrow(/disabled/);
+  });
+
+  it("relays a fabric.steer event across processes to a remote subagent", async () => {
+    const shared = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-relay-"));
+    roots.push(shared);
+    const meshPath = path.join(shared, "mesh");
+    const meshA = new MeshStore(meshPath, 64 * 1024, 100);
+    const meshB = new MeshStore(meshPath, 64 * 1024, 100);
+    const subagentsA = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: fakeWorker,
+      runRoot: path.join(shared, "runsA"),
+    });
+    const subagentsB = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: fakeWorker,
+      runRoot: path.join(shared, "runsB"),
+    });
+    subagentManagers.push(subagentsA, subagentsB);
+    const cfg = { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 };
+    const actorsA = new ActorManager(
+      "a",
+      { id: "session:a", name: "main", kind: "main", sessionId: "a" },
+      meshA,
+      cfg,
+      subagentsA,
+      () => {},
+      { actorRoot: path.join(shared, "actorsA") },
+    );
+    const actorsB = new ActorManager(
+      "b",
+      { id: "session:b", name: "main", kind: "main", sessionId: "b" },
+      meshB,
+      cfg,
+      subagentsB,
+      () => {},
+      { actorRoot: path.join(shared, "actorsB") },
+    );
+    actorManagers.push(actorsA, actorsB);
+
+    // A owns a running subagent; B steers it by publishing over the shared mesh.
+    const handle = await subagentsA.spawn({ task: "HANG", transport: "process" });
+    const remote = await actorsB.steerRemote(handle.id, "redirect from B", "steer");
+    expect(remote).toEqual({ queued: true, messageId: expect.any(String), routed: "mesh" });
+    const steerFile = path.join(subagentsA.runDirectory(handle.id)!, "steer.jsonl");
+    await waitFor(
+      () => fs.existsSync(steerFile) && fs.readFileSync(steerFile, "utf8").includes("redirect from B"),
+      3_000,
+    );
+    const forwarded = fs
+      .readFileSync(steerFile, "utf8")
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]).toMatchObject({ type: "steer", message: "redirect from B" });
+    await subagentsA.stop(handle.id);
+  });
+
+  it("relays a fabric.steer event to a local actor as a mailbox message", async () => {
+    const { actors, mesh } = setup();
+    const actor = await actors.create({
+      name: "target",
+      instructions: "reply",
+      responseMode: "text",
+    });
+    // Simulate a remote peer publishing a steer addressed to this actor.
+    await mesh.publish({
+      topic: "fabric.steer",
+      kind: "steer",
+      from: { id: "peer", name: "peer", kind: "actor" },
+      to: actor.id,
+      text: "from a peer",
+    });
+    await waitFor(
+      () =>
+        actors
+          .messages(actor.id)
+          .some(
+            (message) =>
+              message.direction === "in" &&
+              (message.data as { message?: string } | undefined)?.message === "from a peer",
+          ),
+      3_000,
+    );
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    expect(actors.messages(actor.id).some((message) => message.direction === "out")).toBe(true);
+  });
+});

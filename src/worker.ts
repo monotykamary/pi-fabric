@@ -49,6 +49,7 @@ const parseOptions = (): SubagentWorkerOptions => {
   const actorName = optional(args, "actor-name");
   const meshRoot = optional(args, "mesh-root");
   const runRoot = optional(args, "run-root");
+  const steerFile = optional(args, "steer-file");
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   return {
@@ -76,6 +77,7 @@ const parseOptions = (): SubagentWorkerOptions => {
     ...(actorName ? { actorName } : {}),
     ...(meshRoot ? { meshRoot } : {}),
     ...(runRoot ? { runRoot } : {}),
+    ...(steerFile ? { steerFile } : {}),
     ...(branch ? { branch } : {}),
     ...(worktree ? { worktree } : {}),
   };
@@ -388,6 +390,17 @@ const main = async (): Promise<void> => {
       update();
       return;
     }
+    if (event.type === "queue_update") {
+      const steering = Array.isArray(event.steering)
+        ? event.steering.filter((value): value is string => typeof value === "string")
+        : [];
+      const followUp = Array.isArray(event.followUp)
+        ? event.followUp.filter((value): value is string => typeof value === "string")
+        : [];
+      record.pendingMessages = { steering, followUp };
+      update();
+      return;
+    }
     if (event.type === "message_end") {
       const message = event.message;
       if (typeof message !== "object" || message === null || Array.isArray(message)) return;
@@ -426,6 +439,60 @@ const main = async (): Promise<void> => {
 
   child.stdin?.on("error", () => {});
   child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task })}\n`);
+
+  // Tail a control file (steer.jsonl) the parent appends to and forward each
+  // queued command to the child pi over its RPC stdin. This is the fabric
+  // steering channel: the orchestrator (or any peer via the mesh relay) can
+  // interject a steer / follow_up / queue-mode command between the child's
+  // turns without stopping and respawning it, preserving its context. The
+  // poller is best-effort: a closed or ended stdin (settled/stopped child) is
+  // swallowed so a late steer never crashes the worker.
+  let steerOffset = 0;
+  const pollSteer = (): void => {
+    if (!options.steerFile || terminalStatus) return;
+    let descriptor: number | undefined;
+    try {
+      descriptor = fs.openSync(options.steerFile, "r");
+    } catch {
+      return;
+    }
+    try {
+      const size = fs.fstatSync(descriptor).size;
+      if (size < steerOffset) steerOffset = 0;
+      if (size <= steerOffset) return;
+      const length = size - steerOffset;
+      const buffer = Buffer.allocUnsafe(length);
+      fs.readSync(descriptor, buffer, 0, length, steerOffset);
+      steerOffset = size;
+      for (const raw of buffer.toString("utf8").split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        let command: { type?: string; message?: string; mode?: string };
+        try {
+          command = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        try {
+          if (command.type === "steer" && typeof command.message === "string") {
+            child.stdin?.write(JSON.stringify({ type: "steer", message: command.message }) + "\n");
+          } else if (command.type === "follow_up" && typeof command.message === "string") {
+            child.stdin?.write(JSON.stringify({ type: "follow_up", message: command.message }) + "\n");
+          } else if (command.type === "set_steering_mode" && typeof command.mode === "string") {
+            child.stdin?.write(JSON.stringify({ type: "set_steering_mode", mode: command.mode }) + "\n");
+          } else if (command.type === "set_follow_up_mode" && typeof command.mode === "string") {
+            child.stdin?.write(JSON.stringify({ type: "set_follow_up_mode", mode: command.mode }) + "\n");
+          }
+        } catch {
+          /* stdin closed (settled/stopped child); a late steer is dropped */
+        }
+      }
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  };
+  const steerTimer = options.steerFile ? setInterval(pollSteer, 200) : undefined;
+  steerTimer?.unref?.();
 
   child.stdout?.on("data", (chunk: Buffer) => {
     outputBuffer += chunk.toString("utf8");
@@ -473,6 +540,7 @@ const main = async (): Promise<void> => {
     child.once("close", (code) => resolve(code));
   });
 
+  if (steerTimer) clearInterval(steerTimer);
   clearTimeout(timeout);
   if (process.env.PI_FABRIC_INJECT_CRASH === "close") throw new Error("simulated close crash");
   if (outputBuffer.trim()) processEvent(outputBuffer);

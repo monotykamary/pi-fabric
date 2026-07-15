@@ -161,3 +161,100 @@ describe("AgentsProvider global actors", () => {
     expect(globalActors.list()).toEqual([]);
   });
 });
+
+describe("AgentsProvider steering", () => {
+  const readSteerFile = (root: string, id: string): Array<Record<string, unknown>> => {
+    const file = path.join(root, "runs", id, "steer.jsonl");
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  };
+
+  it("steer routes to a local running subagent and queues a steer command", async () => {
+    const { provider, root } = setup();
+    const handle = (await provider.invoke(
+      "spawn",
+      { task: "HANG", transport: "process" },
+      context,
+    )) as { id: string };
+    const result = (await provider.invoke(
+      "steer",
+      { id: handle.id, message: "focus on refresh tokens" },
+      context,
+    )) as { queued: boolean; messageId: string; routed: string };
+    expect(result).toEqual({ queued: true, messageId: expect.any(String), routed: "local" });
+    const entries = readSteerFile(root, handle.id);
+    expect(entries[0]).toMatchObject({ type: "steer", message: "focus on refresh tokens" });
+    await provider.invoke("stop", { id: handle.id }, context);
+  });
+
+  it("steer routes to a local actor as a mailbox message", async () => {
+    const { provider } = setup();
+    const actor = (await provider.invoke(
+      "create",
+      { name: "steered", instructions: "reply", responseMode: "text" },
+      context,
+    )) as { id: string };
+    const result = (await provider.invoke(
+      "steer",
+      { id: actor.id, message: "check session expiry" },
+      context,
+    )) as { routed: string };
+    expect(result.routed).toBe("local");
+    const messages = (await provider.invoke("messages", { id: actor.id }, context)) as Array<{
+      direction: string;
+      data?: { message?: string };
+    }>;
+    expect(
+      messages.some(
+        (message) => message.direction === "in" && message.data?.message === "check session expiry",
+      ),
+    ).toBe(true);
+  });
+
+  it("steer routes a non-local id over the mesh", async () => {
+    const { provider } = setup();
+    const result = (await provider.invoke(
+      "steer",
+      { id: "not-a-local-id", message: "from elsewhere" },
+      context,
+    )) as { routed: string };
+    expect(result.routed).toBe("mesh");
+  });
+
+  it("setSteeringMode routes to a local subagent", async () => {
+    const { provider, root } = setup();
+    const handle = (await provider.invoke(
+      "spawn",
+      { task: "HANG", transport: "process" },
+      context,
+    )) as { id: string };
+    await provider.invoke("setSteeringMode", { id: handle.id, mode: "all" }, context);
+    const entries = readSteerFile(root, handle.id);
+    expect(entries[0]).toMatchObject({ type: "set_steering_mode", mode: "all" });
+    await provider.invoke("stop", { id: handle.id }, context);
+  });
+
+  it("setSteeringMode throws for a non-local id (no mesh fallback)", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("setSteeringMode", { id: "unknown-id", mode: "all" }, context),
+    ).rejects.toThrow(/Unknown Fabric subagent/);
+  });
+
+  it("setSteeringMode rejects an invalid mode", async () => {
+    const { provider } = setup();
+    const handle = (await provider.invoke(
+      "spawn",
+      { task: "HANG", transport: "process" },
+      context,
+    )) as { id: string };
+    await expect(
+      provider.invoke("setSteeringMode", { id: handle.id, mode: "always" }, context),
+    ).rejects.toThrow(/Invalid steering mode/);
+    await provider.invoke("stop", { id: handle.id }, context);
+  });
+});

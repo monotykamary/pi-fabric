@@ -83,3 +83,7 @@ return { run, topic, actors, taskPrefix: `runs/${run}/tasks/` };
 ```
 
 Pass generated role instructions and tasks through `strings`, not large inline literals. Keep the coordinator pull-based: inspect `mesh.read({ topic })`, task state, and actor mailboxes at decision points rather than continuously polling in one Fabric execution.
+
+## Steering running workers across the team
+
+`agents.tell` enqueues mail for a persistent actor; for a **running one-shot subagent** use `agents.steer({ id, message })`, which is delivered between the child's turns and preserves its context. Any agent can steer any other: `agents.steer` routes to a local subagent/actor directly, and for an id in another process it publishes a `fabric.steer` mesh event the owner relays. Use `agents.steer` to redirect a teammate's running worker without discarding its work.

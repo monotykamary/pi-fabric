@@ -67,3 +67,7 @@ The goal is complete only when the requested result and its relevant validation 
 The supervisor subscribes to `agent_settled` and `tool_error`, not `turn_end` or `input`. It runs at decision points (idle and on failures) and stays silent while work is productively advancing, so it does not invoke a model review on every turn. Intervene only on a concrete, high-confidence signal: material work missing at idle, drift from the goal, a stuck state after a tool error, or verified completion.
 
 After creation, report the goal, actor short ID, and inspect/stop commands. Do not wait for it; host events drive it across later turns.
+
+## Steering running subagents
+
+A supervisor (or any orchestrator) can redirect a running worker without discarding its context: `agents.steer({ id, message })` delivers between the child's turns, and `agents.status({ id }).pendingMessages` shows the queued steers. See the `agents` reference. Prefer this over stopping and respawning a worker that has accumulated useful context but is drifting from the goal. Because actors run with Fabric, the supervisor can call `agents.steer` from inside `fabric_exec` to redirect a running subagent directly, or publish a `fabric.steer` mesh event to steer an agent in another process.

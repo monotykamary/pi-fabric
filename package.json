@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,6 +37,8 @@
     "mcp",
     "subagents",
     "actors",
+    "steering",
+    "mesh",
     "swarm",
     "workflows",
     "rlm",

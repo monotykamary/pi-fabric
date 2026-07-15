@@ -293,6 +293,22 @@ Use `/fabric agents` to list children and `/fabric attach <id>` to display the a
 
 Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called.
 
+### Steering running agents
+
+Any Fabric-equipped agent can steer a running one-shot subagent **between its turns** instead of stopping and respawning it, preserving the child's accumulated context — mirroring Pi core's RPC `steer`/`follow_up` queue:
+
+```ts
+const handle = await agents.spawn({ task: "Audit auth flows.", tools: ["read", "grep", "find", "ls"] });
+const s = await agents.status({ id: handle.id });
+if (s.text.includes("rotating refresh tokens")) {
+  await agents.steer({ id: handle.id, message: "Skip refresh-token rotation; focus on session expiry only." });
+  await agents.setSteeringMode({ id: handle.id, mode: "all" });
+}
+return await agents.wait({ id: handle.id });
+```
+
+`agents.steer({ id, message })` is delivered after the current turn's tool calls, before the next LLM call; `agents.followUp({ id, message })` is delivered after the agent finishes; `agents.setSteeringMode`/`setFollowUpMode` set `"all"` vs `"one-at-a-time"` delivery. `agents.status({ id }).pendingMessages` shows the live queue. For an id not local to this process, `agents.steer` publishes a `fabric.steer` mesh event the owning process relays — so an agent in one Pi process can steer an agent in another. See `skills/fabric-exec/references/agents.md`.
+
 ### Persistent actors and ambient agents
 
 `agents.create()` creates a named actor with a persistent Pi session, a serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:

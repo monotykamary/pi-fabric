@@ -36,6 +36,21 @@ const claimed = await mesh.put({ key: task.key, value: { status: "claimed", owne
 return claimed;
 ```
 
+## Steering across processes
+
+`fabric.steer` is a reserved topic the ActorManager relays to a local subagent or actor, so any agent in one Pi process can steer an agent in another. `agents.steer({ id, message })` publishes to it automatically when the id is not local to this process; you can also publish directly:
+
+```ts
+await mesh.publish({
+  topic: "fabric.steer",
+  kind: "steer",
+  to: actorOrSubagentId,
+  text: "redirect from a peer",
+});
+```
+
+Use `kind: "followUp"` for a follow-up. The owning process's poll reads the event and forwards it as a steer (between turns) to a one-shot subagent, or as a mailbox message to a persistent actor. An event addressed to a target no process owns is dropped best-effort.
+
 ## Notes
 
 - Actors subscribe to topics via `agents.create({ topics: [...] })` (see `agents.md`); published events are delivered as `mesh:<topic>` messages.

@@ -66,3 +66,7 @@ Prefer silence. Return {"action":"silent"} when the agent is on track or product
 The advisor subscribes to `agent_settled` and `tool_error` by default, so it runs at decision points (idle and on failures) and stays silent otherwise rather than invoking a model review on every turn. The prompt is event-agnostic: it reviews whatever event is supplied, so you may subscribe it to other events (for example `turn_end`) for tighter per-turn review, at the cost of a model run per event. Intervene only on a concrete, high-confidence signal: a material correctness gap, a missed constraint, a risky assumption, or a tool error worth surfacing.
 
 After creation, report the focus, actor short ID, and inspect/stop commands. Do not wait for it. `triggerTurn: false` is intentional: delivered advice joins the main loop without forcing a new turn (advice to weigh, not an order).
+
+## Steering running subagents
+
+The same primitive that delivers the advisor's own output (`steer`) lets any agent redirect a running worker without losing its context: `agents.steer({ id, message })` is delivered between the child's turns, and `agents.status({ id }).pendingMessages` shows the queued steers. See the `agents` reference. Prefer it over stopping and respawning a worker that has accumulated useful context but is drifting.

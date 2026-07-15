@@ -157,6 +157,60 @@ const descriptors: FabricActionDescriptor[] = [
     risk: "agent",
   },
   {
+    name: "steer",
+    description:
+      "Steer a running one-shot subagent between its turns (preserving its context), or enqueue a message for a persistent actor. Routes to a local subagent/actor directly; for an id not local to this process, publishes a fabric.steer mesh event the owning process relays. Any Fabric-equipped agent can steer any other.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      required: ["id", "message"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "followUp",
+    description:
+      "Queue a message for a one-shot subagent that is delivered only after the agent finishes, or enqueue a message for a persistent actor. Routes locally first, then over the fabric.steer mesh for a non-local id.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
+      required: ["id", "message"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "setSteeringMode",
+    description:
+      "Set how queued steer messages are delivered to a running one-shot subagent: all at once after the current turn, or one per turn (default). Local subagent only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        mode: { type: "string", enum: ["all", "one-at-a-time"] },
+      },
+      required: ["id", "mode"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "setFollowUpMode",
+    description:
+      "Set how queued follow-up messages are delivered to a one-shot subagent: all when it finishes, or one per completion (default). Local subagent only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        mode: { type: "string", enum: ["all", "one-at-a-time"] },
+      },
+      required: ["id", "mode"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
     name: "actorStatus",
     description: "Read one persistent actor's status",
     inputSchema: idSchema,
@@ -527,6 +581,14 @@ export class AgentsProvider implements FabricProvider {
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return this.actorManager.tell(actor.id, String(args.message), args.data);
       }
+      case "steer":
+        return this.#steer(String(args.id), String(args.message), args.data, "steer", context);
+      case "followUp":
+        return this.#steer(String(args.id), String(args.message), args.data, "followUp", context);
+      case "setSteeringMode":
+        return this.manager.setSteeringMode(String(args.id), this.#steeringMode(args.mode));
+      case "setFollowUpMode":
+        return this.manager.setFollowUpMode(String(args.id), this.#steeringMode(args.mode));
       case "actorStatus":
         return this.actorManager.status(String(args.id));
       case "actors":
@@ -601,6 +663,49 @@ export class AgentsProvider implements FabricProvider {
       default:
         throw new Error(`Unknown agents action: ${actionName}`);
     }
+  }
+
+  async #steer(
+    id: string,
+    message: string,
+    data: unknown,
+    kind: "steer" | "followUp",
+    context: FabricInvocationContext,
+  ): Promise<{ queued: true; messageId: string; routed: "local" | "mesh" }> {
+    // Local one-shot subagent: forward between its turns via the worker's
+    // steer.jsonl channel, preserving the child's accumulated context.
+    try {
+      const status = this.manager.status(id);
+      context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
+      const result =
+        kind === "steer"
+          ? this.manager.steer(id, message, data)
+          : this.manager.followUp(id, message, data);
+      return { queued: true, messageId: result.messageId, routed: "local" };
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+    }
+    // Local persistent actor: enqueue a mailbox message (steer == followUp for
+    // an actor's serial queue).
+    try {
+      const actor = this.actorManager.status(id);
+      context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
+      const result = this.actorManager.tell(actor.id, message, data);
+      return { queued: true, messageId: result.messageId, routed: "local" };
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
+    }
+    // Cross-process: publish a fabric.steer mesh event the owning process
+    // relays to its local target. Best-effort; a target no process owns is dropped.
+    const remote = await this.actorManager.steerRemote(id, message, kind, data);
+    return { queued: true, messageId: remote.messageId, routed: "mesh" };
+  }
+
+  #steeringMode(mode: unknown): "all" | "one-at-a-time" {
+    if (mode === "all" || mode === "one-at-a-time") return mode;
+    throw new Error(
+      `Invalid steering mode: ${String(mode)} (expected "all" or "one-at-a-time")`,
+    );
   }
 
   async close(): Promise<void> {

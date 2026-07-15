@@ -13,11 +13,14 @@ import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
   FabricBudgetSummary,
   FabricLogLine,
+  FabricSteeringMode,
   FabricSubagentLog,
   SubagentHandleInfo,
   SubagentRunRecord,
   SubagentRunRequest,
   SubagentRunResult,
+  SubagentSteerEntry,
+  SubagentSteerResult,
   SubagentTransportAdapter,
   SubagentTransportHandle,
 } from "./types.js";
@@ -258,6 +261,7 @@ export class SubagentManager {
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
     const logFile = path.join(runDirectory, "events.jsonl");
+    const steerFile = path.join(runDirectory, "steer.jsonl");
     const schemaFile = request.schema ? path.join(runDirectory, "schema.json") : undefined;
     fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
     if (schemaFile) {
@@ -330,6 +334,8 @@ export class SubagentManager {
         ...(request.meshRoot ? ["--mesh-root", request.meshRoot] : []),
         "--run-root",
         path.join(runDirectory, "nested"),
+        "--steer-file",
+        steerFile,
         ...(schemaFile ? ["--schema-file", schemaFile] : []),
         ...(branch ? ["--branch", branch] : []),
         ...(worktree ? ["--worktree", worktree] : []),
@@ -458,6 +464,37 @@ export class SubagentManager {
     const events = readJsonlTail(logFile, lines);
     const statusRecord = readRecord(path.join(runDirectory, "status.json"));
     return { id, runDirectory, logFile, events, ...(statusRecord ? { status: statusRecord } : {}) };
+  }
+
+  steer(id: string, message: string, data?: unknown): SubagentSteerResult {
+    return this.#appendSteer(id, { type: "steer", message, data });
+  }
+
+  followUp(id: string, message: string, data?: unknown): SubagentSteerResult {
+    return this.#appendSteer(id, { type: "follow_up", message, data });
+  }
+
+  setSteeringMode(id: string, mode: FabricSteeringMode): SubagentSteerResult {
+    return this.#appendSteer(id, { type: "set_steering_mode", mode });
+  }
+
+  setFollowUpMode(id: string, mode: FabricSteeringMode): SubagentSteerResult {
+    return this.#appendSteer(id, { type: "set_follow_up_mode", mode });
+  }
+
+  #appendSteer(id: string, entry: Omit<SubagentSteerEntry, "id" | "ts">): SubagentSteerResult {
+    const managed = this.#requireRun(id);
+    const record = readRecord(managed.statusFile);
+    if (record && terminalStatuses.has(record.status)) {
+      throw new Error(
+        `Fabric subagent ${id} already finished (${record.status}); steering has no target`,
+      );
+    }
+    const steerFile = path.join(managed.runDirectory, "steer.jsonl");
+    const messageId = randomUUID();
+    const line = JSON.stringify({ ...entry, id: messageId, ts: Date.now() }) + "\n";
+    fs.appendFileSync(steerFile, line, { encoding: "utf8", mode: 0o600 });
+    return { queued: true, messageId };
   }
 
   async close(): Promise<void> {

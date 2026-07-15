@@ -37,3 +37,5 @@ Pass the full task and role array through `strings`. Usually use three to five r
 Council members must inspect evidence independently. The synthesizer must preserve material disagreement, reject unsupported claims, and make a concrete recommendation. Use `synthesize: false` only when the user asked for raw independent opinions.
 
 Do not use a council for a simple lookup or a decision with no meaningful competing considerations.
+
+For a long-running deliberation where a member drifts, you can run members with `agents.spawn` and redirect one between its turns via `agents.steer({ id, message })` instead of `council.run`'s blocking fan-out; `agents.status({ id }).pendingMessages` shows the queued steers. See the `agents` reference.

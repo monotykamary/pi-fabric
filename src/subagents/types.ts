@@ -73,6 +73,7 @@ export interface SubagentRunRecord {
   worktree?: string;
   logFile?: string;
   nestedAgents?: SubagentRunRecord[];
+  pendingMessages?: { steering: string[]; followUp: string[] };
 }
 
 export interface SubagentRunResult extends SubagentRunRecord {
@@ -119,6 +120,7 @@ export interface SubagentWorkerOptions {
   actorName?: string;
   meshRoot?: string;
   runRoot?: string;
+  steerFile?: string;
   transport: FabricSubagentTransport;
   sessionId?: string;
   attachCommand?: string;
@@ -160,4 +162,20 @@ export interface FabricSubagentLog {
   logFile: string;
   status?: SubagentRunRecord;
   events: FabricLogLine[];
+}
+
+export type FabricSteeringMode = "all" | "one-at-a-time";
+
+export interface SubagentSteerEntry {
+  type: "steer" | "follow_up" | "set_steering_mode" | "set_follow_up_mode";
+  id: string;
+  message?: string;
+  mode?: FabricSteeringMode;
+  data?: unknown;
+  ts: number;
+}
+
+export interface SubagentSteerResult {
+  queued: true;
+  messageId: string;
 }

@@ -82,3 +82,7 @@ Append the user's requested focus when present.
 ## After creation
 
 Tell the user the actor name, short ID, subscribed events, and the `/fabric messages` and `/fabric stop` commands. Do not wait for the actor: it is session-persistent and event-driven.
+
+## Steering running subagents
+
+Any agent (an ambient actor included, since actors run with Fabric) can redirect a running worker without losing its context via `agents.steer({ id, message })` (delivered between the child's turns) and observe the queue with `agents.status({ id }).pendingMessages`. Across processes, `agents.steer` publishes a `fabric.steer` mesh event automatically. See the `agents` and `mesh` references. Prefer steering over stopping and respawning a worker that has accumulated useful context but is drifting.

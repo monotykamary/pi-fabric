@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { SubagentManager } from "../src/subagents/manager.js";
-import type { SubagentRunResult } from "../src/subagents/types.js";
+import type { SubagentRunRecord, SubagentRunResult } from "../src/subagents/types.js";
 
 const managers: SubagentManager[] = [];
 const roots: string[] = [];
@@ -371,6 +371,167 @@ describe("SubagentManager", () => {
       delete process.env.PI_FABRIC_BUDGET;
       delete process.env.PI_FABRIC_BUDGET_FILE;
       delete process.env.PI_FABRIC_BUDGET_ID;
+    }
+  });
+});
+
+describe("SubagentManager steering", () => {
+  const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
+  const fakePiSteer = path.resolve("tests/fixtures/fake-pi-rpc-steer.mjs");
+
+  const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!predicate()) {
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for steer state");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
+  const readSteerFile = (runDir: string): Array<Record<string, unknown>> => {
+    const file = path.join(runDir, "steer.jsonl");
+    if (!fs.existsSync(file)) return [];
+    return fs
+      .readFileSync(file, "utf8")
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  };
+
+  const hangManager = (root: string, workerPath = fakeWorker, piBinary?: string) => {
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath,
+      ...(piBinary ? { piBinary } : {}),
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    return manager;
+  };
+
+  it("steer appends a queued steer command for a running subagent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const handle = await manager.spawn({ task: "HANG", transport: "process" });
+    const result = manager.steer(handle.id, "drop the token branch");
+    expect(result).toEqual({ queued: true, messageId: expect.any(String) });
+    const entries = readSteerFile(manager.runDirectory(handle.id)!);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ type: "steer", message: "drop the token branch" });
+    await manager.stop(handle.id);
+  });
+
+  it("steer throws for a finished subagent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const result = await manager.run({ task: "done", transport: "process" });
+    expect(() => manager.steer(result.id, "too late")).toThrow(/already finished/);
+  });
+
+  it("followUp appends a follow_up command", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const handle = await manager.spawn({ task: "HANG", transport: "process" });
+    manager.followUp(handle.id, "then summarize");
+    const entries = readSteerFile(manager.runDirectory(handle.id)!);
+    expect(entries[0]).toMatchObject({ type: "follow_up", message: "then summarize" });
+    await manager.stop(handle.id);
+  });
+
+  it("setSteeringMode and setFollowUpMode append mode commands", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const handle = await manager.spawn({ task: "HANG", transport: "process" });
+    manager.setSteeringMode(handle.id, "all");
+    manager.setFollowUpMode(handle.id, "one-at-a-time");
+    const entries = readSteerFile(manager.runDirectory(handle.id)!);
+    expect(entries[0]).toMatchObject({ type: "set_steering_mode", mode: "all" });
+    expect(entries[1]).toMatchObject({ type: "set_follow_up_mode", mode: "one-at-a-time" });
+    await manager.stop(handle.id);
+  });
+
+  it("forwards a steer to the child pi over RPC and surfaces pendingMessages", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    fs.chmodSync(fakePiSteer, 0o755);
+    const received = path.join(root, "received.jsonl");
+    process.env.FAKE_PI_STEER_LOG = received;
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: fakePiSteer,
+        runRoot: root,
+        fullCodeMode: false,
+      });
+      managers.push(manager);
+      const handle = await manager.spawn({ task: "STEER_ME", transport: "process" });
+      await waitFor(() => manager.status(handle.id).status === "running");
+      manager.steer(handle.id, "redirect to session expiry");
+      await waitFor(
+        () =>
+          fs.existsSync(received) &&
+          fs.readFileSync(received, "utf8").includes("redirect to session expiry"),
+        3_000,
+      );
+      const forwarded = fs
+        .readFileSync(received, "utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(
+        forwarded.some((e) => e.type === "steer" && e.message === "redirect to session expiry"),
+      ).toBe(true);
+      await waitFor(() => {
+        const status = manager.status(handle.id) as SubagentRunRecord;
+        return Boolean(status.pendingMessages?.steering.includes("redirect to session expiry"));
+      }, 3_000);
+      await manager.stop(handle.id);
+    } finally {
+      delete process.env.FAKE_PI_STEER_LOG;
+    }
+  });
+
+  it("forwards a follow_up and a queue mode to the child pi over RPC", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
+    roots.push(root);
+    fs.chmodSync(fakePiSteer, 0o755);
+    const received = path.join(root, "received.jsonl");
+    process.env.FAKE_PI_STEER_LOG = received;
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: fakePiSteer,
+        runRoot: root,
+        fullCodeMode: false,
+      });
+      managers.push(manager);
+      const handle = await manager.spawn({ task: "STEER_ME", transport: "process" });
+      await waitFor(() => manager.status(handle.id).status === "running");
+      manager.setSteeringMode(handle.id, "all");
+      manager.followUp(handle.id, "then run the tests");
+      await waitFor(
+        () => {
+          if (!fs.existsSync(received)) return false;
+          const text = fs.readFileSync(received, "utf8");
+          return text.includes('"type":"set_steering_mode"') && text.includes("then run the tests");
+        },
+        3_000,
+      );
+      const forwarded = fs
+        .readFileSync(received, "utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(forwarded.some((e) => e.type === "set_steering_mode" && e.mode === "all")).toBe(true);
+      expect(
+        forwarded.some((e) => e.type === "follow_up" && e.message === "then run the tests"),
+      ).toBe(true);
+      await manager.stop(handle.id);
+    } finally {
+      delete process.env.FAKE_PI_STEER_LOG;
     }
   });
 });

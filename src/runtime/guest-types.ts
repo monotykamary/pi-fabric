@@ -55,6 +55,7 @@ interface FabricAgentResult extends FabricAgentHandle {
   value?: unknown;
   error?: string;
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  pendingMessages?: { steering: string[]; followUp: string[] };
 }
 interface FabricModelInfo {
   provider: string;
@@ -196,6 +197,10 @@ interface FabricAgentsApi {
   }): Promise<FabricActorInfo>;
   ask(args: { id: string; message: string; data?: unknown }): Promise<FabricActorMessage>;
   tell(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string }>;
+  steer(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "mesh" }>;
+  followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "mesh" }>;
+  setSteeringMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
+  setFollowUpMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
   actorStatus(args: { id: string }): Promise<FabricActorInfo>;
   actors(): Promise<FabricActorInfo[]>;
   messages(args: { id: string; limit?: number }): Promise<FabricActorMessage[]>;

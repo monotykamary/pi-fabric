@@ -364,6 +364,34 @@ export class ActorManager {
     return { queued: true, messageId: item.id };
   }
 
+  /**
+   * Publish a steer/followUp to the shared mesh addressed to an agent that is
+   * not local to this process. The owning process's ActorManager polls the mesh
+   * and relays the event to its local subagent or actor. This is the cross-
+   * process half of "any agent can steer any other agent": callers steer local
+   * targets directly via the agents provider and remote targets through here.
+   */
+  async steerRemote(
+    targetId: string,
+    message: string,
+    kind: "steer" | "followUp",
+    data?: unknown,
+  ): Promise<{ queued: true; messageId: string; routed: "mesh" }> {
+    if (!this.meshConfig.enabled) {
+      throw new Error("Fabric mesh is disabled; cannot steer a remote agent");
+    }
+    if (!message.trim()) throw new Error("Steering message must not be empty");
+    const event = await this.mesh.publish({
+      topic: "fabric.steer",
+      kind,
+      from: this.identity,
+      to: targetId,
+      text: message,
+      ...(data === undefined ? {} : { data }),
+    });
+    return { queued: true, messageId: event.id, routed: "mesh" };
+  }
+
   ask(
     id: string,
     message: string,
@@ -907,9 +935,45 @@ export class ActorManager {
     try {
       const tail = this.mesh.tail(this.#meshOffset, this.meshConfig.maxReadEvents);
       this.#meshOffset = tail.nextOffset;
-      for (const event of tail.events) this.#dispatchMeshEvent(event);
+      for (const event of tail.events) {
+        if (event.topic === "fabric.steer") this.#relaySteer(event);
+        else this.#dispatchMeshEvent(event);
+      }
     } finally {
       this.#polling = false;
+    }
+  }
+
+  /**
+   * Relay an incoming fabric.steer mesh event to a local target. Resolves the
+   * addressed id against this process's one-shot subagents first, then its
+   * persistent actors, so any Fabric-equipped agent (main, recursive child, or
+   * actor in another process) can steer any other by publishing to the shared
+   * mesh. A steer to a finished subagent or an unknown id is dropped
+   * best-effort rather than throwing: the event may be addressed to a target
+   * owned by another process that also reads the same mesh log.
+   */
+  #relaySteer(event: MeshEvent): void {
+    const target = event.to;
+    if (!target) return;
+    const kind = event.kind === "followUp" ? "followUp" : "steer";
+    const message = typeof event.text === "string" ? event.text : "";
+    if (!message) return;
+    try {
+      this.subagents.status(target);
+      if (kind === "steer") this.subagents.steer(target, message);
+      else this.subagents.followUp(target, message);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+        return;
+      }
+    }
+    try {
+      const actor = this.#requireActor(target);
+      this.tell(actor.id, message, event.data);
+    } catch {
+      /* target lives in another process or is unknown — best-effort drop */
     }
   }
 

@@ -37,6 +37,30 @@ return await agents.wait({ id: handle.id });
 
 Use `/fabric agents` to list children and `/fabric attach <id>` for the attach command. Abort signals propagate to the transport and child Pi process.
 
+## Steering running agents
+
+Any Fabric-equipped agent (the main agent, a recursive child, or a persistent actor) can steer any other running agent instead of stopping and respawning it, preserving the child's accumulated context. This mirrors Pi core's RPC `steer` / `follow_up` queue, delivered between the child's turns.
+
+- `agents.steer({ id, message, data? })` queues a message delivered to a running one-shot subagent **between its turns** — after the current turn's tool calls finish, before the next LLM call. For a persistent actor it enqueues a mailbox message (equivalent to `tell`). Returns `{ queued, messageId, routed }`.
+- `agents.followUp({ id, message, data? })` queues a message delivered only **after the agent finishes** (one-shot), or enqueues a mailbox message (actor).
+- `agents.setSteeringMode({ id, mode })` / `agents.setFollowUpMode({ id, mode })` set how queued steer/follow-up messages are delivered to a running one-shot subagent: `"all"` (deliver every queued message after the current turn / when the agent finishes) or `"one-at-a-time"` (one per turn / per completion — the default). Local subagent only.
+- `agents.status({ id })` surfaces the live queue on the result as `pendingMessages: { steering: string[]; followUp: string[] }`, so you can observe how many steers are pending before steering again or stopping.
+
+`routed` is `"local"` when the target is a subagent or actor in this process, or `"mesh"` when the id is not local: the call publishes a `fabric.steer` mesh event the owning process relays to its local target (see `mesh.md`). This is how an agent in one Pi process steers an agent in another — the fabric that lets any agent steer any other.
+
+```ts
+const handle = await agents.spawn({ task: "Audit auth flows.", tools: ["read", "grep", "find", "ls"] });
+// Watch progress, then redirect between turns without losing the child's context.
+const s = await agents.status({ id: handle.id });
+if (s.text.includes("rotating refresh tokens")) {
+  await agents.steer({ id: handle.id, message: "Skip refresh-token rotation; focus on session expiry only." });
+  await agents.setSteeringMode({ id: handle.id, mode: "all" });
+}
+return await agents.wait({ id: handle.id });
+```
+
+Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has useful context you would otherwise discard. Use `agents.stop` only when the child is genuinely off-track and a fresh task is cheaper than a redirect. Steering a finished subagent throws `already finished` — check `agents.status` first.
+
 ## Persistent actors
 
 `agents.create(args)` returns `FabricActorInfo`. An actor has its own Pi session, a serial mailbox, and optional subscriptions to parent events or durable mesh topics. It processes messages one at a time, coalesces repeated host events by default, and resumes when the same Pi session reopens in a trusted project.

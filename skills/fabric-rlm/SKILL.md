@@ -82,3 +82,4 @@ Adapt the phases, tools, and fan-out to the request. Use `schema` on a worker wh
 - Deeper children should be more conservative: fewer sub-calls, more direct action. Teach the pattern once — size-first → search → chunk → delegate → combine — and let it repeat at every depth.
 - For edits, partition ownership by path or set `worktree: true`; never let concurrent recursive children edit the same files.
 - The pre-spawn budget check is best-effort (concurrent children can overshoot slightly); the race-free ceiling is `subagents.maxPerExecution`.
+- A recursive child that drifts can be redirected without losing its context: `agents.steer({ id, message })` is delivered between the child's turns (after its current tool calls, before the next LLM call), and `agents.status({ id }).pendingMessages` shows the queued steers. Prefer steering over abandoning a child that has accumulated useful context. See the `agents` reference.
