@@ -4,6 +4,7 @@ import type {
   FabricActionDescriptor,
   FabricInvocationActivityUpdate,
   FabricInvocationContext,
+  FabricMediaBlock,
   FabricProvider,
   FabricProviderListRequest,
 } from "../protocol.js";
@@ -26,6 +27,7 @@ export interface FabricCallAudit {
   provider?: string;
   args?: Record<string, unknown>;
   result?: unknown;
+  media?: FabricMediaBlock[];
 }
 
 export type FabricRegistryActivityEvent =
@@ -301,6 +303,10 @@ export class ActionRegistry {
             callId: nestedToolCallId,
             update,
           });
+        },
+        attachMedia(blocks) {
+          if (!audit.media) audit.media = [];
+          for (const block of blocks) audit.media.push(block);
         },
       });
       const bounded = boundedResult(value, context.maxResultChars);

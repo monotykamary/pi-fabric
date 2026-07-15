@@ -42,6 +42,32 @@ describe("FabricExecutionService", () => {
     }
   });
 
+  it("attaches image blocks to the audit for a single nested image read", async () => {
+    const cwd = process.cwd();
+    const registry = new ActionRegistry();
+    registry.register(new PiToolsProvider(cwd, undefined, undefined));
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.approvals.read = "allow";
+    const service = new FabricExecutionService(registry, config);
+    const context = { cwd, hasUI: false } as ExtensionContext;
+    const result = await service.execute({
+      code: 'return pi.read({ path: "tests/fixtures/images/sample.jpg" });',
+      signal: undefined,
+      parentToolCallId: "img-read",
+      context,
+      onPartial() {},
+    });
+    expect(result.success).toBe(true);
+    expect(result.audits).toHaveLength(1);
+    const media = result.audits[0]?.media;
+    expect(media).toBeDefined();
+    expect(media!.length).toBeGreaterThan(0);
+    expect(media![0]?.type).toBe("image");
+    expect(media![0]?.mimeType).toMatch(/^image\//);
+    expect(typeof media![0]?.data).toBe("string");
+    expect(media![0]?.data!.length).toBeGreaterThan(0);
+  });
+
   it("keeps Pi core tools outside Fabric in orchestration-only mode", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-native-tools-"));
     try {

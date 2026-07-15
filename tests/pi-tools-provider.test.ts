@@ -5,7 +5,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
-import { ActionRegistry } from "../src/core/action-registry.js";
+import { ActionRegistry, type FabricCallAudit } from "../src/core/action-registry.js";
 import { NESTED_TOOL_CALL_ID_PREFIX } from "../src/core/action-registry.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 
@@ -122,5 +122,45 @@ describe("PiToolsProvider lifecycle", () => {
     const result = await registry.invoke("pi.ls", { path: process.cwd() }, baseContext);
     expect(typeof result).toBe("string");
     expect((result as string).length).toBeGreaterThan(0);
+  });
+
+  it("attaches image blocks from an image read to the call audit", async () => {
+    const runner = makeRunner();
+    const registry = registerWithRunner(runner);
+    const audits: FabricCallAudit[] = [];
+
+    await registry.invoke(
+      "pi.read",
+      { path: "tests/fixtures/images/sample.jpg" },
+      { ...baseContext, audits },
+    );
+
+    expect(audits).toHaveLength(1);
+    const media = audits[0]?.media;
+    expect(media).toBeDefined();
+    expect(media!.length).toBeGreaterThan(0);
+    expect(media![0]?.type).toBe("image");
+    expect(media![0]?.mimeType).toMatch(/^image\//);
+    expect(typeof media![0]?.data).toBe("string");
+    expect(media![0]?.data!.length).toBeGreaterThan(0);
+  });
+
+  it("does not attach media when a tool_result patch replaces image blocks", async () => {
+    const runner = makeRunner({
+      emitToolResult: vi.fn(async () => ({
+        content: [{ type: "text" as const, text: "[Image: a described image.]" }],
+      })),
+    });
+    const registry = registerWithRunner(runner);
+    const audits: FabricCallAudit[] = [];
+
+    await registry.invoke(
+      "pi.read",
+      { path: "tests/fixtures/images/sample.jpg" },
+      { ...baseContext, audits },
+    );
+
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.media).toBeUndefined();
   });
 });

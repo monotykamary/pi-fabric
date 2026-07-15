@@ -19,6 +19,12 @@ export type FabricInvocationActivityUpdate =
   | { type: "entity"; id: string; kind: FabricActivityEntityKind; name?: string }
   | { type: "metrics"; tokens?: number; toolCalls?: number; cost?: number };
 
+export interface FabricMediaBlock {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 export interface FabricActionDescriptor {
   name: string;
   description: string;
@@ -42,6 +48,11 @@ export interface FabricInvocationContext {
   extensionContext: ExtensionContext;
   update(message: string): void;
   activity?(update: FabricInvocationActivityUpdate): void;
+  // Out-of-band image content blocks a provider (currently only pi.read of an
+  // image file) wants attached to the call audit, so the single-call render can
+  // re-attach them to the fabric_exec result content for pi core's kitty image
+  // preview. Bypasses the result char bound that would truncate the base64.
+  attachMedia?(blocks: FabricMediaBlock[]): void;
 }
 
 export interface FabricProvider {

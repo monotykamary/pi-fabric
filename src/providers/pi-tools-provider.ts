@@ -15,6 +15,7 @@ import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
+  FabricMediaBlock,
   FabricProvider,
   FabricProviderListRequest,
   FabricRisk,
@@ -38,6 +39,27 @@ const textContent = (content: ToolContent): string =>
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map((part) => part.text)
     .join("\n");
+
+const imageBlocks = (content: unknown): FabricMediaBlock[] => {
+  if (!Array.isArray(content)) return [];
+  const blocks: FabricMediaBlock[] = [];
+  for (const part of content) {
+    if (
+      typeof part === "object" &&
+      part !== null &&
+      (part as { type?: unknown }).type === "image" &&
+      typeof (part as { data?: unknown }).data === "string" &&
+      typeof (part as { mimeType?: unknown }).mimeType === "string"
+    ) {
+      blocks.push({
+        type: "image",
+        data: (part as { data: string }).data,
+        mimeType: (part as { mimeType: string }).mimeType,
+      });
+    }
+  }
+  return blocks;
+};
 
 const normalizeResult = (
   name: PiCoreToolName,
@@ -142,6 +164,7 @@ export class PiToolsProvider implements FabricProvider {
     // CapturedToolsProvider, so delegate to it unchanged.
     if (this.#catalog?.get(name)) {
       const result = await this.#capturedTools!.invoke(name, args, context);
+      this.#attachReadMedia(name, result, context);
       return normalizeResult(name, result);
     }
     const tool = this.#tools[name];
@@ -157,6 +180,7 @@ export class PiToolsProvider implements FabricProvider {
         undefined,
         context.extensionContext,
       );
+      this.#attachReadMedia(name, result, context);
       return normalizeResult(name, result);
     }
     return this.#invokeWithEvents(name, tool, args, context, runner);
@@ -252,6 +276,8 @@ export class PiToolsProvider implements FabricProvider {
       isError = patch.isError ?? isError;
     }
 
+    this.#attachReadMedia(name, result, context);
+
     await runner.emit({
       type: "tool_execution_end",
       toolCallId,
@@ -265,6 +291,25 @@ export class PiToolsProvider implements FabricProvider {
       throw new Error(text || (thrown instanceof Error ? thrown.message : `Pi tool ${name} failed`));
     }
     return normalizeResult(name, result);
+  }
+
+  // `pi.read` of an image file returns `{ type: "image" }` content blocks.
+  // normalizeResult strips them — the sandbox holds text only and the model
+  // return is a string — but the single-call render wants them re-attached so
+  // pi core's ToolExecutionComponent renders the kitty image preview, the same
+  // path a native `read` takes. Hand them out-of-band via context.attachMedia,
+  // which the ActionRegistry stashes on the call audit; this bypasses the
+  // result char bound that would otherwise truncate the base64 payload.
+  // Called after any tool_result patch so an override that replaces images
+  // with text (e.g. pi-vision-handoff) is honored.
+  #attachReadMedia(
+    name: PiCoreToolName,
+    result: { content?: unknown },
+    context: FabricInvocationContext,
+  ): void {
+    if (name !== "read") return;
+    const blocks = imageBlocks(result?.content);
+    if (blocks.length > 0) context.attachMedia?.(blocks);
   }
 
   #descriptor(

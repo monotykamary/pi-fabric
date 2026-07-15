@@ -13,7 +13,7 @@ import { registerFabricCommand } from "./commands/fabric.js";
 import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "./config.js";
 import { FabricToolOwnership } from "./core/tool-ownership.js";
 import { FabricState } from "./fabric-state.js";
-import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricProviderRegistration } from "./protocol.js";
+import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
   expandHint,
@@ -518,8 +518,29 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           result.value !== null &&
           "terminate" in result.value &&
           result.value.terminate === true;
+        // A single nested `pi.read` of an image returns image content blocks
+        // that normalizeResult stripped (the sandbox holds text only). The
+        // provider handed them out-of-band to the call audit; re-attach them
+        // here so pi core's ToolExecutionComponent renders the kitty image
+        // preview — the same path a native `read` takes — giving the
+        // single-call preview pi core's visual feel. Drop the "(no output)"
+        // placeholder when images carry the result.
+        const singleAudit = result.audits.length === 1 ? result.audits[0] : undefined;
+        const media = singleAudit?.media ?? [];
+        // The base64 payload now lives in the result content for the single-call
+        // case; the audit media copy (and any from a multitool run, which never
+        // reaches content) would otherwise persist in the stored details.
+        for (const audit of result.audits) delete audit.media;
+        const content: Array<{ type: "text"; text: string } | FabricMediaBlock> = [];
+        if (media.length > 0) {
+          const textOutput = output === "(no output)" ? "" : output;
+          if (textOutput) content.push({ type: "text", text: textOutput });
+          for (const block of media) content.push(block);
+        } else {
+          content.push({ type: "text", text: output });
+        }
         return {
-          content: [{ type: "text", text: output }],
+          content,
           details: result,
           ...(terminate ? { terminate: true } : {}),
           ...(result.success ? {} : { isError: true }),
