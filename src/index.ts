@@ -144,7 +144,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         "Pi core tools, tool discovery, and extensions",
       promptGuidelines: [
         "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Return only the compact final value; intermediate results stay in the sandbox.",
-        "The `fabric-exec` skill has exact signatures and the read-error → `tools.describe({ ref })` → retry loop; `pi.read` its `SKILL.md` before your first call and on argument errors.",
       ],
       // The model-facing schema is intentionally flat: one large `code` string
       // plus scalar/optional params. Do not add nested arrays-of-objects with
