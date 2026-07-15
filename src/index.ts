@@ -518,38 +518,46 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           result.value !== null &&
           "terminate" in result.value &&
           result.value.terminate === true;
-        // A single nested `pi.read` of an image returns image content blocks
-        // that normalizeResult stripped (the sandbox holds text only). The
-        // provider handed them out-of-band to the call audit; re-attach them
-        // here so pi core's ToolExecutionComponent renders the kitty image
-        // preview — the same path a native `read` takes — giving the
-        // single-call preview pi core's visual feel. Drop the "(no output)"
-        // placeholder when images carry the result.
+        // A nested `pi.read` of an image returns image content blocks that
+        // normalizeResult stripped (the sandbox holds text only). The provider
+        // handed them out-of-band to each call audit; re-attach them here so
+        // pi core's ToolExecutionComponent renders a kitty image preview — the
+        // same path a native `read` takes — for single-call AND multitool
+        // reads. pi-vision-handoff keeps the image in the nested tool_result
+        // (its `context` hook swaps image→description on the LLM-bound
+        // fabric_exec clone), so every read audit carries its image here.
+        const mediaBlocks: FabricMediaBlock[] = [];
+        for (const audit of result.audits) {
+          if (audit.media) mediaBlocks.push(...audit.media);
+        }
         const singleAudit = result.audits.length === 1 ? result.audits[0] : undefined;
-        const media = singleAudit?.media ?? [];
         // The read tool's own text note (e.g. "Read image file [image/png]"),
-        // captured after the handoff stripped pi's non-vision note and swapped
-        // the image for a description. Used as the body and content text so the
-        // single-call preview shows the kitty image + the clean note (like pi
-        // core) instead of the handoff's verbose description.
+        // captured after the handoff stripped pi's non-vision note. Used as
+        // the single-call body + content text so the preview shows the kitty
+        // image + the clean note (like pi core) instead of the handoff's
+        // verbose description. Multitool renders each read's note as its own
+        // call body, so the joined program return suffices as the content text
+        // there.
         const mediaNote = singleAudit?.mediaNote;
-        // The base64 payload now lives in the result content for the single-call
-        // case; the audit media copy (and any from a multitool run, which never
-        // reaches content) would otherwise persist in the stored details.
+        // The base64 payload now lives in the result content; the audit media
+        // copies would otherwise persist in the stored details.
         for (const audit of result.audits) {
           delete audit.media;
           delete audit.mediaNote;
         }
         const content: Array<{ type: "text"; text: string } | FabricMediaBlock> = [];
-        if (media.length > 0) {
-          // Mirror a native `read`: keep the image block for pi core's kitty
-          // render alongside the short note — not the swapped description
-          // (which is what `output` holds after the inline tool_result swap).
-          // The handoff's `context` hook swaps the image for the description on
-          // the LLM-bound clone, so the text-only model still receives it.
-          const textOutput = mediaNote ?? (output === "(no output)" ? "" : output);
+        if (mediaBlocks.length > 0) {
+          // Mirror a native `read`: keep the image block(s) for pi core's kitty
+          // render alongside the short note. The handoff's `context` hook
+          // swaps each image for its description on the LLM-bound clone, so the
+          // text-only model still receives the description while the terminal
+          // shows the kitty image.
+          const textOutput =
+            singleAudit && mediaNote
+              ? mediaNote
+              : (output === "(no output)" ? "" : output);
           if (textOutput) content.push({ type: "text", text: textOutput });
-          for (const block of media) content.push(block);
+          for (const block of mediaBlocks) content.push(block);
           if (singleAudit && mediaNote) {
             singleAudit.result = mediaNote;
           }
