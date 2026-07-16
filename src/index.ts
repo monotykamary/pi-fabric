@@ -191,7 +191,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         ),
       }),
       renderCall(params, theme, context) {
-        const lines = safeTerminalText(params.code).split("\n");
+        const lines = safeTerminalText(Array.isArray(params.code) ? params.code.join("\n") : params.code).split("\n");
         const limit = context.expanded ? lines.length : 8;
         const shown = lines.slice(0, limit);
         const width = String(Math.max(1, shown.length)).length;
@@ -461,8 +461,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       },
       async execute(toolCallId, params, signal, onUpdate, context) {
         await state.ensure(context);
+        // Defensive: a non-strict provider may deliver code as an array of lines;
+        // join before type-checking so the program runs instead of failing on a
+        // non-string code param. Strict providers reject an array upstream
+        // against the Type.String schema, so this branch is a no-op there.
+        const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
         const result = await state.execution.execute({
-          code: params.code,
+          code,
           ...(params.strings ? { strings: params.strings } : {}),
           signal,
           parentToolCallId: toolCallId,
@@ -717,7 +722,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     state.widgetDismissedAt = Date.now();
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = (fullCodeMode
-      ? "Pi Fabric full code mode is on: `fabric_exec` is the exclusive path to Pi core tools — call them as `pi.read`/`pi.bash`/`pi.edit`/`pi.write`/`pi.grep`/`pi.find`/`pi.ls` (single options object). `pi.read`/`pi.grep`/`pi.find`/`pi.ls` return strings; `pi.bash`/`pi.edit`/`pi.write` return `{ ok, output, details }` — return the result directly or read `.output`. `pi` is a dynamic proxy with no enumerable keys. `tools` is discovery + generic calls only: `tools.search`/`tools.describe`/`tools.call`/`tools.list`/`tools.providers`/`tools.models`; find MCP/extension tools via `tools.search`/`tools.list` and call via `extensions.<tool>(options)` or `tools.call({ ref, args })`. `π.<key>` is only for named strings from the `strings` parameter."
+      ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nReturns: `pi.read`/`pi.grep`/`pi.find`/`pi.ls` → string; `pi.bash`/`pi.edit`/`pi.write` → `{ok, output, details}` (read `.output`).\nExamples: `pi.read('/x')` · `pi.bash({cmd:'ls'})` · `pi.grep('TODO','src')` · `pi.grep({regex:'TODO', ic:true, ctx:2})` · `pi.find('*.ts','src')` · `pi.edit({path:'/x', old:'a', new:'b'})` · `pi.write({path:'/y', text:'z'})` · `pi.ls('src')`.\nShorthands (all accepted): `cmd`/`shell`→command · `query`/`regex`/`search`→pattern · `file`/`dir`→path · `ic`→ignoreCase · `ctx`→context · `max`→limit · `start`→offset · `old`→oldText · `new`/`replacement`→newText · `text`/`contents`→content · `timeoutMs`→timeout.\n`tools` is discovery + generic calls only (`providers`/`list`/`search`/`describe`/`call`/`models`); call MCP/extension tools via `extensions.<tool>(options)` or `tools.call({ref, args})`. `pi` is the core tools; `π.<key>` is named strings from the `strings` param (not a tool)."
       : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Use `tools` (`tools.search`/`tools.describe`/`tools.call`/`tools.list`) to discover and invoke MCP and Fabric providers; other surfaces are opt-in via user-loaded skills.")
       + "\n\n" + FABRIC_TEMPLATE_LITERAL_CAVEAT;
     return {

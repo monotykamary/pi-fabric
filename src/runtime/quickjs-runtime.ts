@@ -37,7 +37,8 @@ const quickJsModule = (): Promise<QuickJsModule> => {
 
 const guestSetup = `
 const __call = (ref, args) => globalThis.__fabricHostCall(ref, args ?? {});
-globalThis.tools = Object.freeze({
+const __piToolNames = ["read","bash","edit","write","grep","find","ls"];
+const __toolsBase = {
   providers: () => __call("fabric.$providers", {}),
   list: (args = {}) => __call("fabric.$list", args),
   search: (args) => __call("fabric.$search", args),
@@ -45,16 +46,67 @@ globalThis.tools = Object.freeze({
   call: (args) => __call("fabric.$call", args),
   progress: (args) => __call("fabric.$progress", args),
   models: () => __call("fabric.$models", {}),
+};
+// tools is discovery + generic calls only. The proxy keeps the seven discovery
+// methods and turns a core-tool name (read/bash/edit/...) into an actionable
+// error pointing at pi.<name>, so a model that writes tools.read(...) learns
+// the fix in one turn instead of looping on "tools.read is not a function".
+globalThis.tools = new Proxy(__toolsBase, {
+  get(target, property) {
+    if (property === "then" || typeof property === "symbol") return undefined;
+    const name = String(property);
+    if (__piToolNames.indexOf(name) >= 0) {
+      return () => {
+        throw new Error(
+          "tools." + name + " is not available on the discovery API. tools is discovery + generic calls only (providers/list/search/describe/call/models). For the Pi core tool, call pi." + name + "(args), e.g. pi." + name + "({ ... })."
+        );
+      };
+    }
+    return target[property];
+  },
+  set() { return true; },
+  deleteProperty() { return true; },
 });
 const __piStringFields = { bash: "command", read: "path", ls: "path", grep: "pattern", find: "pattern" };
+// Per-tool key aliases. The runtime normalizes them to the canonical form
+// before the host validates args, so a model that writes { query, regex, ... }
+// or { file } instead of { pattern } / { path } still succeeds on the first
+// call. Keep these in sync with the PiToolsApi overloads in guest-types.ts so
+// the type-checker accepts the same spellings it coercion-handles at runtime.
 const __piArgAliases = {
-  bash: { cmd: "command" },
-  find: { query: "pattern" },
-  grep: { query: "pattern" },
-  read: { file: "path" },
-  ls: { dir: "path", file: "path" },
-  edit: { file: "path" },
-  write: { file: "path" },
+  bash: { cmd: "command", shell: "command", cmdline: "command", timeoutMs: "timeout" },
+  find: { query: "pattern", regex: "pattern", search: "pattern", max: "limit" },
+  grep: {
+    query: "pattern", regex: "pattern", search: "pattern",
+    ic: "ignoreCase", caseInsensitive: "ignoreCase",
+    globPattern: "glob",
+    max: "limit", ctx: "context",
+  },
+  read: { file: "path", max: "limit", start: "offset" },
+  ls: { dir: "path", file: "path", max: "limit" },
+  edit: { file: "path", old: "oldText", new: "newText", replacement: "newText" },
+  write: { file: "path", contents: "content", body: "content", text: "content" },
+};
+// Multi-arg positional order, used only when a call passes >= 2 args. The
+// one-field tools (read/bash/ls) are intentionally absent: their bare-string
+// form already covers the 1-arg case, and a 2-arg call should hit the
+// type-checker's wrong-arity (2554) and be corrected to an options object
+// rather than silently dropping the second argument.
+const __piPositionalFields = {
+  grep: ["pattern", "path", "limit"],
+  find: ["pattern", "path", "limit"],
+  write: ["path", "content"],
+  edit: ["path", "oldText", "newText"],
+};
+const __positionalToArgs = (name, rest) => {
+  const order = __piPositionalFields[name];
+  if (!order) return rest.length > 0 ? rest[0] : {};
+  const out = {};
+  for (let i = 0; i < rest.length && i < order.length; i++) {
+    const v = rest[i];
+    if (v !== undefined) out[order[i]] = v;
+  }
+  return out;
 };
 const __normalizePiArgs = (name, args) => {
   const field = __piStringFields[name];
@@ -83,15 +135,26 @@ const __normalizePiArgs = (name, args) => {
   }
   return out;
 };
+// The pi proxy accepts: a bare string (primary field), an options object, or
+// a positional spread mapped by __piPositionalFields. 0/1 args preserve the
+// legacy (args = {}) default so existing programs are unchanged.
 globalThis.pi = new Proxy({}, {
   get(_target, property) {
     if (property === "then") return undefined;
     const name = String(property);
-    return (args = {}) => __call("pi." + name, __normalizePiArgs(name, args));
+    return (...rest) => {
+      let args;
+      if (rest.length <= 1) {
+        const first = rest.length === 1 ? rest[0] : undefined;
+        args = first === undefined ? {} : first;
+      } else {
+        args = __positionalToArgs(name, rest);
+      }
+      return __call("pi." + name, __normalizePiArgs(name, args));
+    };
   },
 });
 const __piStrings = (typeof globalThis["π"] === "object" && globalThis["π"] !== null) ? globalThis["π"] : {};
-const __piToolNames = ["read","bash","edit","write","grep","find","ls"];
 globalThis["π"] = new Proxy(__piStrings, {
   get(target, property) {
     if (typeof property === "symbol") return undefined;

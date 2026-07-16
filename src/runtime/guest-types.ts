@@ -120,13 +120,17 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
 // proxy normalizes them to the canonical form before the host validates args.
 interface PiToolsApi {
-  read(args: string | { path: string; offset?: number; limit?: number } | { file: string; offset?: number; limit?: number }): Promise<string>;
-  bash(args: string | { command: string; timeout?: number } | { cmd: string; timeout?: number }): Promise<{ ok: true; output: string; details: unknown }>;
-  edit(args: { path: string; edits: Array<{ oldText: string; newText: string }> } | { file: string; edits: Array<{ oldText: string; newText: string }> } | { path: string; oldText: string; newText: string } | { file: string; oldText: string; newText: string }): Promise<{ ok: true; output: string; details: unknown }>;
-  write(args: { path: string; content: string } | { file: string; content: string }): Promise<{ ok: true; output: string; details: unknown }>;
-  grep(args: string | { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number } | { query: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number }): Promise<string>;
-  find(args: string | { pattern: string; path?: string; limit?: number } | { query: string; path?: string; limit?: number }): Promise<string>;
-  ls(args?: string | { path?: string; limit?: number } | { dir?: string; limit?: number } | { file?: string; limit?: number }): Promise<string>;
+  read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }): Promise<string>;
+  bash(args: string | { command: string; timeout?: number; timeoutMs?: number } | { cmd: string; timeout?: number; timeoutMs?: number } | { shell: string; timeout?: number; timeoutMs?: number }): Promise<{ ok: true; output: string; details: unknown }>;
+  edit(args: { path: string; edits: Array<{ oldText: string; newText: string }> } | { file: string; edits: Array<{ oldText: string; newText: string }> } | { path: string; oldText: string; newText: string } | { file: string; oldText: string; newText: string } | { path: string; old: string; new: string } | { path: string; old: string; replacement: string }): Promise<{ ok: true; output: string; details: unknown }>;
+  edit(path: string, oldText: string, newText: string): Promise<{ ok: true; output: string; details: unknown }>;
+  write(args: { path: string; content: string } | { file: string; content: string } | { path: string; contents: string } | { path: string; body: string } | { path: string; text: string }): Promise<{ ok: true; output: string; details: unknown }>;
+  write(path: string, content: string): Promise<{ ok: true; output: string; details: unknown }>;
+  grep(args: string | { pattern: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { query: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { regex: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number } | { search: string; path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number }): Promise<string>;
+  grep(pattern: string, path?: string, limit?: number): Promise<string>;
+  find(args: string | { pattern: string; path?: string; limit?: number; max?: number } | { query: string; path?: string; limit?: number; max?: number } | { regex: string; path?: string; limit?: number; max?: number } | { search: string; path?: string; limit?: number; max?: number }): Promise<string>;
+  find(pattern: string, path?: string, limit?: number): Promise<string>;
+  ls(args?: string | { path?: string; limit?: number; max?: number } | { dir?: string; limit?: number; max?: number } | { file?: string; limit?: number; max?: number }): Promise<string>;
 }
 type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
