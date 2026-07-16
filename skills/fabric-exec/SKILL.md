@@ -36,4 +36,4 @@ Refs namespaced: `pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`; bare nam
 Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); 2 positional args on `read`/`bash`/`ls` (use an options object — positional is supported only for `grep`/`find`/`write`/`edit`).
 
 ## Other surfaces (opt-in)
-MCP tools are discoverable via `tools` (`mcp.<server>.<tool>`); see `references/mcp.md`. Multi-agent orchestration is opt-in: load `/skill:fabric-workflow`, `/skill:fabric-council`, or `/skill:fabric-rlm` (API detail in `references/agents.md`, `references/mesh.md`).
+MCP tools are discoverable via `tools` (`mcp.<server>.<tool>`); see `references/mcp.md`. Multi-agent orchestration is opt-in: load `/skill:fabric-workflow`, `/skill:fabric-council`, `/skill:fabric-rlm`, or `/skill:fabric-fusion` (API detail in `references/agents.md`, `references/mesh.md`).

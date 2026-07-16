@@ -431,6 +431,7 @@ Pi discovers these package skills automatically:
 | `/skill:fabric-rlm <task>`        | Recursive self-delegation via `rlm.query()` for tasks too big for one context window |
 | `/skill:fabric-swarm <objective>`  | Persistent actors, durable topics, and CAS-based shared tasks           |
 | `/skill:fabric-council <decision>` | Bounded independent perspectives plus synthesis                         |
+| `/skill:fabric-fusion <task>`      | Multi-model deliberation: parallel panel plus a compare-not-merge judge |
 
 `fabric-exec` is the one discoverable reference skill: it holds the full `fabric_exec` API (core `pi.*` tools, `tools` discovery, `π` strings, error recovery) plus `references/` files for MCP, agents/rlm, and mesh loaded by relative path (not separate skills). It appears in `<available_skills>`; load it via `read` before your first `fabric_exec` call or when a call errors.
 
