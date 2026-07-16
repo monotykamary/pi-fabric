@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { headlineArg } from "../core/call-preview.js";
 import type { FabricInvocationActivityUpdate } from "../protocol.js";
 import type {
   FabricActivityCall,
@@ -94,12 +95,8 @@ const labelForCall = (ref: string, args: Record<string, unknown>): string => {
     cleanText(args.title, MAX_NAME_CHARS);
   if (explicit) return explicit;
 
-  const target =
-    cleanText(args.task, MAX_NAME_CHARS) ??
-    cleanText(args.path, MAX_NAME_CHARS) ??
-    cleanText(args.query, MAX_NAME_CHARS) ??
-    cleanText(args.message, MAX_NAME_CHARS);
-  return target ? `${ref} · ${target.replace(/\s+/g, " ")}` : ref;
+  const target = headlineArg(args, MAX_NAME_CHARS);
+  return target ? `${ref} · ${target}` : ref;
 };
 
 const metricsFrom = (value: unknown): FabricActivityMetrics | undefined => {

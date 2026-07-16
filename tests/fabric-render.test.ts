@@ -120,4 +120,31 @@ e
 f` }], `a
 b`, theme)).toBe("");
   });
+
+  it("renders a generic extension tool's query argument", () => {
+    const title = nestedCallTitle(
+      { ref: "extensions.vcc_recall", provider: "extensions", tool: "vcc_recall", args: { query: "how do I recall X" } },
+      theme,
+    );
+    expect(title).toContain("vcc_recall");
+    expect(title).toContain("how do I recall X");
+  });
+
+  it("falls back to the first string arg for tools with unfamiliar keys", () => {
+    const title = nestedCallTitle(
+      { ref: "extensions.custom_search", provider: "extensions", tool: "custom_search", args: { haystack: "needle" } },
+      theme,
+    );
+    expect(title).toContain("custom_search");
+    expect(title).toContain("needle");
+  });
+
+  it("renders just the tool name when there is no string arg", () => {
+    const title = nestedCallTitle(
+      { ref: "extensions.no_args", provider: "extensions", tool: "no_args", args: { count: 3 } },
+      theme,
+    );
+    expect(title).toContain("no_args");
+    expect(title).not.toContain("3");
+  });
 });

@@ -1,6 +1,7 @@
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { highlightCode, languageFromPath } from "./highlight.js";
+import { headlineArg } from "../core/call-preview.js";
 
 export interface FabricRenderAudit {
   ref: string;
@@ -140,6 +141,7 @@ export function nestedCallTitle(
   if (path) detail = path;
   else if (pattern) detail = `/${pattern}/${path ? ` ${path}` : ""}`;
   else if (task) detail = truncateOneLine(task, 64);
+  else detail = headlineArg(args) ?? "";
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
 }
 

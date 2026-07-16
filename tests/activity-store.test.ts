@@ -114,4 +114,16 @@ describe("FabricActivityStore", () => {
       calls: [{ status: "failed", error: "command failed" }],
     });
   });
+
+  it("labels generic extension tool calls with their query argument", () => {
+    const store = new FabricActivityStore();
+    store.start("run-q");
+    store.beginCall("run-q", {
+      callId: "recall-1",
+      ref: "extensions.vcc_recall",
+      args: { query: "how do I recall X" },
+    });
+    const run = store.get("run-q");
+    expect(run?.calls[0]?.label).toBe("extensions.vcc_recall · how do I recall X");
+  });
 });
