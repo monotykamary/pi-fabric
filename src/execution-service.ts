@@ -6,7 +6,11 @@ import type {
   FabricPhaseInput,
   FabricRunDisplay,
 } from "./activity/types.js";
-import type { FabricConfig } from "./config.js";
+import {
+  MAX_SUBAGENT_TIMEOUT_MS,
+  MIN_SUBAGENT_TIMEOUT_MS,
+  type FabricConfig,
+} from "./config.js";
 import {
   ActionRegistry,
   type FabricCallAudit,
@@ -14,7 +18,10 @@ import {
 } from "./core/action-registry.js";
 import { ApprovalController } from "./core/approval-controller.js";
 import { guestTypeDeclarations } from "./runtime/guest-types.js";
-import { codeUsesOrchestration } from "./runtime/orchestration.js";
+import {
+  codeUsesOrchestration,
+  isBlockingOrchestrationRef,
+} from "./runtime/orchestration.js";
 import { QuickJsRuntime, type FabricSandboxResult } from "./runtime/quickjs-runtime.js";
 import { typeCheckFabricCode, type FabricTypeError } from "./runtime/type-checker.js";
 
@@ -134,13 +141,41 @@ export class FabricExecutionService {
       extensionContext: options.context,
       update,
     };
-    // Orchestration programs spawn/await child Pi agents whose per-agent
-    // budget (subagents.timeoutMs) can exceed the whole-program executor
-    // deadline. Floor the executor deadline at the subagent deadline so the
-    // parent cannot abort children that are still within their own budget.
+    // Start known orchestration programs with the longer deadline. Calls
+    // reached through generic or computed refs are classified again at the
+    // host bridge and can extend the active sandbox deadline before they run.
+    const orchestrationTimeoutMs = Math.max(
+      this.config.executor.timeoutMs,
+      this.config.subagents.timeoutMs,
+    );
     const effectiveTimeoutMs = codeUsesOrchestration(options.code)
-      ? Math.max(this.config.executor.timeoutMs, this.config.subagents.timeoutMs)
+      ? orchestrationTimeoutMs
       : this.config.executor.timeoutMs;
+    const minimumTimeoutMsForHostCall = (
+      ref: string,
+      args: Record<string, unknown>,
+    ): number | undefined => {
+      const targetRef =
+        ref === "fabric.$call" && typeof args.ref === "string" ? args.ref : ref;
+      if (!isBlockingOrchestrationRef(targetRef)) return undefined;
+      const targetArgs =
+        ref === "fabric.$call" &&
+        typeof args.args === "object" &&
+        args.args !== null &&
+        !Array.isArray(args.args)
+          ? (args.args as Record<string, unknown>)
+          : args;
+      const requestedTimeoutMs =
+        targetRef === "agents.run" &&
+        typeof targetArgs.timeoutMs === "number" &&
+        Number.isFinite(targetArgs.timeoutMs)
+          ? Math.max(
+              MIN_SUBAGENT_TIMEOUT_MS,
+              Math.min(Math.floor(targetArgs.timeoutMs), MAX_SUBAGENT_TIMEOUT_MS),
+            )
+          : 0;
+      return Math.max(orchestrationTimeoutMs, requestedTimeoutMs);
+    };
     let sandboxResult: FabricSandboxResult;
     try {
       sandboxResult = await this.#runtime.execute(
@@ -270,6 +305,7 @@ export class FabricExecutionService {
           timeoutMs: effectiveTimeoutMs,
           memoryLimitBytes: this.config.executor.memoryLimitBytes,
           maxLogChars: this.config.executor.maxOutputChars,
+          minimumTimeoutMsForHostCall,
           ...(options.strings ? { strings: options.strings } : {}),
           ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
           ...(options.signal ? { signal: options.signal } : {}),

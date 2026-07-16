@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { codeUsesOrchestration } from "../src/runtime/orchestration.js";
+import {
+  codeUsesOrchestration,
+  isBlockingOrchestrationRef,
+} from "../src/runtime/orchestration.js";
+
+describe("isBlockingOrchestrationRef", () => {
+  it("classifies only host calls that wait for child agent turns", () => {
+    expect(isBlockingOrchestrationRef("agents.run")).toBe(true);
+    expect(isBlockingOrchestrationRef("agents.wait")).toBe(true);
+    expect(isBlockingOrchestrationRef("agents.ask")).toBe(true);
+    expect(isBlockingOrchestrationRef("agents.spawn")).toBe(false);
+    expect(isBlockingOrchestrationRef("agents.status")).toBe(false);
+    expect(isBlockingOrchestrationRef("demo.slow")).toBe(false);
+  });
+});
 
 describe("codeUsesOrchestration", () => {
   it("detects workflow agent entry points", () => {

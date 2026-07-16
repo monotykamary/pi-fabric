@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { FabricSubagentConfig, FabricSubagentTransport } from "../config.js";
+import {
+  MAX_SUBAGENT_TIMEOUT_MS,
+  MIN_SUBAGENT_TIMEOUT_MS,
+  type FabricSubagentConfig,
+  type FabricSubagentTransport,
+} from "../config.js";
 import { Semaphore } from "./semaphore.js";
 import { removeTree } from "./rm.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
@@ -290,8 +295,8 @@ export class SubagentManager {
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
       const tools = this.#childTools(request);
       const timeoutMs = Math.max(
-        1_000,
-        Math.min(request.timeoutMs ?? this.config.timeoutMs, 3_600_000),
+        MIN_SUBAGENT_TIMEOUT_MS,
+        Math.min(request.timeoutMs ?? this.config.timeoutMs, MAX_SUBAGENT_TIMEOUT_MS),
       );
       const model = request.model ?? this.config.model;
       const thinking = request.thinking ?? this.config.thinking;

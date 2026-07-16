@@ -1,8 +1,5 @@
 import releaseSyncVariant from "@jitl/quickjs-singlefile-mjs-release-sync";
-import {
-  newQuickJSWASMModuleFromVariant,
-  shouldInterruptAfterDeadline,
-} from "quickjs-emscripten-core";
+import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import ts from "typescript";
 
 export interface FabricSandboxResult {
@@ -18,6 +15,10 @@ export interface FabricSandboxOptions {
   strings?: Record<string, string>;
   tokenBudget?: number;
   signal?: AbortSignal;
+  minimumTimeoutMsForHostCall?(
+    ref: string,
+    args: Record<string, unknown>,
+  ): number | undefined;
 }
 
 export type FabricHostCall = (
@@ -410,7 +411,7 @@ const resolveQuickJsPromise = async (
   context: any,
   runtime: any,
   promiseHandle: any,
-  hardDeadlineMs: number,
+  hardDeadlineMs: () => number,
 ): Promise<any> => {
   const resolution = context.resolvePromise(promiseHandle);
   let settled = false;
@@ -418,7 +419,7 @@ const resolveQuickJsPromise = async (
     settled = true;
   });
   while (!settled) {
-    if (Date.now() > hardDeadlineMs) break;
+    if (Date.now() > hardDeadlineMs()) break;
     runtime.executePendingJobs();
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -437,8 +438,11 @@ export class QuickJsRuntime {
     const module = await quickJsModule();
     const context = module.newContext();
     const runtime = context.runtime;
+    const executionStartedAt = Date.now();
+    let effectiveTimeoutMs = options.timeoutMs;
+    let executionDeadlineAt = executionStartedAt + effectiveTimeoutMs;
     runtime.setMemoryLimit(options.memoryLimitBytes);
-    runtime.setInterruptHandler(shouldInterruptAfterDeadline(Date.now() + options.timeoutMs));
+    runtime.setInterruptHandler(() => Date.now() > executionDeadlineAt);
     const logs: string[] = [];
     const maxLogChars = options.maxLogChars ?? 100_000;
     let logChars = 0;
@@ -450,6 +454,7 @@ export class QuickJsRuntime {
     let cancelled = false;
     let timedOut = false;
     let timeout: NodeJS.Timeout | undefined;
+    let rejectDeadline: ((error: Error) => void) | undefined;
     let abortHandler: (() => void) | undefined;
     let activePromiseHandle: any;
     let executionGate: any;
@@ -469,6 +474,40 @@ export class QuickJsRuntime {
       runtime.executePendingJobs();
     };
 
+    const timeoutMessage = (): string =>
+      `Execution timed out after ${effectiveTimeoutMs}ms`;
+    const expireDeadline = (): void => {
+      if (closing || cancelled || timedOut) return;
+      timedOut = true;
+      const message = timeoutMessage();
+      abortHostCalls(message);
+      rejectExecutionGate(message);
+      rejectDeadline?.(new Error(message));
+    };
+    const scheduleDeadline = (): void => {
+      if (!rejectDeadline || closing || cancelled || timedOut) return;
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(expireDeadline, Math.max(0, executionDeadlineAt - Date.now()));
+    };
+    const extendExecutionTimeout = (
+      ref: string,
+      args: Record<string, unknown>,
+    ): void => {
+      const requestedTimeoutMs = options.minimumTimeoutMsForHostCall?.(ref, args);
+      if (
+        typeof requestedTimeoutMs !== "number" ||
+        !Number.isFinite(requestedTimeoutMs)
+      ) {
+        return;
+      }
+      const nextTimeoutMs = Math.max(1, Math.floor(requestedTimeoutMs));
+      const nextDeadlineAt = executionStartedAt + nextTimeoutMs;
+      if (nextDeadlineAt <= executionDeadlineAt) return;
+      effectiveTimeoutMs = nextTimeoutMs;
+      executionDeadlineAt = nextDeadlineAt;
+      scheduleDeadline();
+    };
+
     try {
       const hostFunction = context.newFunction(
         "__fabricHostCall",
@@ -479,6 +518,7 @@ export class QuickJsRuntime {
             typeof dumpedArgs === "object" && dumpedArgs !== null && !Array.isArray(dumpedArgs)
               ? (dumpedArgs as Record<string, unknown>)
               : {};
+          extendExecutionTimeout(reference, args);
           const promise = context.newPromise();
           pendingHostPromises.add(promise);
           void promise.settled.then(() => pendingHostPromises.delete(promise));
@@ -577,19 +617,14 @@ export class QuickJsRuntime {
       });
       void cancellation.catch(() => undefined);
       const deadline = new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => {
-          timedOut = true;
-          const message = `Execution timed out after ${options.timeoutMs}ms`;
-          hostAbortController.abort(new Error(message));
-          rejectExecutionGate(message);
-          reject(new Error(message));
-        }, options.timeoutMs);
+        rejectDeadline = reject;
+        scheduleDeadline();
       });
       pendingResolution = resolveQuickJsPromise(
         context,
         runtime,
         activePromiseHandle,
-        Date.now() + options.timeoutMs + 5_000,
+        () => executionDeadlineAt + 5_000,
       );
       const resolution = await Promise.race([pendingResolution, deadline, cancellation]);
       activePromiseHandle.dispose();
@@ -625,11 +660,9 @@ export class QuickJsRuntime {
       closing = true;
       if (timedOut || cancelled) {
         if (!hostAbortController.signal.aborted) hostAbortController.abort();
-        rejectExecutionGate(
-          cancelled ? "Execution cancelled" : `Execution timed out after ${options.timeoutMs}ms`,
-        );
+        rejectExecutionGate(cancelled ? "Execution cancelled" : timeoutMessage());
         const errorHandle = context.newError(
-          cancelled ? "Execution cancelled" : `Execution timed out after ${options.timeoutMs}ms`,
+          cancelled ? "Execution cancelled" : timeoutMessage(),
         );
         for (const promise of pendingHostPromises) promise.reject(errorHandle);
         errorHandle.dispose();

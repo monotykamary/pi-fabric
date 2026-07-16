@@ -277,6 +277,68 @@ return "unreachable";
     expect(result.value).toBe("ok");
   });
 
+  it("raises the deadline for literal and computed generic agent refs", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "run",
+      description: "fake agent",
+      inputSchema: {
+        type: "object",
+        properties: { task: { type: "string" } },
+        required: ["task"],
+        additionalProperties: true,
+      },
+      risk: "agent" as const,
+    };
+    registry.register({
+      name: "agents",
+      description: "fake agents",
+      async list() {
+        return [descriptor];
+      },
+      async describe(name) {
+        return name === "run" ? descriptor : undefined;
+      },
+      async invoke(_name, args, context) {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            resolve({
+              status: "completed",
+              text: String(args.task),
+              usage: { input: 0, output: 0 },
+            });
+          }, 250);
+          context.signal?.addEventListener("abort", () => clearTimeout(timer), { once: true });
+        });
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = false;
+    config.approvals.agent = "allow";
+    config.executor.timeoutMs = 100;
+    config.subagents.timeoutMs = 30_000;
+    const service = new FabricExecutionService(registry, config);
+    const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
+    const result = await service.execute({
+      code: `
+const computedRef = ["agents", "run"].join(".");
+return Promise.all([
+  tools.call({ ref: "agents.run", args: { task: "literal" } }),
+  tools.call({ ref: computedRef, args: { task: "computed" } }),
+]);
+`,
+      signal: undefined,
+      parentToolCallId: "generic-orchestration-floor",
+      context,
+      onPartial() {},
+    });
+    expect(result.success).toBe(true);
+    expect(result.value).toEqual([
+      { status: "completed", text: "literal", usage: { input: 0, output: 0 } },
+      { status: "completed", text: "computed", usage: { input: 0, output: 0 } },
+    ]);
+  });
+
   it("keeps the short executor deadline for non-orchestration programs", async () => {
     const registry = new ActionRegistry();
     const descriptor = {

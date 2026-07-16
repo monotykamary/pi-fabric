@@ -89,6 +89,9 @@ export interface FabricConfig {
   mesh: FabricMeshConfig;
 }
 
+export const MIN_SUBAGENT_TIMEOUT_MS = 1_000;
+export const MAX_SUBAGENT_TIMEOUT_MS = 3_600_000;
+
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   fullCodeMode: true,
   executor: {
@@ -117,7 +120,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxConcurrent: 4,
     maxPerExecution: 100,
     maxDepth: 2,
-    timeoutMs: 3_600_000,
+    timeoutMs: MAX_SUBAGENT_TIMEOUT_MS,
     extensions: true,
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
@@ -357,8 +360,8 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       timeoutMs: boundedInteger(
         subagents.timeoutMs,
         DEFAULT_FABRIC_CONFIG.subagents.timeoutMs,
-        1_000,
-        3_600_000,
+        MIN_SUBAGENT_TIMEOUT_MS,
+        MAX_SUBAGENT_TIMEOUT_MS,
       ),
       extensions: booleanValue(subagents.extensions, DEFAULT_FABRIC_CONFIG.subagents.extensions),
       defaultTools: configuredTools,

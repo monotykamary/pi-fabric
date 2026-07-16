@@ -158,6 +158,28 @@ return self.name;
     expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
+  it("extends the active deadline before a blocking host call runs", async () => {
+    const result = await new QuickJsRuntime().execute(
+      `
+const ref = ["agents", "run"].join(".");
+return tools.call({ ref, args: { task: "slow" } });
+`,
+      async () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ status: "completed", text: "ok" }), 150);
+        }),
+      {
+        ...options,
+        timeoutMs: 50,
+        minimumTimeoutMsForHostCall(ref, args) {
+          return ref === "fabric.$call" && args.ref === "agents.run" ? 1_000 : undefined;
+        },
+      },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({ status: "completed", text: "ok" });
+  });
+
   it("aborts sibling host calls when guest workflow code fails", async () => {
     let hostCallAborted = false;
     const result = await new QuickJsRuntime().execute(
