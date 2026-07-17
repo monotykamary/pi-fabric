@@ -55,11 +55,15 @@ const run = (
   finishedAt: startedAt,
 });
 
-const fakeState = (runs: FabricActivityRun[], records: SubagentRunRecord[]): FabricState =>
+const fakeState = (
+  runs: FabricActivityRun[],
+  records: SubagentRunRecord[],
+  actors: unknown[] = [],
+): FabricState =>
   ({
     activity: { runs: () => runs },
     subagents: { list: () => records },
-    actors: { list: () => [], instructions: () => "", messages: () => [] },
+    actors: { list: () => actors, instructions: () => "", messages: () => [] },
     globalActors: { list: () => [] },
     config: { mesh: { enabled: false } },
     mesh: { list: () => [] },
@@ -104,5 +108,52 @@ describe("dashboard snapshot agent ownership", () => {
       runId: "launch-run",
       phaseId: "investigate",
     });
+  });
+
+  it("includes recursively nested agents with inherited ownership", () => {
+    const grandchild = record("agent-grandchild");
+    const child = record("agent-child", [grandchild]);
+    const parent = record("agent-parent", [child]);
+    const launch = run("launch-run", "agents.spawn", parent.id, 100, "investigate");
+
+    const snapshot = createDashboardSnapshot(fakeState([launch], [parent]), []);
+    expect(snapshot.agents.find((agent) => agent.id === grandchild.id)).toMatchObject({
+      parentId: child.id,
+      runId: "launch-run",
+      phaseId: "investigate",
+    });
+  });
+
+  it("prefers an active actor worker over a newer retained failure", () => {
+    const failed = {
+      ...record("actor-failed"),
+      actorId: "actor-1",
+      status: "failed" as const,
+      updatedAt: 900,
+    };
+    const running = {
+      ...record("actor-running"),
+      actorId: "actor-1",
+      status: "running" as const,
+      updatedAt: 800,
+    };
+    const actor = {
+      id: "actor-1",
+      name: "reviewer",
+      status: "running",
+      events: [],
+      topics: [],
+      delivery: "mailbox",
+      responseMode: "text",
+      triggerTurn: false,
+      coalesce: true,
+      queued: 0,
+      messages: 0,
+      createdAt: 100,
+      updatedAt: 900,
+    };
+
+    const snapshot = createDashboardSnapshot(fakeState([], [failed, running], [actor]), []);
+    expect(snapshot.actors[0]?.worker?.id).toBe("actor-running");
   });
 });

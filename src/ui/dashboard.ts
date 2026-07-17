@@ -420,6 +420,7 @@ export class FabricDashboard implements Component, Focusable {
   private selectedEntityId: string | undefined;
   private filter: StatusFilter = "all";
   private phaseSelectionTouched = false;
+  private selectedPhaseId: string | undefined;
   private detailId: string | undefined;
   private detailScroll = 0;
   private readonly refreshTimer: NodeJS.Timeout;
@@ -718,6 +719,13 @@ export class FabricDashboard implements Component, Focusable {
         this.phaseSelectionTouched = true;
       } else this.entityIndex = 0;
     }
+    if (this.phaseSelectionTouched) this.selectedPhaseId = panels[this.phaseIndex]?.id;
+    if (this.detailId) {
+      this.runSelectionTouched = true;
+      this.selectedRunId = run?.id;
+      this.phaseSelectionTouched = true;
+      this.selectedPhaseId = panel?.id;
+    }
     if (this.pane === "entities") {
       this.selectedEntityId = entities[this.entityIndex]?.id;
     }
@@ -803,7 +811,8 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private renderAgentMessageEditor(width: number): string[] {
-    if (width < 24 || !this.editor || !this.agentMessageTarget) return [];
+    if (!this.editor || !this.agentMessageTarget) return [];
+    if (width < 24) return this.renderNarrowFallback(width, `${this.agentMessageTarget.kind} · ${this.agentMessageTarget.name}`, "esc cancel");
     const target = this.agentMessageTarget;
     const label = target.kind === "steer" ? "steer now" : "follow up after completion";
     const innerWidth = width - 2;
@@ -821,14 +830,33 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private renderHelp(width: number): string[] {
-    if (width < 24) return [truncateToWidth("too narrow · need 24 cols", width)];
+    if (width < 24) return this.renderNarrowFallback(width, "dashboard help", "? or esc close");
     const lines = [this.topBorder(width, "Fabric dashboard help")];
+    const agentActions = [
+      this.onAgentSteer ? "s steer now" : undefined,
+      this.onAgentFollowUp ? "u queue follow-up" : undefined,
+      this.onAgentStop ? "x twice stop" : undefined,
+      "enter details",
+    ].filter((value): value is string => Boolean(value));
+    const actorActions = [
+      this.modelSource && this.onActorModel ? "m model" : undefined,
+      this.onActorThinking ? "e thinking" : undefined,
+      this.onActorEvents ? "v events" : undefined,
+      this.onActorInstructions ? "i instructions" : undefined,
+      this.onClearMessages ? "c clear mailbox" : undefined,
+      this.onExportActor ? "x export" : undefined,
+    ].filter((value): value is string => Boolean(value));
+    const templateActions = [
+      this.onGlobalInstructions ? "i instructions" : undefined,
+      this.onImportActor ? "p import" : undefined,
+      this.onRemoveGlobalActor ? "d delete" : undefined,
+    ].filter((value): value is string => Boolean(value));
     const help = [
       ["Navigate", "↑↓/jk select · ←→/tab switch pane · enter inspect · esc back"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
-      ["Agents", "s steer now · u queue follow-up · x twice stop · enter details"],
-      ["Actors", "m model · e thinking · v events · i instructions · c clear mailbox"],
-      ["Templates", "i instructions · p import · d delete"],
+      ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
+      ...(actorActions.length > 0 ? [["Actors", actorActions.join(" · ")]] : []),
+      ...(templateActions.length > 0 ? [["Templates", templateActions.join(" · ")]] : []),
       ["Details", "↑↓/jk scroll · g top · ? close help"],
     ];
     for (const [label, value] of help) {
@@ -957,7 +985,8 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private renderPicker(width: number): string[] {
-    if (width < 24 || !this.picker) return [];
+    if (!this.picker) return [];
+    if (width < 24) return this.renderNarrowFallback(width, `actor · ${this.pickerActorName ?? ""}`, "esc cancel");
     const kind =
       this.mode === "thinkingPicker"
         ? "thinking"
@@ -983,7 +1012,8 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private renderInstructionsEditor(width: number): string[] {
-    if (width < 24 || !this.editor) return [];
+    if (!this.editor) return [];
+    if (width < 24) return this.renderNarrowFallback(width, `instructions · ${this.editorActorName ?? ""}`, "esc cancel");
     const innerWidth = width - 2;
     const lines = [this.topBorder(width, `instructions · ${this.editorActorName ?? ""}`)];
     for (const line of this.editor.render(innerWidth)) {
@@ -1054,7 +1084,8 @@ export class FabricDashboard implements Component, Focusable {
     lines.push(this.row(width, headerLine || this.theme.fg("muted", "No Fabric activity yet")));
     lines.push(this.middleBorder(width));
 
-    const maxBody = Math.max(8, Math.min(22, (process.stdout.rows ?? 28) - 10));
+    const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
+    const maxBody = Math.max(2, Math.min(22, terminalRows - 12));
     if (innerWidth >= 88) {
       const leftWidth = Math.min(38, Math.max(28, Math.floor((innerWidth - 1) * 0.34)));
       const rightWidth = innerWidth - leftWidth - 1;
@@ -1080,8 +1111,9 @@ export class FabricDashboard implements Component, Focusable {
         );
       }
     } else {
-      const phaseHeight = Math.min(Math.max(3, panels.length + 1), Math.floor(maxBody * 0.45));
-      const entityHeight = Math.max(3, maxBody - phaseHeight - 1);
+      const panelRows = Math.max(2, maxBody - 1);
+      const phaseHeight = Math.max(1, Math.min(panels.length + 1, Math.floor(panelRows * 0.45)));
+      const entityHeight = Math.max(1, panelRows - phaseHeight);
       for (const line of this.renderPhasePanel(panels, innerWidth, phaseHeight)) {
         lines.push(this.row(width, line));
       }
@@ -1135,7 +1167,7 @@ export class FabricDashboard implements Component, Focusable {
         width,
         this.theme.fg(
           "dim",
-          `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · [ older · ] newer · esc close`,
+          `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · [ older · ] newer · ? help · esc close`,
         ),
       ),
     );
@@ -1151,10 +1183,25 @@ export class FabricDashboard implements Component, Focusable {
 
   private overviewActionHint(entity: Entity): string {
     if (entity.kind === "actor" && entity.status !== "stopped") {
-      return "actor actions: m model · e thinking · v events · i instructions · enter details";
+      const actions = [
+        this.modelSource && this.onActorModel ? "m model" : undefined,
+        this.onActorThinking ? "e thinking" : undefined,
+        this.onActorEvents ? "v events" : undefined,
+        this.onActorInstructions ? "i instructions" : undefined,
+        this.onClearMessages ? "c clear mailbox" : undefined,
+        this.onExportActor ? "x export" : undefined,
+        "enter details",
+      ].filter((value): value is string => Boolean(value));
+      return `actor actions: ${actions.join(" · ")}`;
     }
     if (entity.kind === "globalActor") {
-      return "template actions: i instructions · enter details";
+      const actions = [
+        this.onGlobalInstructions ? "i instructions" : undefined,
+        this.onImportActor ? "p import" : undefined,
+        this.onRemoveGlobalActor ? "d delete" : undefined,
+        "enter details",
+      ].filter((value): value is string => Boolean(value));
+      return `template actions: ${actions.join(" · ")}`;
     }
     if (entity.kind === "agent") {
       const armed = this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > Date.now();
@@ -1266,13 +1313,13 @@ export class FabricDashboard implements Component, Focusable {
     snapshot: FabricDashboardSnapshot,
     entity: Entity,
   ): string[] {
-    if (width < 24) return [truncateToWidth(entity.label, width)];
+    if (width < 24) return this.renderNarrowFallback(width, entity.label, "esc back · ? help");
     const innerWidth = width - 2;
     const actionLines = wrapPlainText(this.detailActionHint(entity), Math.max(1, innerWidth - 2), 3);
     const lines = [this.topBorder(width, `${entity.kind} · ${entity.label}`)];
     const content = this.detailLines(entity, innerWidth, snapshot.now);
     const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
-    const maxBody = Math.max(8, Math.min(24, terminalRows - 8 - actionLines.length));
+    const maxBody = Math.max(1, Math.min(24, terminalRows - 8 - actionLines.length));
     const maxScroll = Math.max(0, content.length - maxBody);
     this.detailScroll = Math.max(0, Math.min(this.detailScroll, maxScroll));
     const visible = content.slice(this.detailScroll, this.detailScroll + maxBody);
@@ -1476,6 +1523,7 @@ export class FabricDashboard implements Component, Focusable {
   private syncPhase(run: FabricActivityRun | undefined, panels: PhasePanel[]): void {
     if (panels.length === 0) {
       this.phaseIndex = 0;
+      this.selectedPhaseId = undefined;
       return;
     }
     if (!this.phaseSelectionTouched) {
@@ -1492,8 +1540,17 @@ export class FabricDashboard implements Component, Focusable {
       } else if (current >= 0) {
         this.phaseIndex = current;
       }
+    } else {
+      const retainedIndex = this.selectedPhaseId
+        ? panels.findIndex((panel) => panel.id === this.selectedPhaseId)
+        : -1;
+      this.phaseIndex =
+        retainedIndex >= 0
+          ? retainedIndex
+          : Math.max(0, Math.min(this.phaseIndex, panels.length - 1));
     }
     this.phaseIndex = Math.max(0, Math.min(this.phaseIndex, panels.length - 1));
+    this.selectedPhaseId = panels[this.phaseIndex]?.id;
   }
 
   private resetSelection(): void {
@@ -1501,9 +1558,16 @@ export class FabricDashboard implements Component, Focusable {
     this.entityIndex = 0;
     this.selectedEntityId = undefined;
     this.phaseSelectionTouched = false;
+    this.selectedPhaseId = undefined;
     this.detailId = undefined;
     this.detailScroll = 0;
     this.pane = "phases";
+  }
+
+  private renderNarrowFallback(width: number, label: string, hint: string): string[] {
+    return [safeText(label), hint]
+      .map((line) => truncateToWidth(line, width, ""))
+      .filter((line) => visibleWidth(line) > 0);
   }
 
   private topBorder(width: number, title: string): string {

@@ -113,18 +113,28 @@ export const createDashboardSnapshot = (
     };
   };
   const allAgents: FabricUiAgent[] = [];
-  for (const record of agentRecords) {
-    const parent = agentFromRecord(record);
-    allAgents.push(parent);
-    if (isRunRecord(record) && record.nestedAgents) {
-      for (const nested of record.nestedAgents) {
-        allAgents.push(agentFromRecord(nested, record.id, parent));
-      }
-    }
-  }
+  const appendAgent = (
+    record: SubagentRunRecord | SubagentHandleInfo,
+    parentId?: string,
+    parent?: FabricUiAgent,
+  ): void => {
+    const agent = agentFromRecord(record, parentId, parent);
+    allAgents.push(agent);
+    if (!isRunRecord(record)) return;
+    for (const nested of record.nestedAgents ?? []) appendAgent(nested, record.id, agent);
+  };
+  for (const record of agentRecords) appendAgent(record);
 
   const actors = state.actors.list().map((actor) => {
-    const worker = allAgents.find((agent) => agent.actorId === actor.id);
+    const worker = allAgents
+      .filter((agent) => agent.actorId === actor.id)
+      .sort((left, right) => {
+        const active = Number(activeStatuses.has(right.status)) - Number(activeStatuses.has(left.status));
+        const recency =
+          (numberFrom(right.updatedAt) ?? numberFrom(right.startedAt) ?? 0) -
+          (numberFrom(left.updatedAt) ?? numberFrom(left.startedAt) ?? 0);
+        return active || recency;
+      })[0];
     return {
       ...actor,
       instructions: state.actors.instructions(actor.id),

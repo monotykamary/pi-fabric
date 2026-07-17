@@ -46,8 +46,19 @@ export const wrapPlainText = (value: string, width: number, maxLines = 100): str
     if (current) lines.push(truncateToWidth(current, width));
     current = word;
     while (visibleWidth(current) > width && lines.length < maxLines) {
-      lines.push(truncateToWidth(current, width, ""));
-      current = current.slice(Math.max(1, width));
+      let chunk = "";
+      let consumed = 0;
+      for (const character of current) {
+        const candidate = chunk + character;
+        if (visibleWidth(candidate) > width) {
+          if (!chunk) consumed += character.length;
+          break;
+        }
+        chunk = candidate;
+        consumed += character.length;
+      }
+      if (chunk) lines.push(chunk);
+      current = current.slice(consumed);
     }
     if (lines.length >= maxLines) break;
   }

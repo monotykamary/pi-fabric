@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
 import type { FabricActivityRun, FabricActivityStatus } from "../activity/types.js";
@@ -113,7 +113,7 @@ export const shouldShowFabricWidget = (
   if (!run) return false;
   if (run.status === "running") return true;
   const finishedAt = run.finishedAt ?? run.updatedAt;
-  return finishedAt >= (snapshot.widgetDismissedAt ?? 0);
+  return finishedAt > (snapshot.widgetDismissedAt ?? 0);
 };
 
 export class FabricWidget implements Component {
@@ -151,7 +151,7 @@ export class FabricWidget implements Component {
     const run =
       candidateRun &&
       (candidateRun.status === "running" ||
-        candidateFinishedAt >= (snapshot.widgetDismissedAt ?? 0))
+        candidateFinishedAt > (snapshot.widgetDismissedAt ?? 0))
         ? candidateRun
         : undefined;
     const activeAgents = snapshot.agents.filter((agent) => isActiveStatus(agent.status));
@@ -225,10 +225,10 @@ export class FabricWidget implements Component {
   #boundContent(content: string[], width: number): string[] {
     const bounded = content.slice(0, Math.max(1, this.maxRows));
     if (content.length > bounded.length && bounded.length > 0) {
-      bounded[bounded.length - 1] = `${bounded[bounded.length - 1]} ${this.theme.fg(
-        "dim",
-        `+${content.length - bounded.length}`,
-      )}`;
+      const marker = this.theme.fg("dim", `+${content.length - bounded.length}`);
+      const available = Math.max(0, width - visibleWidth(marker) - 1);
+      const last = truncateToWidth(bounded[bounded.length - 1] ?? "", available, "");
+      bounded[bounded.length - 1] = `${last} ${marker}`;
     }
     return bounded.map((line) => truncateToWidth(line, width));
   }

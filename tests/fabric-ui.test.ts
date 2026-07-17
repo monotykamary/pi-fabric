@@ -3,6 +3,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";
+import { wrapPlainText } from "../src/ui/format.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import type { FabricThinking } from "../src/thinking.js";
 import type { FabricDashboardSnapshot } from "../src/ui/types.js";
@@ -223,6 +224,8 @@ describe("Fabric dynamic UI", () => {
     const lines = new FabricWidget(theme, () => current, 8).render(72);
     expect(lines.length).toBe(1);
     // a new prompt dismisses the run (it finished before the prompt) -> hidden
+    current.widgetDismissedAt = current.now;
+    expect(shouldShowFabricWidget(current, "auto")).toBe(false);
     current.widgetDismissedAt = current.now + 1;
     expect(shouldShowFabricWidget(current, "auto")).toBe(false);
     // a later run that finishes after the dismiss shows again
@@ -256,6 +259,22 @@ describe("Fabric dynamic UI", () => {
     const third = widget.render(72);
     expect(third.length).toBe(1); // header only
     expect(visibleWidth(third[0]!)).toBeGreaterThan(0);
+  });
+
+
+  it("keeps the hidden-row marker visible at the width boundary", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.state = [];
+    current.runs[0]!.items = [];
+    current.runs[0]!.calls = [];
+    current.agents = [
+      { ...current.agents[0]!, id: "agent-one", name: "a very long active agent name", status: "running" },
+      { ...current.agents[0]!, id: "agent-two", name: "second", status: "running" },
+    ];
+    const lines = new FabricWidget(theme, () => current, 2).render(24);
+    expect(lines[1]).toContain("+1");
+    expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
   });
 
   it("reports whether the rendered output changed", () => {
@@ -793,8 +812,8 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("?");
       const help = dashboard.render(100).join("\n");
       expect(help).toContain("Fabric dashboard help");
-      expect(help).toContain("s steer now");
-      expect(help).toContain("m model");
+      expect(help).not.toContain("s steer now");
+      expect(help).not.toContain("m model");
       dashboard.handleInput("\x1b");
       expect(dashboard.render(100).join("\n")).toContain("Repository migration");
     } finally {
@@ -846,6 +865,83 @@ describe("Fabric dynamic UI", () => {
     } finally {
       dashboard.dispose();
     }
+  });
+
+  it("pins an inspected entity to its run and phase during live reordering", () => {
+    const current = snapshot();
+    const inspectedRun = current.runs[0]!;
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput("\r");
+      expect(dashboard.render(120).join("\n")).toContain("Review the migration for security defects");
+
+      const { phaseId: _phaseId, ...unphasedAgent } = current.agents[0]!;
+      current.agents.push({
+        ...unphasedAgent,
+        id: "agent-unphased",
+        name: "new background agent",
+      });
+      const later = structuredClone(inspectedRun);
+      later.id = "run-later-live";
+      later.name = "Later live run";
+      current.runs = [later, inspectedRun];
+
+      const refreshed = dashboard.render(120).join("\n");
+      expect(refreshed).toContain("Review the migration for security defects");
+      expect(refreshed).not.toContain("Later live run");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("keeps narrow detail and editor modes operable", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+      { onAgentSteer: vi.fn() },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput("\r");
+      expect(dashboard.render(20).join("\n")).toContain("esc back");
+      dashboard.handleInput("s");
+      const editor = dashboard.render(20).join("\n");
+      expect(editor).toContain("steer");
+      expect(editor).toContain("esc cancel");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("bounds dashboard height using the overlay terminal", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 12 } } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+    );
+    try {
+      expect(dashboard.render(100).length).toBeLessThanOrEqual(12);
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("preserves CJK and emoji while wrapping by display width", () => {
+    const value = "界界界界 🚀 mission";
+    const lines = wrapPlainText(value, 4);
+    expect(lines.every((line) => visibleWidth(line) <= 4)).toBe(true);
+    expect(lines.join("").replaceAll(" ", "")).toBe(value.replaceAll(" ", ""));
   });
 
 });
