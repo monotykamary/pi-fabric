@@ -11,6 +11,7 @@ const record = (id: string, nestedAgents?: SubagentRunRecord[]): SubagentRunReco
   name: id,
   task: `Inspect ${id}`,
   status: "running",
+  runner: "pi",
   transport: "process",
   cwd: "/tmp/project",
   startedAt: 100,

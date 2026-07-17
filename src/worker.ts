@@ -12,6 +12,14 @@ import type {
   SubagentWorkerOptions,
 } from "./subagents/types.js";
 
+type ClaudeCliModule = typeof import("./subagents/claude-cli.js");
+
+const loadClaudeCli = async (): Promise<ClaudeCliModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./subagents/claude-cli.js");
+  const sourceModulePath = "./subagents/claude-cli.ts";
+  return import(sourceModulePath) as Promise<ClaudeCliModule>;
+};
+
 const MAX_STDERR_CHARS = 20_000;
 const MAX_TEXT_CHARS = 100_000;
 const KILL_GRACE_MS = 5_000;
@@ -54,8 +62,14 @@ const parseOptions = (): SubagentWorkerOptions => {
   const branch = optional(args, "branch");
   const worktree = optional(args, "worktree");
   const maxTokens = optional(args, "max-tokens");
+  const runnerSessionId = optional(args, "runner-session-id");
+  const runner = required(args, "runner");
+  if (runner !== "pi" && runner !== "claude") {
+    throw new Error(`Unsupported Fabric agent runner: ${runner}`);
+  }
   return {
     id: required(args, "id"),
+    runner,
     name: required(args, "name"),
     taskFile: required(args, "task-file"),
     statusFile: required(args, "status-file"),
@@ -63,6 +77,7 @@ const parseOptions = (): SubagentWorkerOptions => {
     ...(schemaFile ? { schemaFile } : {}),
     cwd: required(args, "cwd"),
     piBinary: required(args, "pi-binary"),
+    claudeBinary: required(args, "claude-binary"),
     timeoutMs: Number(required(args, "timeout-ms")),
     depth: Number(required(args, "depth")),
     fullCodeMode: required(args, "full-code-mode") === "true",
@@ -78,6 +93,7 @@ const parseOptions = (): SubagentWorkerOptions => {
     ...(actorId ? { actorId } : {}),
     ...(actorName ? { actorName } : {}),
     ...(meshRoot ? { meshRoot } : {}),
+    ...(runnerSessionId ? { runnerSessionId } : {}),
     ...(runRoot ? { runRoot } : {}),
     ...(steerFile ? { steerFile } : {}),
     ...(branch ? { branch } : {}),
@@ -269,6 +285,7 @@ const main = async (): Promise<void> => {
     name: options.name,
     task,
     status: "running",
+    runner: options.runner,
     transport: options.transport,
     cwd: options.cwd,
     ...(options.model ? { model: options.model } : {}),
@@ -291,7 +308,15 @@ const main = async (): Promise<void> => {
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
   const logStream = fs.createWriteStream(options.logFile, { flags: "a", mode: 0o600 });
   logStream.on("error", () => {});
+  const sessionStream =
+    options.runner === "claude" && options.sessionFile
+      ? fs.createWriteStream(options.sessionFile, { flags: "a", mode: 0o600 })
+      : undefined;
+  sessionStream?.on("error", () => {});
 
+  const schema = options.schemaFile
+    ? fs.readFileSync(options.schemaFile, "utf8")
+    : undefined;
   const piArguments = ["--mode", "rpc"];
   if (options.sessionFile) piArguments.push("--session", options.sessionFile);
   else piArguments.push("--no-session");
@@ -299,17 +324,32 @@ const main = async (): Promise<void> => {
   if (options.fabricExtensionPath) piArguments.push("-e", options.fabricExtensionPath);
   if (options.tools.length > 0) piArguments.push("--tools", options.tools.join(","));
   if (options.model) piArguments.push("--model", options.model);
-  if (options.thinking) piArguments.push("--thinking", options.thinking);
+  if (thinking) piArguments.push("--thinking", thinking);
   if (options.systemPrompt) piArguments.push("--append-system-prompt", options.systemPrompt);
-  if (options.schemaFile) {
-    const schema = fs.readFileSync(options.schemaFile, "utf8");
+  if (schema) {
     piArguments.push(
       "--append-system-prompt",
       `Your final response must contain only JSON matching this schema, without Markdown fences:\n${schema}`,
     );
   }
+  const claudeCli = options.runner === "claude" ? await loadClaudeCli() : undefined;
+  const childArguments =
+    options.runner === "claude"
+      ? claudeCli!.buildClaudeArguments({
+          tools: options.tools,
+          extensions: options.extensions,
+          persistentSession: Boolean(options.sessionFile),
+          ...(options.model ? { model: options.model } : {}),
+          ...(thinking ? { thinking } : {}),
+          ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+          ...(schema ? { schema } : {}),
+          ...(options.runnerSessionId ? { runnerSessionId: options.runnerSessionId } : {}),
+          name: options.name,
+        })
+      : piArguments;
+  const childBinary = options.runner === "claude" ? options.claudeBinary : options.piBinary;
 
-  const child = spawn(options.piBinary, piArguments, {
+  const child = spawn(childBinary, childArguments, {
     cwd: options.cwd,
     detached: process.platform !== "win32",
     env: {
@@ -359,16 +399,253 @@ const main = async (): Promise<void> => {
     child.stdin?.end();
   };
 
+  type ClaudeInputKind = "initial" | "steer" | "follow_up";
+  const claudeTools = new Map<string, string>();
+  const claudeCompletedUsage = emptyUsage();
+  const claudeCurrentUsage = emptyUsage();
+  const syncClaudeUsage = (): void => {
+    record.usage = {
+      input: claudeCompletedUsage.input + claudeCurrentUsage.input,
+      output: claudeCompletedUsage.output + claudeCurrentUsage.output,
+      cacheRead: claudeCompletedUsage.cacheRead + claudeCurrentUsage.cacheRead,
+      cacheWrite: claudeCompletedUsage.cacheWrite + claudeCurrentUsage.cacheWrite,
+      cost: claudeCompletedUsage.cost,
+    };
+  };
+
+  const claudeSentInputs: Array<{ kind: ClaudeInputKind; message: string }> = [];
+  const claudeSteering: string[] = [];
+  const claudeFollowUps: string[] = [];
+  let claudeSteeringMode: "all" | "one-at-a-time" = "one-at-a-time";
+  let claudeFollowUpMode: "all" | "one-at-a-time" = "one-at-a-time";
+  let claudeCanFollowUp = false;
+  let claudeResultSeen = false;
+  let claudeCloseTimer: NodeJS.Timeout | undefined;
+
+  const updateClaudeQueue = (): void => {
+    const sentSteering = claudeSentInputs
+      .filter((entry) => entry.kind === "steer")
+      .map((entry) => entry.message);
+    const sentFollowUps = claudeSentInputs
+      .filter((entry) => entry.kind === "follow_up")
+      .map((entry) => entry.message);
+    record.pendingMessages = {
+      steering: [...sentSteering, ...claudeSteering],
+      followUp: [...sentFollowUps, ...claudeFollowUps],
+    };
+    update();
+  };
+
+  const writeClaudeInput = (kind: ClaudeInputKind, message: string): void => {
+    if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
+    claudeCloseTimer = undefined;
+    if (!child.stdin || child.stdin.writableEnded || child.stdin.destroyed) return;
+    claudeSentInputs.push({ kind, message });
+    if (kind === "follow_up") claudeCanFollowUp = false;
+    child.stdin.write(`${JSON.stringify(claudeCli!.claudeUserMessage(message))}\n`);
+    updateClaudeQueue();
+  };
+
+  const flushClaudeSteering = (): void => {
+    if (claudeSteering.length === 0) return;
+    const alreadySent = claudeSentInputs.some((entry) => entry.kind === "steer");
+    if (claudeSteeringMode === "one-at-a-time" && alreadySent) return;
+    const count = claudeSteeringMode === "all" ? claudeSteering.length : 1;
+    for (const message of claudeSteering.splice(0, count)) {
+      writeClaudeInput("steer", message);
+    }
+  };
+
+  const flushClaudeFollowUps = (): void => {
+    if (claudeFollowUps.length === 0 || claudeSteering.length > 0) return;
+    if (claudeSentInputs.some((entry) => entry.kind === "steer")) return;
+    const alreadySent = claudeSentInputs.some((entry) => entry.kind === "follow_up");
+    if (claudeFollowUpMode === "one-at-a-time" && alreadySent) return;
+    const count = claudeFollowUpMode === "all" ? claudeFollowUps.length : 1;
+    for (const message of claudeFollowUps.splice(0, count)) {
+      writeClaudeInput("follow_up", message);
+    }
+  };
+
+  const scheduleClaudeClose = (): void => {
+    if (claudeCloseTimer || terminalStatus) return;
+    claudeCloseTimer = setTimeout(() => {
+      claudeCloseTimer = undefined;
+      if (
+        claudeSentInputs.length === 0 &&
+        claudeSteering.length === 0 &&
+        claudeFollowUps.length === 0
+      ) {
+        child.stdin?.end();
+      }
+    }, 300);
+    claudeCloseTimer.unref();
+  };
+
+  const processClaudeEvent = (event: Record<string, unknown>): void => {
+    if (event.type === "system" && event.subtype === "init") {
+      const sessionId = stringField(event.session_id);
+      if (sessionId) record.runnerSessionId = sessionId;
+      const model = stringField(event.model);
+      if (model && !record.model) record.model = model;
+      update();
+      return;
+    }
+    if (event.type === "assistant") {
+      const message = event.message;
+      if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+      const assistant = message as Record<string, unknown>;
+      const text = extractText(assistant);
+      if (text) {
+        record.text = Array.from(text).slice(-MAX_TEXT_CHARS).join("");
+        process.stdout.write(`\n${text}\n`);
+      }
+      const content = assistant.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
+          const part = block as Record<string, unknown>;
+          if (part.type !== "tool_use") continue;
+          const id = stringField(part.id);
+          const name = stringField(part.name);
+          if (!id || !name || claudeTools.has(id)) continue;
+          claudeTools.set(id, name);
+          record.toolCalls++;
+          record.currentTool = name;
+          process.stdout.write(`→ ${name}\n`);
+        }
+      }
+      const usage = assistant.usage;
+      if (typeof usage === "object" && usage !== null && !Array.isArray(usage)) {
+        const values = usage as Record<string, unknown>;
+        claudeCurrentUsage.input += numberField(values.input_tokens);
+        claudeCurrentUsage.output += numberField(values.output_tokens);
+        claudeCurrentUsage.cacheRead += numberField(values.cache_read_input_tokens);
+        claudeCurrentUsage.cacheWrite += numberField(values.cache_creation_input_tokens);
+        syncClaudeUsage();
+      }
+      if (typeof event.error === "string") {
+        sawAgentError = true;
+        terminalError = event.error;
+      }
+      enforceTokenLimit();
+      update();
+      return;
+    }
+    if (event.type === "user") {
+      const message = event.message;
+      if (typeof message !== "object" || message === null || Array.isArray(message)) return;
+      const content = (message as Record<string, unknown>).content;
+      if (!Array.isArray(content)) return;
+      for (const block of content) {
+        if (typeof block !== "object" || block === null || Array.isArray(block)) continue;
+        const part = block as Record<string, unknown>;
+        if (part.type !== "tool_result") continue;
+        const id = stringField(part.tool_use_id);
+        if (id) claudeTools.delete(id);
+      }
+      const current = [...claudeTools.values()].at(-1);
+      if (current) record.currentTool = current;
+      else delete record.currentTool;
+      update();
+      return;
+    }
+    if (event.type === "stream_event") {
+      const streamEvent = event.event;
+      if (typeof streamEvent !== "object" || streamEvent === null || Array.isArray(streamEvent)) return;
+      const stream = streamEvent as Record<string, unknown>;
+      if (stream.type !== "content_block_start") return;
+      const contentBlock = stream.content_block;
+      if (typeof contentBlock !== "object" || contentBlock === null || Array.isArray(contentBlock)) return;
+      const block = contentBlock as Record<string, unknown>;
+      const name = stringField(block.name);
+      if (block.type === "tool_use" && name) {
+        record.currentTool = name;
+        update();
+      }
+      return;
+    }
+    if (event.type !== "result") return;
+    claudeResultSeen = true;
+    const sessionId = stringField(event.session_id);
+    if (sessionId) record.runnerSessionId = sessionId;
+    const resultText = typeof event.result === "string" ? event.result : "";
+    if (resultText) record.text = Array.from(resultText).slice(-MAX_TEXT_CHARS).join("");
+    if (event.structured_output !== undefined) record.value = event.structured_output;
+    record.turns += Math.max(0, Math.floor(numberField(event.num_turns)));
+    const resultUsage =
+      typeof event.usage === "object" && event.usage !== null && !Array.isArray(event.usage)
+        ? (event.usage as Record<string, unknown>)
+        : undefined;
+    claudeCompletedUsage.input += resultUsage
+      ? numberField(resultUsage.input_tokens)
+      : claudeCurrentUsage.input;
+    claudeCompletedUsage.output += resultUsage
+      ? numberField(resultUsage.output_tokens)
+      : claudeCurrentUsage.output;
+    claudeCompletedUsage.cacheRead += resultUsage
+      ? numberField(resultUsage.cache_read_input_tokens)
+      : claudeCurrentUsage.cacheRead;
+    claudeCompletedUsage.cacheWrite += resultUsage
+      ? numberField(resultUsage.cache_creation_input_tokens)
+      : claudeCurrentUsage.cacheWrite;
+    claudeCompletedUsage.cost += Math.max(0, numberField(event.total_cost_usd));
+    claudeCurrentUsage.input = 0;
+    claudeCurrentUsage.output = 0;
+    claudeCurrentUsage.cacheRead = 0;
+    claudeCurrentUsage.cacheWrite = 0;
+    syncClaudeUsage();
+    enforceTokenLimit();
+    const failed = event.is_error === true || event.subtype !== "success";
+    if (failed) {
+      sawAgentError = true;
+      const errors = Array.isArray(event.errors)
+        ? event.errors.filter((value): value is string => typeof value === "string").join(" · ")
+        : "";
+      terminalError = errors || resultText || `Claude returned ${String(event.subtype ?? "an error")}`;
+      claudeSteering.splice(0);
+      claudeFollowUps.splice(0);
+    } else {
+      sawAgentError = false;
+      if (!terminalStatus) terminalError = undefined;
+    }
+    if (failed || terminalStatus) claudeSentInputs.splice(0);
+    else claudeSentInputs.shift();
+    claudeCanFollowUp = !failed && !terminalStatus;
+    delete record.currentTool;
+    updateClaudeQueue();
+    if (failed || terminalStatus) {
+      child.stdin?.end();
+      return;
+    }
+    flushClaudeSteering();
+    if (claudeSentInputs.length === 0 && claudeSteering.length === 0) {
+      flushClaudeFollowUps();
+    }
+    if (
+      claudeSentInputs.length === 0 &&
+      claudeSteering.length === 0 &&
+      claudeFollowUps.length === 0
+    ) {
+      scheduleClaudeClose();
+    }
+  };
+
   const processEvent = (line: string): void => {
     if (process.env.PI_FABRIC_INJECT_CRASH === "stream") throw new Error("simulated stream crash");
     if (!line.trim()) return;
     logStream.write(`${line}\n`);
+    sessionStream?.write(`${line}\n`);
     let event: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(line);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
       event = parsed as Record<string, unknown>;
     } catch {
+      return;
+    }
+    if (options.runner === "claude") {
+      processClaudeEvent(event);
       return;
     }
     if (event.type === "agent_start") {
@@ -466,7 +743,8 @@ const main = async (): Promise<void> => {
   };
 
   child.stdin?.on("error", () => {});
-  child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task })}\n`);
+  if (options.runner === "claude") writeClaudeInput("initial", task);
+  else child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task })}\n`);
 
   // Tail a control file (steer.jsonl) the parent appends to and forward each
   // queued command to the child pi over its RPC stdin. This is the fabric
@@ -513,7 +791,30 @@ const main = async (): Promise<void> => {
           continue;
         }
         try {
-          if (command.type === "steer" && typeof command.message === "string") {
+          if (options.runner === "claude") {
+            if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
+            claudeCloseTimer = undefined;
+            if (command.type === "steer" && typeof command.message === "string") {
+              claudeSteering.push(command.message);
+              flushClaudeSteering();
+            } else if (command.type === "follow_up" && typeof command.message === "string") {
+              claudeFollowUps.push(command.message);
+              if (claudeCanFollowUp && claudeSentInputs.length === 0) flushClaudeFollowUps();
+            } else if (
+              command.type === "set_steering_mode" &&
+              (command.mode === "all" || command.mode === "one-at-a-time")
+            ) {
+              claudeSteeringMode = command.mode;
+              flushClaudeSteering();
+            } else if (
+              command.type === "set_follow_up_mode" &&
+              (command.mode === "all" || command.mode === "one-at-a-time")
+            ) {
+              claudeFollowUpMode = command.mode;
+              if (claudeCanFollowUp && claudeSentInputs.length === 0) flushClaudeFollowUps();
+            }
+            updateClaudeQueue();
+          } else if (command.type === "steer" && typeof command.message === "string") {
             child.stdin?.write(JSON.stringify({ type: "steer", message: command.message }) + "\n");
           } else if (command.type === "follow_up" && typeof command.message === "string") {
             child.stdin?.write(JSON.stringify({ type: "follow_up", message: command.message }) + "\n");
@@ -583,6 +884,7 @@ const main = async (): Promise<void> => {
   });
 
   if (steerTimer) clearInterval(steerTimer);
+  if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
   if (process.env.PI_FABRIC_INJECT_CRASH === "close") throw new Error("simulated close crash");
   outputBuffer += outputDecoder.end();
@@ -592,14 +894,22 @@ const main = async (): Promise<void> => {
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
   record.finishedAt = Date.now();
   record.updatedAt = record.finishedAt;
-  record.status = terminalStatus ?? (exitCode === 0 && !sawAgentError ? "completed" : "failed");
+  const childCompleted =
+    exitCode === 0 &&
+    !sawAgentError &&
+    (options.runner === "pi" ||
+      (claudeResultSeen &&
+        claudeSentInputs.length === 0 &&
+        claudeSteering.length === 0 &&
+        claudeFollowUps.length === 0));
+  record.status = terminalStatus ?? (childCompleted ? "completed" : "failed");
   if (terminalError) record.error = terminalError;
   if (record.status === "failed" && !record.error) {
     record.error =
       stderr.trim() ||
       (exitCode === 0
-        ? "Pi agent reported an error before exiting"
-        : `Pi exited with code ${exitCode ?? "unknown"}`);
+        ? `${options.runner === "claude" ? "Claude" : "Pi"} agent reported an error before exiting`
+        : `${options.runner === "claude" ? "Claude" : "Pi"} exited with code ${exitCode ?? "unknown"}`);
   }
   if (record.status === "completed" && options.schemaFile) {
     try {
@@ -607,7 +917,7 @@ const main = async (): Promise<void> => {
         string,
         unknown
       >;
-      const value = parseStructuredValue(record.text);
+      const value = record.value ?? parseStructuredValue(record.text);
       if (!Value.Check(schema, value)) {
         const errors = [...Value.Errors(schema, value)]
           .slice(0, 5)
@@ -628,7 +938,12 @@ const main = async (): Promise<void> => {
   atomicWrite(options.statusFile, record);
   terminalWritten = true;
   process.stdout.write(`\n[pi-fabric] ${record.status}\n`);
-  await new Promise<void>((resolve) => logStream.end(resolve));
+  await Promise.all([
+    new Promise<void>((resolve) => logStream.end(resolve)),
+    sessionStream
+      ? new Promise<void>((resolve) => sessionStream.end(resolve))
+      : Promise.resolve(),
+  ]);
   process.exitCode = record.status === "completed" ? 0 : 1;
 };
 

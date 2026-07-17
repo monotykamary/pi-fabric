@@ -271,7 +271,39 @@ const handle = await agents.spawn({
 return await agents.wait({ id: handle.id });
 ```
 
-Children inherit the parent model unless `model` is specified. Their tool allowlist defaults to `subagents.defaultTools`. Their reasoning effort defaults to `subagents.thinking` (default `medium`) unless a call or actor sets `thinking`; the level is clamped to each model's supported levels, picking the next highest level when the requested one is unsupported.
+`runner` is `"pi"` or `"claude"` and defaults to `subagents.runner` (`"pi"`). Pi children use `subagents.model` or inherit the parent model unless `model` is specified. Claude children use `subagents.claude.model` or Claude Code's own runtime default. Their tool allowlist defaults to `subagents.defaultTools`. Reasoning effort defaults to `subagents.thinking` (`medium`); Pi clamps it to model support, while Claude forwards it through `--effort` (`off`/`minimal` map to `low`).
+
+#### Claude Code runner
+
+Install and authenticate the official Claude Code CLI (`claude`) normally; Fabric invokes that binary rather than Anthropic's Agent SDK or a third-party API client. Select it per call or globally:
+
+```ts
+const models = await agents.models({ runner: "claude" });
+const haiku = models.find((model) => model.key === "claude/haiku");
+return agents.run({
+  runner: "claude",
+  model: haiku?.key,
+  task: "Review the current diff. Do not edit files.",
+  tools: ["read", "grep", "find", "ls"],
+});
+```
+
+`agents.models({ runner: "claude" })` asks the installed CLI for its initialization model catalog, including aliases, resolved IDs, descriptions, and supported effort levels. The list is not hard-coded and the handshake sends no user prompt or model inference request, so model discovery itself is not billable. Because it launches the configured local binary, model-authored `agents.models` calls carry Fabric's `execute` risk. Fabric caches it for 60 seconds. Claude model keys use `claude/<runtime-value>` (for example `claude/default`, `claude/sonnet`, or `claude/haiku`); Fabric strips that namespace before `--model`.
+
+Claude runs use `claude -p` with stream-JSON input/output, partial messages, `--permission-mode dontAsk`, and both `--tools` and `--allowedTools`. Fabric maps its portable core allowlist as follows:
+
+| Fabric tool  | Claude Code tool |
+| ------------ | ---------------- |
+| `read`       | `Read`           |
+| `grep`       | `Grep`           |
+| `find`, `ls` | `Glob`           |
+| `bash`       | `Bash`           |
+| `edit`       | `Edit`           |
+| `write`      | `Write`          |
+
+Unknown tools fail before launch. `extensions: false` starts Claude in safe mode; the default `true` preserves the user's normal Claude Code customizations while the explicit tool list still controls model-facing tools. JSON schemas use Claude's native `--json-schema`; usage, cost, turns, tool activity, errors, and Claude's session ID are normalized into the ordinary Fabric result and dashboard transcript. One-shot runs add `--no-session-persistence`.
+
+Claude-backed children are intentionally **not recursively Fabric-equipped**: `recursive: true`, `fabric_exec`, and direct `mesh.*` access are rejected. Use `runner: "pi"` for RLM/recursive Fabric, or use a Claude-backed persistent actor for host-managed mailbox/event coordination.
 
 Supported transports:
 
@@ -289,7 +321,7 @@ LocalTerm already exposes the needed tmux-parity primitives: detached creation, 
 localterm start
 ```
 
-Use `/fabric agents` to list children and `/fabric attach <id>` to display the appropriate attach command. Abort signals propagate to the transport and child Pi process. When a program uses orchestration entry points (`agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, `rlm.query`)—including `agents.*` refs invoked through `tools.call()` and refs computed at runtime—Fabric raises the whole-program `executor.timeoutMs` to at least `subagents.timeoutMs`, so the parent deadline cannot stop children that are still within their own per-agent budget.
+Use `/fabric agents` to list children and `/fabric attach <id>` to display the appropriate attach command. Abort signals propagate to the transport and selected child process. When a program uses orchestration entry points (`agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, `rlm.query`)—including `agents.*` refs invoked through `tools.call()` and refs computed at runtime—Fabric raises the whole-program `executor.timeoutMs` to at least `subagents.timeoutMs`, so the parent deadline cannot stop children that are still within their own per-agent budget.
 
 Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called.
 
@@ -307,11 +339,11 @@ if (s.text.includes("rotating refresh tokens")) {
 return await agents.wait({ id: handle.id });
 ```
 
-`agents.steer({ id, message })` is delivered after the current turn's tool calls, before the next LLM call; `agents.followUp({ id, message })` is delivered after the agent finishes; `agents.setSteeringMode`/`setFollowUpMode` set `"all"` vs `"one-at-a-time"` delivery. `agents.status({ id }).pendingMessages` shows the live queue. For an id not local to this process, `agents.steer` publishes a `fabric.steer` mesh event the owning process relays — so an agent in one Pi process can steer an agent in another. See `skills/fabric-exec/references/agents.md`.
+`agents.steer({ id, message })` is delivered after the current turn's tool calls, before the next LLM call; `agents.followUp({ id, message })` is delivered after the agent finishes; `agents.setSteeringMode`/`setFollowUpMode` set `"all"` vs `"one-at-a-time"` delivery. Pi uses its RPC queue; Claude uses additional user records on the same `claude -p` stream so the session and context are preserved. `agents.status({ id }).pendingMessages` shows the live queue. For an id not local to this process, `agents.steer` publishes a `fabric.steer` mesh event the owning process relays — so an agent in one Pi process can steer an agent in another. See `skills/fabric-exec/references/agents.md`.
 
 ### Persistent actors and ambient agents
 
-`agents.create()` creates a named actor with a persistent Pi session, a serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:
+`agents.create()` creates a named actor with a fixed runner, a persistent runner session, a serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:
 
 ```ts
 return agents.create({
@@ -327,7 +359,24 @@ Prefer silence. Reply with a directive only for material drift, a blocker, or ve
 });
 ```
 
-This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, keep model context in their own session file, and resume when the same Pi session is reopened in a trusted project. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `subagents.thinking` (`medium`) and clamped to the model's supported levels; set it at creation or change it later with `e` from the dashboard.
+A host-managed Claude actor uses the same mailbox and event surface while retaining Claude Code context across activations:
+
+```ts
+return agents.create({
+  name: "claude-reviewer",
+  runner: "claude",
+  model: "claude/haiku",
+  instructions: "Review each delivered event and report only concrete regressions.",
+  events: ["agent_settled", "tool_error"],
+  responseMode: "directive",
+  delivery: "steer",
+  tools: ["read", "grep", "find", "ls"],
+});
+```
+
+Claude actors can retain context, inspect/edit with mapped Claude Code tools, consume host events and mesh messages delivered by Fabric, and return text or directives. They cannot themselves call `fabric_exec`, `agents.*`, or `mesh.*`; use a Pi actor when the actor must recursively coordinate through Fabric. If Claude's private session has been removed, the next activation fails clearly rather than silently discarding actor context. Recreate the actor to start a fresh Claude session.
+
+This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, and restore with the trusted project actor registry. Pi actors keep model context in their Fabric-owned Pi session file. Claude actors persist the session ID emitted by the official CLI, reapply tools/permissions/schema/system-prompt flags on every activation, and use `--resume <id>` after the first message; Fabric also keeps a runner-neutral stream transcript instead of reading Claude's private JSONL format. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `subagents.thinking` (`medium`); set it at creation or change it later with `e` from the dashboard.
 
 Two response modes are available:
 
@@ -409,12 +458,13 @@ Council members run concurrently under the global subagent semaphore. With `synt
 
 ```ts
 return rlm.query({
+  runner: "pi",
   task: "Recursively decompose this repository and produce a compact architecture map.",
   transport: "process",
 });
 ```
 
-`rlm.query()` is `agents.run()` with Fabric enabled in the child. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits. When `subagents.budgetUsd` is set, a shared append-only cost ledger bounds total spend across the whole recursion tree: every node records the cost of the children it spawns into one ledger file inherited via environment, and each node rejects a new child when the accumulated spend reaches the budget. The check is best-effort (concurrent children can each pass before any cost lands, so a tree may slightly overshoot); the race-free ceiling remains `subagents.maxPerExecution`. The result and live status of every recursive child carry a `budget` summary (`limit`, `spent`, `remaining`, `tokens`).
+`rlm.query()` is `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child. Claude runners are intentionally rejected for recursive Fabric. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits. When `subagents.budgetUsd` is set, a shared append-only cost ledger bounds total spend across the whole recursion tree: every node records the cost of the children it spawns into one ledger file inherited via environment, and each node rejects a new child when the accumulated spend reaches the budget. The check is best-effort (concurrent children can each pass before any cost lands, so a tree may slightly overshoot); the race-free ceiling remains `subagents.maxPerExecution`. The result and live status of every recursive child carry a `budget` summary (`limit`, `spent`, `remaining`, `tokens`).
 
 `subagents.maxTokensPerChild` (0 = disabled) bounds each child's cumulative token usage. The wall-clock `timeoutMs` and the cost `budgetUsd` bound time and money; this bounds a single runaway child's context before the host session compacts, terminating it with the same `timed_out` status and a `token limit` error.
 
@@ -444,8 +494,8 @@ Supervisor and advisor are deliberately skills rather than hard-coded host servi
 Fabric also owns a general-purpose, theme-aware activity surface for any agent setup:
 
 - A compact widget above the chat (like `pi-supervisor`) follows the current phase and shows active agents, actors, tools, custom items, shared tasks, token use, and elapsed time. It disappears after ordinary runs become quiet, while persistent actors remain visible as a compact ambient row.
-- `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use an activity-group pane beside agents and work items; narrow terminals stack the same panels. Explicit workflow phases remain distinct, while direct calls, items, and agents launched without a phase appear under **Run activity** instead of disappearing. Activity groups show agent count, token use, and elapsed time; agent rows prioritize attention and summarize current work, errors, or results. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Press Space on an agent for a live transcript peek, or press `t` in its detail to switch between summary and transcript. The bounded ring-buffer transcript renders streamed assistant text with Pi's native Markdown treatment while keeping tool activity as compact one-line markers; common credential fields and token shapes are redacted from tool previews. Oldest activity rolls off the top, scrolling pauses follow mode, and `G` resumes it. One-shot agent model and thinking settings are fixed when spawned, but selected agents can be steered, given a queued follow-up, or safely stopped from the dashboard. Persistent actors are editable: select an actor to see the available shortcuts, then press `m` for its model, `e` for thinking (reasoning effort), `v` for host events, or `i` for its default instruction. Model/thinking changes persist to the actor registry and take effect on the actor's next run; picking Inherit falls back to the Fabric default. Actor mailboxes, mesh state, recent mesh events, and global actor templates use the same view rather than role-specific screens. Press `x` to export a project actor to the global library, `p` to import a global template as a fresh project actor, or `d` to delete a global template.
-- `/fabric settings` opens an inline settings view that mirrors Pi core's `/settings` (top and bottom borders, fuzzy search, section submenus) and writes changes to `fabric.json`. Trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`. Full code mode, capture, executor, approvals, and UI changes apply immediately; mesh, subagent, and MCP changes persist and take effect on the next `/fabric reload`. List editors for `subagents.defaultTools` and `capture.keepVisible` toggle known tools on and off; `keepVisible` candidates include `fabric_exec` plus every captured extension tool.
+- `/fabric dashboard` opens a responsive interactive overlay. Wide terminals use an activity-group pane beside agents and work items; narrow terminals stack the same panels. Explicit workflow phases remain distinct, while direct calls, items, and agents launched without a phase appear under **Run activity** instead of disappearing. Activity groups show agent count, token use, and elapsed time; agent rows prioritize attention and summarize current work, errors, or results. Agent detail includes task, model, current tool, usage, result, worktree, and attach metadata. Press Space on an agent for a live transcript peek, or press `t` in its detail to switch between summary and transcript. The bounded ring-buffer transcript renders Pi RPC and Claude stream-JSON assistant text with Pi's native Markdown treatment while keeping tool activity as compact one-line markers; common credential fields and token shapes are redacted from tool previews. Oldest activity rolls off the top, scrolling pauses follow mode, and `G` resumes it. One-shot agent model and thinking settings are fixed when spawned, but selected agents can be steered, given a queued follow-up, or safely stopped from the dashboard. Persistent actors are editable: select an actor to see the available shortcuts, then press `m` for its model, `e` for thinking (reasoning effort), `v` for host events, or `i` for its default instruction. Model/thinking changes persist to the actor registry and take effect on the actor's next run; the model picker uses Pi's registry for Pi actors and Claude's runtime catalog for Claude actors, and Inherit falls back to that runner's Fabric/runtime default. Actor mailboxes, mesh state, recent mesh events, and global actor templates use the same view rather than role-specific screens. Press `x` to export a project actor to the global library, `p` to import a global template as a fresh project actor, or `d` to delete a global template.
+- `/fabric settings` opens an inline settings view that mirrors Pi core's `/settings` (top and bottom borders, fuzzy search, section submenus) and writes changes to `fabric.json`. Trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`. Full code mode, capture, executor, approvals, and UI changes apply immediately; mesh, subagent, and MCP changes persist and take effect on the next `/fabric reload`. The Subagents section selects the default runner and keeps independent Pi and runtime-enumerated Claude model pickers. List editors for `subagents.defaultTools` and `capture.keepVisible` toggle known tools on and off; `keepVisible` candidates include `fabric_exec` plus every captured extension tool.
 - `↑`/`↓` or `j`/`k` select, `←`/`→` or Tab switch panes, Enter drills into details, `f` cycles status filters, `[` selects an older retained run, `]` a newer one, and `?` opens contextual help. On one-shot agents, Space peeks at the live transcript, `t` toggles transcript/summary detail, `s` opens a steer editor, `u` queues a follow-up, and pressing `x` twice stops an active run. On actors, `m` changes the model, `e` thinking, `v` host events, and `i` instructions; `x` exports to global, `p` imports a global template, `d` deletes one, and Esc backs out or closes.
 
 The surface is data-driven. Fabric automatically instruments nested provider calls, subagents, persistent actors, and task-shaped mesh entries. A workflow can add domain-specific labels and arbitrary progress without adding extension UI code:
@@ -513,7 +563,11 @@ Project values override global values.
   },
   "subagents": {
     "enabled": true,
+    "runner": "pi",
     "transport": "process",
+    "claude": {
+      "binary": "claude"
+    },
     "thinking": "medium",
     "maxConcurrent": 4,
     "maxPerExecution": 100,
@@ -545,6 +599,8 @@ Project values override global values.
   }
 }
 ```
+
+`subagents.runner` selects the default harness (`"pi"` or `"claude"`). `subagents.model` is the optional Pi `provider/id` override; `subagents.claude.model` is the optional canonical Claude runtime key. `subagents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary and stores the two runner defaults independently.
 
 `fullCodeMode` defaults to `true`. Full mode deactivates native core tools in the parent session and makes `fabric_exec` their exclusive model-facing owner. When false, Fabric uses orchestration-only mode: native Pi and registered extension tools remain direct, capture is disabled, and Fabric's internal registry omits the `pi` and `extensions` providers.
 
@@ -675,12 +731,14 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 - Registry interception composes through the public `ExtensionRunner.getAllRegisteredTools()` method. An extension that replaces that method without delegating to the previous implementation can prevent capture.
 - MCP servers and external providers execute with their own host privileges. Review their configuration and code.
 - Type checking improves reliability but is not a security boundary; QuickJS isolation and the host capability bridge are the boundaries.
-- Child Pi processes load normal extensions by default so provider-backed models continue to work. Their active tool list is restricted by `defaultTools`; `fabric_exec` is excluded unless recursion is explicitly requested.
+- Child Pi processes load normal extensions by default so provider-backed models continue to work. Claude children use the official installed CLI and its existing authentication. Both runners restrict the active model-facing tools to `defaultTools`; Pi adds `fabric_exec` only for explicit recursion, while Claude rejects recursion and unmapped tools.
+- Claude `extensions: true` preserves the user's normal Claude Code customizations, including applicable settings and hooks; those hooks execute with their usual host privileges. Use `extensions: false` for Claude safe mode. `Bash` remains unrestricted inside the child when allowed, just as Fabric's `bash` capability is.
+- Claude model discovery uses a local initialization control request and does not invoke a model. Actual one-shot and actor activations use the account/API billing already configured in Claude Code; Fabric records the CLI's reported `total_cost_usd` in normal usage and budget ledgers.
 - A Git worktree isolates files, not credentials, network access, processes, or external services.
 - Agent transcripts are projected from local `events.jsonl` run logs. The dashboard redacts common credentials from compact tool previews, but the permission-restricted raw event log can contain assistant text, tool arguments/results, diagnostics, and extension protocol payloads; treat retained run directories as sensitive.
 - Background one-shot children are stopped when the parent Pi session shuts down. A detached `agents.spawn()` sends a follow-up completion message unless the caller later waits for it or `notifyOnComplete` is disabled. Completed worktrees are intentionally retained.
-- Persistent actors are suspended on shutdown and restored when project trust is active. By default (`mesh.actorScope: "project"`), their definitions, mailbox history, and child session files live under `.pi/fabric/mesh/actors/` and are shared across all Pi sessions in the project, so actors survive `/new`. Set `mesh.actorScope: "session"` to isolate actors per Pi session instead. Mesh topics and shared state are always project-scoped. Do not place secrets in actor prompts, messages, or mesh state.
-- Approving `agents.create()` delegates future subscribed events to that actor until it is stopped. Each activation uses the actor's fixed tool allowlist and model settings; review those settings before approving a persistent actor.
+- Persistent actors are suspended on shutdown and restored when project trust is active. Claude actor session IDs refer to Claude Code's own persisted session store; removing that private session makes resume fail, and removing a Fabric actor does not currently delete Claude Code's private transcript. By default (`mesh.actorScope: "project"`), their definitions, mailbox history, and child session files live under `.pi/fabric/mesh/actors/` and are shared across all Pi sessions in the project, so actors survive `/new`. Set `mesh.actorScope: "session"` to isolate actors per Pi session instead. Mesh topics and shared state are always project-scoped. Do not place secrets in actor prompts, messages, or mesh state.
+- Approving `agents.create()` delegates future subscribed events to that actor until it is stopped. Each activation uses the actor's fixed runner/tool allowlist and its persisted model setting; review them before approving a persistent actor.
 - Actor responses can enter the main context only through the delivery policy fixed at creation. Directive output is schema-validated, but it is still untrusted model output that the main agent should weigh.
 - One Pi process should own the actor registry at a time. This is especially important with project scope, where concurrent Pi sessions in the same project share one registry and may race on writes. Mesh topics are append-only and are not compacted automatically; archive or remove an old mesh root when its history is no longer useful.
 
@@ -693,7 +751,7 @@ pnpm test
 pnpm build
 ```
 
-The deterministic test suite covers configuration, schema validation, provider dispatch, registered-tool interception and execution, QuickJS isolation, Pi built-in invocation, direct-process subagents, workflow helpers, durable mesh state, actor mailboxes, subscriptions, and actor restoration.
+The deterministic test suite covers configuration, schema validation, provider dispatch, registered-tool interception and execution, QuickJS isolation, Pi built-in invocation, direct-process subagents, fake Claude stream-JSON/model discovery, workflow helpers, durable mesh state, actor mailboxes, subscriptions, and Pi/Claude actor restoration. Claude fixtures never make a billable API request.
 
 ## License
 

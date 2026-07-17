@@ -2,6 +2,7 @@ export const GUEST_TYPE_DECLARATIONS = `
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type FabricTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
+type FabricAgentRunner = "pi" | "claude";
 type FabricThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 interface FabricAction {
   ref: string;
@@ -16,6 +17,7 @@ interface FabricAction {
 interface FabricAgentRequest {
   task: string;
   name?: string;
+  runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
   thinking?: FabricThinking;
@@ -30,6 +32,7 @@ interface FabricAgentHandle {
   id: string;
   name: string;
   status: string;
+  runner: FabricAgentRunner;
   transport: FabricTransport;
   cwd: string;
   model?: string;
@@ -37,6 +40,7 @@ interface FabricAgentHandle {
   actorId?: string;
   actorName?: string;
   sessionId?: string;
+  runnerSessionId?: string;
   attachCommand?: string;
   branch?: string;
   worktree?: string;
@@ -58,10 +62,20 @@ interface FabricAgentResult extends FabricAgentHandle {
   pendingMessages?: { steering: string[]; followUp: string[] };
 }
 interface FabricModelInfo {
+  runner?: FabricAgentRunner;
   provider: string;
   id: string;
   name: string;
   key: string;
+  value?: string;
+  resolvedModel?: string;
+  displayName?: string;
+  description?: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: string[];
+  supportsAdaptiveThinking?: boolean;
+  supportsFastMode?: boolean;
+  supportsAutoMode?: boolean;
 }
 interface FabricLogLine {
   index: number;
@@ -143,6 +157,7 @@ interface FabricActorRequest {
   responseMode?: "text" | "directive";
   triggerTurn?: boolean;
   coalesce?: boolean;
+  runner?: FabricAgentRunner;
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
@@ -153,6 +168,7 @@ interface FabricActorInfo {
   id: string;
   name: string;
   status: "idle" | "queued" | "running" | "stopped";
+  runner: FabricAgentRunner;
   events: FabricActorHostEvent[];
   topics: string[];
   delivery: FabricActorDelivery;
@@ -190,6 +206,7 @@ interface FabricAgentsApi {
   wait(args: { id: string }): Promise<FabricAgentResult>;
   status(args: { id: string }): Promise<FabricAgentResult | FabricAgentHandle>;
   list(): Promise<Array<FabricAgentResult | FabricAgentHandle>>;
+  models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
   stop(args: { id: string }): Promise<FabricAgentResult>;
   cleanup(args: { id: string; deleteBranch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
@@ -246,6 +263,7 @@ type FabricMcpApi = Record<string, FabricMcpServer> & {
 interface FabricCouncilRunOptions {
   task: string;
   roles: string[];
+  runner?: FabricAgentRunner;
   transport?: FabricTransport;
   model?: string;
   thinking?: FabricThinking;
@@ -344,7 +362,8 @@ declare function pipeline<T>(items: T[], ...stages: Array<(value: unknown, origi
 declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
-declare const rlm: { query(args: FabricAgentRequest): Promise<FabricAgentResult> };
+type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };
+declare const rlm: { query(args: FabricRlmRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
   log(...args: unknown[]): void;
   info(...args: unknown[]): void;

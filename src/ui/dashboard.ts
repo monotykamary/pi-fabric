@@ -375,6 +375,7 @@ const entityTail = (entity: Entity, now: number): string => {
             : agent.currentTool ?? (agent.status === "running" ? "thinking" : undefined);
     const parts = [
       summary,
+      agent.runner,
       agent.model,
       agent.usage ? `${formatTokens(agent.usage.input + agent.usage.output)} tok` : undefined,
       agent.toolCalls !== undefined ? `${agent.toolCalls} tools` : undefined,
@@ -385,6 +386,7 @@ const entityTail = (entity: Entity, now: number): string => {
   if (entity.kind === "actor") {
     const actor = entity.value;
     return [
+      actor.runner,
       actor.model ?? actor.worker?.model,
       actor.worker?.currentTool,
       actor.worker?.usage
@@ -400,6 +402,7 @@ const entityTail = (entity: Entity, now: number): string => {
     const def = entity.value;
     return [
       "global template",
+      def.runner,
       def.model ?? "inherit",
       def.responseMode === "directive" ? "directive" : undefined,
       def.delivery !== "mailbox" ? def.delivery : undefined,
@@ -474,6 +477,7 @@ export class FabricDashboard implements Component, Focusable {
   private agentMessageTarget: { id: string; name: string; kind: "steer" | "followUp" } | undefined;
   private pendingStop: { id: string; expiresAt: number } | undefined;
   private readonly modelSource: ModelSource | undefined;
+  private readonly claudeModelSource: ModelSource | undefined;
   private readonly onAgentSteer: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentFollowUp: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentStop: ((agentId: string) => void) | undefined;
@@ -506,6 +510,7 @@ export class FabricDashboard implements Component, Focusable {
     readonly done: () => void,
     options: {
       modelSource?: ModelSource;
+      claudeModelSource?: ModelSource;
       onAgentSteer?: (agentId: string, message: string) => void;
       onAgentFollowUp?: (agentId: string, message: string) => void;
       onAgentStop?: (agentId: string) => void;
@@ -523,6 +528,7 @@ export class FabricDashboard implements Component, Focusable {
   ) {
     this.focused = true;
     this.modelSource = options.modelSource;
+    this.claudeModelSource = options.claudeModelSource;
     this.onAgentSteer = options.onAgentSteer;
     this.onAgentFollowUp = options.onAgentFollowUp;
     this.onAgentStop = options.onAgentStop;
@@ -899,7 +905,7 @@ export class FabricDashboard implements Component, Focusable {
       "enter details",
     ].filter((value): value is string => Boolean(value));
     const actorActions = [
-      this.modelSource && this.onActorModel ? "m model" : undefined,
+      (this.modelSource || this.claudeModelSource) && this.onActorModel ? "m model" : undefined,
       this.onActorThinking ? "e thinking" : undefined,
       this.onActorEvents ? "v events" : undefined,
       this.onActorInstructions ? "i instructions" : undefined,
@@ -933,16 +939,28 @@ export class FabricDashboard implements Component, Focusable {
     return lines.map((line) => truncateToWidth(line, width, ""));
   }
 
+  private modelSourceForActor(actor: FabricUiActor): ModelSource | undefined {
+    return actor.runner === "claude" ? this.claudeModelSource : this.modelSource;
+  }
+
   private openModelPicker(entity: Entity): void {
-    if (entity.kind !== "actor" || !this.modelSource || !this.onActorModel) return;
+    if (entity.kind !== "actor" || !this.onActorModel) return;
     const actor = entity.value;
+    const source = this.modelSourceForActor(actor);
+    if (!source) return;
     this.pickerActorName = actor.name;
     this.picker = new FabricModelSelector({
       theme: this.theme,
-      source: this.modelSource,
+      source,
       currentValue: actor.model ?? INHERIT_VALUE,
-      headerText: `Model for actor "${actor.name}". Pick Inherit to use the Fabric default.`,
-      inheritName: "Use the Fabric default model (or host default)",
+      headerText:
+        actor.runner === "claude"
+          ? `Model for Claude actor "${actor.name}". Pick Inherit to use the Claude default.`
+          : `Model for actor "${actor.name}". Pick Inherit to use the Fabric Pi default.`,
+      inheritName:
+        actor.runner === "claude"
+          ? "Use the Fabric Claude model (or Claude Code runtime default)"
+          : "Use the Fabric Pi model (or host default)",
       onSelect: (value) => {
         const model = value === INHERIT_VALUE ? undefined : value;
         this.onActorModel!(actor.id, model);
@@ -1244,7 +1262,7 @@ export class FabricDashboard implements Component, Focusable {
   private overviewActionHint(entity: Entity): string {
     if (entity.kind === "actor" && entity.status !== "stopped") {
       const actions = [
-        this.modelSource && this.onActorModel ? "m model" : undefined,
+        this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
         this.onActorThinking ? "e thinking" : undefined,
         this.onActorEvents ? "v events" : undefined,
         this.onActorInstructions ? "i instructions" : undefined,
@@ -1517,7 +1535,7 @@ export class FabricDashboard implements Component, Focusable {
     }
     if (entity.kind === "actor" && entity.status !== "stopped") {
       const actions = [
-        this.modelSource && this.onActorModel ? "m model" : undefined,
+        this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
         this.onActorThinking ? "e thinking" : undefined,
         this.onActorEvents ? "v events" : undefined,
         this.onClearMessages ? "c clear mailbox" : undefined,
@@ -1554,6 +1572,7 @@ export class FabricDashboard implements Component, Focusable {
     if (entity.kind === "agent") {
       const agent = entity.value;
       field("ID", agent.id);
+      field("Runner", agent.runner);
       field("Model", agent.model);
       field("Thinking", agent.thinking);
       field("Transport", agent.transport);
@@ -1569,6 +1588,7 @@ export class FabricDashboard implements Component, Focusable {
     } else if (entity.kind === "actor") {
       const actor = entity.value;
       field("ID", actor.id);
+      field("Runner", actor.runner);
       field("Model override", actor.model ?? "inherit");
       field("Active worker model", actor.worker?.model);
       field("Thinking override", actor.thinking ?? "inherit");
@@ -1622,6 +1642,7 @@ export class FabricDashboard implements Component, Focusable {
       const def = entity.value;
       field("Scope", "global template");
       field("ID", def.id);
+      field("Runner", def.runner);
       field("Delivery", `${def.delivery} · ${def.responseMode}`);
       field("Model", def.model ?? "inherit");
       field("Thinking", def.thinking ?? "inherit");

@@ -85,6 +85,27 @@ describe("Fabric configuration", () => {
     expect(nonString.subagents.model).toBeUndefined();
   });
 
+  it("normalizes the default runner and independent Claude settings", () => {
+    expect(DEFAULT_FABRIC_CONFIG.subagents.runner).toBe("pi");
+    expect(DEFAULT_FABRIC_CONFIG.subagents.claude).toEqual({ binary: "claude" });
+    const configured = normalizeFabricConfig({
+      subagents: {
+        runner: "claude",
+        claude: { binary: "/opt/claude", model: "claude/haiku" },
+      },
+    });
+    expect(configured.subagents.runner).toBe("claude");
+    expect(configured.subagents.claude).toEqual({
+      binary: "/opt/claude",
+      model: "claude/haiku",
+    });
+    const invalid = normalizeFabricConfig({
+      subagents: { runner: "other", claude: { binary: " ", model: " " } },
+    });
+    expect(invalid.subagents.runner).toBe("pi");
+    expect(invalid.subagents.claude).toEqual({ binary: "claude" });
+  });
+
   it("defaults the subagent thinking level to medium and validates the value", () => {
     expect(DEFAULT_FABRIC_CONFIG.subagents.thinking).toBe("medium");
     const set = normalizeFabricConfig({ subagents: { thinking: "high" } });

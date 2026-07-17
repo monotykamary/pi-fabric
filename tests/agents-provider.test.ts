@@ -31,6 +31,7 @@ const setup = () => {
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
   const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
     workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+    claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
     runRoot: path.join(root, "runs"),
   });
   subagentManagers.push(subagents);
@@ -72,6 +73,37 @@ const createRequest = {
   delivery: "steer",
   responseMode: "directive",
 };
+
+describe("AgentsProvider runner support", () => {
+  it("enumerates Claude models and preserves runner on actors", async () => {
+    const { provider } = setup();
+    const models = (await provider.invoke("models", { runner: "claude" }, context)) as Array<{
+      runner: string;
+      key: string;
+      resolvedModel: string;
+    }>;
+    expect(models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runner: "claude",
+          key: "claude/haiku",
+          resolvedModel: "claude-haiku-test",
+        }),
+      ]),
+    );
+
+    const actor = (await provider.invoke(
+      "create",
+      {
+        name: "claude-reviewer",
+        instructions: "Review messages.",
+        runner: "claude",
+      },
+      context,
+    )) as { runner: string };
+    expect(actor.runner).toBe("claude");
+  });
+});
 
 describe("AgentsProvider global actors", () => {
   it("creates a global template and lists it separately from project actors", async () => {

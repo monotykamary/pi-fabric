@@ -6,9 +6,16 @@ import { fileURLToPath } from "node:url";
 import {
   MAX_SUBAGENT_TIMEOUT_MS,
   MIN_SUBAGENT_TIMEOUT_MS,
+  type FabricAgentRunner,
   type FabricSubagentConfig,
   type FabricSubagentTransport,
 } from "../config.js";
+import {
+  discoverClaudeModels,
+  mapClaudeTools,
+  normalizeClaudeModel,
+  type ClaudeModelInfo,
+} from "./claude-cli.js";
 import { Semaphore } from "./semaphore.js";
 import { removeTree } from "./rm.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
@@ -47,6 +54,7 @@ interface ManagedSubagent {
   id: string;
   name: string;
   task: string;
+  runner: FabricAgentRunner;
   cwd: string;
   statusFile: string;
   runDirectory: string;
@@ -60,6 +68,7 @@ interface ManagedSubagent {
   thinking?: SubagentRunRequest["thinking"];
   actorId?: string;
   actorName?: string;
+  runnerSessionId?: string;
   branch?: string;
   worktree?: string;
   settled: boolean;
@@ -81,7 +90,8 @@ const readRecord = (filePath: string): SubagentRunRecord | undefined => {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-    return parsed as SubagentRunRecord;
+    const record = parsed as SubagentRunRecord;
+    return { ...record, runner: record.runner === "claude" ? "claude" : "pi" };
   } catch {
     return undefined;
   }
@@ -176,6 +186,7 @@ const failedRecord = (
     name: managed.name,
     task: managed.task,
     status,
+    runner: managed.runner,
     transport: managed.transport.kind,
     cwd: managed.cwd,
     startedAt: now,
@@ -190,6 +201,7 @@ const failedRecord = (
     ...(managed.thinking ? { thinking: managed.thinking } : {}),
     ...(managed.actorId ? { actorId: managed.actorId } : {}),
     ...(managed.actorName ? { actorName: managed.actorName } : {}),
+    ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
     ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
     ...(managed.transport.attachCommand ? { attachCommand: managed.transport.attachCommand } : {}),
     ...(managed.branch ? { branch: managed.branch } : {}),
@@ -205,6 +217,7 @@ export class SubagentManager {
   readonly #workerPath: string;
   readonly #fabricExtensionPath: string;
   readonly #piBinary: string;
+  readonly #claudeBinary: string;
   readonly #currentDepth: number;
   readonly #fullCodeMode: boolean;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
@@ -212,6 +225,7 @@ export class SubagentManager {
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
   #budgetSummaryCache: { at: number; value: FabricBudgetSummary } | undefined;
+  #claudeModelsCache: { at: number; value: ClaudeModelInfo[] } | undefined;
   #closing = false;
 
   constructor(
@@ -221,6 +235,7 @@ export class SubagentManager {
       workerPath?: string;
       fabricExtensionPath?: string;
       piBinary?: string;
+      claudeBinary?: string;
       runRoot?: string;
       fullCodeMode?: boolean;
       onBackgroundComplete?: (result: SubagentRunResult) => void;
@@ -234,6 +249,8 @@ export class SubagentManager {
     this.#fabricExtensionPath =
       options.fabricExtensionPath ?? fileURLToPath(new URL("../index.js", import.meta.url));
     this.#piBinary = options.piBinary ?? process.env.PI_FABRIC_PI_BINARY ?? "pi";
+    this.#claudeBinary =
+      options.claudeBinary ?? process.env.PI_FABRIC_CLAUDE_BINARY ?? config.claude.binary;
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
@@ -260,6 +277,20 @@ export class SubagentManager {
       throw new Error(`Fabric subagent depth limit reached (${this.config.maxDepth})`);
     }
     if (!request.task.trim()) throw new Error("Subagent task must not be empty");
+    const runner = request.runner ?? this.config.runner;
+    if (runner !== "pi" && runner !== "claude") {
+      throw new Error(`Unsupported Fabric agent runner: ${String(runner)}`);
+    }
+    if (runner === "claude" && request.recursive) {
+      throw new Error(
+        "Claude runner does not support recursive Fabric. Use a Pi runner for recursive: true, or omit recursive for Claude Code tools.",
+      );
+    }
+    const tools = this.#childTools(request, runner);
+    if (runner === "claude") mapClaudeTools(tools);
+    const model =
+      request.model ?? (runner === "claude" ? this.config.claude.model : this.config.model);
+    if (runner === "claude" && model) normalizeClaudeModel(model);
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
       if (spent >= this.#budget.budget) {
@@ -303,18 +334,20 @@ export class SubagentManager {
 
     try {
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
-      const tools = this.#childTools(request);
       const timeoutMs = Math.max(
         MIN_SUBAGENT_TIMEOUT_MS,
         Math.min(request.timeoutMs ?? this.config.timeoutMs, MAX_SUBAGENT_TIMEOUT_MS),
       );
-      const model = request.model ?? this.config.model;
       const thinking = request.thinking ?? this.config.thinking;
+      const recursive = runner === "pi" && request.recursive === true;
+      const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
       const workerArguments = [
         "--id",
         id,
         "--name",
         name,
+        "--runner",
+        runner,
         "--task-file",
         taskFile,
         "--status-file",
@@ -325,24 +358,26 @@ export class SubagentManager {
         agentCwd,
         "--pi-binary",
         this.#piBinary,
+        "--claude-binary",
+        this.#claudeBinary,
         "--timeout-ms",
         String(timeoutMs),
         "--depth",
         String(this.#currentDepth + 1),
         "--full-code-mode",
-        String(request.recursive === true && this.#fullCodeMode),
+        String(recursive && this.#fullCodeMode),
         "--extensions",
-        String(request.recursive ? true : (request.extensions ?? this.config.extensions)),
+        String(extensions),
         "--tools",
         JSON.stringify(tools),
         "--granted-risks",
-        JSON.stringify(request.recursive ? ["agent"] : []),
+        JSON.stringify(recursive ? ["agent"] : []),
         ...(this.config.maxTokensPerChild > 0
           ? ["--max-tokens", String(this.config.maxTokensPerChild)]
           : []),
         "--transport",
         adapter.kind,
-        ...(request.recursive ? ["--fabric-extension", this.#fabricExtensionPath] : []),
+        ...(recursive ? ["--fabric-extension", this.#fabricExtensionPath] : []),
         ...(model ? ["--model", model] : []),
         ...(thinking ? ["--thinking", thinking] : []),
         ...(request.systemPrompt ? ["--system-prompt", request.systemPrompt] : []),
@@ -350,6 +385,9 @@ export class SubagentManager {
         ...(request.actorId ? ["--actor-id", request.actorId] : []),
         ...(request.actorName ? ["--actor-name", request.actorName] : []),
         ...(request.meshRoot ? ["--mesh-root", request.meshRoot] : []),
+        ...(request.runnerSessionId
+          ? ["--runner-session-id", request.runnerSessionId]
+          : []),
         "--run-root",
         path.join(runDirectory, "nested"),
         "--steer-file",
@@ -378,6 +416,7 @@ export class SubagentManager {
         id,
         name,
         task: request.task,
+        runner,
         cwd: agentCwd,
         statusFile,
         runDirectory,
@@ -391,6 +430,7 @@ export class SubagentManager {
         ...(thinking ? { thinking } : {}),
         ...(request.actorId ? { actorId: request.actorId } : {}),
         ...(request.actorName ? { actorName: request.actorName } : {}),
+        ...(request.runnerSessionId ? { runnerSessionId: request.runnerSessionId } : {}),
         ...(branch ? { branch } : {}),
         ...(worktree ? { worktree } : {}),
         settled: false,
@@ -444,6 +484,16 @@ export class SubagentManager {
 
   runDirectory(id: string): string | undefined {
     return this.#runs.get(id)?.runDirectory;
+  }
+
+  async claudeModels(refresh = false): Promise<ClaudeModelInfo[]> {
+    const now = Date.now();
+    if (!refresh && this.#claudeModelsCache && now - this.#claudeModelsCache.at < 60_000) {
+      return structuredClone(this.#claudeModelsCache.value);
+    }
+    const value = await discoverClaudeModels(this.#claudeBinary, this.cwd);
+    this.#claudeModelsCache = { at: now, value };
+    return structuredClone(value);
   }
 
   async stop(id: string): Promise<SubagentRunResult> {
@@ -546,6 +596,9 @@ export class SubagentManager {
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
       const record = readRecord(managed.statusFile);
+      if (record?.runnerSessionId && !managed.runnerSessionId) {
+        managed.runnerSessionId = record.runnerSessionId;
+      }
       if (record && terminalStatuses.has(record.status)) {
         this.#settle(managed, this.#withTransportMetadata(record, managed) as SubagentRunResult);
         return;
@@ -629,11 +682,11 @@ export class SubagentManager {
     }
   }
 
-  #childTools(request: SubagentRunRequest): string[] {
+  #childTools(request: SubagentRunRequest, runner: FabricAgentRunner): string[] {
     const tools = [...(request.tools ?? this.config.defaultTools)].filter(
       (tool) => tool !== "fabric_exec",
     );
-    if (request.recursive) tools.push("fabric_exec");
+    if (runner === "pi" && request.recursive) tools.push("fabric_exec");
     return [...new Set(tools)];
   }
 
@@ -680,12 +733,14 @@ export class SubagentManager {
       id: managed.id,
       name: managed.name,
       status,
+      runner: managed.runner,
       transport: managed.transport.kind,
       cwd: managed.cwd,
       ...(managed.model ? { model: managed.model } : {}),
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
       ...(managed.transport.attachCommand
         ? { attachCommand: managed.transport.attachCommand }
@@ -701,6 +756,7 @@ export class SubagentManager {
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     return {
       ...safeRecord,
+      runner: managed.runner,
       logFile: path.join(managed.runDirectory, "events.jsonl"),
       ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
       ...(budget ? { budget } : {}),
@@ -708,6 +764,7 @@ export class SubagentManager {
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
       ...(managed.transport.attachCommand
         ? { attachCommand: managed.transport.attachCommand }

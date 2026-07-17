@@ -50,6 +50,7 @@ await phase("Decompose", { total: scope.paths.length });
 const findings = await parallel(
   scope.paths.map((p) => () =>
     rlm.query({
+      runner: "pi",
       task: `Analyze ${p} for this objective and report concrete, bounded findings.\n\nObjective:\n${π.task}`,
       name: `analyze ${p}`.slice(0, 50),
       tools: ["read", "grep", "find", "ls"],

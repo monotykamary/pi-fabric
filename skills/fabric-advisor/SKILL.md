@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Start an emergent advisor using `fabric_exec`; never install or invoke an external advisor extension.
 
-Treat skill arguments as an optional review focus. Put the completed advisor prompt in `strings.instructions` and the stable name `advisor` in `strings.name`. Optionally set `strings.model` to a `provider/id` key or model id substring to pin the actor's model at creation via `tools.models()` lookup; omitted means it inherits the host model. An actor's model is fixed at creation — sending it a message later cannot switch the underlying model, so set it here. Then call `fabric_exec` once with:
+Treat skill arguments as an optional review focus. Put the completed advisor prompt in `strings.instructions` and the stable name `advisor` in `strings.name`. Optionally set `strings.model` to a Pi `provider/id`, a Claude `claude/<runtime-value>` key, or a model substring. The lookup combines `tools.models()` with `agents.models({ runner: "claude" })` and pins both the matching runner and model; omitted uses the configured default runner and its default model. An actor's runner is fixed at creation, while its model can be changed from the dashboard for the next activation. Then call `fabric_exec` once with:
 
 ```ts
 await workflow.configure({
@@ -27,12 +27,33 @@ if (existing) {
 }
 
 let model;
+let runner: FabricAgentRunner | undefined;
 if (π.model) {
-  const models = await tools.models();
+  const piModels = (await tools.models()).map((entry) => ({ ...entry, runner: "pi" as const }));
+  let claudeModels: Array<FabricModelInfo & { runner: "claude" }> = [];
+  try {
+    claudeModels = (await agents.models({ runner: "claude" })).map((entry) => ({
+      ...entry,
+      runner: "claude" as const,
+    }));
+  } catch {
+    // Claude Code is optional; Pi model lookup still works without it.
+  }
+  const models = [...piModels, ...claudeModels];
   const needle = π.model.toLowerCase();
-  model = models.find(
-    (m) => m.key === needle || m.id.toLowerCase().includes(needle),
-  )?.key;
+  const hit = models.find(
+    (entry) =>
+      entry.key.toLowerCase() === needle ||
+      entry.id.toLowerCase().includes(needle) ||
+      entry.name.toLowerCase().includes(needle),
+  );
+  if (!hit) {
+    throw new Error(
+      `Advisor model "${π.model}" not found. Available: ${models.map((entry) => entry.key).join(", ")}`,
+    );
+  }
+  model = hit.key;
+  runner = hit.runner;
 }
 const actor = await agents.create({
   name: π.name,
@@ -43,6 +64,7 @@ const actor = await agents.create({
   triggerTurn: false,
   coalesce: true,
   tools: ["read", "grep", "find", "ls"],
+  ...(runner ? { runner } : {}),
   ...(model ? { model } : {}),
 });
 return {

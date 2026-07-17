@@ -159,6 +159,83 @@ describe("ActorManager", () => {
     });
   });
 
+  it("resumes a Claude Code session after a persistent actor is restored", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-actor-"));
+    roots.push(root);
+    const invocationLog = path.join(root, "claude-args.jsonl");
+    process.env.FAKE_CLAUDE_LOG = invocationLog;
+    try {
+      const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
+      const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
+        runRoot: path.join(root, "runs"),
+      });
+      subagentManagers.push(subagents);
+      const identity: MeshIdentity = {
+        id: "session:test",
+        name: "main",
+        kind: "main",
+        sessionId: "test",
+      };
+      const meshConfig = { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 };
+      const actorRoot = path.join(root, "actors");
+      const first = new ActorManager(
+        "test",
+        identity,
+        mesh,
+        meshConfig,
+        subagents,
+        () => {},
+        { actorRoot, persistent: true },
+      );
+      actorManagers.push(first);
+      const actor = await first.create({
+        name: "claude-reviewer",
+        instructions: "Review each mailbox item.",
+        runner: "claude",
+        tools: ["read"],
+      });
+
+      const firstReply = await first.ask(actor.id, "first message");
+      expect(firstReply.text).toContain("fake claude complete");
+      await waitFor(() => first.status(actor.id).status === "idle");
+      expect(first.status(actor.id)).toMatchObject({ runner: "claude", status: "idle" });
+      await first.close();
+      actorManagers.splice(actorManagers.indexOf(first), 1);
+
+      const restored = new ActorManager(
+        "test",
+        identity,
+        mesh,
+        meshConfig,
+        subagents,
+        () => {},
+        { actorRoot, persistent: true },
+      );
+      actorManagers.push(restored);
+      expect(restored.status(actor.id)).toMatchObject({ runner: "claude", status: "idle" });
+      const secondReply = await restored.ask(actor.id, "second message");
+      expect(secondReply.text).toContain("fake claude complete");
+
+      const invocations = fs
+        .readFileSync(invocationLog, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { argv: string[] });
+      expect(invocations).toHaveLength(2);
+      expect(invocations[0]!.argv).not.toContain("--resume");
+      const resumeAt = invocations[1]!.argv.indexOf("--resume");
+      expect(invocations[1]!.argv[resumeAt + 1]).toBe(
+        "11111111-1111-4111-8111-111111111111",
+      );
+      expect(invocations[0]!.argv).not.toContain("--no-session-persistence");
+      expect(restored.readLog(actor.id).session.filter((line) => line.parsed)).not.toHaveLength(0);
+    } finally {
+      delete process.env.FAKE_CLAUDE_LOG;
+    }
+  });
+
   it("restores project-scoped actors across different Pi sessions", async () => {
     // Project scope stores actors at a shared root (no sessionId segment), so a
     // new Pi session that points at the same root picks up the roster without
@@ -672,6 +749,7 @@ describe("ActorManager", () => {
       responseMode: "text",
       triggerTurn: false,
       coalesce: true,
+      runner: "pi",
       model: "anthropic/sonnet",
     });
     // history never crosses the global⇄project boundary

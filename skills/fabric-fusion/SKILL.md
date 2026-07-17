@@ -34,24 +34,45 @@ await workflow.configure({
   description: `${panel.length}-model panel + judge (compare, don't merge)`,
 });
 
-// Resolve each model to its canonical provider/id key. A bare id may not
-// resolve, and silently inheriting the host model would defeat a multi-model
-// panel, so fail loudly with the available keys.
-const models = await tools.models();
-const resolve = (needle: string): string => {
+// Resolve models across Pi's registry and Claude Code's runtime catalog.
+// Prefix Claude aliases with claude/ (for example claude/haiku) to select the
+// official CLI runner unambiguously. Claude Code is optional, so discovery is
+// best-effort when the panel contains only Pi models.
+type RunnerModel = FabricModelInfo & { runner: FabricAgentRunner };
+const models: RunnerModel[] = (await tools.models()).map((entry) => ({
+  ...entry,
+  runner: "pi" as const,
+}));
+try {
+  models.push(
+    ...(await agents.models({ runner: "claude" })).map((entry) => ({
+      ...entry,
+      runner: "claude" as const,
+    })),
+  );
+} catch {
+  // The installed Claude CLI is optional; report the combined available list below.
+}
+const resolve = (needle: string): RunnerModel => {
   const n = needle.toLowerCase();
   const hit = models.find(
-    (m) => m.key === n || m.id.toLowerCase().includes(n) || m.name.toLowerCase().includes(n),
+    (entry) =>
+      entry.key.toLowerCase() === n ||
+      entry.id.toLowerCase().includes(n) ||
+      entry.name.toLowerCase().includes(n),
   );
   if (!hit) {
     throw new Error(
-      `Fusion: model "${needle}" not found. Available: ${models.map((m) => m.key).join(", ")}`,
+      `Fusion: model "${needle}" not found. Available: ${models.map((entry) => entry.key).join(", ")}`,
     );
   }
-  return hit.key;
+  return hit;
 };
-const members = panel.map((m) => ({ key: resolve(m.model), label: m.label || m.model }));
-const judgeModel = π.judge ? resolve(π.judge) : members[0].key;
+const members = panel.map((member) => ({
+  ...resolve(member.model),
+  label: member.label || member.model,
+}));
+const judgeModel = π.judge ? resolve(π.judge) : members[0];
 
 // Panel: up to 8 distinct models answer the same task in parallel, each with
 // web access (bash → gsearch/curl is the web_search/web_fetch analog). Members
@@ -64,6 +85,7 @@ const responses = await parallel(
       `Independently answer this task. Use web search (run gsearch or curl via bash) when fresh sources help, and cite them inline.\n\nTask:\n${task}`,
       {
         label: `panel · ${m.label}`.slice(0, 50),
+        runner: m.runner,
         model: m.key,
         tools: toolset,
         ...(thinking ? { thinking } : {}),
@@ -85,7 +107,8 @@ const analysis = await agent<FusionAnalysis>(
     JSON.stringify(members.map((m, i) => ({ model: m.label, response: responses[i] }))),
   {
     label: "fusion judge",
-    model: judgeModel,
+    runner: judgeModel.runner,
+    model: judgeModel.key,
     tools: toolset,
     ...(thinking ? { thinking } : {}),
     schema: {

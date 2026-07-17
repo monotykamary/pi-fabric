@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 export type ModelLike = { provider: string; id: string; name?: string };
 
+export type ClaudeModelLike = { value: string; displayName?: string; resolvedModel?: string };
+
 /** Structural shape buildModelSource needs; the real ModelRegistry satisfies this. */
 type ModelRegistryLike = {
   getAvailable(): ModelLike[];
@@ -76,6 +78,17 @@ export function buildModelSource(registry: ModelRegistryLike): ModelSource {
     models = [];
   }
   return { models, lastUsed: readModelSortLastUsed() };
+}
+
+export function buildClaudeModelSource(models: readonly ClaudeModelLike[]): ModelSource {
+  return {
+    models: models.map((model) => ({
+      provider: "claude",
+      id: model.value,
+      name: model.displayName ?? model.resolvedModel ?? model.value,
+    })),
+    lastUsed: {},
+  };
 }
 
 /** Build the canonical `provider/id` key used on disk and by `pi --model`. */

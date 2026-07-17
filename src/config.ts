@@ -6,6 +6,7 @@ import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "
 
 type FabricApprovalMode = "allow" | "ask" | "deny";
 export type FabricSubagentTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
+export type FabricAgentRunner = "pi" | "claude";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 type FabricActorScope = "project" | "session";
 
@@ -32,10 +33,17 @@ export interface FabricMcpConfig {
   callTimeoutMs: number;
 }
 
+interface FabricClaudeRunnerConfig {
+  binary: string;
+  model?: string;
+}
+
 export interface FabricSubagentConfig {
   enabled: boolean;
+  runner: FabricAgentRunner;
   transport: FabricSubagentTransport;
   model?: string;
+  claude: FabricClaudeRunnerConfig;
   thinking: FabricThinking;
   maxConcurrent: number;
   maxPerExecution: number;
@@ -115,7 +123,9 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   },
   subagents: {
     enabled: true,
+    runner: "pi",
     transport: "process",
+    claude: { binary: "claude" },
     thinking: DEFAULT_FABRIC_THINKING,
     maxConcurrent: 4,
     maxPerExecution: 100,
@@ -222,6 +232,9 @@ const boundedFloat = (value: unknown, fallback: number, min: number, max: number
 const stringValue = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
 
+const runnerValue = (value: unknown, fallback: FabricAgentRunner): FabricAgentRunner =>
+  value === "pi" || value === "claude" ? value : fallback;
+
 const transportValue = (
   value: unknown,
   fallback: FabricSubagentTransport,
@@ -262,6 +275,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
   const subagents = objectValue(input.subagents);
+  const claude = objectValue(subagents.claude);
   const capture = objectValue(input.capture);
   const ui = objectValue(input.ui);
   const mesh = objectValue(input.mesh);
@@ -273,6 +287,8 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
   const subagentModel = stringValue(subagents.model);
+  const claudeBinary = stringValue(claude.binary);
+  const claudeModel = stringValue(claude.model);
   const subagentThinking = thinkingValue(subagents.thinking, DEFAULT_FABRIC_CONFIG.subagents.thinking);
   const configuredVisible = Array.isArray(capture.keepVisible)
     ? capture.keepVisible.filter(
@@ -341,8 +357,13 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     subagents: {
       enabled: booleanValue(subagents.enabled, DEFAULT_FABRIC_CONFIG.subagents.enabled),
+      runner: runnerValue(subagents.runner, DEFAULT_FABRIC_CONFIG.subagents.runner),
       transport: transportValue(subagents.transport, DEFAULT_FABRIC_CONFIG.subagents.transport),
       ...(subagentModel ? { model: subagentModel } : {}),
+      claude: {
+        binary: claudeBinary ?? DEFAULT_FABRIC_CONFIG.subagents.claude.binary,
+        ...(claudeModel ? { model: claudeModel } : {}),
+      },
       thinking: subagentThinking,
       maxConcurrent: boundedInteger(
         subagents.maxConcurrent,

@@ -1,4 +1,4 @@
-import type { FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 
 export type SubagentRunStatus =
@@ -12,6 +12,7 @@ export type SubagentRunStatus =
 export interface SubagentRunRequest {
   task: string;
   name?: string;
+  runner?: FabricAgentRunner;
   transport?: FabricSubagentTransport;
   model?: string;
   thinking?: FabricThinking;
@@ -26,6 +27,7 @@ export interface SubagentRunRequest {
   actorId?: string;
   actorName?: string;
   meshRoot?: string;
+  runnerSessionId?: string;
 }
 
 export interface SubagentUsage {
@@ -48,6 +50,7 @@ export interface SubagentRunRecord {
   name: string;
   task: string;
   status: SubagentRunStatus;
+  runner: FabricAgentRunner;
   transport: FabricSubagentTransport;
   cwd: string;
   model?: string;
@@ -68,6 +71,7 @@ export interface SubagentRunRecord {
   usage: SubagentUsage;
   budget?: FabricBudgetSummary;
   sessionId?: string;
+  runnerSessionId?: string;
   attachCommand?: string;
   branch?: string;
   worktree?: string;
@@ -84,6 +88,7 @@ export interface SubagentHandleInfo {
   id: string;
   name: string;
   status: SubagentRunStatus;
+  runner: FabricAgentRunner;
   transport: FabricSubagentTransport;
   cwd: string;
   model?: string;
@@ -91,6 +96,7 @@ export interface SubagentHandleInfo {
   actorId?: string;
   actorName?: string;
   sessionId?: string;
+  runnerSessionId?: string;
   attachCommand?: string;
   branch?: string;
   worktree?: string;
@@ -98,6 +104,7 @@ export interface SubagentHandleInfo {
 
 export interface SubagentWorkerOptions {
   id: string;
+  runner: FabricAgentRunner;
   name: string;
   taskFile: string;
   statusFile: string;
@@ -105,6 +112,7 @@ export interface SubagentWorkerOptions {
   schemaFile?: string;
   cwd: string;
   piBinary: string;
+  claudeBinary: string;
   timeoutMs: number;
   depth: number;
   fullCodeMode: boolean;
@@ -120,6 +128,7 @@ export interface SubagentWorkerOptions {
   actorId?: string;
   actorName?: string;
   meshRoot?: string;
+  runnerSessionId?: string;
   runRoot?: string;
   steerFile?: string;
   transport: FabricSubagentTransport;

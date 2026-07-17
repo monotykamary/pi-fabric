@@ -294,6 +294,26 @@ await Promise.all([
     ]);
   });
 
+  it("bridges agents.models() to the runner-aware provider action", async () => {
+    let request: Record<string, unknown> | undefined;
+    const result = await new QuickJsRuntime().execute(
+      `return agents.models({ runner: "claude", refresh: true });`,
+      async (ref, args) => {
+        if (ref === "agents.models") {
+          request = args;
+          return [{ runner: "claude", provider: "claude", id: "haiku", name: "Haiku", key: "claude/haiku" }];
+        }
+        throw new Error(`Unexpected call: ${ref}`);
+      },
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(request).toEqual({ runner: "claude", refresh: true });
+    expect(result.value).toEqual([
+      { runner: "claude", provider: "claude", id: "haiku", name: "Haiku", key: "claude/haiku" },
+    ]);
+  });
+
   it("counts council.run role usage toward budget.spent()", async () => {
     const result = await new QuickJsRuntime().execute(
       `await council.run({ task: "review", roles: ["a", "b"], synthesize: false }); return budget.spent();`,
@@ -309,11 +329,13 @@ await Promise.all([
     expect(result.value).toBe(30);
   });
 
-  it("counts rlm.query usage toward budget.spent()", async () => {
+  it("counts rlm.query usage and forces the Pi runner", async () => {
+    let request: Record<string, unknown> | undefined;
     const result = await new QuickJsRuntime().execute(
       `await rlm.query({ task: "map" }); return budget.spent();`,
-      async (ref) => {
+      async (ref, args) => {
         if (ref === "agents.run") {
+          request = args;
           return { status: "completed", text: "done", usage: { input: 7, output: 3 } };
         }
         throw new Error(`Unexpected call: ${ref}`);
@@ -322,6 +344,7 @@ await Promise.all([
     );
     expect(result.error).toBeUndefined();
     expect(result.value).toBe(10);
+    expect(request).toMatchObject({ task: "map", runner: "pi", recursive: true });
   });
 
   it("preempts the council synthesizer when roles exhaust the token budget", async () => {

@@ -147,6 +147,7 @@ export class GlobalActorRegistry {
       responseMode: patch.responseMode ?? existing.responseMode,
       triggerTurn: patch.triggerTurn ?? existing.triggerTurn,
       coalesce: patch.coalesce ?? existing.coalesce,
+      runner: patch.runner ?? existing.runner,
       ...(patch.model !== undefined ? { model: patch.model } : existing.model ? { model: existing.model } : {}),
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : existing.thinking ? { thinking: existing.thinking } : {}),
       ...(patch.tools !== undefined ? { tools: patch.tools } : existing.tools ? { tools: existing.tools } : {}),
@@ -198,6 +199,7 @@ export class GlobalActorRegistry {
       responseMode: def.responseMode,
       triggerTurn: def.triggerTurn,
       coalesce: def.coalesce,
+      runner: def.runner,
       ...(def.model ? { model: def.model } : {}),
       ...(def.thinking ? { thinking: def.thinking } : {}),
       ...(def.tools ? { tools: [...def.tools] } : {}),
@@ -231,6 +233,10 @@ export class GlobalActorRegistry {
     }
     const triggerTurn = def.triggerTurn ?? false;
     const coalesce = def.coalesce ?? true;
+    const runner = def.runner ?? "pi";
+    if (runner !== "pi" && runner !== "claude") {
+      throw new Error(`Invalid global actor runner: ${String(def.runner)}`);
+    }
     const model = typeof def.model === "string" && def.model.trim() ? def.model.trim() : undefined;
     const thinking =
       def.thinking !== undefined && isFabricThinking(def.thinking) ? def.thinking : undefined;
@@ -249,6 +255,7 @@ export class GlobalActorRegistry {
       responseMode,
       triggerTurn,
       coalesce,
+      runner,
       ...(model ? { model } : {}),
       ...(thinking ? { thinking } : {}),
       ...(tools ? { tools } : {}),
@@ -298,6 +305,7 @@ export class GlobalActorRegistry {
         record.responseMode === "directive" ? "directive" : "text";
       const triggerTurn = record.triggerTurn === true;
       const coalesce = record.coalesce !== false;
+      const runner = record.runner === "claude" ? "claude" : "pi";
       const thinking: FabricThinking | undefined = isFabricThinking(record.thinking)
         ? record.thinking
         : undefined;
@@ -317,6 +325,7 @@ export class GlobalActorRegistry {
         responseMode,
         triggerTurn,
         coalesce,
+        runner,
         createdAt: record.createdAt,
         updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : record.createdAt,
         ...(typeof record.model === "string" && record.model ? { model: record.model } : {}),

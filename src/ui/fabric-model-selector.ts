@@ -27,7 +27,7 @@ interface ModelEntry {
 export interface FabricModelSelectorOptions {
   theme: Theme;
   source: ModelSource;
-  /** The currently configured value: `subagents.model` or "Inherit". */
+  /** The currently configured canonical model key or "Inherit". */
   currentValue: string;
   onSelect: (value: string) => void;
   onCancel: () => void;

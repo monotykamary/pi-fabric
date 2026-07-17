@@ -190,6 +190,7 @@ globalThis.agents = Object.freeze({
   wait: (args) => __call("agents.wait", args),
   status: (args) => __call("agents.status", args),
   list: () => __call("agents.list", {}),
+  models: (args = {}) => __call("agents.models", args),
   stop: (args) => __call("agents.stop", args),
   cleanup: (args) => __call("agents.cleanup", args),
   create: (args) => __call("agents.create", args),
@@ -327,7 +328,12 @@ globalThis.phase = workflow.phase;
 globalThis.log = workflow.log;
 globalThis.budget = workflow.budget;
 globalThis.rlm = Object.freeze({
-  query: (args) => __budgetedRun({ ...args, recursive: true }),
+  query: (args) => {
+    if (args && args.runner && args.runner !== "pi") {
+      throw new Error("rlm.query requires the Pi runner because recursive Fabric is unavailable in Claude Code");
+    }
+    return __budgetedRun({ ...args, runner: "pi", recursive: true });
+  },
 });
 globalThis.council = Object.freeze({
   async run(args) {

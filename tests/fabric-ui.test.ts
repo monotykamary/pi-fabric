@@ -126,6 +126,7 @@ const snapshot = (): FabricDashboardSnapshot => {
         id: "actor-1",
         name: "advisor",
         status: "idle",
+        runner: "pi",
         events: ["turn_end"],
         topics: ["team.review"],
         delivery: "mailbox",
@@ -389,6 +390,38 @@ describe("Fabric dynamic UI", () => {
       const after = dashboard.render(120);
       expect(after.join("\n")).toContain("advisor");
       expect(after.join("\n")).not.toContain('Model for actor "advisor"');
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("uses the Claude runtime catalog for a Claude actor", () => {
+    const current = snapshot();
+    current.actors[0]!.runner = "claude";
+    current.actors[0]!.model = "claude/haiku";
+    const onActorModel = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+      {
+        modelSource: actorModelSource,
+        claudeModelSource: {
+          models: [{ provider: "claude", id: "haiku", name: "Haiku (runtime)" }],
+          lastUsed: {},
+        },
+        onActorModel,
+      },
+    );
+    try {
+      openActorDetail(dashboard);
+      dashboard.handleInput("m");
+      const picker = dashboard.render(120).join("\n");
+      expect(picker).toContain('Model for Claude actor "advisor"');
+      expect(picker).toContain("Haiku (runtime)");
+      dashboard.handleInput("\r");
+      expect(onActorModel).toHaveBeenCalledWith("actor-1", "claude/haiku");
     } finally {
       dashboard.dispose();
     }
@@ -1095,6 +1128,7 @@ describe("Fabric dashboard global actors and instructions editor", () => {
           id: "actor-1",
           name: "advisor",
           status: "idle",
+          runner: "pi",
           events: [],
           topics: [],
           delivery: "mailbox",
@@ -1114,6 +1148,7 @@ describe("Fabric dashboard global actors and instructions editor", () => {
           id: "g-actor-1",
           name: "global-reviewer",
           instructions: "You are a global reviewer template.",
+          runner: "pi",
           events: ["turn_end"],
           topics: [],
           delivery: "mailbox",

@@ -18,7 +18,12 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import { FabricModelSelector } from "./fabric-model-selector.js";
-import { buildModelSource, INHERIT_VALUE, type ModelSource } from "./model-picker.js";
+import {
+  buildClaudeModelSource,
+  buildModelSource,
+  INHERIT_VALUE,
+  type ModelSource,
+} from "./model-picker.js";
 import { saveFabricConfig, type FabricConfig } from "../config.js";
 import { THINKING_LEVELS, thinkingLabel } from "../thinking.js";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
@@ -31,6 +36,7 @@ const SUBMENU_LAYOUT: SelectListLayoutOptions = {
 
 const BOOLEANS = ["true", "false"] as const;
 const APPROVAL_MODES = ["allow", "ask", "deny"] as const;
+const RUNNERS = ["pi", "claude"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const ACTOR_SCOPES = ["project", "session"] as const;
@@ -139,7 +145,9 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
   // The model picker stores the canonical "provider/id" string, or "Inherit"
   // for no override; persist an empty string so normalizeFabricConfig drops it
   // and the subagent inherits the host's default model.
-  if (id === "subagents.model") return value === INHERIT_VALUE ? "" : value;
+  if (id === "subagents.model" || id === "subagents.claude.model") {
+    return value === INHERIT_VALUE ? "" : value;
+  }
   return value;
 };
 
@@ -170,7 +178,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "mcp":
       return config.mcp.enabled ? "enabled" : "disabled";
     case "subagents":
-      return config.subagents.transport;
+      return `${config.subagents.runner}/${config.subagents.transport}`;
     case "capture":
       return config.capture.enabled ? "enabled" : "disabled";
     case "ui":
@@ -329,6 +337,7 @@ const modelPickerSubmenu = (
   theme: Theme,
   source: ModelSource,
   currentValue: string,
+  options: { headerText?: string; inheritName?: string } = {},
 ): SettingsSubmenu => (_currentValue, done) =>
   new FabricModelSelector({
     theme,
@@ -336,6 +345,8 @@ const modelPickerSubmenu = (
     currentValue,
     onSelect: (value) => done(value),
     onCancel: () => done(),
+    ...(options.headerText ? { headerText: options.headerText } : {}),
+    ...(options.inheritName ? { inheritName: options.inheritName } : {}),
   });
 
 class SectionSubmenu extends Container {
@@ -400,7 +411,11 @@ export const buildFabricSettingsItems = (
   theme: Theme,
   config: FabricConfig,
   apply: (id: string, value: unknown) => void,
-  options: { keepVisibleCandidates: readonly string[]; modelSource: ModelSource },
+  options: {
+    keepVisibleCandidates: readonly string[];
+    modelSource: ModelSource;
+    claudeModelSource?: ModelSource;
+  },
 ): SettingItem[] => {
   const persist = (id: string, newValue: string): void =>
     apply(id, coerceValue(id, newValue, config));
@@ -588,19 +603,42 @@ export const buildFabricSettingsItems = (
             description: "Enable subagent spawning via workflow.agent() and agents.run().",
             values: BOOLEANS,
           }),
+          setting("subagents.runner", "Default runner", config.subagents.runner, {
+            description: "Execution harness used when agents.run/create does not specify runner.",
+            values: RUNNERS,
+          }),
           setting("subagents.transport", "Transport", config.subagents.transport, {
             description: "Preferred transport for spawned subagents.",
             values: TRANSPORTS,
           }),
           setting("subagents.model", "Default model", config.subagents.model || INHERIT_VALUE, {
             description:
-              "Model forwarded to spawned subagents and actors when a call does not specify one. Pick Inherit to use the host session's default. Order matches pi-model-sort (most recently used first).",
+              "Model forwarded to Pi-backed subagents and actors when a call does not specify one. Pick Inherit to use the host session's default. Order matches pi-model-sort (most recently used first).",
             submenu: modelPickerSubmenu(
               theme,
               options.modelSource,
               config.subagents.model || INHERIT_VALUE,
             ),
           }),
+          setting(
+            "subagents.claude.model",
+            "Claude model",
+            config.subagents.claude.model || INHERIT_VALUE,
+            {
+              description:
+                "Claude Code model used by Claude-backed agents and actors. Models are enumerated from the installed claude runtime; Inherit uses Claude Code's default.",
+              submenu: modelPickerSubmenu(
+                theme,
+                options.claudeModelSource ?? { models: [], lastUsed: {} },
+                config.subagents.claude.model || INHERIT_VALUE,
+                {
+                  headerText:
+                    "Default model for Claude-backed Fabric agents and actors. Pick Inherit to use Claude Code's runtime default.",
+                  inheritName: "Use Claude Code's runtime default model",
+                },
+              ),
+            },
+          ),
           setting("subagents.thinking", "Default thinking", thinkingLabel(config.subagents.thinking), {
             description:
               "Reasoning effort forwarded to spawned subagents and actors when a call does not specify one. Clamped to each model's supported levels (next highest if unsupported).",
@@ -892,12 +930,24 @@ export async function openFabricSettings(
     ...deps.capturedTools.list().map((tool) => tool.name),
   ]);
   const modelSource = buildModelSource(context.modelRegistry);
+  let claudeModelSource: ModelSource = { models: [], lastUsed: {} };
+  try {
+    claudeModelSource = buildClaudeModelSource(await deps.state.subagents.claudeModels());
+  } catch (error) {
+    if (deps.state.config.subagents.runner === "claude") {
+      context.ui.notify(
+        `Claude model discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+        "warning",
+      );
+    }
+  }
 
   await context.ui.custom<void>(
     (_tui, theme, _keybindings, done) => {
       const items = buildFabricSettingsItems(theme, deps.state.config, apply, {
         keepVisibleCandidates,
         modelSource,
+        claudeModelSource,
       });
       const component = new FabricSettingsComponent(theme, items, persist, () => done());
       rootList = component.settingsList;

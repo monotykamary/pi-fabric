@@ -82,6 +82,7 @@ export const createDashboardSnapshot = (
       id: record.id,
       name: record.name,
       status: record.status,
+      runner: record.runner,
       transport: record.transport,
       cwd: record.cwd,
       ...(record.model ? { model: record.model } : {}),

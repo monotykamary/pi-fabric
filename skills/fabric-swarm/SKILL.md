@@ -42,7 +42,7 @@ await workflow.configure({
 
 const tasks = JSON.parse(π.tasks) as Array<{ id: string; title: string; detail: string }>;
 await phase("Seed tasks", { total: tasks.length });
-for (const task of tasks of JSON.parse(π.tasks) as Array<{ id: string; title: string; detail: string }>) {
+for (const task of tasks) {
   await mesh.put({
     key: `runs/${run}/tasks/${task.id}`,
     value: { ...task, status: "ready", owner: null, progress: [], result: null },
@@ -55,6 +55,7 @@ const actors = await Promise.all(
   (JSON.parse(π.roles) as Array<{ name: string; instructions: string }>).map((role) =>
     agents.create({
       name: role.name,
+      runner: "pi",
       instructions: role.instructions,
       topics: [topic],
       responseMode: "directive",

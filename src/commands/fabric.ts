@@ -111,7 +111,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             items.push({
               value: template.name,
               label: template.name,
-              description: `global template · ${template.id.slice(0, 8)}`,
+              description: `global ${template.runner} template · ${template.id.slice(0, 8)}`,
             });
           }
         } catch {
@@ -128,7 +128,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
               items.push({
                 value: actor.name,
                 label: actor.name,
-                description: `${actor.status} actor · ${actor.id.slice(0, 8)}`,
+                description: `${actor.status} ${actor.runner} actor · ${actor.id.slice(0, 8)}`,
               });
             }
           } catch {
@@ -145,7 +145,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           items.push({
             value: actor.name,
             label: actor.name,
-            description: `${actor.status} actor · ${actor.id.slice(0, 8)}`,
+            description: `${actor.status} ${actor.runner} actor · ${actor.id.slice(0, 8)}`,
           });
         }
       } catch {
@@ -157,7 +157,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           items.push({
             value: short,
             label: short,
-            description: `${agent.status} subagent · ${agent.name}`,
+            description: `${agent.status} ${agent.runner} subagent · ${agent.name}`,
           });
         }
       } catch {
@@ -231,7 +231,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             ? agents
                 .map(
                   (agent) =>
-                    `${agent.id.slice(0, 8)} ${agent.status} ${agent.transport} — ${agent.name}`,
+                    `${agent.id.slice(0, 8)} ${agent.status} ${agent.runner}/${agent.transport} — ${agent.name}`,
                 )
                 .join("\n")
             : "No Fabric subagents",
@@ -246,7 +246,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             ? actors
                 .map(
                   (actor) =>
-                    `${actor.id.slice(0, 8)} ${actor.status} q:${actor.queued} — ${actor.name}`,
+                    `${actor.id.slice(0, 8)} ${actor.status} ${actor.runner} q:${actor.queued} — ${actor.name}`,
                 )
                 .join("\n")
             : "No Fabric actors",
@@ -480,7 +480,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         context.ui.notify(
           templates.length > 0
             ? templates
-                .map((template) => `${template.id.slice(0, 8)} global — ${template.name}`)
+                .map((template) => `${template.id.slice(0, 8)} global ${template.runner} — ${template.name}`)
                 .join("\n")
             : "No global Fabric actor templates",
           "info",
@@ -548,7 +548,11 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             .providers()
             .map((provider) => provider.name)
             .join(", ")}`,
-          `transport: ${config.subagents.transport} · model: ${config.subagents.model || "inherit"}`,
+          `runner: ${config.subagents.runner} · transport: ${config.subagents.transport} · model: ${
+            config.subagents.runner === "claude"
+              ? config.subagents.claude.model || "Claude default"
+              : config.subagents.model || "inherit"
+          }`,
           `subagent limits: concurrency ${config.subagents.maxConcurrent}, per execution ${config.subagents.maxPerExecution}, depth ${config.subagents.maxDepth}`,
           config.fullCodeMode && config.capture.enabled
             ? `captured tools: ${capturedTools.size} · model visibility: ${config.capture.hideFromModel ? "hidden" : "visible"}`

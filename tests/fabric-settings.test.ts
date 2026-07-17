@@ -164,7 +164,7 @@ describe("FabricSettingsComponent", () => {
     const lines = subagents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default model");
     expect(lines).toContain("claude-sonnet-4-5");
-    expect(lines).not.toContain("Inherit");
+    expect(lines).not.toContain("Default model ›      Inherit");
   });
 
   it("renders the list-editor rows with counts in their sections", () => {

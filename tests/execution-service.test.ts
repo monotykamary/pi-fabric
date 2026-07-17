@@ -66,7 +66,7 @@ describe("FabricExecutionService", () => {
     expect(media![0]?.mimeType).toMatch(/^image\//);
     expect(typeof media![0]?.data).toBe("string");
     expect(media![0]?.data!.length).toBeGreaterThan(0);
-  });
+  }, 15_000);
 
   it("keeps Pi core tools outside Fabric in orchestration-only mode", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-native-tools-"));

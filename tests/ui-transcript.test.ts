@@ -76,6 +76,58 @@ describe("agent transcript projection", () => {
     ]);
   });
 
+  it("projects Claude stream-json assistant and tool events", () => {
+    const transcript = projectAgentTranscript([
+      {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "draft" } },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-tool",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu-1",
+              name: "Read",
+              input: { file_path: "README.md", authorization: "secret" },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu-1", content: "loaded" }],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "assistant-final",
+        message: { role: "assistant", content: [{ type: "text", text: "Claude complete" }] },
+      },
+      { type: "result", subtype: "success", is_error: false },
+    ]);
+
+    expect(transcript.entries).toEqual([
+      expect.objectContaining({
+        kind: "assistant",
+        label: "Claude",
+        text: "Claude complete",
+        status: "completed",
+      }),
+      expect.objectContaining({
+        kind: "tool",
+        label: "Read",
+        text: expect.stringContaining("[redacted]"),
+        status: "completed",
+      }),
+    ]);
+  });
+
   it("settles assistant, tool, retry, and compaction failures and completions", () => {
     const transcript = projectAgentTranscript([
       { type: "message_update", message: { role: "assistant", content: "partial" } },

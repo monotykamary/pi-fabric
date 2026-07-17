@@ -12,13 +12,21 @@ import type { SubagentRunRequest } from "../subagents/types.js";
 import { isFabricThinking } from "../thinking.js";
 
 const runProperties = {
-  task: { type: "string", description: "A self-contained task for the child Pi agent" },
+  task: { type: "string", description: "A self-contained task for the child agent" },
   name: { type: "string" },
+  runner: {
+    type: "string",
+    enum: ["pi", "claude"],
+    description: "Execution harness. Defaults to subagents.runner.",
+  },
   transport: {
     type: "string",
     enum: ["auto", "process", "tmux", "screen", "localterm"],
   },
-  model: { type: "string" },
+  model: {
+    type: "string",
+    description: "Pi provider/id key or Claude claude/<runtime-value> key from agents.models().",
+  },
   thinking: {
     type: "string",
     enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -50,37 +58,51 @@ const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 const descriptors: FabricActionDescriptor[] = [
   {
     name: "run",
-    description: "Run a child Pi agent and wait for its final result",
+    description: "Run a child agent through Pi or Claude Code and wait for its final result",
     inputSchema: runSchema,
     risk: "agent",
   },
   {
     name: "spawn",
-    description: "Start a child Pi agent and return a handle immediately",
+    description: "Start a child agent through Pi or Claude Code and return a handle immediately",
     inputSchema: runSchema,
     risk: "agent",
   },
   {
     name: "wait",
-    description: "Wait for a previously spawned child Pi agent",
+    description: "Wait for a previously spawned child agent",
     inputSchema: idSchema,
     risk: "read",
   },
   {
     name: "status",
-    description: "Get the latest status of a child Pi agent",
+    description: "Get the latest status of a child agent",
     inputSchema: idSchema,
     risk: "read",
   },
   {
     name: "list",
-    description: "List child Pi agents created by this Fabric session",
+    description: "List child agents created by this Fabric session",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     risk: "read",
   },
   {
+    name: "models",
+    description:
+      "List models exposed by the selected runner. Claude models are enumerated from the installed Claude Code runtime, not hard-coded.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        runner: { type: "string", enum: ["pi", "claude"] },
+        refresh: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    risk: "execute",
+  },
+  {
     name: "stop",
-    description: "Stop a running child Pi agent",
+    description: "Stop a running child agent",
     inputSchema: idSchema,
     risk: "agent",
   },
@@ -122,7 +144,8 @@ const descriptors: FabricActionDescriptor[] = [
         responseMode: { type: "string", enum: ["text", "directive"] },
         triggerTurn: { type: "boolean" },
         coalesce: { type: "boolean" },
-        model: { type: "string" },
+        runner: runProperties.runner,
+        model: runProperties.model,
         thinking: runProperties.thinking,
         tools: runProperties.tools,
         transport: runProperties.transport,
@@ -357,6 +380,7 @@ const stringArray = (value: unknown): string[] | undefined =>
 const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
+  manager: SubagentManager,
 ): SubagentRunRequest => {
   const transport =
     args.transport === "auto" ||
@@ -368,11 +392,14 @@ const runRequest = (
       : undefined;
   const thinking = isFabricThinking(args.thinking) ? args.thinking : undefined;
   const tools = stringArray(args.tools);
-  const inheritedModel = context.extensionContext.model
-    ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
-    : undefined;
+  const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
+  const inheritedModel =
+    runner === "pi" && !manager.config.model && context.extensionContext.model
+      ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
+      : undefined;
   return {
     task: String(args.task),
+    runner,
     ...(typeof args.name === "string" ? { name: args.name } : {}),
     ...(transport ? { transport } : {}),
     ...(typeof args.model === "string"
@@ -395,6 +422,7 @@ const runRequest = (
 const actorRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
+  manager: SubagentManager,
   inheritModel = true,
 ): FabricActorRequest => {
   const events = Array.isArray(args.events)
@@ -409,13 +437,15 @@ const actorRequest = (
     : undefined;
   const topics = stringArray(args.topics);
   const tools = stringArray(args.tools);
+  const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
   const inheritedModel =
-    inheritModel && context.extensionContext.model
+    inheritModel && runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
       : undefined;
   return {
     name: String(args.name),
     instructions: String(args.instructions),
+    runner,
     ...(events ? { events } : {}),
     ...(topics ? { topics } : {}),
     ...(args.delivery === "mailbox" ||
@@ -489,7 +519,7 @@ const waitWithProgress = async (
 export class AgentsProvider implements FabricProvider {
   readonly name = "agents";
   readonly description =
-    "One-shot child Pi agents and persistent mailbox actors over process, tmux, screen, or LocalTerm";
+    "One-shot Pi or Claude Code agents and persistent mailbox actors over process, tmux, screen, or LocalTerm";
 
   constructor(
     readonly manager: SubagentManager,
@@ -523,7 +553,10 @@ export class AgentsProvider implements FabricProvider {
   ): Promise<unknown> {
     switch (actionName) {
       case "run": {
-        const handle = await this.manager.spawn(runRequest(args, context), context.signal);
+        const handle = await this.manager.spawn(
+          runRequest(args, context, this.manager),
+          context.signal,
+        );
         context.activity?.({
           type: "entity",
           id: handle.id,
@@ -531,12 +564,15 @@ export class AgentsProvider implements FabricProvider {
           name: handle.name,
         });
         context.update(
-          `Agent ${handle.id.slice(0, 8)} started via ${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
+          `Agent ${handle.id.slice(0, 8)} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
         return waitWithProgress(this.manager, handle.id, context);
       }
       case "spawn": {
-        const handle = await this.manager.spawn(runRequest(args, context), context.signal);
+        const handle = await this.manager.spawn(
+          runRequest(args, context, this.manager),
+          context.signal,
+        );
         this.manager.detachSignal(handle.id);
         context.activity?.({
           type: "entity",
@@ -545,7 +581,7 @@ export class AgentsProvider implements FabricProvider {
           name: handle.name,
         });
         context.update(
-          `Agent ${handle.id.slice(0, 8)} started via ${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
+          `Agent ${handle.id.slice(0, 8)} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
         return handle;
       }
@@ -559,15 +595,44 @@ export class AgentsProvider implements FabricProvider {
         return this.manager.status(String(args.id));
       case "list":
         return this.manager.list();
+      case "models": {
+        const runner =
+          args.runner === "pi" || args.runner === "claude"
+            ? args.runner
+            : this.manager.config.runner;
+        if (runner === "claude") {
+          const models = await this.manager.claudeModels(args.refresh === true);
+          return models.map((model) => ({
+            runner: "claude",
+            provider: "claude",
+            id: model.value,
+            name: model.displayName,
+            key: `claude/${model.value}`,
+            ...model,
+          }));
+        }
+        try {
+          const available = context.extensionContext.modelRegistry.getAvailable();
+          return available.map((model) => ({
+            runner: "pi",
+            provider: String(model.provider),
+            id: String(model.id),
+            name: String(model.name ?? model.id),
+            key: `${model.provider}/${model.id}`,
+          }));
+        } catch {
+          return [];
+        }
+      }
       case "stop":
         return this.manager.stop(String(args.id));
       case "cleanup":
         return this.manager.cleanup(String(args.id), args.deleteBranch === true);
       case "create": {
         if (args.scope === "global") {
-          return this.globalActors.create(actorRequest(args, context, false));
+          return this.globalActors.create(actorRequest(args, context, this.manager, false));
         }
-        const actor = await this.actorManager.create(actorRequest(args, context));
+        const actor = await this.actorManager.create(actorRequest(args, context, this.manager));
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return actor;
       }

@@ -1,4 +1,4 @@
-import type { FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricLogLine, SubagentRunRecord, SubagentUsage } from "../subagents/types.js";
 
@@ -22,6 +22,7 @@ export interface FabricActorRequest {
   responseMode?: FabricActorResponseMode;
   triggerTurn?: boolean;
   coalesce?: boolean;
+  runner?: FabricAgentRunner;
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
@@ -33,6 +34,7 @@ export interface FabricActorInfo {
   id: string;
   name: string;
   status: FabricActorStatus;
+  runner: FabricAgentRunner;
   events: FabricActorHostEvent[];
   topics: string[];
   delivery: FabricActorDelivery;
@@ -117,4 +119,5 @@ export interface GlobalActorDefinition extends FabricActorRequest {
   responseMode: FabricActorResponseMode;
   triggerTurn: boolean;
   coalesce: boolean;
+  runner: FabricAgentRunner;
 }

@@ -6,17 +6,18 @@ Every method takes a single options object.
 
 ## One-shot child agents
 
-- `agents.run(args)` runs to completion and returns `FabricAgentResult` with `{ id, status, text, value?, error?, usage, turns, toolCalls }`.
+- `agents.run(args)` runs to completion and returns `FabricAgentResult` with `{ id, runner, status, text, value?, error?, usage, turns, toolCalls, runnerSessionId? }`.
 - `agents.spawn(args)` returns a background `FabricAgentHandle` with an `id`. Then use `agents.wait({ id })`, `agents.status({ id })`, `agents.stop({ id })`.
 - `agents.list()` returns all children.
 - `agents.cleanup({ id, deleteBranch? })` returns `{ cleaned }` and removes a worktree branch.
 
-`args` is a `FabricAgentRequest`: `{ task, name?, transport?, model?, thinking?, tools?, timeoutMs?, extensions?, recursive?, worktree?, schema? }`.
+`args` is a `FabricAgentRequest`: `{ task, name?, runner?, transport?, model?, thinking?, tools?, timeoutMs?, extensions?, recursive?, worktree?, schema? }`.
 
+- `runner` is `pi` or `claude` and defaults to `subagents.runner` (`pi`).
 - `transport` is one of `auto`, `process`, `tmux`, `screen`, `localterm` (default `process`). `auto` tries LocalTerm, tmux, screen, then process.
-- `model` is a `provider/id` string; use `tools.models()` to discover valid `key` values. Children inherit the parent model unless `model` is set.
+- Pi `model` values are `provider/id` keys from `tools.models()`; omitted uses `subagents.model` or inherits the host model. Claude values are `claude/<value>` keys from `agents.models({ runner: "claude" })`; omitted uses `subagents.claude.model` or Claude Code's runtime default. `agents.models()` defaults to the configured runner; Claude discovery is a local CLI control handshake and makes no model inference request.
 - `thinking` is the reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); defaults to `subagents.thinking` (`medium`) and is clamped to the model's supported levels (next highest when unsupported).
-- `tools` defaults to `subagents.defaultTools`.
+- `tools` defaults to `subagents.defaultTools`. Claude maps `read→Read`, `grep→Grep`, `find/ls→Glob`, `bash→Bash`, `edit→Edit`, and `write→Write`; other tool names fail before launch.
 - `schema` is a JSON Schema; the worker returns validated structured data in `result.value`.
 - `worktree: true` creates a dedicated Git worktree on branch `pi-fabric/<name>-<id>`, retained until `agents.cleanup()`.
 
@@ -35,7 +36,7 @@ const handle = await agents.spawn({ task: "Map the persistence layer.", transpor
 return await agents.wait({ id: handle.id });
 ```
 
-Use `/fabric agents` to list children and `/fabric attach <id>` for the attach command. Abort signals propagate to the transport and child Pi process.
+Use `/fabric agents` to list children and `/fabric attach <id>` for the attach command. Abort signals propagate to the transport and selected child process. Claude runs use official `claude -p` stream JSON with `dontAsk`, `--tools`, and `--allowedTools`; `extensions: false` adds Claude safe mode. One-shot Claude sessions use `--no-session-persistence`. Claude cannot use `recursive: true`, `fabric_exec`, or direct mesh APIs.
 
 ## Steering running agents
 
@@ -63,11 +64,12 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 
 ## Persistent actors
 
-`agents.create(args)` returns `FabricActorInfo`. An actor has its own Pi session, a serial mailbox, and optional subscriptions to parent events or durable mesh topics. It processes messages one at a time, coalesces repeated host events by default, and resumes when the same Pi session reopens in a trusted project.
+`agents.create(args)` returns `FabricActorInfo`. An actor has a fixed `runner`, a serial mailbox, and optional subscriptions to parent events or durable mesh topics. It processes messages one at a time, coalesces repeated host events by default, and restores with the project actor registry. Pi actors resume their Fabric-owned Pi session file. Claude actors persist the session ID emitted by `claude -p` and launch later activations with `--resume <id>` while keeping a Fabric-owned stream transcript.
 
-`args` is a `FabricActorRequest`: `{ name, instructions, events?, topics?, delivery?, responseMode?, triggerTurn?, coalesce?, model?, thinking?, tools?, transport?, timeoutMs? }`.
+`args` is a `FabricActorRequest`: `{ name, instructions, runner?, events?, topics?, delivery?, responseMode?, triggerTurn?, coalesce?, model?, thinking?, tools?, transport?, timeoutMs? }`.
 
-- `model` is a `provider/id` string (the canonical `key` from `tools.models()`). Omitted inherits the host session's model. The model is fixed at creation — a later `tell`/`ask` message cannot switch the underlying Pi process model, so set it here when it matters.
+- `runner` is fixed at creation. Omitted uses `subagents.runner`. Pi actors are recursively Fabric-equipped; Claude actors retain Claude context and use Claude Code tools, while mailbox/event delivery and coordination remain host-managed (no `fabric_exec` or direct `mesh.*` inside Claude).
+- `model` follows the selected runner's key format. Omitted uses that runner's configured/default model. The dashboard can change an actor model override for its next activation; `tell`/`ask` payloads do not change it.
 - `thinking` is the reasoning effort forwarded to the actor's runs (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Omitted inherits `subagents.thinking` (default `medium`), clamped to the model's supported levels. Change it later with `e` from the dashboard actor detail, or by recreating the actor.
 - `events` is a subset of `input`, `turn_end`, `agent_settled`, `tool_error`, `session_compact` (host events to subscribe to).
 - `topics` lists durable mesh topics to subscribe to (see `mesh.md`).
@@ -98,7 +100,7 @@ Mailbox:
 
 ## Recursive queries
 
-`rlm.query(args)` is a budget-aware `agents.run({ ...args, recursive: true })` with Fabric enabled in the child. Its usage counts toward `budget.spent()` and the `tokenBudget` guard. Recursion is rejected at `subagents.maxDepth`. Approving the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own concurrency and timeout limits.
+`rlm.query(args)` is a budget-aware `agents.run({ ...args, runner: "pi", recursive: true })` with Fabric enabled in the child. Claude runners are deliberately rejected for recursion. Its usage counts toward `budget.spent()` and the `tokenBudget` guard. Recursion is rejected at `subagents.maxDepth`. Approving the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own concurrency and timeout limits.
 
 ```ts
 return rlm.query({ task: "Decompose this repository and produce a compact architecture map.", transport: "process" });

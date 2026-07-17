@@ -435,6 +435,188 @@ describe("SubagentManager", () => {
   });
 });
 
+describe("SubagentManager Claude runner", () => {
+  const fakeClaude = path.resolve("tests/fixtures/fake-claude.mjs");
+
+  it("uses the independent configured Claude runner and model defaults", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const config = {
+      ...DEFAULT_FABRIC_CONFIG.subagents,
+      runner: "claude" as const,
+      model: "openai/pi-only",
+      claude: { ...DEFAULT_FABRIC_CONFIG.subagents.claude, model: "claude/haiku" },
+    };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Use Claude defaults", transport: "process" });
+    expect(result).toMatchObject({
+      status: "completed",
+      runner: "claude",
+      model: "claude/haiku",
+    });
+  });
+
+  it("runs Claude stream-json with mapped tools, native schema output, and usage", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const invocationLog = path.join(root, "claude-args.jsonl");
+    process.env.FAKE_CLAUDE_LOG = invocationLog;
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        claudeBinary: fakeClaude,
+        runRoot: root,
+      });
+      managers.push(manager);
+      const result = await manager.run({
+        task: "Return structured output",
+        runner: "claude",
+        transport: "process",
+        model: "claude/haiku",
+        thinking: "minimal",
+        tools: ["read", "grep", "find", "ls"],
+        schema: {
+          type: "object",
+          properties: { ok: { type: "boolean" } },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      });
+
+      expect(result).toMatchObject({
+        status: "completed",
+        runner: "claude",
+        model: "claude/haiku",
+        thinking: "minimal",
+        turns: 2,
+        toolCalls: 1,
+        value: { ok: true },
+        runnerSessionId: "11111111-1111-4111-8111-111111111111",
+        usage: { input: 10, output: 7, cacheRead: 2, cacheWrite: 3, cost: 0.001 },
+      });
+      const invocation = JSON.parse(fs.readFileSync(invocationLog, "utf8").trim()) as {
+        argv: string[];
+      };
+      expect(invocation.argv).toEqual(
+        expect.arrayContaining([
+          "--model",
+          "haiku",
+          "--effort",
+          "low",
+          "--tools",
+          "Read,Grep,Glob",
+          "--allowedTools",
+          "Read,Grep,Glob",
+          "--no-session-persistence",
+        ]),
+      );
+      expect(invocation.argv).not.toContain("fabric_exec");
+    } finally {
+      delete process.env.FAKE_CLAUDE_LOG;
+    }
+  });
+
+  it("preserves Claude result diagnostics on a failed run", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("src/worker.ts"),
+      claudeBinary: fakeClaude,
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({
+      task: "CLAUDE_FAIL",
+      runner: "claude",
+      transport: "process",
+      tools: ["read"],
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      runner: "claude",
+      error: "fake Claude failure",
+      exitCode: 0,
+    });
+  });
+
+  it("delivers Claude steering and follow-up messages on later turns", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("src/worker.ts"),
+      claudeBinary: fakeClaude,
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const handle = await manager.spawn({
+      task: "Initial Claude task",
+      runner: "claude",
+      transport: "process",
+      tools: ["read"],
+    });
+    manager.steer(handle.id, "Redirect the active analysis");
+    manager.followUp(handle.id, "Check one final detail");
+    const result = await manager.wait(handle.id);
+
+    expect(result).toMatchObject({
+      status: "completed",
+      runner: "claude",
+      turns: 6,
+      toolCalls: 3,
+      usage: { input: 30, output: 21, cacheRead: 6, cacheWrite: 9, cost: 0.003 },
+      pendingMessages: { steering: [], followUp: [] },
+    });
+  });
+
+  it("enumerates models from the Claude runtime control handshake", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      claudeBinary: fakeClaude,
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const models = await manager.claudeModels();
+    expect(models.map((model) => model.value)).toEqual(["default", "haiku"]);
+    expect(models[1]).toMatchObject({
+      value: "haiku",
+      resolvedModel: "claude-haiku-test",
+      displayName: "Haiku (test)",
+    });
+  });
+
+  it("rejects recursive Fabric and unsupported tools before launching Claude", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      claudeBinary: fakeClaude,
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    await expect(
+      manager.run({ task: "recurse", runner: "claude", recursive: true }),
+    ).rejects.toThrow(/does not support recursive Fabric/);
+    await expect(
+      manager.run({ task: "unknown tool", runner: "claude", tools: ["custom"] }),
+    ).rejects.toThrow(/does not support Fabric tool/);
+    await expect(
+      manager.run({ task: "prototype tool", runner: "claude", tools: ["__proto__"] }),
+    ).rejects.toThrow(/does not support Fabric tool/);
+    await expect(
+      manager.run({ task: "blank model", runner: "claude", model: "claude/" }),
+    ).rejects.toThrow(/must include a runtime model value/);
+  });
+});
+
 describe("SubagentManager steering", () => {
   const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
   const fakePiSteer = path.resolve("tests/fixtures/fake-pi-rpc-steer.mjs");

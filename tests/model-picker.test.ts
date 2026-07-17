@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildClaudeModelSource,
   buildModelSource,
   INHERIT_VALUE,
   modelKey,
@@ -65,6 +66,18 @@ describe("model-picker buildModelSource", () => {
     expect(source.models).toHaveLength(2);
     expect(source.models.map((m) => modelKey(m.provider, m.id))).toContain("anthropic/claude-sonnet-4-5");
     expect(typeof source.lastUsed).toBe("object");
+  });
+
+  it("maps Claude runtime values to canonical claude model keys", () => {
+    const source = buildClaudeModelSource([
+      { value: "default", resolvedModel: "claude-opus-test", displayName: "Default" },
+      { value: "haiku", resolvedModel: "claude-haiku-test", displayName: "Haiku" },
+    ]);
+    expect(source.models.map((model) => modelKey(model.provider, model.id))).toEqual([
+      "claude/default",
+      "claude/haiku",
+    ]);
+    expect(source.models[1]?.name).toBe("Haiku");
   });
 
   it("degrades to an empty model list when the registry throws", () => {

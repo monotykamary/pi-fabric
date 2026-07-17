@@ -5,7 +5,7 @@ import type { FabricState } from "../fabric-state.js";
 import type { FabricThinking } from "../thinking.js";
 import type { MeshEvent } from "../mesh/store.js";
 import { FabricDashboard } from "./dashboard.js";
-import { buildModelSource } from "./model-picker.js";
+import { buildClaudeModelSource, buildModelSource, type ModelSource } from "./model-picker.js";
 import { createDashboardSnapshot } from "./snapshot.js";
 import { type FabricDashboardSnapshot } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
@@ -86,6 +86,17 @@ export class FabricUiController {
     if (!this.#context) this.start(context);
     else this.#refresh();
     const modelSource = buildModelSource(context.modelRegistry);
+    let claudeModelSource: ModelSource | undefined;
+    if (this.#snapshot.actors.some((actor) => actor.runner === "claude")) {
+      try {
+        claudeModelSource = buildClaudeModelSource(await this.state.subagents.claudeModels());
+      } catch (error) {
+        context.ui.notify(
+          `Claude model discovery failed: ${error instanceof Error ? error.message : String(error)}`,
+          "warning",
+        );
+      }
+    }
     const reportUpdate = (message: string, update: Promise<unknown>): void => {
       void update
         .then(() => {
@@ -171,6 +182,7 @@ export class FabricUiController {
       (tui, theme, _keybindings, done) =>
         new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
           modelSource,
+          ...(claudeModelSource ? { claudeModelSource } : {}),
           onAgentSteer,
           onAgentFollowUp,
           onAgentStop,

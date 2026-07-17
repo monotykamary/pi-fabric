@@ -161,7 +161,9 @@ class TranscriptAccumulator {
   }
 
   #nextId(event: Record<string, unknown>): string {
-    return typeof event.toolCallId === "string" ? event.toolCallId : `event-${this.#sequence++}`;
+    if (typeof event.toolCallId === "string") return event.toolCallId;
+    if (typeof event.uuid === "string") return event.uuid;
+    return `event-${this.#sequence++}`;
   }
 
   #finishAssistant(status: "completed" | "failed"): void {
@@ -173,6 +175,128 @@ class TranscriptAccumulator {
   #append(event: Record<string, unknown>): void {
     if (typeof event.type !== "string") return;
     const id = this.#nextId(event);
+
+
+    if (event.type === "stream_event") {
+      const stream = recordOf(event.event);
+      const delta = recordOf(stream?.delta);
+      if (stream?.type === "content_block_delta" && delta?.type === "text_delta") {
+        const text = typeof delta.text === "string" ? delta.text : "";
+        if (!text) return;
+        if (!this.#assistant) {
+          this.#assistant = {
+            id,
+            kind: "assistant",
+            label: "Claude",
+            text: clip(text, MAX_ASSISTANT_CHARS),
+            status: "running",
+          };
+          this.entries.push(this.#assistant);
+        } else {
+          this.#assistant.text = clip(`${this.#assistant.text ?? ""}${text}`, MAX_ASSISTANT_CHARS);
+        }
+        this.#bound();
+      }
+      return;
+    }
+
+    if (event.type === "assistant") {
+      const message = recordOf(event.message);
+      if (!message || message.role !== "assistant") return;
+      if (Array.isArray(message.content)) {
+        for (const value of message.content) {
+          const part = recordOf(value);
+          if (part?.type !== "tool_use") continue;
+          const toolId = typeof part.id === "string" ? part.id : `claude-tool-${this.#sequence++}`;
+          const label = typeof part.name === "string" ? terminalSafe(part.name) : "tool";
+          const text = part.input === undefined ? undefined : compactValue(part.input);
+          const entry: TranscriptEntry = {
+            id: toolId,
+            kind: "tool",
+            label,
+            status: "running",
+            ...(text ? { text } : {}),
+          };
+          this.entries.push(entry);
+          this.#tools.set(toolId, entry);
+        }
+      }
+      const text = clip(contentText(message.content), MAX_ASSISTANT_CHARS);
+      if (text) {
+        if (this.#assistant) {
+          this.#assistant.text = text;
+          this.#finishAssistant("completed");
+        } else {
+          this.entries.push({ id, kind: "assistant", label: "Claude", text, status: "completed" });
+        }
+      }
+      if (typeof event.error === "string") {
+        this.entries.push({
+          id: `${id}-error`,
+          kind: "error",
+          label: "Claude error",
+          text: clip(event.error, MAX_TOOL_CHARS),
+          status: "failed",
+        });
+      }
+      this.#bound();
+      return;
+    }
+
+    if (event.type === "user") {
+      const message = recordOf(event.message);
+      if (!message || !Array.isArray(message.content)) return;
+      for (const value of message.content) {
+        const part = recordOf(value);
+        if (part?.type !== "tool_result" || typeof part.tool_use_id !== "string") continue;
+        const entry = this.#tools.get(part.tool_use_id);
+        const failed = part.is_error === true;
+        const failure = failed ? compactValue(part.content) : "";
+        if (entry) {
+          entry.status = failed ? "failed" : "completed";
+          if (failure) {
+            entry.text = clip(
+              `${entry.text ? `${entry.text} · ` : ""}error: ${failure}`,
+              MAX_TOOL_CHARS,
+            );
+          }
+          this.#tools.delete(part.tool_use_id);
+        }
+      }
+      return;
+    }
+
+    if (event.type === "result") {
+      this.#finishAssistant(event.is_error === true ? "failed" : "completed");
+      if (event.is_error === true || event.subtype !== "success") {
+        const errors = Array.isArray(event.errors)
+          ? event.errors.filter((value): value is string => typeof value === "string").join(" · ")
+          : "";
+        const text = errors || (typeof event.result === "string" ? event.result : "Claude run failed");
+        this.entries.push({
+          id,
+          kind: "error",
+          label: "Claude result",
+          text: clip(text, MAX_TOOL_CHARS),
+          status: "failed",
+        });
+        this.#bound();
+      }
+      return;
+    }
+
+    if (event.type === "system" && event.subtype === "api_retry") {
+      const text = typeof event.error === "string" ? clip(event.error, MAX_TOOL_CHARS) : undefined;
+      this.entries.push({
+        id,
+        kind: "status",
+        label: "Claude API retry",
+        status: "running",
+        ...(text ? { text } : {}),
+      });
+      this.#bound();
+      return;
+    }
 
     if (event.type === "message_start") this.#finishAssistant("completed");
     if (event.type === "message_start" || event.type === "message_update") {

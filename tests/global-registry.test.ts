@@ -39,6 +39,7 @@ describe("GlobalActorRegistry", () => {
     expect(created.name).toBe("reviewer");
     expect(created.events).toEqual(["turn_end"]);
     expect(created.delivery).toBe("steer");
+    expect(created.runner).toBe("pi");
     expect(created.model).toBeUndefined();
 
     expect(registry.list()).toHaveLength(1);
@@ -107,13 +108,14 @@ describe("GlobalActorRegistry", () => {
 
   it("strips identity and timestamps in toRequest and supports renaming", () => {
     const { registry } = setup();
-    const created = registry.create({ ...baseRequest, model: "anthropic/sonnet" });
+    const created = registry.create({ ...baseRequest, runner: "claude", model: "claude/haiku" });
     const request = registry.toRequest(created);
     expect(request).not.toHaveProperty("id");
     expect(request).not.toHaveProperty("createdAt");
     expect(request).not.toHaveProperty("updatedAt");
     expect(request.name).toBe("reviewer");
-    expect(request.model).toBe("anthropic/sonnet");
+    expect(request.runner).toBe("claude");
+    expect(request.model).toBe("claude/haiku");
 
     const renamed = registry.toRequest(created, "reviewer-2");
     expect(renamed.name).toBe("reviewer-2");
