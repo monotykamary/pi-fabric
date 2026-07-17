@@ -91,6 +91,13 @@ export interface FabricMeshConfig {
   actorContextEntries: number;
 }
 
+export interface FabricMemoryConfig {
+  enabled: boolean;
+  indexDir?: string;
+  maxSessions: number;
+  maxEntryChars: number;
+}
+
 export interface FabricConfig {
   fullCodeMode: boolean;
   executor: FabricExecutorConfig;
@@ -101,6 +108,7 @@ export interface FabricConfig {
   ui: FabricUiConfig;
   compaction: FabricCompactionConfig;
   mesh: FabricMeshConfig;
+  memory: FabricMemoryConfig;
 }
 
 export const MIN_SUBAGENT_TIMEOUT_MS = 1_000;
@@ -179,6 +187,11 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     actorQueueLimit: 32,
     eventContextChars: 40_000,
     actorContextEntries: 14,
+  },
+  memory: {
+    enabled: true,
+    maxSessions: 500,
+    maxEntryChars: 2_000,
   },
 };
 
@@ -295,6 +308,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const ui = objectValue(input.ui);
   const compaction = objectValue(input.compaction);
   const mesh = objectValue(input.mesh);
+  const memory = objectValue(input.memory);
   const configuredTools = Array.isArray(subagents.defaultTools)
     ? subagents.defaultTools.filter(
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
@@ -302,6 +316,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
+  const memoryIndexDir = stringValue(memory.indexDir);
   const subagentModel = stringValue(subagents.model);
   const claudeBinary = stringValue(claude.binary);
   const claudeModel = stringValue(claude.model);
@@ -485,6 +500,22 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.mesh.actorContextEntries,
         1,
         100,
+      ),
+    },
+    memory: {
+      enabled: booleanValue(memory.enabled, DEFAULT_FABRIC_CONFIG.memory.enabled),
+      ...(memoryIndexDir ? { indexDir: memoryIndexDir } : {}),
+      maxSessions: boundedInteger(
+        memory.maxSessions,
+        DEFAULT_FABRIC_CONFIG.memory.maxSessions,
+        1,
+        100_000,
+      ),
+      maxEntryChars: boundedInteger(
+        memory.maxEntryChars,
+        DEFAULT_FABRIC_CONFIG.memory.maxEntryChars,
+        100,
+        1_000_000,
       ),
     },
   };

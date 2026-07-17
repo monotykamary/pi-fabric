@@ -16,6 +16,7 @@ import { AgentsProvider } from "./providers/agents-provider.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { CompactProvider } from "./providers/compact-provider.js";
 import { McpProvider } from "./providers/mcp-provider.js";
+import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
 import {
@@ -217,6 +218,17 @@ export class FabricState {
     );
     this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
     this.#registry.register(new AgentsProvider(this.#subagents, this.#actors, this.#globalActors));
+    if (this.#config.memory.enabled) {
+      const sessionFile = context.sessionManager.getSessionFile();
+      const memoryContext: MemoryProviderContext = {
+        agentDir: getAgentDir(),
+        cwd: context.cwd,
+        config: this.#config.memory,
+        sessionId,
+        ...(sessionFile ? { sessionFile } : {}),
+      };
+      this.#registry.register(new MemoryProvider(memoryContext));
+    }
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);
     }
