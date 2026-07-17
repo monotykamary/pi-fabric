@@ -362,6 +362,7 @@ describe("StateProvider", () => {
       "transition",
       "get",
       "history",
+      "complexity",
       "verify",
       "goal",
       "checkGoal",

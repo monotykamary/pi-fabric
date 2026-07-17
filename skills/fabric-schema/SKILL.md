@@ -16,13 +16,19 @@ Run one `fabric_exec` program. Each iteration is: **observe → hypothesize → 
 
 1. **Observe.** Read the current world state with `state.get()`. The head names where the model believes the work is. If you have done related work before, call `memory.recall` first so you do not redo it (see the memory provider, added by a sibling workstream).
 
-2. **Hypothesize.** Commit a hypothesis as a `state.transition` **before** acting. The transition's `summary` is a falsifiable claim, and its `evidence` is the cheapest shell command that discriminates this hypothesis from its rivals. When explanations compete, record each as its own labeled transition (separate `label`/`to`) so the log holds competing world-model versions rather than one merged guess.
+2. **Hypothesize.** Commit a hypothesis as a `state.transition` **before** acting. The transition's `summary` is a falsifiable claim, and its `evidence` is the cheapest shell command that discriminates this hypothesis from its rivals. A summary is a **delta from `from`**, not a restatement of the world: express what becomes true relative to the previous label. When explanations compete, record each as its own labeled transition (separate `label`/`to`) so the log holds competing world-model versions rather than one merged guess.
 
 3. **Verify.** Call `state.verify()` to re-run the evidence commands. It returns `confirmed` (exit 0), `violated` (non-zero), or `error` (spawn/timeout). Run the cheapest command that discriminates between hypotheses first; stop discriminating once one survives. **On any `violated`, the plan is void.** `state.verify` publishes a `state.violated` event on topic `fabric.state`; actors and supervisors subscribed to that topic react to the surprise without the main agent re-asserting it.
 
 4. **Act.** Only after verification passes, make the change. A gated channel: a belief that did not survive `verify` must not reach an action.
 
-5. **Record.** Commit the outcome as the next transition. If the outcome contradicts the hypothesis, that is a surprise — void the plan, revise the hypothesis, and transition again. A **persistent** counterexample that survives repeated `verify` indicts the *representation* (the labels/kind you are using), not just the current rule: emit a `state.transition` with `kind: "representation"` to revise the world model itself.
+5. **Record.** Commit the outcome as the next transition. Again, summarize only the delta from `from`. If the outcome contradicts the hypothesis, that is a surprise — void the plan, revise the hypothesis, and transition again. A **persistent** counterexample that survives repeated `verify` indicts the *representation* (the labels/kind you are using), not just the current rule: emit a `state.transition` with `kind: "representation"` to revise the world model itself. That event archives every earlier label; the active history is rebuilt from the last representation transition, while `state.history({ includeArchived: true })` remains available for inspection.
+
+## Certified erasure
+
+Models naturally add information. During a refactor, make removal explicit by adding `complexity: { files: [...] }` to the outcome transition. The harness counts statement-level TS/JS/TSX/JSX decision keywords and records the per-file deltas. A net reduction is rejected unless the transition carries at least one replayable behavior-preservation command in `evidence`: deleting error handling also reduces branches, so only executable evidence separates abstraction from vandalism. Run `state.verify()` after the transition to replay that certificate.
+
+Use `kind: "representation"` when the state schema itself changes, not merely when implementation branches are reduced. Representation changes deliberately erase old label detail from the active model; they do not delete the append-only log.
 
 ## Goal
 
@@ -73,8 +79,9 @@ while (true) {
     label: "applied-atomic-guard",
     from: "hypothesis-stated",
     to: "guard-applied",
-    summary: "Refresh-token rotation now holds the lock",
+    summary: "Relative to hypothesis-stated, refresh-token rotation now holds the lock",
     evidence: ["grep -RIn 'lock' src/auth/refresh.ts"],
+    complexity: { files: ["src/auth/refresh.ts"] },
   });
 
   const goal = await state.checkGoal();
@@ -87,7 +94,7 @@ while (true) {
 return { ok: true, head: (await state.get()).head };
 ```
 
-Adapt the labels, evidence commands, and goal predicate to the request. Evidence should be the *cheapest* idempotent check that falsifies the claim — a `grep`, a `typecheck`, or a single test — not a full rebuild. Prefer many small falsifiable transitions over one large confident one.
+Adapt the labels, evidence commands, complexity scope, and goal predicate to the request. Evidence should be the *cheapest* idempotent check that falsifies the claim — a `grep`, a `typecheck`, or a single test — not a full rebuild. Prefer many small falsifiable deltas over one large confident restatement.
 
 ## Storage is transparent
 
