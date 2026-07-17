@@ -71,25 +71,29 @@ const fakeState = (
   }) as unknown as FabricState;
 
 describe("dashboard snapshot agent ownership", () => {
-  it("orders agents by attention before recency", () => {
-    const queued = { ...record("queued"), status: "queued" as const, updatedAt: 900 };
-    const running = { ...record("running"), status: "running" as const, updatedAt: 500 };
-    const failed = { ...record("failed"), status: "failed" as const, updatedAt: 600 };
-    const completed = { ...record("completed"), status: "completed" as const, updatedAt: 700 };
-    const stopped = { ...record("stopped"), status: "stopped" as const, updatedAt: 800 };
+  it("orders agents by creation regardless of status or recent activity", () => {
+    const first = {
+      ...record("first"),
+      status: "completed" as const,
+      startedAt: 100,
+      updatedAt: 900,
+    };
+    const second = {
+      ...record("second"),
+      status: "running" as const,
+      startedAt: 200,
+      updatedAt: 800,
+    };
+    const third = {
+      ...record("third"),
+      status: "queued" as const,
+      startedAt: 300,
+      updatedAt: 700,
+    };
 
-    const snapshot = createDashboardSnapshot(
-      fakeState([], [stopped, completed, failed, running, queued]),
-      [],
-    );
+    const snapshot = createDashboardSnapshot(fakeState([], [third, first, second]), []);
 
-    expect(snapshot.agents.map((agent) => agent.id)).toEqual([
-      "queued",
-      "running",
-      "failed",
-      "completed",
-      "stopped",
-    ]);
+    expect(snapshot.agents.map((agent) => agent.id)).toEqual(["first", "second", "third"]);
   });
 
   it("keeps launch ownership when a later status call returns the same agent id", () => {
@@ -126,16 +130,18 @@ describe("dashboard snapshot agent ownership", () => {
     });
   });
 
-  it("bounds historical one-shot agents while retaining attention-first rows", () => {
+  it("bounds historical one-shot agents to the newest creation window", () => {
     const records = Array.from({ length: 300 }, (_, index) => ({
       ...record(`agent-${index}`),
       status: (index === 299 ? "running" : "completed") as "running" | "completed",
-      updatedAt: index,
+      startedAt: index,
+      updatedAt: 300 - index,
     }));
 
     const snapshot = createDashboardSnapshot(fakeState([], records), []);
     expect(snapshot.agents).toHaveLength(240);
-    expect(snapshot.agents[0]?.id).toBe("agent-299");
+    expect(snapshot.agents[0]?.id).toBe("agent-60");
+    expect(snapshot.agents.at(-1)?.id).toBe("agent-299");
   });
 
   it("prefers an active actor worker over a newer retained failure", () => {

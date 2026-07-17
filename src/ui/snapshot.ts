@@ -4,6 +4,7 @@ import type { SubagentHandleInfo, SubagentRunRecord } from "../subagents/types.j
 import { safeText } from "./format.js";
 import {
   activeStatuses,
+  orderAgentsByCreation,
   type FabricDashboardSnapshot,
   type FabricUiAgent,
   type FabricUiStateEntry,
@@ -17,15 +18,6 @@ const isRunRecord = (
 
 const numberFrom = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
-
-const agentStatusPriority = (status: string): number => {
-  if (status === "blocked") return 0;
-  if (activeStatuses.has(status)) return 1;
-  if (status === "failed" || status === "timed_out") return 2;
-  if (status === "completed" || status === "done") return 3;
-  if (status === "stopped" || status === "cancelled") return 4;
-  return 5;
-};
 
 const stateEntry = (entry: MeshStateEntry): FabricUiStateEntry => {
   const value =
@@ -85,6 +77,7 @@ export const createDashboardSnapshot = (
       runner: record.runner,
       transport: record.transport,
       cwd: record.cwd,
+      ...(!isRunRecord(record) && linked ? { startedAt: linked.call.startedAt } : {}),
       ...(record.model ? { model: record.model } : {}),
       ...(record.thinking ? { thinking: record.thinking } : {}),
       ...(record.attachCommand ? { attachCommand: record.attachCommand } : {}),
@@ -177,16 +170,7 @@ export const createDashboardSnapshot = (
     runs: orderedRuns,
     widgetDismissedAt: state.widgetDismissedAt,
     globalActors: state.globalActors.list(),
-    agents: agents.sort((left, right) => {
-      if (right.parentId === left.id) return -1;
-      if (left.parentId === right.id) return 1;
-      const priority = agentStatusPriority(left.status) - agentStatusPriority(right.status);
-      if (priority !== 0) return priority;
-      const recency =
-        (numberFrom(right.updatedAt) ?? numberFrom(right.startedAt) ?? 0) -
-        (numberFrom(left.updatedAt) ?? numberFrom(left.startedAt) ?? 0);
-      return recency || left.id.localeCompare(right.id);
-    }).slice(0, MAX_UI_AGENTS),
+    agents: orderAgentsByCreation(agents).slice(-MAX_UI_AGENTS),
     actors: actors.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;

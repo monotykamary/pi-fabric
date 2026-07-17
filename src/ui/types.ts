@@ -74,3 +74,14 @@ export const activeStatuses = new Set([
 ]);
 
 export const isActiveStatus = (status: string): boolean => activeStatuses.has(status);
+
+export const orderAgentsByCreation = (agents: FabricUiAgent[]): FabricUiAgent[] =>
+  agents
+    .map((agent, index) => ({ agent, index }))
+    .sort(
+      (left, right) =>
+        (left.agent.startedAt ?? Number.MAX_SAFE_INTEGER) -
+          (right.agent.startedAt ?? Number.MAX_SAFE_INTEGER) ||
+        left.index - right.index,
+    )
+    .map(({ agent }) => agent);

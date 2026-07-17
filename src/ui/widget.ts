@@ -6,6 +6,7 @@ import type { FabricActivityRun, FabricActivityStatus } from "../activity/types.
 import { formatDuration, formatTokens, safeText } from "./format.js";
 import {
   isActiveStatus,
+  orderAgentsByCreation,
   type FabricDashboardSnapshot,
   type FabricUiActor,
   type FabricUiAgent,
@@ -162,10 +163,11 @@ export class FabricWidget implements Component {
         candidateFinishedAt > (snapshot.widgetDismissedAt ?? 0))
         ? candidateRun
         : undefined;
-    const activeAgents = snapshot.agents.filter((agent) => isActiveStatus(agent.status));
+    const orderedAgents = orderAgentsByCreation(snapshot.agents);
+    const activeAgents = orderedAgents.filter((agent) => isActiveStatus(agent.status));
     const terminalAgents =
       run && run.status !== "running" && activeAgents.length === 0
-        ? snapshot.agents
+        ? orderedAgents
             .filter((agent) => agent.runId === run.id && !isActiveStatus(agent.status))
             .slice(0, 2)
         : [];

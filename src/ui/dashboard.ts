@@ -30,7 +30,7 @@ import type {
   FabricUiAgent,
   FabricUiStateEntry,
 } from "./types.js";
-import { isActiveStatus } from "./types.js";
+import { isActiveStatus, orderAgentsByCreation } from "./types.js";
 import type { FabricAgentTranscript } from "./transcript.js";
 import { highlightCode } from "./highlight.js";
 
@@ -191,7 +191,7 @@ const entitiesFor = (
   }
 
   const calls = callsForPanel(run, panel);
-  const panelAgents = snapshot.agents.filter((agent) => {
+  const panelAgents = orderAgentsByCreation(snapshot.agents).filter((agent) => {
     const ownedByPanel =
       agent.runId === run?.id &&
       (panel.kind === "unphased" ? !agent.phaseId : agent.phaseId === panel.id);

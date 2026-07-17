@@ -184,6 +184,52 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("keeps dashboard and widget agents in creation order", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.state = [];
+    current.runs[0]!.calls = [];
+    current.runs[0]!.items = [];
+    const base = current.agents[0]!;
+    current.agents = [
+      { ...base, id: "third", name: "third-created", startedAt: 300, updatedAt: 700 },
+      { ...base, id: "first", name: "first-created", startedAt: 100, updatedAt: 900 },
+      { ...base, id: "second", name: "second-created", startedAt: 200, updatedAt: 800 },
+    ];
+
+    const widgetText = new FabricWidget(theme, () => current, 8).render(120).join("\n");
+    expect(widgetText.indexOf("first-created")).toBeLessThan(widgetText.indexOf("second-created"));
+    expect(widgetText.indexOf("second-created")).toBeLessThan(widgetText.indexOf("third-created"));
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      const dashboardText = dashboard.render(120).join("\n");
+      expect(dashboardText.indexOf("first-created")).toBeLessThan(
+        dashboardText.indexOf("second-created"),
+      );
+      expect(dashboardText.indexOf("second-created")).toBeLessThan(
+        dashboardText.indexOf("third-created"),
+      );
+
+      current.agents[2]!.updatedAt = 1_000;
+      current.agents[0]!.updatedAt = 0;
+      const refreshed = dashboard.render(120).join("\n");
+      expect(refreshed.indexOf("first-created")).toBeLessThan(
+        refreshed.indexOf("second-created"),
+      );
+      expect(refreshed.indexOf("second-created")).toBeLessThan(
+        refreshed.indexOf("third-created"),
+      );
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("keeps completed runs until settle, then dismisses but retains actors", () => {
     const current = snapshot();
     const run = current.runs[0];
