@@ -91,6 +91,18 @@ export class FabricUiController {
           context.ui.notify(error instanceof Error ? error.message : String(error), "error"),
         );
     };
+    const onAgentSteer = (agentId: string, message: string): void => {
+      reportUpdate("Steer queued for agent", Promise.resolve(this.state.subagents.steer(agentId, message)));
+    };
+    const onAgentFollowUp = (agentId: string, message: string): void => {
+      reportUpdate(
+        "Follow-up queued for agent",
+        Promise.resolve(this.state.subagents.followUp(agentId, message)),
+      );
+    };
+    const onAgentStop = (agentId: string): void => {
+      reportUpdate("Agent stopped", this.state.subagents.stop(agentId));
+    };
     const onActorModel = (actorId: string, model: string | undefined): void => {
       reportUpdate("Actor model updated", this.state.actors.setModel(actorId, model));
     };
@@ -154,6 +166,9 @@ export class FabricUiController {
       (tui, theme, _keybindings, done) =>
         new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
           modelSource,
+          onAgentSteer,
+          onAgentFollowUp,
+          onAgentStop,
           onActorModel,
           onActorThinking,
           onActorEvents,

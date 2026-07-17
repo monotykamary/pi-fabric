@@ -66,6 +66,27 @@ const fakeState = (runs: FabricActivityRun[], records: SubagentRunRecord[]): Fab
   }) as unknown as FabricState;
 
 describe("dashboard snapshot agent ownership", () => {
+  it("orders agents by attention before recency", () => {
+    const queued = { ...record("queued"), status: "queued" as const, updatedAt: 900 };
+    const running = { ...record("running"), status: "running" as const, updatedAt: 500 };
+    const failed = { ...record("failed"), status: "failed" as const, updatedAt: 600 };
+    const completed = { ...record("completed"), status: "completed" as const, updatedAt: 700 };
+    const stopped = { ...record("stopped"), status: "stopped" as const, updatedAt: 800 };
+
+    const snapshot = createDashboardSnapshot(
+      fakeState([], [stopped, completed, failed, running, queued]),
+      [],
+    );
+
+    expect(snapshot.agents.map((agent) => agent.id)).toEqual([
+      "queued",
+      "running",
+      "failed",
+      "completed",
+      "stopped",
+    ]);
+  });
+
   it("keeps launch ownership when a later status call returns the same agent id", () => {
     const child = record("agent-child");
     const parent = record("agent-parent", [child]);

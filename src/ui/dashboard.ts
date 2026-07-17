@@ -40,6 +40,9 @@ interface PhasePanel {
   total: number;
   phase?: FabricActivityPhase;
   kind: PanelKind;
+  agents?: number;
+  tokens?: number;
+  elapsedMs?: number;
 }
 
 type Entity =
@@ -234,12 +237,41 @@ const withPanelProgress = (
           ? "running"
           : "idle"
       : panelStatus(entities, panel.status);
+  const agents = entities.filter((entity) => entity.kind === "agent");
+  const tokens = agents.reduce(
+    (sum, entity) =>
+      sum +
+      (entity.kind === "agent" && entity.value.usage
+        ? entity.value.usage.input + entity.value.usage.output
+        : 0),
+    0,
+  );
+  const starts = entities.flatMap((entity) => {
+    if (entity.kind === "agent" || entity.kind === "call") return [entity.value.startedAt ?? 0];
+    if (entity.kind === "item") return [entity.value.createdAt];
+    return [];
+  }).filter((value) => value > 0);
+  const startedAt = starts.length > 0 ? Math.min(...starts) : undefined;
+  const hasActive = entities.some((entity) => isActiveStatus(entity.status));
+  const finishes = entities.flatMap((entity) => {
+    if (entity.kind === "agent" || entity.kind === "call") return [entity.value.finishedAt ?? 0];
+    if (entity.kind === "item") return [entity.value.finishedAt ?? 0];
+    return [];
+  }).filter((value) => value > 0);
+  const finishedAt = hasActive
+    ? snapshot.now
+    : finishes.length > 0
+      ? Math.max(...finishes)
+      : undefined;
   return {
     ...panel,
     status,
     completed: entities.filter((entity) => entity.status === "completed" || entity.status === "done")
       .length,
     total: Math.max(panel.total, entities.length),
+    ...(agents.length > 0 ? { agents: agents.length } : {}),
+    ...(tokens > 0 ? { tokens } : {}),
+    ...(startedAt && finishedAt ? { elapsedMs: Math.max(0, finishedAt - startedAt) } : {}),
   };
 };
 
@@ -308,9 +340,18 @@ const tokensFor = (
 const entityTail = (entity: Entity, now: number): string => {
   if (entity.kind === "agent") {
     const agent = entity.value;
+    const narrative = safeText(agent.error ?? agent.text).slice(0, 140);
+    const summary =
+      agent.status === "blocked" && narrative
+        ? `needs input: ${narrative}`
+        : (agent.status === "failed" || agent.status === "timed_out") && narrative
+          ? `error: ${narrative}`
+          : agent.status === "completed" && narrative
+            ? `result: ${narrative}`
+            : agent.currentTool ?? (agent.status === "running" ? "thinking" : undefined);
     const parts = [
+      summary,
       agent.model,
-      agent.currentTool ?? (agent.status === "running" ? "thinking" : undefined),
       agent.usage ? `${formatTokens(agent.usage.input + agent.usage.output)} tok` : undefined,
       agent.toolCalls !== undefined ? `${agent.toolCalls} tools` : undefined,
       agent.startedAt ? formatDuration((agent.finishedAt ?? now) - agent.startedAt) : undefined,
@@ -388,7 +429,9 @@ export class FabricDashboard implements Component, Focusable {
     | "modelPicker"
     | "thinkingPicker"
     | "eventsPicker"
-    | "instructionsEditor" = "overview";
+    | "instructionsEditor"
+    | "agentMessageEditor"
+    | "help" = "overview";
   private picker:
     | FabricModelSelector
     | FabricThinkingSelector
@@ -396,7 +439,12 @@ export class FabricDashboard implements Component, Focusable {
     | undefined;
   private editor: Editor | undefined;
   private editorActorName: string | undefined;
+  private agentMessageTarget: { id: string; name: string; kind: "steer" | "followUp" } | undefined;
+  private pendingStop: { id: string; expiresAt: number } | undefined;
   private readonly modelSource: ModelSource | undefined;
+  private readonly onAgentSteer: ((agentId: string, message: string) => void) | undefined;
+  private readonly onAgentFollowUp: ((agentId: string, message: string) => void) | undefined;
+  private readonly onAgentStop: ((agentId: string) => void) | undefined;
   private readonly onActorModel:
     | ((actorId: string, model: string | undefined) => void)
     | undefined;
@@ -425,6 +473,9 @@ export class FabricDashboard implements Component, Focusable {
     readonly done: () => void,
     options: {
       modelSource?: ModelSource;
+      onAgentSteer?: (agentId: string, message: string) => void;
+      onAgentFollowUp?: (agentId: string, message: string) => void;
+      onAgentStop?: (agentId: string) => void;
       onActorModel?: (actorId: string, model: string | undefined) => void;
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
@@ -438,6 +489,9 @@ export class FabricDashboard implements Component, Focusable {
   ) {
     this.focused = true;
     this.modelSource = options.modelSource;
+    this.onAgentSteer = options.onAgentSteer;
+    this.onAgentFollowUp = options.onAgentFollowUp;
+    this.onAgentStop = options.onAgentStop;
     this.onActorModel = options.onActorModel;
     this.onActorThinking = options.onActorThinking;
     this.onActorEvents = options.onActorEvents;
@@ -452,6 +506,26 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   handleInput(data: string): void {
+    if (this.mode === "help") {
+      if (
+        data === "?" ||
+        matchesKey(data, Key.escape) ||
+        matchesKey(data, Key.ctrl("c"))
+      ) {
+        this.mode = this.detailId ? "detail" : "overview";
+      }
+      this.tui.requestRender();
+      return;
+    }
+    if (this.mode === "agentMessageEditor" && this.editor) {
+      if (getKeybindings().matches(data, "tui.select.cancel")) {
+        this.closeAgentMessageEditor();
+      } else {
+        this.editor.handleInput(data);
+      }
+      this.tui.requestRender();
+      return;
+    }
     if (this.mode === "instructionsEditor" && this.editor) {
       if (getKeybindings().matches(data, "tui.select.cancel")) {
         this.closeInstructionsEditor();
@@ -481,6 +555,12 @@ export class FabricDashboard implements Component, Focusable {
     const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
     this.syncEntitySelection(entities);
 
+    if (data === "?") {
+      this.mode = "help";
+      this.tui.requestRender();
+      return;
+    }
+
     if (this.detailId) {
       if (
         matchesKey(data, Key.escape) ||
@@ -496,6 +576,11 @@ export class FabricDashboard implements Component, Focusable {
         this.detailScroll++;
       } else if (matchesKey(data, Key.home) || data === "g") {
         this.detailScroll = 0;
+      } else if (data === "s" || data === "u") {
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
+        if (detail?.kind === "agent") {
+          this.openAgentMessageEditor(detail, data === "s" ? "steer" : "followUp");
+        }
       } else if (data === "m") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
@@ -528,7 +613,9 @@ export class FabricDashboard implements Component, Focusable {
         }
       } else if (data === "x") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (
+        if (detail?.kind === "agent" && isActiveStatus(detail.status)) {
+          this.requestAgentStop(detail);
+        } else if (
           detail &&
           detail.kind === "actor" &&
           detail.status !== "stopped" &&
@@ -577,10 +664,15 @@ export class FabricDashboard implements Component, Focusable {
       } else {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
-    } else if (["m", "e", "v", "i"].includes(data) && this.pane === "entities") {
+    } else if (["m", "e", "v", "i", "s", "u", "x"].includes(data) && this.pane === "entities") {
       const selected = entities[this.entityIndex];
       if (selected) {
-        if (data === "m" && selected.kind === "actor" && selected.status !== "stopped") {
+        if ((data === "s" || data === "u") && selected.kind === "agent") {
+          this.detailId = selected.id;
+          this.openAgentMessageEditor(selected, data === "s" ? "steer" : "followUp");
+        } else if (data === "x" && selected.kind === "agent" && isActiveStatus(selected.status)) {
+          this.requestAgentStop(selected);
+        } else if (data === "m" && selected.kind === "actor" && selected.status !== "stopped") {
           this.detailId = selected.id;
           this.openModelPicker(selected);
         } else if (data === "e" && selected.kind === "actor" && selected.status !== "stopped") {
@@ -634,6 +726,8 @@ export class FabricDashboard implements Component, Focusable {
 
   render(width: number): string[] {
     if (width <= 0) return [];
+    if (this.mode === "help") return this.renderHelp(width);
+    if (this.mode === "agentMessageEditor") return this.renderAgentMessageEditor(width);
     if (this.mode === "instructionsEditor") {
       return this.renderInstructionsEditor(width);
     }
@@ -668,7 +762,87 @@ export class FabricDashboard implements Component, Focusable {
     this.picker = undefined;
     this.editor = undefined;
     this.editorActorName = undefined;
+    this.agentMessageTarget = undefined;
+    this.pendingStop = undefined;
     this.mode = "overview";
+  }
+
+  private openAgentMessageEditor(entity: Entity, kind: "steer" | "followUp"): void {
+    if (entity.kind !== "agent") return;
+    if (kind === "steer" && (!isActiveStatus(entity.status) || !this.onAgentSteer)) return;
+    if (kind === "followUp" && !this.onAgentFollowUp) return;
+    const editor = new Editor(this.tui, editorTheme(this.theme));
+    editor.focused = true;
+    editor.onSubmit = (text) => {
+      const message = text.trim();
+      if (!message) return;
+      if (kind === "steer") this.onAgentSteer?.(entity.value.id, message);
+      else this.onAgentFollowUp?.(entity.value.id, message);
+      this.closeAgentMessageEditor();
+    };
+    this.editor = editor;
+    this.agentMessageTarget = { id: entity.value.id, name: entity.value.name, kind };
+    this.mode = "agentMessageEditor";
+  }
+
+  private closeAgentMessageEditor(): void {
+    this.editor = undefined;
+    this.agentMessageTarget = undefined;
+    this.mode = this.detailId ? "detail" : "overview";
+  }
+
+  private requestAgentStop(entity: Extract<Entity, { kind: "agent" }>): void {
+    if (!this.onAgentStop) return;
+    const now = Date.now();
+    if (this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > now) {
+      this.pendingStop = undefined;
+      this.onAgentStop(entity.value.id);
+      return;
+    }
+    this.pendingStop = { id: entity.value.id, expiresAt: now + 2_000 };
+  }
+
+  private renderAgentMessageEditor(width: number): string[] {
+    if (width < 24 || !this.editor || !this.agentMessageTarget) return [];
+    const target = this.agentMessageTarget;
+    const label = target.kind === "steer" ? "steer now" : "follow up after completion";
+    const innerWidth = width - 2;
+    const lines = [this.topBorder(width, `${label} · ${target.name}`)];
+    for (const line of this.editor.render(innerWidth)) lines.push(this.row(width, line));
+    lines.push(this.middleBorder(width));
+    lines.push(
+      this.row(
+        width,
+        this.theme.fg("dim", "  enter send · shift+enter newline · esc cancel"),
+      ),
+    );
+    lines.push(this.bottomBorder(width));
+    return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  private renderHelp(width: number): string[] {
+    if (width < 24) return [truncateToWidth("too narrow · need 24 cols", width)];
+    const lines = [this.topBorder(width, "Fabric dashboard help")];
+    const help = [
+      ["Navigate", "↑↓/jk select · ←→/tab switch pane · enter inspect · esc back"],
+      ["Runs", "[ older · ] newer · f cycle status filter"],
+      ["Agents", "s steer now · u queue follow-up · x twice stop · enter details"],
+      ["Actors", "m model · e thinking · v events · i instructions · c clear mailbox"],
+      ["Templates", "i instructions · p import · d delete"],
+      ["Details", "↑↓/jk scroll · g top · ? close help"],
+    ];
+    for (const [label, value] of help) {
+      const prefix = `${this.theme.fg("accent", `${label}:`)} `;
+      const wrapped = wrapPlainText(value ?? "", Math.max(1, width - 2 - visibleWidth(prefix)), 3);
+      if (wrapped[0]) lines.push(this.row(width, prefix + wrapped[0]));
+      for (const continuation of wrapped.slice(1)) {
+        lines.push(this.row(width, " ".repeat(visibleWidth(prefix)) + continuation));
+      }
+    }
+    lines.push(this.middleBorder(width));
+    lines.push(this.row(width, this.theme.fg("dim", "  ? or esc close")));
+    lines.push(this.bottomBorder(width));
+    return lines.map((line) => truncateToWidth(line, width, ""));
   }
 
   private openModelPicker(entity: Entity): void {
@@ -846,16 +1020,17 @@ export class FabricDashboard implements Component, Focusable {
       : snapshot.agents;
     const activeAgents = runAgents.filter((agent) => isActiveStatus(agent.status)).length;
     const hasDetachedWork = activeAgents > 0;
+    const runTokens = tokensFor(snapshot, run);
+    const largeRun = runAgents.length > 25 || runTokens > 1_500_000;
     const elapsed = run
       ? formatDuration(((hasDetachedWork ? snapshot.now : run.finishedAt) ?? snapshot.now) - run.startedAt)
       : undefined;
     const summary = [
       run?.status,
+      largeRun ? "⚠ large run" : undefined,
       `${activeAgents}/${runAgents.length} run agents active`,
       `${snapshot.actors.length} actors`,
-      tokensFor(snapshot, run) > 0
-        ? `${formatTokens(tokensFor(snapshot, run))} tok`
-        : undefined,
+      runTokens > 0 ? `${formatTokens(runTokens)} tok` : undefined,
       elapsed,
       snapshot.runs.length > 1 ? `run ${this.runIndex + 1}/${snapshot.runs.length}` : undefined,
     ]
@@ -982,7 +1157,18 @@ export class FabricDashboard implements Component, Focusable {
       return "template actions: i instructions · enter details";
     }
     if (entity.kind === "agent") {
-      return "enter details · one-shot model and thinking are fixed at spawn";
+      const armed = this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > Date.now();
+      const actions = [
+        isActiveStatus(entity.status) && this.onAgentSteer ? "s steer" : undefined,
+        this.onAgentFollowUp ? "u follow-up" : undefined,
+        isActiveStatus(entity.status) && this.onAgentStop
+          ? armed
+            ? "x again to stop"
+            : "x stop"
+          : undefined,
+        "enter details",
+      ].filter((value): value is string => Boolean(value));
+      return `agent actions: ${actions.join(" · ")}`;
     }
     return "enter details";
   }
@@ -1029,9 +1215,14 @@ export class FabricDashboard implements Component, Focusable {
     panel: PhasePanel | undefined,
   ): string[] {
     const heading = panel?.name ?? "Activity";
-    const headingDetail = panel?.phase?.description
-      ? this.theme.fg("dim", ` · ${safeText(panel.phase.description)}`)
-      : "";
+    const headingParts = [
+      panel?.phase?.description ? safeText(panel.phase.description) : undefined,
+      panel?.agents ? `${panel.agents} agent${panel.agents === 1 ? "" : "s"}` : undefined,
+      panel?.tokens ? `${formatTokens(panel.tokens)} tok` : undefined,
+      panel?.elapsedMs !== undefined ? formatDuration(panel.elapsedMs) : undefined,
+    ].filter((value): value is string => Boolean(value));
+    const headingDetail =
+      headingParts.length > 0 ? this.theme.fg("dim", ` · ${headingParts.join(" · ")}`) : "";
     const lines = [
       truncateToWidth(
         `${this.pane === "entities" ? this.theme.fg("accent", "▸ ") : "  "}${this.theme.fg(
@@ -1102,7 +1293,18 @@ export class FabricDashboard implements Component, Focusable {
 
   private detailActionHint(entity: Entity): string {
     if (entity.kind === "agent") {
-      return "One-shot agent: model and thinking are fixed at spawn. Use a persistent actor for editable runtime settings.";
+      const armed = this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > Date.now();
+      const actions = [
+        isActiveStatus(entity.status) && this.onAgentSteer ? "s steer now" : undefined,
+        this.onAgentFollowUp ? "u queue follow-up" : undefined,
+        isActiveStatus(entity.status) && this.onAgentStop
+          ? armed
+            ? "x again to confirm stop"
+            : "x stop"
+          : undefined,
+      ].filter((value): value is string => Boolean(value));
+      const controls = actions.length > 0 ? `One-shot agent actions: ${actions.join(" · ")}. ` : "One-shot agent. ";
+      return `${controls}Model and thinking are fixed at spawn; use a persistent actor for editable runtime settings.`;
     }
     if (entity.kind === "actor" && entity.status !== "stopped") {
       const actions = [

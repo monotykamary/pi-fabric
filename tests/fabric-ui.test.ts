@@ -741,6 +741,90 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("steers, follows up, and safely stops an agent from the overview", () => {
+    const current = snapshot();
+    const onAgentSteer = vi.fn();
+    const onAgentFollowUp = vi.fn();
+    const onAgentStop = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+      { onAgentSteer, onAgentFollowUp, onAgentStop },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      expect(dashboard.render(120).join("\n")).toContain("agent actions: s steer · u follow-up · x stop");
+
+      dashboard.handleInput("s");
+      expect(dashboard.render(120).join("\n")).toContain("steer now · security-reviewer");
+      dashboard.handleInput("focus on auth checks");
+      dashboard.handleInput("\r");
+      expect(onAgentSteer).toHaveBeenCalledWith("agent-1", "focus on auth checks");
+
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("u");
+      expect(dashboard.render(120).join("\n")).toContain("follow up after completion");
+      dashboard.handleInput("summarize remaining risks");
+      dashboard.handleInput("\r");
+      expect(onAgentFollowUp).toHaveBeenCalledWith("agent-1", "summarize remaining risks");
+
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("x");
+      expect(onAgentStop).not.toHaveBeenCalled();
+      expect(dashboard.render(120).join("\n")).toContain("x again to stop");
+      dashboard.handleInput("x");
+      expect(onAgentStop).toHaveBeenCalledWith("agent-1");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("opens contextual keyboard help", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("?");
+      const help = dashboard.render(100).join("\n");
+      expect(help).toContain("Fabric dashboard help");
+      expect(help).toContain("s steer now");
+      expect(help).toContain("m model");
+      dashboard.handleInput("\x1b");
+      expect(dashboard.render(100).join("\n")).toContain("Repository migration");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("shows completed-agent result summaries and activity-group metrics", () => {
+    const current = snapshot();
+    current.agents[0]!.status = "completed";
+    current.agents[0]!.finishedAt = current.now;
+    current.agents[0]!.text = "Found two concrete authentication gaps.";
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      const overview = dashboard.render(120).join("\n");
+      expect(overview).toContain("result: Found two concrete authentication gaps.");
+      expect(overview).toContain("1 agent");
+      expect(overview).toContain("5.2k tok");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("advertises and opens actor controls directly from the overview", () => {
     const current = snapshot();
     const dashboard = new FabricDashboard(
