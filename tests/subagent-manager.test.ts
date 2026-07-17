@@ -807,4 +807,114 @@ describe("SubagentManager steering", () => {
       delete process.env.FAKE_PI_STEER_LOG;
     }
   });
+
+  it("compact appends a compact entry to the steer channel for a running pi child", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const handle = await manager.spawn({ task: "HANG", transport: "process" });
+    const result = manager.compact(handle.id, "Keep the file map");
+    expect(result).toEqual({ queued: true, messageId: expect.any(String) });
+    const entries = readSteerFile(manager.runDirectory(handle.id)!);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ type: "compact", instructions: "Keep the file map" });
+    await manager.stop(handle.id);
+  });
+
+  it("compact appends a compact entry without instructions when omitted", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const handle = await manager.spawn({ task: "HANG", transport: "process" });
+    manager.compact(handle.id);
+    const entries = readSteerFile(manager.runDirectory(handle.id)!);
+    expect(entries[0]).toMatchObject({ type: "compact" });
+    expect(entries[0]).not.toHaveProperty("instructions");
+    await manager.stop(handle.id);
+  });
+
+  it("compact throws for a finished subagent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
+    roots.push(root);
+    const manager = hangManager(root);
+    const result = await manager.run({ task: "done", transport: "process" });
+    expect(() => manager.compact(result.id)).toThrow(/already finished/);
+  });
+
+  it("compact rejects claude-runner children with a clear error", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
+    roots.push(root);
+    const fakeClaude = path.resolve("tests/fixtures/fake-claude.mjs");
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("src/worker.ts"),
+      claudeBinary: fakeClaude,
+      runRoot: root,
+    });
+    managers.push(manager);
+    const handle = await manager.spawn({
+      task: "Initial Claude task",
+      runner: "claude",
+      transport: "process",
+      tools: ["read"],
+    });
+    expect(() => manager.compact(handle.id)).toThrow(/only supported for Pi-runner children/);
+    await manager.stop(handle.id);
+  });
+
+  it("forwards a compact frame to the child pi over RPC", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
+    roots.push(root);
+    fs.chmodSync(fakePiSteer, 0o755);
+    const received = path.join(root, "received.jsonl");
+    process.env.FAKE_PI_STEER_LOG = received;
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: fakePiSteer,
+        runRoot: root,
+        fullCodeMode: false,
+      });
+      managers.push(manager);
+      const handle = await manager.spawn({ task: "STEER_ME", transport: "process" });
+      await waitFor(() => manager.status(handle.id).status === "running");
+      manager.compact(handle.id, "Preserve the test plan");
+      await waitFor(
+        () => fs.existsSync(received) && fs.readFileSync(received, "utf8").includes("compact"),
+        3_000,
+      );
+      const forwarded = fs
+        .readFileSync(received, "utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(
+        forwarded.some(
+          (e) => e.type === "compact" && e.customInstructions === "Preserve the test plan",
+        ),
+      ).toBe(true);
+      // A compact without instructions forwards a bare { type: "compact" }.
+      manager.compact(handle.id);
+      await waitFor(
+        () =>
+          fs.readFileSync(received, "utf8").split("\n").filter((line) => line.trim())
+            .filter((line) => (JSON.parse(line) as Record<string, unknown>).type === "compact")
+            .length >= 2,
+        3_000,
+      );
+      const compactFrames = forwarded
+        .concat(
+          fs
+            .readFileSync(received, "utf8")
+            .split("\n")
+            .filter((line) => line.trim())
+            .map((line) => JSON.parse(line) as Record<string, unknown>),
+        )
+        .filter((e) => e.type === "compact");
+      expect(compactFrames.length).toBeGreaterThanOrEqual(2);
+      expect(compactFrames.some((e) => !("customInstructions" in e))).toBe(true);
+      await manager.stop(handle.id);
+    } finally {
+      delete process.env.FAKE_PI_STEER_LOG;
+    }
+  });
 });

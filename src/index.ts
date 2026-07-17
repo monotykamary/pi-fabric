@@ -673,6 +673,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     toolOwnership.apply(state.config.fullCodeMode);
     state.dispatchHostEvent("agent_settled", event, context);
     fabricUi.dismissOnSettle();
+    // Commit any pending host-session compaction intent. Compaction is
+    // advisory-then-committed: a `compact.request` only records an intent; the
+    // host commits it here, at a fully settled boundary — never mid-turn and
+    // never while a turn is in flight. The controller is a no-op when nothing
+    // is pending or a commit is already in flight.
+    state.compact.maybeCommit(context);
   });
 
   pi.on("tool_execution_end", async (event, context) => {

@@ -555,6 +555,25 @@ export class SubagentManager {
     return this.#appendSteer(id, { type: "set_follow_up_mode", mode });
   }
 
+  // Request an advisory compaction of a running Pi-runner child's context.
+  // Appended to the same steer.jsonl channel as steer(); the worker forwards a
+  // `{"type":"compact","customInstructions":...}` RPC frame to the child pi,
+  // which applies the compaction safely between its own turns. Rejected for
+  // Claude-runner children — the official Claude Code CLI exposes no compact
+  // RPC; a fresh run is the only way to reset a Claude child's context.
+  compact(id: string, instructions?: string): SubagentSteerResult {
+    const managed = this.#requireRun(id);
+    if (managed.runner === "claude") {
+      throw new Error(
+        "Fabric subagent compaction is only supported for Pi-runner children; Claude Code sessions cannot be compacted through Fabric.",
+      );
+    }
+    return this.#appendSteer(id, {
+      type: "compact",
+      ...(typeof instructions === "string" && instructions ? { instructions } : {}),
+    });
+  }
+
   #appendSteer(id: string, entry: Omit<SubagentSteerEntry, "id" | "ts">): SubagentSteerResult {
     const managed = this.#requireRun(id);
     const record = readRecord(managed.statusFile);

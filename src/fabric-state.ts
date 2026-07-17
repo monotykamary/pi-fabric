@@ -9,10 +9,12 @@ import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { loadFabricConfig, type FabricConfig } from "./config.js";
 import { ActionRegistry } from "./core/action-registry.js";
+import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
 import { FabricExecutionService } from "./execution-service.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { AgentsProvider } from "./providers/agents-provider.js";
 import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
+import { CompactProvider } from "./providers/compact-provider.js";
 import { McpProvider } from "./providers/mcp-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
@@ -37,6 +39,8 @@ export class FabricState {
   #actors: ActorManager | undefined;
   #globalActors: GlobalActorRegistry | undefined;
   #mesh: MeshStore | undefined;
+  #identity: MeshIdentity | undefined;
+  #compact: CompactController | undefined;
   #cwd: string | undefined;
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly activity = new FabricActivityStore();
@@ -98,6 +102,11 @@ export class FabricState {
     return this.#mesh;
   }
 
+  get compact(): CompactController {
+    if (!this.#compact) throw new Error("Pi Fabric has not initialized");
+    return this.#compact;
+  }
+
   async initialize(context: ExtensionContext): Promise<void> {
     await this.#closeInternal();
     this.activity.reset();
@@ -143,6 +152,12 @@ export class FabricState {
     if (this.#config.mesh.enabled) {
       this.#registry.register(new MeshProvider(this.#mesh, identity));
     }
+    this.#identity = identity;
+    this.#compact = new CompactController({
+      onRequest: (intent) => void this.#publishCompactEvent("requested", intent),
+      onCommit: (info) => void this.#publishCompactEvent(info.status, info),
+    });
+    this.#registry.register(new CompactProvider(this.#compact));
     this.#subagents = new SubagentManager(context.cwd, this.#config.subagents, {
       fullCodeMode: this.#config.fullCodeMode,
       onBackgroundComplete: (result) => {
@@ -297,10 +312,30 @@ export class FabricState {
     this.#actors = undefined;
     this.#globalActors = undefined;
     this.#mesh = undefined;
+    this.#identity = undefined;
+    this.#compact = undefined;
     this.#cwd = undefined;
     this.activity.reset();
     this.#widgetDismissedAt = 0;
     this.#externalProviders.clear();
+  }
+
+  // Publish a best-effort mesh event to the durable `fabric.compact` topic so
+  // other Fabric participants (actors, peers) observe compaction transitions.
+  // Activity-only sessions (mesh disabled) silently skip this.
+  #publishCompactEvent(kind: string, data: CompactPendingIntent | CompactLastCommit): void {
+    if (!this.#mesh || !this.#identity || !this.#config?.mesh.enabled) return;
+    try {
+      void this.#mesh.publish({
+        topic: "fabric.compact",
+        kind,
+        from: this.#identity,
+        data,
+      });
+    } catch {
+      // Best-effort: a full event log or an oversized payload must not break
+      // the host compaction path.
+    }
   }
 
   async #closeInternal(): Promise<void> {
@@ -312,6 +347,8 @@ export class FabricState {
     this.#subagents = undefined;
     this.#actors = undefined;
     this.#mesh = undefined;
+    this.#identity = undefined;
+    this.#compact = undefined;
   }
 }
 

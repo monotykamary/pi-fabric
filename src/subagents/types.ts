@@ -177,10 +177,11 @@ export interface FabricSubagentLog {
 export type FabricSteeringMode = "all" | "one-at-a-time";
 
 export interface SubagentSteerEntry {
-  type: "steer" | "follow_up" | "set_steering_mode" | "set_follow_up_mode";
+  type: "steer" | "follow_up" | "set_steering_mode" | "set_follow_up_mode" | "compact";
   id: string;
   message?: string;
   mode?: FabricSteeringMode;
+  instructions?: string;
   data?: unknown;
   ts: number;
 }

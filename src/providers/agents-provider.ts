@@ -234,6 +234,24 @@ const descriptors: FabricActionDescriptor[] = [
     risk: "agent",
   },
   {
+    name: "compact",
+    description:
+      "Request an advisory compaction of a running Pi-runner child agent's context at its next safe boundary (between its own turns), preserving the child's accumulated context. Rejected for Claude-runner children. The child pi core applies the compaction; Fabric only forwards the intent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        instructions: {
+          type: "string",
+          description: "Optional custom compaction instructions forwarded to the child pi",
+        },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
     name: "actorStatus",
     description: "Read one persistent actor's status",
     inputSchema: idSchema,
@@ -654,6 +672,18 @@ export class AgentsProvider implements FabricProvider {
         return this.manager.setSteeringMode(String(args.id), this.#steeringMode(args.mode));
       case "setFollowUpMode":
         return this.manager.setFollowUpMode(String(args.id), this.#steeringMode(args.mode));
+      case "compact": {
+        const id = String(args.id);
+        const status = this.manager.status(id);
+        context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
+        const instructions = typeof args.instructions === "string" ? args.instructions : undefined;
+        const result = this.manager.compact(id, instructions);
+        context.activity?.({
+          type: "progress",
+          message: `Compaction enqueued for agent ${id.slice(0, 8)} (advisory; commits at the child's next turn boundary)`,
+        });
+        return result;
+      }
       case "actorStatus":
         return this.actorManager.status(String(args.id));
       case "actors":

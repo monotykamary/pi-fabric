@@ -44,6 +44,16 @@ process.stdin.on("data", (chunk) => {
     } else if (command.type === "set_follow_up_mode") {
       send({ type: "response", command: "set_follow_up_mode", success: true });
       record({ type: "set_follow_up_mode", mode: command.mode });
+    } else if (command.type === "compact") {
+      // Advisory compaction: pi core applies it between the child's own turns.
+      // The worker only forwards the intent; record it so tests can assert the
+      // frame shape (customInstructions is optional).
+      record({
+        type: "compact",
+        ...(typeof command.customInstructions === "string"
+          ? { customInstructions: command.customInstructions }
+          : {}),
+      });
     }
   }
 });
