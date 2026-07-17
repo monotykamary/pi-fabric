@@ -289,4 +289,44 @@ describe("AgentsProvider steering", () => {
     ).rejects.toThrow(/Invalid steering mode/);
     await provider.invoke("stop", { id: handle.id }, context);
   });
+
+  it("compact enqueues a compact entry for a running pi child", async () => {
+    const { provider, root } = setup();
+    const handle = (await provider.invoke(
+      "spawn",
+      { task: "HANG", transport: "process" },
+      context,
+    )) as { id: string };
+    const result = (await provider.invoke(
+      "compact",
+      { id: handle.id, instructions: "Keep the test plan" },
+      context,
+    )) as { queued: true; messageId: string };
+    expect(result.queued).toBe(true);
+    expect(typeof result.messageId).toBe("string");
+    const entries = readSteerFile(root, handle.id);
+    expect(entries[0]).toMatchObject({ type: "compact", instructions: "Keep the test plan" });
+    await provider.invoke("stop", { id: handle.id }, context);
+  });
+
+  it("compact descriptor is agent-risk with required id", async () => {
+    const { provider } = setup();
+    const descriptor = await provider.describe("compact", context);
+    expect(descriptor?.risk).toBe("agent");
+    const schema = descriptor?.inputSchema as {
+      properties: Record<string, unknown>;
+      required: string[];
+      additionalProperties: boolean;
+    };
+    expect(schema.required).toEqual(["id"]);
+    expect(schema.properties).toHaveProperty("instructions");
+    expect(schema.additionalProperties).toBe(false);
+  });
+
+  it("compact rejects an unknown id", async () => {
+    const { provider } = setup();
+    await expect(
+      provider.invoke("compact", { id: "not-a-real-id" }, context),
+    ).rejects.toThrow(/Unknown Fabric subagent/);
+  });
 });

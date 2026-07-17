@@ -784,7 +784,7 @@ const main = async (): Promise<void> => {
       for (const raw of combined.subarray(0, newline + 1).toString("utf8").split("\n")) {
         const line = raw.trim();
         if (!line) continue;
-        let command: { type?: string; message?: string; mode?: string };
+        let command: { type?: string; message?: string; mode?: string; instructions?: string };
         try {
           command = JSON.parse(line);
         } catch {
@@ -822,6 +822,15 @@ const main = async (): Promise<void> => {
             child.stdin?.write(JSON.stringify({ type: "set_steering_mode", mode: command.mode }) + "\n");
           } else if (command.type === "set_follow_up_mode" && typeof command.mode === "string") {
             child.stdin?.write(JSON.stringify({ type: "set_follow_up_mode", mode: command.mode }) + "\n");
+          } else if (command.type === "compact") {
+            // Advisory compaction for the child pi's own context. pi core
+            // applies it safely between the child's own turns; the worker only
+            // forwards the intent. customInstructions is optional.
+            const frame: Record<string, unknown> = { type: "compact" };
+            if (typeof command.instructions === "string") {
+              frame.customInstructions = command.instructions;
+            }
+            child.stdin?.write(JSON.stringify(frame) + "\n");
           }
         } catch {
           /* stdin closed (settled/stopped child); a late steer is dropped */
