@@ -22,6 +22,7 @@ export interface NormalizedEntry {
   timestamp: number | null;
   isError: boolean;
   truncated: boolean;
+  filesTouched?: string[];
 }
 
 export interface SessionHeaderInfo {
@@ -57,6 +58,34 @@ const summarizeArgs = (args: unknown, max = 400): string => {
   }
   if (serialized.length <= max) return serialized;
   return `${serialized.slice(0, max)}…`;
+};
+
+const collectPathArguments = (value: unknown, key: string | null, paths: string[]): void => {
+  if (typeof value === "string") {
+    if (key !== null && /(?:file|path)s?$/i.test(key) && value.trim()) paths.push(value.trim());
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectPathArguments(item, key, paths);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    collectPathArguments(childValue, childKey, paths);
+  }
+};
+
+const extractFilesTouched = (raw: Record<string, unknown>): string[] => {
+  if (asString(raw.type) !== "message") return [];
+  const message = raw.message as Record<string, unknown> | undefined;
+  if (!message || asString(message.role) !== "assistant" || !Array.isArray(message.content)) return [];
+  const paths: string[] = [];
+  for (const block of message.content) {
+    if (block === null || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    if (record.type === "toolCall") collectPathArguments(record.arguments, null, paths);
+  }
+  return [...new Set(paths)];
 };
 
 /**
@@ -170,8 +199,11 @@ const parseTimestamp = (raw: unknown): number | null => {
     return Number.isNaN(parsed) ? null : parsed;
   }
   if (raw && typeof raw === "object") {
-    const message = (raw as Record<string, unknown>).message as Record<string, unknown> | undefined;
-    if (message && typeof message.timestamp === "number") return message.timestamp;
+    const record = raw as Record<string, unknown>;
+    const entryTimestamp = parseTimestamp(record.timestamp);
+    if (entryTimestamp !== null) return entryTimestamp;
+    const message = record.message as Record<string, unknown> | undefined;
+    if (message) return parseTimestamp(message.timestamp);
   }
   return null;
 };
@@ -228,6 +260,7 @@ export const normalizeSession = (
       continue;
     }
     const { role, toolName, isError } = entryRoleAndTool(raw);
+    const filesTouched = extractFilesTouched(raw);
     const fullText = extractFullText(raw);
     const { text, truncated } = truncate(fullText, maxEntryChars);
     if (!text.trim() && role === null) continue;
@@ -246,6 +279,7 @@ export const normalizeSession = (
       timestamp: parseTimestamp(raw),
       isError,
       truncated,
+      ...(filesTouched.length > 0 ? { filesTouched } : {}),
     });
     index += 1;
   }

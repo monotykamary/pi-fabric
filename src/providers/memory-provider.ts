@@ -5,10 +5,19 @@ import type {
   FabricProviderListRequest,
 } from "../protocol.js";
 import type { FabricMemoryConfig } from "../config.js";
-import { resolveScope, type ResolveScopeInput, type SessionRef } from "../memory/discovery.js";
-import { expandSessionEntry, readSessionHeader } from "../memory/normalize.js";
-import { loadShard, loadShards, type MemoryIndexOptions } from "../memory/index.js";
-import { formatSearchResult, searchShards } from "../memory/search.js";
+import {
+  enumerateAllSessions,
+  resolveScope,
+  type ResolveScopeInput,
+  type SessionRef,
+} from "../memory/discovery.js";
+import { expandSessionEntry } from "../memory/normalize.js";
+import {
+  DEFAULT_HOT_SESSIONS,
+  loadTieredIndex,
+  type MemoryIndexOptions,
+} from "../memory/index.js";
+import { formatSearchResult, searchMemoryIndex, type SearchItem } from "../memory/search.js";
 
 const RECALL_DEFAULT_PAGE_SIZE = 25;
 const RECALL_MAX_PAGE_SIZE = 200;
@@ -19,7 +28,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "recall",
     description:
-      "Search across Pi session histories. With a query: BM25 over normalized session entries (or a regex if the query compiles as one). Without a query: browse the 25 most recent entries in scope.",
+      "Search hot session entries and cold session digests. Use scope session:<id-or-path> to hydrate a cold session and search its entries.",
     inputSchema: {
       type: "object",
       properties: {
@@ -59,7 +68,7 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "sessions",
-    description: "List known sessions in scope with id, file, cwd, mtime, and entry count.",
+    description: "List known sessions in scope with id, file, cwd, mtime, entry count, and hot/cold tier.",
     inputSchema: {
       type: "object",
       properties: {
@@ -83,7 +92,18 @@ export interface MemoryProviderContext {
 const resolveIndexOptions = (config: FabricMemoryConfig, agentDir: string): MemoryIndexOptions => ({
   indexDir: config.indexDir ?? `${agentDir}/fabric/memory-index`,
   maxEntryChars: config.maxEntryChars,
+  hotSessions: config.hotSessions ?? DEFAULT_HOT_SESSIONS,
+  digestTerms: config.digestTerms ?? 200,
 });
+
+const resolveTierRefs = (refs: SessionRef[], context: MemoryProviderContext): SessionRef[] => {
+  const all = enumerateAllSessions(context.agentDir, Number.MAX_SAFE_INTEGER);
+  const known = new Set(all.map((ref) => ref.file));
+  for (const ref of refs) {
+    if (!known.has(ref.file)) all.push(ref);
+  }
+  return all;
+};
 
 const resolveRefs = (scope: string | undefined, context: MemoryProviderContext): SessionRef[] => {
   const effectiveScope = scope ?? "session";
@@ -182,7 +202,13 @@ export class MemoryProvider implements FabricProvider {
     }
 
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
-    const { shards } = loadShards(refs, options);
+    const hydrate = scope?.trim().startsWith("session:") ?? false;
+    const { shards, digests } = loadTieredIndex(
+      refs,
+      resolveTierRefs(refs, this.context),
+      options,
+      hydrate,
+    );
     const limit = page * pageSize;
     const filters: { role?: string; tool?: string; since?: number; until?: number } = {};
     if (role) filters.role = role;
@@ -194,19 +220,32 @@ export class MemoryProvider implements FabricProvider {
       limit,
     };
     if (query) searchQuery.query = query;
-    const result = searchShards(shards, searchQuery);
+    const result = searchMemoryIndex(shards, digests, searchQuery);
 
     const start = (page - 1) * pageSize;
-    const pagedSegments = result.segments.slice(start, start + pageSize);
+    const pagedItems = result.items.slice(start, start + pageSize);
+    const pagedSegments = pagedItems
+      .filter((item): item is Extract<SearchItem, { kind: "entry" }> => item.kind === "entry")
+      .map((item) => item.segment);
+    const pagedDigests = pagedItems
+      .filter((item): item is Extract<SearchItem, { kind: "digest" }> => item.kind === "digest")
+      .map((item) => item.digest);
+    const displayResult = {
+      ...result,
+      segments: pagedSegments,
+      digestHits: pagedDigests,
+      items: pagedItems,
+    };
     const pagedResult = {
       scope: scope ?? "session",
       query: query ?? null,
       matchedCount: result.matchedCount,
       segmentCount: result.segmentCount,
       segments: pagedSegments,
+      digestHits: pagedDigests,
       page,
       pageSize,
-      text: formatSearchResult({ ...result, segments: pagedSegments }, query),
+      text: formatSearchResult(displayResult, query),
     };
     invocationContext.update(
       query
@@ -239,15 +278,20 @@ export class MemoryProvider implements FabricProvider {
     const scope = typeof args.scope === "string" ? args.scope : undefined;
     const refs = resolveRefs(scope, this.context).slice(0, SESSIONS_MAX);
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
+    const index = loadTieredIndex(refs, resolveTierRefs(refs, this.context), options);
+    const shards = new Map(index.shards.map((shard) => [shard.sessionFile, shard]));
+    const digests = new Map(index.digests.map((digest) => [digest.file, digest]));
     const sessions = refs.map((ref) => {
-      const shard = loadShard(ref, options);
-      const header = readSessionHeader(ref.file);
+      const tier = index.tiers.get(ref.file) ?? "cold";
+      const shard = shards.get(ref.file);
+      const digest = digests.get(ref.file);
       return {
-        id: shard.sessionId || ref.id,
+        id: shard?.sessionId ?? digest?.sessionId ?? ref.id,
         file: ref.file,
-        cwd: header?.cwd ?? ref.cwd,
+        cwd: digest?.cwd ?? ref.cwd,
         mtime: ref.mtime,
-        entryCount: shard.entries.length,
+        entryCount: shard?.entries.length ?? digest?.entryCount ?? 0,
+        tier,
       };
     });
     return { scope: scope ?? "session", sessions };

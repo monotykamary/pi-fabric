@@ -96,6 +96,8 @@ export interface FabricMemoryConfig {
   indexDir?: string;
   maxSessions: number;
   maxEntryChars: number;
+  hotSessions?: number;
+  digestTerms?: number;
 }
 
 export interface FabricConfig {
@@ -192,6 +194,8 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     enabled: true,
     maxSessions: 500,
     maxEntryChars: 2_000,
+    hotSessions: 50,
+    digestTerms: 200,
   },
 };
 
@@ -516,6 +520,18 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.memory.maxEntryChars,
         100,
         1_000_000,
+      ),
+      hotSessions: boundedInteger(
+        memory.hotSessions,
+        DEFAULT_FABRIC_CONFIG.memory.hotSessions ?? 50,
+        0,
+        100_000,
+      ),
+      digestTerms: boundedInteger(
+        memory.digestTerms,
+        DEFAULT_FABRIC_CONFIG.memory.digestTerms ?? 200,
+        1,
+        10_000,
       ),
     },
   };

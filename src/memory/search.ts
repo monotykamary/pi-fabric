@@ -1,5 +1,5 @@
 import type { NormalizedEntry } from "./normalize.js";
-import type { Shard } from "./index.js";
+import type { DigestShard, Shard } from "./index.js";
 import { bm25Score, recentEntries, type ScoredEntry } from "./index.js";
 
 export interface SearchQuery {
@@ -26,12 +26,30 @@ interface SearchSegment {
   range: string;
   entries: SearchSegmentEntry[];
   matchedCount: number;
+  score: number;
+  tier: "hot" | "cold";
 }
+
+interface DigestHit {
+  sessionId: string;
+  sessionFile: string;
+  cwd: string;
+  lastTs: number | null;
+  sessionMtime: number;
+  score: number;
+  tier: "cold";
+}
+
+export type SearchItem =
+  | { kind: "entry"; segment: SearchSegment }
+  | { kind: "digest"; digest: DigestHit };
 
 export interface SearchResult {
   matchedCount: number;
   segmentCount: number;
   segments: SearchSegment[];
+  digestHits: DigestHit[];
+  items: SearchItem[];
 }
 
 interface SearchFilters {
@@ -58,16 +76,25 @@ const looksLikeRegex = (query: string): boolean => {
 
 const segmentStartRoles = new Set(["user", "bashExecution", "compaction"]);
 
-const matchesFilters = (
-  entry: NormalizedEntry,
-  filters: SearchFilters,
-): boolean => {
+const matchesFilters = (entry: NormalizedEntry, filters: SearchFilters): boolean => {
   if (filters.role !== undefined && entry.role !== filters.role) return false;
   if (filters.tool !== undefined && entry.toolName !== filters.tool) return false;
   if (filters.since !== undefined && entry.timestamp !== null && entry.timestamp < filters.since) {
     return false;
   }
   if (filters.until !== undefined && entry.timestamp !== null && entry.timestamp > filters.until) {
+    return false;
+  }
+  return true;
+};
+
+const digestMatchesFilters = (digest: DigestShard, filters: SearchFilters): boolean => {
+  if (filters.role !== undefined) return false;
+  if (filters.tool !== undefined && !Object.hasOwn(digest.toolHistogram, filters.tool)) return false;
+  if (filters.since !== undefined && digest.lastTs !== null && digest.lastTs < filters.since) {
+    return false;
+  }
+  if (filters.until !== undefined && digest.firstTs !== null && digest.firstTs > filters.until) {
     return false;
   }
   return true;
@@ -103,12 +130,14 @@ const collectRegexMatches = (shards: Shard[], regex: RegExp, filters: SearchFilt
   return matches;
 };
 
-const collectTermMatches = (shards: Shard[], query: string, filters: SearchFilters): LocatedEntry[] => {
-  const terms = query
+const queryTerms = (query: string): string[] =>
+  query
     .split(/\s+/)
     .map((term) => term.toLowerCase())
     .filter((term) => term.length > 0);
-  const scored: ScoredEntry[] = bm25Score(shards, terms, filters);
+
+const collectTermMatches = (shards: Shard[], query: string, filters: SearchFilters): LocatedEntry[] => {
+  const scored: ScoredEntry[] = bm25Score(shards, queryTerms(query), filters);
   return scored.map((item) => ({
     entry: item.entry,
     matched: true,
@@ -117,151 +146,273 @@ const collectTermMatches = (shards: Shard[], query: string, filters: SearchFilte
   }));
 };
 
-const collectRecent = (shards: Shard[], filters: SearchFilters): LocatedEntry[] => {
-  const recent = recentEntries(shards, filters, 25);
-  return recent.map((item) => ({
+const collectRecent = (shards: Shard[], filters: SearchFilters): LocatedEntry[] =>
+  recentEntries(shards, filters, 25).map((item) => ({
     entry: item.entry,
     matched: true,
     sessionMtime: item.sessionMtime,
     score: 0,
   }));
+
+const termFrequency = (text: string, term: string): number => {
+  let count = 0;
+  let index = 0;
+  const lower = text.toLowerCase();
+  while (index <= lower.length) {
+    const found = lower.indexOf(term, index);
+    if (found === -1) break;
+    count += 1;
+    index = found + term.length;
+  }
+  return count;
 };
 
-/**
- * Run a query over loaded shards. A query that compiles as a regex is applied
- * directly; otherwise it is split into multiword OR terms ranked by BM25. The
- * returned segments are conversation turns (a segment begins at a
- * user / bashExecution / compaction entry and runs to the next one). Matched
- * entries are marked with `>`; the other entries in the same segment are
- * included as context. Segments are computed structurally from typed entry
- * roles — never by regex over rendered text.
- */
-export const searchShards = (shards: Shard[], query: SearchQuery): SearchResult => {
+const digestDocument = (digest: DigestShard): string =>
+  `${digest.goalLine} ${digest.filesTouched.join(" ")} ${digest.terms.join(" ")}`;
+
+const scoreDigestTerms = (
+  digests: DigestShard[],
+  terms: string[],
+  filters: SearchFilters,
+): DigestHit[] => {
+  const candidates = digests.filter((digest) => digestMatchesFilters(digest, filters));
+  if (candidates.length === 0 || terms.length === 0) return [];
+  const documents = candidates.map(digestDocument);
+  const lengths = documents.map((document) =>
+    Math.max(1, document.split(/[^a-z0-9_]+/i).filter(Boolean).length),
+  );
+  const averageLength = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+  const documentFrequency = new Map<string, number>();
+  for (const document of documents) {
+    for (const term of new Set(terms)) {
+      if (termFrequency(document, term) > 0) {
+        documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+      }
+    }
+  }
+
+  const K = 1.2;
+  const B = 0.75;
+  const hits: DigestHit[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const digest = candidates[index]!;
+    const document = documents[index]!;
+    const length = lengths[index]!;
+    let score = 0;
+    for (const term of terms) {
+      const tf = termFrequency(document, term);
+      if (tf === 0) continue;
+      const df = documentFrequency.get(term) ?? 0;
+      const idf = Math.log((candidates.length - df + 0.5) / (df + 0.5) + 1);
+      const normalized = (tf * (K + 1)) / (tf + K * (1 - B + B * (length / averageLength)));
+      score += idf * normalized;
+    }
+    if (score > 0) hits.push(toDigestHit(digest, score));
+  }
+  return hits;
+};
+
+const scoreDigestRegex = (
+  digests: DigestShard[],
+  regex: RegExp,
+  filters: SearchFilters,
+): DigestHit[] =>
+  digests
+    .filter((digest) => digestMatchesFilters(digest, filters) && regex.test(digestDocument(digest)))
+    .map((digest) => toDigestHit(digest, 1));
+
+const toDigestHit = (digest: DigestShard, score: number): DigestHit => ({
+  sessionId: digest.sessionId,
+  sessionFile: digest.file,
+  cwd: digest.cwd,
+  lastTs: digest.lastTs,
+  sessionMtime: digest.mtime,
+  score,
+  tier: "cold",
+});
+
+const sortDigestHits = (hits: DigestHit[]): void => {
+  hits.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (right.sessionMtime !== left.sessionMtime) return right.sessionMtime - left.sessionMtime;
+    return left.sessionFile.localeCompare(right.sessionFile);
+  });
+};
+
+/** Search hot entry shards and cold session digests. */
+export const searchMemoryIndex = (
+  shards: Shard[],
+  digests: DigestShard[],
+  query: SearchQuery,
+): SearchResult => {
   const filters: SearchFilters = query.filters ?? {};
   const rawQuery = query.query?.trim();
   const limit = query.limit ?? 50;
-
   let located: LocatedEntry[];
+  let digestHits: DigestHit[] = [];
   let hasQuery: boolean;
+
   if (!rawQuery) {
     located = collectRecent(shards, filters);
     hasQuery = false;
   } else if (looksLikeRegex(rawQuery)) {
     const regex = tryCompileRegex(rawQuery)!;
     located = collectRegexMatches(shards, regex, filters);
+    digestHits = scoreDigestRegex(digests, regex, filters);
     sortLocated(located);
-    located = located.slice(0, limit);
     hasQuery = true;
   } else {
     located = collectTermMatches(shards, rawQuery, filters);
-    located = located.slice(0, limit);
+    digestHits = scoreDigestTerms(digests, queryTerms(rawQuery), filters);
     hasQuery = true;
   }
 
-  return groupIntoSegments(shards, located, hasQuery);
+  located = located.slice(0, limit);
+  sortDigestHits(digestHits);
+  digestHits = digestHits.slice(0, limit);
+  return groupIntoResults(shards, located, digestHits, hasQuery, limit);
 };
 
-const groupIntoSegments = (
+/** Search entry shards only, retaining the round-one API. */
+export const searchShards = (shards: Shard[], query: SearchQuery): SearchResult =>
+  searchMemoryIndex(shards, [], query);
+
+const groupIntoResults = (
   shards: Shard[],
   located: LocatedEntry[],
+  digestHits: DigestHit[],
   hasQuery: boolean,
+  limit: number,
 ): SearchResult => {
-  if (located.length === 0) {
-    return { matchedCount: 0, segmentCount: 0, segments: [] };
+  if (located.length === 0 && digestHits.length === 0) {
+    return { matchedCount: 0, segmentCount: 0, segments: [], digestHits: [], items: [] };
   }
 
-  const shardsByFile = new Map<string, Shard>();
-  for (const shard of shards) shardsByFile.set(shard.sessionFile, shard);
-
-  // Group matched entries by session, preserving score sort within a session.
+  const shardsByFile = new Map(shards.map((shard) => [shard.sessionFile, shard]));
+  const sessionOrder: string[] = [];
   const matchedBySession = new Map<string, Set<number>>();
+  const scores = new Map<string, number>();
   for (const item of located) {
+    if (!matchedBySession.has(item.entry.sessionFile)) sessionOrder.push(item.entry.sessionFile);
     const set = matchedBySession.get(item.entry.sessionFile) ?? new Set<number>();
     set.add(item.entry.index);
     matchedBySession.set(item.entry.sessionFile, set);
+    scores.set(`${item.entry.sessionFile}\0${item.entry.index}`, item.score);
   }
 
   const segments: SearchSegment[] = [];
-  for (const item of located) {
-    const file = item.entry.sessionFile;
-    if (!matchedBySession.has(file)) continue;
-    matchedBySession.delete(file); // process each session once
-
+  for (const file of sessionOrder) {
     const shard = shardsByFile.get(file);
-    if (!shard) continue;
-    const matchedSet = new Set<number>(
-      located.filter((entry) => entry.entry.sessionFile === file).map((entry) => entry.entry.index),
-    );
-
+    const matchedSet = matchedBySession.get(file);
+    if (!shard || !matchedSet) continue;
     let current: NormalizedEntry[] = [];
     let currentStart = 0;
     const flush = (): void => {
       if (current.length === 0) return;
-      const segmentEntries: SearchSegmentEntry[] = current.map((entry) => {
+      const entries: SearchSegmentEntry[] = current.map((entry) => {
         const matched = matchedSet.has(entry.index);
         return { entry, matched, marker: hasQuery ? (matched ? ">" : " ") : ">" };
       });
-      const matchedCount = segmentEntries.filter((entry) => entry.matched).length;
-      if (hasQuery && matchedCount === 0) {
+      const matchedEntries = entries.filter((entry) => entry.matched);
+      if (hasQuery && matchedEntries.length === 0) {
         current = [];
         return;
       }
       const lastIndex = current[current.length - 1]!.index;
-      const range =
-        lastIndex === currentStart ? `#${currentStart}` : `#${currentStart}-#${lastIndex}`;
+      const range = lastIndex === currentStart ? `#${currentStart}` : `#${currentStart}-#${lastIndex}`;
+      const score = Math.max(
+        0,
+        ...matchedEntries.map((item) => scores.get(`${file}\0${item.entry.index}`) ?? 0),
+      );
       segments.push({
         sessionId: shard.sessionId,
         sessionFile: shard.sessionFile,
         sessionMtime: shard.mtime,
         range,
-        entries: segmentEntries,
-        matchedCount,
+        entries,
+        matchedCount: matchedEntries.length,
+        score,
+        tier: shard.tier ?? "hot",
       });
       current = [];
     };
 
     for (const entry of shard.entries) {
-      const role = entry.role;
-      const startsSegment =
-        current.length > 0 && role !== null && segmentStartRoles.has(role);
-      if (startsSegment) flush();
+      if (current.length > 0 && entry.role !== null && segmentStartRoles.has(entry.role)) flush();
       if (current.length === 0) currentStart = entry.index;
       current.push(entry);
     }
     flush();
   }
 
-  segments.sort((left, right) => {
-    if (right.sessionMtime !== left.sessionMtime) return right.sessionMtime - left.sessionMtime;
-    const leftIndex = left.entries[0]?.entry.index ?? 0;
-    const rightIndex = right.entries[0]?.entry.index ?? 0;
-    return leftIndex - rightIndex;
-  });
-
-  const matchedCount = segments.reduce((sum, segment) => sum + segment.matchedCount, 0);
-  return { matchedCount, segmentCount: segments.length, segments };
+  const items: SearchItem[] = [
+    ...segments.map((segment): SearchItem => ({ kind: "entry", segment })),
+    ...digestHits.map((digest): SearchItem => ({ kind: "digest", digest })),
+  ];
+  items.sort(compareSearchItems);
+  const limitedItems = items.slice(0, Math.max(1, limit));
+  const limitedSegments = limitedItems
+    .filter((item): item is { kind: "entry"; segment: SearchSegment } => item.kind === "entry")
+    .map((item) => item.segment);
+  const limitedDigests = limitedItems
+    .filter((item): item is { kind: "digest"; digest: DigestHit } => item.kind === "digest")
+    .map((item) => item.digest);
+  const matchedCount = limitedSegments.reduce((sum, segment) => sum + segment.matchedCount, 0)
+    + limitedDigests.length;
+  return {
+    matchedCount,
+    segmentCount: limitedSegments.length,
+    segments: limitedSegments,
+    digestHits: limitedDigests,
+    items: limitedItems,
+  };
 };
 
-/** Render a {@link SearchResult} as deterministic text for the model context. */
+const compareSearchItems = (left: SearchItem, right: SearchItem): number => {
+  const leftValue = left.kind === "entry" ? left.segment : left.digest;
+  const rightValue = right.kind === "entry" ? right.segment : right.digest;
+  if (rightValue.score !== leftValue.score) return rightValue.score - leftValue.score;
+  if (rightValue.sessionMtime !== leftValue.sessionMtime) {
+    return rightValue.sessionMtime - leftValue.sessionMtime;
+  }
+  if (left.kind !== right.kind) return left.kind === "entry" ? -1 : 1;
+  if (left.kind === "entry" && right.kind === "entry") {
+    const leftIndex = left.segment.entries[0]?.entry.index ?? 0;
+    const rightIndex = right.segment.entries[0]?.entry.index ?? 0;
+    if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+    return left.segment.sessionFile.localeCompare(right.segment.sessionFile);
+  }
+  if (left.kind === "digest" && right.kind === "digest") {
+    return left.digest.sessionFile.localeCompare(right.digest.sessionFile);
+  }
+  return 0;
+};
+
+/** Render entry segments and cold session pointers as deterministic text. */
 export const formatSearchResult = (result: SearchResult, query: string | undefined): string => {
-  if (result.segments.length === 0) {
+  if (result.items.length === 0) {
     return query ? `No matches for "${query}".` : "No entries in scope.";
   }
+  const coldSuffix = result.digestHits.length > 0
+    ? ` and ${result.digestHits.length} cold session${result.digestHits.length === 1 ? "" : "s"}`
+    : "";
   const header = query
-    ? `${result.matchedCount} matches across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"} for "${query}":`
+    ? `${result.matchedCount} matches across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"}${coldSuffix} for "${query}":`
     : `${result.matchedCount} most recent entries:`;
-  const body = result.segments.map(formatSegment).join("\n\n");
+  const body = result.items.map((item) =>
+    item.kind === "entry" ? formatSegment(item.segment) : formatDigestHit(item.digest),
+  ).join("\n\n");
   return `${header}\n\n${body}`;
+};
+
+const formatDigestHit = (hit: DigestHit): string => {
+  const timestamp = hit.lastTs === null ? "unknown time" : new Date(hit.lastTs).toISOString();
+  return `> session ${hit.sessionId} (cold, ${hit.cwd}, ${timestamp}) matched — re-run with scope "session:${hit.sessionId}" to search its entries.`;
 };
 
 const formatSegment = (segment: SearchSegment): string => {
   const lines: string[] = [];
-  const contextOnly = segment.matchedCount === 0;
-  lines.push(
-    contextOnly
-      ? `--- ${segment.range} (context) ---`
-      : `--- ${segment.range} (${segment.matchedCount}/${segment.entries.length} match) ---`,
-  );
+  lines.push(`--- ${segment.range} (${segment.matchedCount}/${segment.entries.length} match) ---`);
   for (const item of segment.entries) lines.push(formatEntry(item));
   return lines.join("\n");
 };
