@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import {
   MeshStore,
   type MeshEvent,
   type MeshIdentity,
   type MeshStateEntry,
 } from "../mesh/store.js";
+import { countFileComplexity } from "./complexity.js";
 
 // The Fabric state layer is the Schema world-model heart: an append-only
 // Timeline of typed, validated transitions stored as mesh events, plus a
@@ -15,6 +17,7 @@ import {
 export const STATE_TOPIC = "fabric.state";
 export const CURRENT_KEY = "state/current";
 export const GOAL_KEY = "state/goal";
+export const COMPLEXITY_KEY_PREFIX = "state/complexity/";
 
 export type StateTransitionKind = "state" | "representation";
 
@@ -26,7 +29,44 @@ export interface StateTransitionInput {
   evidence?: string[];
   tags?: string[];
   kind?: StateTransitionKind;
+  complexity?: { files: string[] };
   force?: boolean;
+}
+
+interface StateComplexityDelta {
+  file: string;
+  supported: boolean;
+  language?: string;
+  previous?: number;
+  current?: number;
+  delta?: number;
+  baseline?: boolean;
+}
+
+interface StateTransitionComplexity {
+  files: StateComplexityDelta[];
+  netDelta: number;
+}
+
+interface StateComplexityFile {
+  file: string;
+  supported: boolean;
+  language?: string;
+  current?: number;
+  recorded?: number;
+  delta?: number;
+  recordedDelta?: number;
+}
+
+export interface StateComplexityResult {
+  files: StateComplexityFile[];
+  netDelta: number;
+}
+
+export interface StateComplexitySummary {
+  files: number;
+  decisionPoints: number;
+  lastNetDelta: number;
 }
 
 export interface StateTransitionRecord {
@@ -39,7 +79,25 @@ export interface StateTransitionRecord {
   evidence?: string[];
   tags?: string[];
   kind: StateTransitionKind;
+  complexity?: StateTransitionComplexity;
   ts: number;
+}
+
+interface ComplexityLedgerValue {
+  file: string;
+  language: string;
+  count: number;
+  lastDelta: number;
+  ts: number;
+}
+
+interface PreparedComplexity {
+  record: StateTransitionComplexity;
+  updates: Array<{
+    key: string;
+    value: ComplexityLedgerValue;
+    expectedVersion: number;
+  }>;
 }
 
 interface StateHeadValue {
@@ -194,6 +252,34 @@ const runCommand = (
     }
   });
 
+const toComplexityRecord = (
+  value: unknown,
+): StateTransitionComplexity | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as { files?: unknown; netDelta?: unknown };
+  if (!Array.isArray(raw.files) || typeof raw.netDelta !== "number") {
+    return undefined;
+  }
+  const files: StateComplexityDelta[] = [];
+  for (const item of raw.files) {
+    if (!item || typeof item !== "object") continue;
+    const delta = item as Record<string, unknown>;
+    if (typeof delta.file !== "string" || typeof delta.supported !== "boolean") {
+      continue;
+    }
+    files.push({
+      file: delta.file,
+      supported: delta.supported,
+      ...(typeof delta.language === "string" ? { language: delta.language } : {}),
+      ...(typeof delta.previous === "number" ? { previous: delta.previous } : {}),
+      ...(typeof delta.current === "number" ? { current: delta.current } : {}),
+      ...(typeof delta.delta === "number" ? { delta: delta.delta } : {}),
+      ...(typeof delta.baseline === "boolean" ? { baseline: delta.baseline } : {}),
+    });
+  }
+  return { files, netDelta: raw.netDelta };
+};
+
 const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
   if (event.kind !== "transition") return undefined;
   const data = event.data as Record<string, unknown> | undefined;
@@ -207,6 +293,7 @@ const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
   const from = typeof data.from === "string" ? data.from : undefined;
   const evidence = toStringArray(data.evidence);
   const tags = toStringArray(data.tags);
+  const complexity = toComplexityRecord(data.complexity);
   if (!label || !to) return undefined;
   return {
     transitionId: event.id,
@@ -218,6 +305,7 @@ const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
     ...(evidence !== undefined ? { evidence } : {}),
     ...(tags !== undefined ? { tags } : {}),
     kind,
+    ...(complexity !== undefined ? { complexity } : {}),
     ts,
   };
 };
@@ -230,12 +318,25 @@ export class StateStore {
     return { ...value, version: entry.version };
   }
 
-  get(): { head: StateHead | null; goal: StateGoal | null } {
+  get(): {
+    head: StateHead | null;
+    goal: StateGoal | null;
+    complexity: StateComplexitySummary;
+  } {
     const entry = this.store.get(CURRENT_KEY);
     const head = entry ? this.toHead(entry) : null;
     const goalEntry = this.store.get(GOAL_KEY);
     const goal = goalEntry ? (goalEntry.value as StateGoal) : null;
-    return { head, goal };
+    const ledgers = this.complexityLedgers();
+    const lastComplexity = this.history({}).transitions
+      .filter((transition) => transition.complexity !== undefined)
+      .at(-1)?.complexity;
+    const complexity = {
+      files: ledgers.length,
+      decisionPoints: ledgers.reduce((total, ledger) => total + ledger.count, 0),
+      lastNetDelta: lastComplexity?.netDelta ?? 0,
+    };
+    return { head, goal, complexity };
   }
 
   getHead(): StateHead | null {
@@ -246,6 +347,7 @@ export class StateStore {
   async transition(
     input: StateTransitionInput,
     identity: MeshIdentity,
+    cwd = process.cwd(),
   ): Promise<{ event: MeshEvent; head: StateHead }> {
     const current = this.store.get(CURRENT_KEY);
     const expectedVersion = current ? current.version : 0;
@@ -259,6 +361,18 @@ export class StateStore {
       }
     }
     const ts = Date.now();
+    const preparedComplexity = input.complexity
+      ? this.prepareComplexity(input.complexity.files, cwd, ts)
+      : undefined;
+    if (
+      preparedComplexity &&
+      preparedComplexity.record.netDelta < 0 &&
+      !input.evidence?.some((command) => command.trim().length > 0)
+    ) {
+      throw new Error(
+        `State complexity reduction rejected: net decision-point delta is ${preparedComplexity.record.netDelta}. Reducing branches is also achievable by deleting error handling; attach at least one replayable behavior-preservation evidence command to separate abstraction from vandalism. state.verify() will replay it.`,
+      );
+    }
     const kind: StateTransitionKind = input.kind ?? "state";
     const data: Record<string, unknown> = {
       label: input.label,
@@ -269,6 +383,7 @@ export class StateStore {
       ...(input.from !== undefined ? { from: input.from } : {}),
       ...(input.evidence ? { evidence: input.evidence } : {}),
       ...(input.tags ? { tags: input.tags } : {}),
+      ...(preparedComplexity ? { complexity: preparedComplexity.record } : {}),
     };
     const event = await this.store.publish({
       topic: STATE_TOPIC,
@@ -277,6 +392,14 @@ export class StateStore {
       text: input.summary,
       data,
     });
+    for (const update of preparedComplexity?.updates ?? []) {
+      await this.store.put({
+        key: update.key,
+        value: update.value,
+        ifVersion: update.expectedVersion,
+        identity,
+      });
+    }
     const payload: StateHeadValue = {
       label: input.label,
       to: input.to,
@@ -340,7 +463,11 @@ export class StateStore {
     );
   }
 
-  history(input: { label?: string; limit?: number } = {}): {
+  history(input: {
+    label?: string;
+    limit?: number;
+    includeArchived?: boolean;
+  } = {}): {
     transitions: StateTransitionRecord[];
     labels: string[];
   } {
@@ -353,25 +480,154 @@ export class StateStore {
       const record = toRecord(event);
       if (record) records.push(record);
     }
+    let lastRepresentation = -1;
+    for (let index = records.length - 1; index >= 0; index--) {
+      if (records[index]?.kind === "representation") {
+        lastRepresentation = index;
+        break;
+      }
+    }
+    const visibleRecords =
+      input.includeArchived || lastRepresentation < 0
+        ? records
+        : records.slice(lastRepresentation);
+    const archiveBoundaryId =
+      input.includeArchived !== true && lastRepresentation > 0
+        ? records[lastRepresentation]?.transitionId
+        : undefined;
     const filtered = input.label
-      ? records.filter(
+      ? visibleRecords.filter(
           (record) =>
             record.label === input.label ||
             record.to === input.label ||
-            record.from === input.label,
+            (record.from === input.label &&
+              record.transitionId !== archiveBoundaryId),
         )
-      : records;
+      : visibleRecords;
     const limited =
       input.limit !== undefined && input.limit > 0
         ? filtered.slice(0, input.limit)
         : filtered;
     const labelSet = new Set<string>();
     for (const record of limited) {
-      if (record.from) labelSet.add(record.from);
+      if (record.from && record.transitionId !== archiveBoundaryId) {
+        labelSet.add(record.from);
+      }
       labelSet.add(record.to);
       labelSet.add(record.label);
     }
     return { transitions: limited, labels: [...labelSet] };
+  }
+
+  complexity(input: { files?: string[]; cwd: string }): StateComplexityResult {
+    const requestedFiles = input.files ?? this.complexityLedgers().map((entry) => entry.file);
+    const files: StateComplexityFile[] = [];
+    let netDelta = 0;
+    for (const file of this.normalizeComplexityFiles(requestedFiles, input.cwd)) {
+      const measured = countFileComplexity(path.resolve(input.cwd, file));
+      if (!measured) {
+        files.push({ file, supported: false });
+        continue;
+      }
+      const ledger = this.readComplexityLedger(file);
+      const delta = ledger ? measured.count - ledger.count : 0;
+      netDelta += delta;
+      files.push({
+        file,
+        supported: true,
+        language: measured.language,
+        current: measured.count,
+        ...(ledger
+          ? {
+              recorded: ledger.count,
+              delta,
+              recordedDelta: ledger.lastDelta,
+            }
+          : { delta: 0 }),
+      });
+    }
+    return { files, netDelta };
+  }
+
+  private prepareComplexity(
+    files: string[],
+    cwd: string,
+    ts: number,
+  ): PreparedComplexity {
+    const deltas: StateComplexityDelta[] = [];
+    const updates: PreparedComplexity["updates"] = [];
+    let netDelta = 0;
+    for (const file of this.normalizeComplexityFiles(files, cwd)) {
+      const measured = countFileComplexity(path.resolve(cwd, file));
+      if (!measured) {
+        deltas.push({ file, supported: false });
+        continue;
+      }
+      const entry = this.store.get(this.complexityKey(file));
+      const previous = entry ? (entry.value as ComplexityLedgerValue).count : undefined;
+      const delta = previous === undefined ? 0 : measured.count - previous;
+      netDelta += delta;
+      deltas.push({
+        file,
+        supported: true,
+        language: measured.language,
+        ...(previous !== undefined ? { previous } : {}),
+        current: measured.count,
+        delta,
+        baseline: previous === undefined,
+      });
+      updates.push({
+        key: this.complexityKey(file),
+        value: {
+          file,
+          language: measured.language,
+          count: measured.count,
+          lastDelta: delta,
+          ts,
+        },
+        expectedVersion: entry?.version ?? 0,
+      });
+    }
+    return { record: { files: deltas, netDelta }, updates };
+  }
+
+  private complexityLedgers(): ComplexityLedgerValue[] {
+    return this.store
+      .list(COMPLEXITY_KEY_PREFIX, this.store.maxReadEvents)
+      .map((entry) => entry.value as ComplexityLedgerValue)
+      .filter(
+        (value) =>
+          typeof value.file === "string" &&
+          typeof value.language === "string" &&
+          typeof value.count === "number" &&
+          typeof value.lastDelta === "number",
+      );
+  }
+
+  private readComplexityLedger(file: string): ComplexityLedgerValue | undefined {
+    const entry = this.store.get(this.complexityKey(file));
+    return entry ? (entry.value as ComplexityLedgerValue) : undefined;
+  }
+
+  private complexityKey(file: string): string {
+    return `${COMPLEXITY_KEY_PREFIX}${file}`;
+  }
+
+  private normalizeComplexityFiles(files: string[], cwd: string): string[] {
+    const normalized = new Set<string>();
+    for (const file of files) {
+      if (!file.trim()) continue;
+      const relative = path.relative(cwd, path.resolve(cwd, file));
+      if (
+        relative === ".." ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative)
+      ) {
+        throw new Error(`State complexity file must be inside the project cwd: ${file}`);
+      }
+      normalized.add(relative.split(path.sep).join("/"));
+    }
+    return [...normalized];
   }
 
   async goal(
@@ -432,6 +688,7 @@ export class StateStore {
 
   async verify(input: {
     labels?: string[];
+    includeArchived?: boolean;
     cwd: string;
     timeoutMs?: number;
     signal?: AbortSignal | undefined;
@@ -439,18 +696,25 @@ export class StateStore {
   }): Promise<{ results: VerifyResult[]; violated: boolean }> {
     let targets: StateTransitionRecord[];
     if (input.labels && input.labels.length > 0) {
-      const set = new Set(input.labels);
-      const { transitions } = this.history({});
-      targets = transitions.filter(
-        (record) =>
-          set.has(record.label) ||
-          set.has(record.to) ||
-          (record.from !== undefined && set.has(record.from)),
+      const matches = new Map<string, StateTransitionRecord>();
+      for (const label of input.labels) {
+        const { transitions } = this.history({
+          label,
+          includeArchived: input.includeArchived === true,
+        });
+        for (const transition of transitions) {
+          matches.set(transition.transitionId, transition);
+        }
+      }
+      targets = [...matches.values()].sort(
+        (left, right) => left.sequence - right.sequence,
       );
     } else {
       const head = this.getHead();
       if (!head) return { results: [], violated: false };
-      const { transitions } = this.history({});
+      const { transitions } = this.history({
+        includeArchived: input.includeArchived === true,
+      });
       const match = transitions.find(
         (record) => record.transitionId === head.transitionId,
       );

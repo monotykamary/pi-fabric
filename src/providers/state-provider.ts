@@ -37,7 +37,19 @@ const transitionSchema = {
       type: "string",
       enum: ["state", "representation"],
       description:
-        "Default \"state\". \"representation\" marks a Schema-style revision of the world model itself.",
+        "Default \"state\". \"representation\" revises the state schema and archives all earlier labels.",
+    },
+    complexity: {
+      type: "object",
+      properties: {
+        files: {
+          type: "array",
+          items: { type: "string" },
+          description: "Project-relative TS/JS/TSX/JSX files whose decision points this transition changes.",
+        },
+      },
+      required: ["files"],
+      additionalProperties: false,
     },
     force: {
       type: "boolean",
@@ -57,6 +69,10 @@ const verifySchema = {
       description:
         "Verify transitions matching these labels (by transition.label, from, or to). Omit to verify the current head.",
     },
+    includeArchived: {
+      type: "boolean",
+      description: "Also replay evidence from labels before the last representation transition.",
+    },
     timeoutMs: { type: "number", minimum: 1, description: "Per-command timeout (default 30s)" },
   },
   additionalProperties: false,
@@ -67,6 +83,22 @@ const historySchema = {
   properties: {
     label: { type: "string", description: "Filter transitions by label, from, or to" },
     limit: { type: "number", minimum: 1 },
+    includeArchived: {
+      type: "boolean",
+      description: "Reveal labels before the last representation transition.",
+    },
+  },
+  additionalProperties: false,
+};
+
+const complexitySchema = {
+  type: "object",
+  properties: {
+    files: {
+      type: "array",
+      items: { type: "string" },
+      description: "Project-relative files to count. Omit to inspect all recorded files.",
+    },
   },
   additionalProperties: false,
 };
@@ -103,15 +135,22 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "get",
-    description: "Return the current state head, goal, and recent labels",
+    description: "Return the current state head, goal, compact complexity summary, and recent labels",
     inputSchema: emptySchema,
     risk: "read",
     namespace: "state",
   },
   {
     name: "history",
-    description: "Fold the transition log into an ordered label graph with optional label filter",
+    description: "Fold the transition log from its representation archive boundary into an ordered label graph",
     inputSchema: historySchema,
+    risk: "read",
+    namespace: "state",
+  },
+  {
+    name: "complexity",
+    description: "Count current structural decision points and compare them with the complexity ledger",
+    inputSchema: complexitySchema,
     risk: "read",
     namespace: "state",
   },
@@ -194,6 +233,14 @@ export class StateProvider implements FabricProvider {
           : undefined;
         const kind: StateTransitionKind | undefined =
           args.kind === "representation" || args.kind === "state" ? args.kind : undefined;
+        const complexityFiles =
+          typeof args.complexity === "object" &&
+          args.complexity !== null &&
+          Array.isArray((args.complexity as { files?: unknown }).files)
+            ? (args.complexity as { files: unknown[] }).files.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : undefined;
         const force = args.force === true;
         const { event, head } = await this.#store.transition(
           {
@@ -204,9 +251,11 @@ export class StateProvider implements FabricProvider {
             ...(evidence ? { evidence } : {}),
             ...(tags ? { tags } : {}),
             ...(kind ? { kind } : {}),
+            ...(complexityFiles ? { complexity: { files: complexityFiles } } : {}),
             force,
           },
           this.#identity,
+          context.cwd,
         );
         context.activity?.({
           type: "entity",
@@ -218,16 +267,27 @@ export class StateProvider implements FabricProvider {
         return { event, head };
       }
       case "get": {
-        const { head, goal } = this.#store.get();
+        const { head, goal, complexity } = this.#store.get();
         const { labels } = this.#store.history({ limit: 20 });
-        return { head, goal, recentLabels: labels };
+        return { head, goal, complexity, recentLabels: labels };
       }
       case "history": {
         const label = typeof args.label === "string" ? args.label : undefined;
         const limit = typeof args.limit === "number" ? args.limit : undefined;
+        const includeArchived = args.includeArchived === true;
         return this.#store.history({
           ...(label !== undefined ? { label } : {}),
           ...(limit !== undefined ? { limit } : {}),
+          includeArchived,
+        });
+      }
+      case "complexity": {
+        const files = Array.isArray(args.files)
+          ? args.files.filter((item): item is string => typeof item === "string")
+          : undefined;
+        return this.#store.complexity({
+          ...(files ? { files } : {}),
+          cwd: context.cwd,
         });
       }
       case "verify": {
@@ -235,6 +295,7 @@ export class StateProvider implements FabricProvider {
           ? args.labels.filter((item): item is string => typeof item === "string")
           : undefined;
         const timeoutMs = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
+        const includeArchived = args.includeArchived === true;
         context.activity?.({
           type: "entity",
           id: STATE_ENTITY_ID,
@@ -243,6 +304,7 @@ export class StateProvider implements FabricProvider {
         });
         const result = await this.#store.verify({
           ...(labels ? { labels } : {}),
+          includeArchived,
           cwd: context.cwd,
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(context.signal ? { signal: context.signal } : {}),
