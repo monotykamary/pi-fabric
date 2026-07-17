@@ -16,6 +16,7 @@ import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { McpProvider } from "./providers/mcp-provider.js";
 import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
+import { StateProvider } from "./providers/state-provider.js";
 import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricProvider,
@@ -142,6 +143,7 @@ export class FabricState {
     );
     if (this.#config.mesh.enabled) {
       this.#registry.register(new MeshProvider(this.#mesh, identity));
+      this.#registry.register(new StateProvider(this.#mesh, identity));
     }
     this.#subagents = new SubagentManager(context.cwd, this.#config.subagents, {
       fullCodeMode: this.#config.fullCodeMode,
