@@ -47,19 +47,26 @@ export const createDashboardSnapshot = (
 ): FabricDashboardSnapshot => {
   const runs = state.activity.runs();
   const agentRecords = state.subagents.list();
+  const agentLinks = runs
+    .flatMap((run) => run.calls.map((call) => ({ runId: run.id, call })))
+    .sort((left, right) => {
+      const leftLaunch = left.call.ref === "agents.spawn" || left.call.ref === "agents.run";
+      const rightLaunch = right.call.ref === "agents.spawn" || right.call.ref === "agents.run";
+      if (leftLaunch !== rightLaunch) return leftLaunch ? -1 : 1;
+      return left.call.startedAt - right.call.startedAt;
+    });
   const agentFromRecord = (
     record: SubagentRunRecord | SubagentHandleInfo,
     parentId?: string,
+    parent?: FabricUiAgent,
   ): FabricUiAgent => {
     const linked = parentId
       ? undefined
-      : runs
-          .flatMap((run) => run.calls.map((call) => ({ runId: run.id, call })))
-          .find(
-            ({ call }) =>
-              call.entityId &&
-              (record.id.startsWith(call.entityId) || call.entityId.startsWith(record.id)),
-          );
+      : agentLinks.find(
+          ({ call }) =>
+            call.entityId &&
+            (record.id.startsWith(call.entityId) || call.entityId.startsWith(record.id)),
+        );
     const base: FabricUiAgent = {
       id: record.id,
       name: record.name,
@@ -74,8 +81,12 @@ export const createDashboardSnapshot = (
       ...(record.actorId ? { actorId: record.actorId } : {}),
       ...(record.actorName ? { actorName: record.actorName } : {}),
       ...(parentId ? { parentId } : {}),
-      ...(linked ? { runId: linked.runId } : {}),
-      ...(linked?.call.phaseId ? { phaseId: linked.call.phaseId } : {}),
+      ...(linked ? { runId: linked.runId } : parent?.runId ? { runId: parent.runId } : {}),
+      ...(linked?.call.phaseId
+        ? { phaseId: linked.call.phaseId }
+        : parent?.phaseId
+          ? { phaseId: parent.phaseId }
+          : {}),
     };
     if (!isRunRecord(record)) return base;
     return {
@@ -94,10 +105,11 @@ export const createDashboardSnapshot = (
   };
   const allAgents: FabricUiAgent[] = [];
   for (const record of agentRecords) {
-    allAgents.push(agentFromRecord(record));
+    const parent = agentFromRecord(record);
+    allAgents.push(parent);
     if (isRunRecord(record) && record.nestedAgents) {
       for (const nested of record.nestedAgents) {
-        allAgents.push(agentFromRecord(nested, record.id));
+        allAgents.push(agentFromRecord(nested, record.id, parent));
       }
     }
   }
@@ -112,6 +124,19 @@ export const createDashboardSnapshot = (
     };
   });
   const agents = allAgents.filter((agent) => !agent.actorId);
+  const activeRunIds = new Set(
+    agents
+      .filter((agent) => agent.runId && activeStatuses.has(agent.status))
+      .map((agent) => agent.runId as string),
+  );
+  const orderedRuns = runs
+    .map((run, index) => ({ run, index }))
+    .sort((left, right) => {
+      const leftActive = activeRunIds.has(left.run.id) ? 1 : 0;
+      const rightActive = activeRunIds.has(right.run.id) ? 1 : 0;
+      return rightActive - leftActive || left.index - right.index;
+    })
+    .map(({ run }) => run);
 
   const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
   const stateEntries = meshEntries
@@ -126,7 +151,7 @@ export const createDashboardSnapshot = (
 
   return {
     now: Date.now(),
-    runs,
+    runs: orderedRuns,
     widgetDismissedAt: state.widgetDismissedAt,
     globalActors: state.globalActors.list(),
     agents: agents.sort((left, right) => {

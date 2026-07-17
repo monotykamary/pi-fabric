@@ -116,6 +116,7 @@ const snapshot = (): FabricDashboardSnapshot => {
         turns: 2,
         toolCalls: 6,
         usage: { input: 4000, output: 1200, cacheRead: 0, cacheWrite: 0, cost: 0.04 },
+        runId: "run-1",
         phaseId: "audit",
       },
     ],
@@ -282,12 +283,15 @@ describe("Fabric dynamic UI", () => {
     try {
       const overview = dashboard.render(120);
       const overviewText = overview.join("\n");
-      expect(overviewText).toContain("Phases");
+      expect(overviewText).toContain("Activity");
       expect(overviewText).toContain("Audit");
       expect(overviewText).toContain("security-reviewer");
       expect(overviewText).toContain("claude-opus-4-8");
       expect(overview.every((line) => visibleWidth(line) <= 120)).toBe(true);
       expect(dashboard.render(60).every((line) => visibleWidth(line) <= 60)).toBe(true);
+      const tooNarrow = dashboard.render(20);
+      expect(tooNarrow.join("\n")).toContain("too narrow");
+      expect(tooNarrow.every((line) => visibleWidth(line) <= 20)).toBe(true);
       const ansiDashboard = new FabricDashboard(tui, ansiTheme, snapshot, vi.fn());
       try {
         expect(ansiDashboard.render(96).every((line) => visibleWidth(line) <= 96)).toBe(true);
@@ -308,12 +312,10 @@ describe("Fabric dynamic UI", () => {
   });
 
   const openActorDetail = (dashboard: FabricDashboard): void => {
-    // Phases pane: move from the auto-selected "audit" phase to the session panel.
+    // Activity pane: move from the auto-selected "audit" phase to session state.
     dashboard.handleInput("j");
-    // Switch to the entities pane and select the actor (index 1, after the
-    // unlinked agent), then open its detail.
+    // The run-owned agent stays in its phase, so the actor is the first session entity.
     dashboard.handleInput("l");
-    dashboard.handleInput("j");
     dashboard.handleInput("\r");
   };
 
@@ -603,6 +605,165 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
+  it("shows active and completed run-owned work in an Run activity panel", () => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.events = [];
+    run.status = "completed";
+    run.finishedAt = current.now - 1_000;
+    for (const phase of run.phases) phase.status = "completed";
+    run.items = [];
+    run.calls = [
+      {
+        id: "spawn-active",
+        ref: "agents.spawn",
+        label: "background-active",
+        kind: "agent",
+        status: "completed",
+        entityId: "agent-active",
+        startedAt: current.now - 2_000,
+        updatedAt: current.now - 1_900,
+        finishedAt: current.now - 1_900,
+      },
+      {
+        id: "spawn-done",
+        ref: "agents.spawn",
+        label: "background-done",
+        kind: "agent",
+        status: "completed",
+        entityId: "agent-done",
+        startedAt: current.now - 3_000,
+        updatedAt: current.now - 2_900,
+        finishedAt: current.now - 2_900,
+      },
+    ];
+    const { phaseId: _phaseId, ...unphasedAgent } = snapshot().agents[0]!;
+    current.agents = [
+      {
+        ...unphasedAgent,
+        id: "agent-active",
+        name: "background-active",
+        status: "running",
+        runId: run.id,
+      },
+      {
+        ...unphasedAgent,
+        id: "agent-done",
+        name: "background-done",
+        status: "completed",
+        runId: run.id,
+      },
+    ];
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      expect(dashboard.render(120).join("\n")).toContain("Run activity");
+      dashboard.handleInput("l");
+      const all = dashboard.render(120).join("\n");
+      expect(all).toContain("background-active");
+      expect(all).toContain("background-done");
+      expect(all).toMatch(/Run activity\s+1\/2/);
+
+      dashboard.handleInput("f");
+      const active = dashboard.render(120).join("\n");
+      expect(active).toContain("background-active");
+      expect(active).not.toContain("background-done");
+
+      dashboard.handleInput("f");
+      const completed = dashboard.render(120).join("\n");
+      expect(completed).not.toContain("background-active");
+      expect(completed).toContain("background-done");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("keeps the selected run stable when newer activity reorders the run list", () => {
+    const current = snapshot();
+    const newest = current.runs[0]!;
+    const older = structuredClone(newest);
+    older.id = "run-older";
+    older.name = "Older retained run";
+    older.updatedAt -= 10_000;
+    current.runs = [newest, older];
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("[");
+      expect(dashboard.render(120).join("\n")).toContain("Older retained run");
+
+      const later = structuredClone(newest);
+      later.id = "run-later";
+      later.name = "Later activity";
+      current.runs = [later, newest, older];
+      const afterRefresh = dashboard.render(120).join("\n");
+      expect(afterRefresh).toContain("Older retained run");
+      expect(afterRefresh).not.toContain("Fabric · Later activity");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("keeps an open detail visible when its status leaves the current filter", () => {
+    const current = snapshot();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput("f");
+      dashboard.handleInput("\r");
+      expect(dashboard.render(120).join("\n")).toContain("Review the migration");
+
+      current.agents[0]!.status = "completed";
+      const completedDetail = dashboard.render(120).join("\n");
+      expect(completedDetail).toContain("Review the migration");
+      expect(completedDetail).toContain("One-shot agent");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("advertises and opens actor controls directly from the overview", () => {
+    const current = snapshot();
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+      { modelSource: actorModelSource, onActorModel: vi.fn(), onActorThinking: vi.fn() },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("j");
+      dashboard.handleInput("l");
+      const overview = dashboard.render(120).join("\n");
+      expect(overview).toContain("actor actions: m model · e thinking");
+
+      dashboard.handleInput("m");
+      expect(dashboard.render(120).join("\n")).toContain('Model for actor "advisor"');
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
 });
 
 describe("Fabric dashboard global actors and instructions editor", () => {

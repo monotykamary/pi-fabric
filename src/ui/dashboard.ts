@@ -30,6 +30,8 @@ import type {
 } from "./types.js";
 import { isActiveStatus } from "./types.js";
 
+type PanelKind = "phase" | "unphased" | "session";
+
 interface PhasePanel {
   id: string;
   name: string;
@@ -37,7 +39,7 @@ interface PhasePanel {
   completed: number;
   total: number;
   phase?: FabricActivityPhase;
-  session: boolean;
+  kind: PanelKind;
 }
 
 type Entity =
@@ -93,46 +95,8 @@ const editorTheme = (theme: Theme): EditorTheme => ({
   },
 });
 
-const phaseWork = (
-  run: FabricActivityRun,
-  phaseId: string,
-): Array<FabricActivityCall | FabricActivityItem> => [
-  ...run.calls.filter((call) => call.phaseId === phaseId),
-  ...run.items.filter((item) => item.phaseId === phaseId),
-];
-
-const phasePanels = (snapshot: FabricDashboardSnapshot, run: FabricActivityRun | undefined): PhasePanel[] => {
-  const panels: PhasePanel[] =
-    run?.phases.map((phase) => {
-      const work = phaseWork(run, phase.id);
-      return {
-        id: phase.id,
-        name: phase.name,
-        status: phase.status,
-        completed: work.filter((entry) => entry.status === "completed").length,
-        total: Math.max(phase.total ?? 0, work.length),
-        phase,
-        session: false,
-      };
-    }) ?? [];
-  const sessionTotal = snapshot.actors.length + snapshot.state.length;
-  if (sessionTotal > 0 || panels.length === 0) {
-    panels.push({
-      id: "__fabric_session",
-      name: "Actors & shared state",
-      status: snapshot.actors.some((actor) => actor.lastError)
-        ? "failed"
-        : snapshot.actors.some((actor) => isActiveStatus(actor.status)) ||
-            snapshot.state.some((entry) => isActiveStatus(entry.status))
-          ? "running"
-          : "idle",
-      completed: snapshot.actors.filter((actor) => actor.status === "stopped").length,
-      total: sessionTotal,
-      session: true,
-    });
-  }
-  return panels;
-};
+const UNPHASED_PANEL_ID = "__fabric_unphased";
+const SESSION_PANEL_ID = "__fabric_session";
 
 const linkedAgent = (call: FabricActivityCall, agent: FabricUiAgent): boolean =>
   Boolean(
@@ -140,12 +104,32 @@ const linkedAgent = (call: FabricActivityCall, agent: FabricUiAgent): boolean =>
       (agent.id.startsWith(call.entityId) || call.entityId.startsWith(agent.id)),
   );
 
+const callsForPanel = (
+  run: FabricActivityRun | undefined,
+  panel: PhasePanel,
+): FabricActivityCall[] => {
+  if (!run || panel.kind === "session") return [];
+  return run.calls.filter((call) =>
+    panel.kind === "unphased" ? !call.phaseId : call.phaseId === panel.id,
+  );
+};
+
+const itemsForPanel = (
+  run: FabricActivityRun | undefined,
+  panel: PhasePanel,
+): FabricActivityItem[] => {
+  if (!run || panel.kind === "session") return [];
+  return run.items.filter((item) =>
+    panel.kind === "unphased" ? !item.phaseId : item.phaseId === panel.id,
+  );
+};
+
 const entitiesFor = (
   snapshot: FabricDashboardSnapshot,
   run: FabricActivityRun | undefined,
   panel: PhasePanel | undefined,
 ): Entity[] => {
-  if (!panel || panel.session) {
+  if (!panel || panel.kind === "session") {
     const actors: Entity[] = snapshot.actors.map((actor) => ({
       id: `actor:${actor.id}`,
       kind: "actor",
@@ -161,10 +145,7 @@ const entitiesFor = (
       value: entry,
     }));
     const unlinkedAgents: Entity[] = snapshot.agents
-      .filter(
-        (agent) =>
-          agent.runId !== run?.id && isActiveStatus(agent.status),
-      )
+      .filter((agent) => agent.runId !== run?.id && isActiveStatus(agent.status))
       .map((agent) => ({
         id: `agent:${agent.id}`,
         kind: "agent",
@@ -182,13 +163,14 @@ const entitiesFor = (
     return [...unlinkedAgents, ...actors, ...globalActors, ...state];
   }
 
-  const calls = run?.calls.filter((call) => call.phaseId === panel.id) ?? [];
+  const calls = callsForPanel(run, panel);
   const linkedAgents: Entity[] = snapshot.agents
-    .filter(
-      (agent) =>
-        (agent.runId === run?.id && agent.phaseId === panel.id) ||
-        calls.some((call) => linkedAgent(call, agent)),
-    )
+    .filter((agent) => {
+      const ownedByPanel =
+        agent.runId === run?.id &&
+        (panel.kind === "unphased" ? !agent.phaseId : agent.phaseId === panel.id);
+      return ownedByPanel || (!agent.runId && calls.some((call) => linkedAgent(call, agent)));
+    })
     .map((agent) => ({
       id: `agent:${agent.id}`,
       kind: "agent",
@@ -209,17 +191,100 @@ const entitiesFor = (
       status: call.status,
       value: call,
     }));
-  const items: Entity[] =
-    run?.items
-      .filter((item) => item.phaseId === panel.id)
-      .map((item) => ({
-        id: `item:${item.id}`,
-        kind: "item" as const,
-        label: item.label,
-        status: item.status,
-        value: item,
-      })) ?? [];
+  const items: Entity[] = itemsForPanel(run, panel).map((item) => ({
+    id: `item:${item.id}`,
+    kind: "item",
+    label: item.label,
+    status: item.status,
+    value: item,
+  }));
   return [...linkedAgents, ...visibleCalls, ...items];
+};
+
+const panelStatus = (entities: Entity[], fallback: string): string => {
+  if (entities.some((entity) => ["failed", "timed_out", "error"].includes(entity.status))) {
+    return "failed";
+  }
+  if (entities.some((entity) => entity.status === "blocked")) return "blocked";
+  if (entities.some((entity) => isActiveStatus(entity.status))) return "running";
+  if (
+    entities.length > 0 &&
+    entities.every((entity) =>
+      ["completed", "done", "stopped", "cancelled", "global", "idle", "state"].includes(
+        entity.status,
+      ),
+    )
+  ) {
+    return "completed";
+  }
+  return fallback;
+};
+
+const withPanelProgress = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+  panel: PhasePanel,
+): PhasePanel => {
+  const entities = entitiesFor(snapshot, run, panel);
+  const status =
+    panel.kind === "session"
+      ? entities.some((entity) => ["failed", "timed_out", "error"].includes(entity.status))
+        ? "failed"
+        : entities.some((entity) => isActiveStatus(entity.status))
+          ? "running"
+          : "idle"
+      : panelStatus(entities, panel.status);
+  return {
+    ...panel,
+    status,
+    completed: entities.filter((entity) => entity.status === "completed" || entity.status === "done")
+      .length,
+    total: Math.max(panel.total, entities.length),
+  };
+};
+
+const phasePanels = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+): PhasePanel[] => {
+  const panels: PhasePanel[] = [];
+
+  if (run) {
+    const runActivity: PhasePanel = {
+      id: UNPHASED_PANEL_ID,
+      name: "Run activity",
+      status: run.status,
+      completed: 0,
+      total: 0,
+      kind: "unphased",
+    };
+    if (entitiesFor(snapshot, run, runActivity).length > 0) panels.push(runActivity);
+  }
+
+  panels.push(
+    ...(run?.phases.map((phase) => ({
+      id: phase.id,
+      name: phase.name,
+      status: phase.status,
+      completed: 0,
+      total: phase.total ?? 0,
+      phase,
+      kind: "phase" as const,
+    })) ?? []),
+  );
+
+  const session: PhasePanel = {
+    id: SESSION_PANEL_ID,
+    name: "Actors & shared state",
+    status: "idle",
+    completed: 0,
+    total: 0,
+    kind: "session",
+  };
+  const sessionEntities = entitiesFor(snapshot, run, session);
+  if (sessionEntities.length > 0 || panels.length === 0) panels.push(session);
+
+  return panels.map((panel) => withPanelProgress(snapshot, run, panel));
 };
 
 const matchesFilter = (status: string, filter: StatusFilter): boolean => {
@@ -309,6 +374,9 @@ export class FabricDashboard implements Component, Focusable {
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
+  private selectedRunId: string | undefined;
+  private runSelectionTouched = false;
+  private selectedEntityId: string | undefined;
   private filter: StatusFilter = "all";
   private phaseSelectionTouched = false;
   private detailId: string | undefined;
@@ -405,13 +473,13 @@ export class FabricDashboard implements Component, Focusable {
     }
 
     const snapshot = this.snapshot();
-    const run = snapshot.runs[this.runIndex];
+    const run = this.selectRun(snapshot);
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const entities = entitiesFor(snapshot, run, panel).filter((entity) =>
-      matchesFilter(entity.status, this.filter),
-    );
+    const allEntities = entitiesFor(snapshot, run, panel);
+    const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
+    this.syncEntitySelection(entities);
 
     if (this.detailId) {
       if (
@@ -429,22 +497,22 @@ export class FabricDashboard implements Component, Focusable {
       } else if (matchesKey(data, Key.home) || data === "g") {
         this.detailScroll = 0;
       } else if (data === "m") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
           this.openModelPicker(detail);
         }
       } else if (data === "e") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
           this.openThinkingPicker(detail);
         }
       } else if (data === "v") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
           this.openEventsPicker(detail);
         }
       } else if (data === "c") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (
           detail &&
           detail.kind === "actor" &&
@@ -454,12 +522,12 @@ export class FabricDashboard implements Component, Focusable {
           this.onClearMessages(detail.value.id);
         }
       } else if (data === "i") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && (detail.kind === "actor" || detail.kind === "globalActor")) {
           this.openInstructionsEditor(detail);
         }
       } else if (data === "x") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (
           detail &&
           detail.kind === "actor" &&
@@ -469,12 +537,12 @@ export class FabricDashboard implements Component, Focusable {
           this.onExportActor(detail.value.id);
         }
       } else if (data === "p") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "globalActor" && this.onImportActor) {
           this.onImportActor(detail.value.id);
         }
       } else if (data === "d") {
-        const detail = entities.find((entity) => entity.id === this.detailId);
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "globalActor" && this.onRemoveGlobalActor) {
           this.onRemoveGlobalActor(detail.value.id);
         }
@@ -509,6 +577,23 @@ export class FabricDashboard implements Component, Focusable {
       } else {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
+    } else if (["m", "e", "v", "i"].includes(data) && this.pane === "entities") {
+      const selected = entities[this.entityIndex];
+      if (selected) {
+        if (data === "m" && selected.kind === "actor" && selected.status !== "stopped") {
+          this.detailId = selected.id;
+          this.openModelPicker(selected);
+        } else if (data === "e" && selected.kind === "actor" && selected.status !== "stopped") {
+          this.detailId = selected.id;
+          this.openThinkingPicker(selected);
+        } else if (data === "v" && selected.kind === "actor" && selected.status !== "stopped") {
+          this.detailId = selected.id;
+          this.openEventsPicker(selected);
+        } else if (data === "i" && (selected.kind === "actor" || selected.kind === "globalActor")) {
+          this.detailId = selected.id;
+          this.openInstructionsEditor(selected);
+        }
+      }
     } else if (matchesKey(data, Key.enter)) {
       if (this.pane === "phases") {
         this.pane = "entities";
@@ -522,9 +607,13 @@ export class FabricDashboard implements Component, Focusable {
       this.entityIndex = 0;
     } else if (data === "[") {
       this.runIndex = Math.min(Math.max(0, snapshot.runs.length - 1), this.runIndex + 1);
+      this.selectedRunId = snapshot.runs[this.runIndex]?.id;
+      this.runSelectionTouched = true;
       this.resetSelection();
     } else if (data === "]") {
       this.runIndex = Math.max(0, this.runIndex - 1);
+      this.selectedRunId = snapshot.runs[this.runIndex]?.id;
+      this.runSelectionTouched = true;
       this.resetSelection();
     } else if (data === "G") {
       if (this.pane === "phases") {
@@ -536,6 +625,9 @@ export class FabricDashboard implements Component, Focusable {
         this.phaseIndex = 0;
         this.phaseSelectionTouched = true;
       } else this.entityIndex = 0;
+    }
+    if (this.pane === "entities") {
+      this.selectedEntityId = entities[this.entityIndex]?.id;
     }
     this.tui.requestRender();
   }
@@ -554,17 +646,15 @@ export class FabricDashboard implements Component, Focusable {
       return this.renderPicker(width);
     }
     const snapshot = this.snapshot();
-    this.runIndex = Math.max(0, Math.min(this.runIndex, Math.max(0, snapshot.runs.length - 1)));
-    const run = snapshot.runs[this.runIndex];
+    const run = this.selectRun(snapshot);
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const entities = entitiesFor(snapshot, run, panel).filter((entity) =>
-      matchesFilter(entity.status, this.filter),
-    );
-    this.entityIndex = Math.max(0, Math.min(this.entityIndex, Math.max(0, entities.length - 1)));
+    const allEntities = entitiesFor(snapshot, run, panel);
+    const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
+    this.syncEntitySelection(entities);
     if (this.detailId) {
-      const detail = entities.find((entity) => entity.id === this.detailId);
+      const detail = allEntities.find((entity) => entity.id === this.detailId);
       if (detail) return this.renderDetail(width, snapshot, detail);
       this.detailId = undefined;
     }
@@ -745,17 +835,23 @@ export class FabricDashboard implements Component, Focusable {
     entities: Entity[],
   ): string[] {
     if (width < 24) {
-      return [truncateToWidth(`Fabric · ${run?.name ?? "session"}`, width)];
+      return [truncateToWidth("too narrow · need 24 cols", width)];
     }
     const innerWidth = width - 2;
     const lines: string[] = [];
     lines.push(this.topBorder(width, `Fabric · ${run?.name ?? "session"}`));
 
-    const activeAgents = snapshot.agents.filter((agent) => isActiveStatus(agent.status)).length;
-    const elapsed = run ? formatDuration((run.finishedAt ?? snapshot.now) - run.startedAt) : undefined;
+    const runAgents = run
+      ? snapshot.agents.filter((agent) => agent.runId === run.id)
+      : snapshot.agents;
+    const activeAgents = runAgents.filter((agent) => isActiveStatus(agent.status)).length;
+    const hasDetachedWork = activeAgents > 0;
+    const elapsed = run
+      ? formatDuration(((hasDetachedWork ? snapshot.now : run.finishedAt) ?? snapshot.now) - run.startedAt)
+      : undefined;
     const summary = [
       run?.status,
-      `${activeAgents}/${snapshot.agents.length} agents active`,
+      `${activeAgents}/${runAgents.length} run agents active`,
       `${snapshot.actors.length} actors`,
       tokensFor(snapshot, run) > 0
         ? `${formatTokens(tokensFor(snapshot, run))} tok`
@@ -864,12 +960,31 @@ export class FabricDashboard implements Component, Focusable {
         width,
         this.theme.fg(
           "dim",
-          `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · [ ] runs · esc close`,
+          `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · [ older · ] newer · esc close`,
         ),
       ),
     );
+    const selectedEntity = entities[this.entityIndex];
+    if (this.pane === "entities" && selectedEntity) {
+      lines.push(
+        this.row(width, this.theme.fg("muted", `  ${this.overviewActionHint(selectedEntity)}`)),
+      );
+    }
     lines.push(this.bottomBorder(width));
     return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  private overviewActionHint(entity: Entity): string {
+    if (entity.kind === "actor" && entity.status !== "stopped") {
+      return "actor actions: m model · e thinking · v events · i instructions · enter details";
+    }
+    if (entity.kind === "globalActor") {
+      return "template actions: i instructions · enter details";
+    }
+    if (entity.kind === "agent") {
+      return "enter details · one-shot model and thinking are fixed at spawn";
+    }
+    return "enter details";
   }
 
   private renderPhasePanel(panels: PhasePanel[], width: number, height: number): string[] {
@@ -877,7 +992,7 @@ export class FabricDashboard implements Component, Focusable {
       truncateToWidth(
         `${this.pane === "phases" ? this.theme.fg("accent", "▸ ") : "  "}${this.theme.fg(
           "accent",
-          "Phases",
+          "Activity",
         )}`,
         width,
       ),
@@ -948,7 +1063,8 @@ export class FabricDashboard implements Component, Focusable {
       lines.push(truncateToWidth(line, width, ""));
     }
     if (entities.length === 0 && available > 0) {
-      lines.push(this.theme.fg("dim", "  (no matching activity)"));
+      const label = this.filter === "all" ? "activity" : `${this.filter} activity`;
+      lines.push(this.theme.fg("dim", `  (no ${label} in this group; press f to change filter)`));
     }
     while (lines.length < height) lines.push("");
     return lines.slice(0, height);
@@ -961,55 +1077,53 @@ export class FabricDashboard implements Component, Focusable {
   ): string[] {
     if (width < 24) return [truncateToWidth(entity.label, width)];
     const innerWidth = width - 2;
+    const actionLines = wrapPlainText(this.detailActionHint(entity), Math.max(1, innerWidth - 2), 3);
     const lines = [this.topBorder(width, `${entity.kind} · ${entity.label}`)];
     const content = this.detailLines(entity, innerWidth, snapshot.now);
-    const maxBody = Math.max(8, Math.min(24, (process.stdout.rows ?? 28) - 7));
+    const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
+    const maxBody = Math.max(8, Math.min(24, terminalRows - 8 - actionLines.length));
     const maxScroll = Math.max(0, content.length - maxBody);
     this.detailScroll = Math.max(0, Math.min(this.detailScroll, maxScroll));
     const visible = content.slice(this.detailScroll, this.detailScroll + maxBody);
     for (const line of visible) lines.push(this.row(width, line));
     while (lines.length < maxBody + 1) lines.push(this.row(width, ""));
     lines.push(this.middleBorder(width));
-    const actorModelHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.modelSource
-        ? " · m model"
+    const range =
+      content.length > maxBody
+        ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}`
         : "";
-    const actorThinkingHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.onActorThinking
-        ? " · e thinking"
-        : "";
-    const actorEventsHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.onActorEvents
-        ? " · v events"
-        : "";
-    const actorClearHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.onClearMessages
-        ? " · c clear"
-        : "";
-    const actorInstructionsHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.onActorInstructions
-        ? " · i instructions"
-        : "";
-    const actorExportHint =
-      entity.kind === "actor" && entity.status !== "stopped" && this.onExportActor
-        ? " · x export→global"
-        : "";
-    const globalInstructionsHint =
-      entity.kind === "globalActor" && this.onGlobalInstructions ? " · i instructions" : "";
-    const globalImportHint = entity.kind === "globalActor" && this.onImportActor ? " · p import" : "";
-    const globalDeleteHint =
-      entity.kind === "globalActor" && this.onRemoveGlobalActor ? " · d delete" : "";
-    lines.push(
-      this.row(
-        width,
-        this.theme.fg(
-          "dim",
-          `j/k scroll · esc back${content.length > maxBody ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}` : ""}${actorModelHint}${actorThinkingHint}${actorEventsHint}${actorClearHint}${actorInstructionsHint}${actorExportHint}${globalInstructionsHint}${globalImportHint}${globalDeleteHint}`,
-        ),
-      ),
-    );
+    lines.push(this.row(width, this.theme.fg("dim", `↑↓/jk scroll · esc back${range}`)));
+    for (const actionLine of actionLines) {
+      lines.push(this.row(width, this.theme.fg("muted", `  ${actionLine}`)));
+    }
     lines.push(this.bottomBorder(width));
     return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  private detailActionHint(entity: Entity): string {
+    if (entity.kind === "agent") {
+      return "One-shot agent: model and thinking are fixed at spawn. Use a persistent actor for editable runtime settings.";
+    }
+    if (entity.kind === "actor" && entity.status !== "stopped") {
+      const actions = [
+        this.modelSource && this.onActorModel ? "m model" : undefined,
+        this.onActorThinking ? "e thinking" : undefined,
+        this.onActorEvents ? "v events" : undefined,
+        this.onClearMessages ? "c clear mailbox" : undefined,
+        this.onActorInstructions ? "i instructions" : undefined,
+        this.onExportActor ? "x export→global" : undefined,
+      ].filter((value): value is string => Boolean(value));
+      return actions.length > 0 ? `Actor actions: ${actions.join(" · ")}` : "Actor settings are read-only in this session.";
+    }
+    if (entity.kind === "globalActor") {
+      const actions = [
+        this.onGlobalInstructions ? "i instructions" : undefined,
+        this.onImportActor ? "p import" : undefined,
+        this.onRemoveGlobalActor ? "d delete" : undefined,
+      ].filter((value): value is string => Boolean(value));
+      return actions.length > 0 ? `Template actions: ${actions.join(" · ")}` : "Global template is read-only in this session.";
+    }
+    return "Read-only detail.";
   }
 
   private detailLines(entity: Entity, width: number, now: number): string[] {
@@ -1044,8 +1158,10 @@ export class FabricDashboard implements Component, Focusable {
     } else if (entity.kind === "actor") {
       const actor = entity.value;
       field("ID", actor.id);
-      field("Model", actor.model ?? actor.worker?.model);
-      field("Thinking", actor.thinking ?? actor.worker?.thinking);
+      field("Model override", actor.model ?? "inherit");
+      field("Active worker model", actor.worker?.model);
+      field("Thinking override", actor.thinking ?? "inherit");
+      field("Active worker thinking", actor.worker?.thinking);
       field("Delivery", `${actor.delivery} · ${actor.responseMode}`);
       field("Activity", actor.worker?.currentTool);
       field("Transport", actor.worker?.transport);
@@ -1117,14 +1233,63 @@ export class FabricDashboard implements Component, Focusable {
     return lines.length > 0 ? lines : [this.theme.fg("dim", "No details")];
   }
 
+  private syncEntitySelection(entities: Entity[]): void {
+    if (entities.length === 0) {
+      this.entityIndex = 0;
+      this.selectedEntityId = undefined;
+      return;
+    }
+    const retainedIndex = this.selectedEntityId
+      ? entities.findIndex((entity) => entity.id === this.selectedEntityId)
+      : -1;
+    this.entityIndex =
+      retainedIndex >= 0
+        ? retainedIndex
+        : Math.max(0, Math.min(this.entityIndex, entities.length - 1));
+    this.selectedEntityId = entities[this.entityIndex]?.id;
+  }
+
+  private selectRun(snapshot: FabricDashboardSnapshot): FabricActivityRun | undefined {
+    if (snapshot.runs.length === 0) {
+      this.runIndex = 0;
+      this.selectedRunId = undefined;
+      return undefined;
+    }
+    if (!this.runSelectionTouched) {
+      this.runIndex = 0;
+      this.selectedRunId = snapshot.runs[0]?.id;
+      return snapshot.runs[0];
+    }
+    const retainedIndex = this.selectedRunId
+      ? snapshot.runs.findIndex((run) => run.id === this.selectedRunId)
+      : -1;
+    this.runIndex =
+      retainedIndex >= 0
+        ? retainedIndex
+        : Math.max(0, Math.min(this.runIndex, snapshot.runs.length - 1));
+    this.selectedRunId = snapshot.runs[this.runIndex]?.id;
+    return snapshot.runs[this.runIndex];
+  }
+
   private syncPhase(run: FabricActivityRun | undefined, panels: PhasePanel[]): void {
     if (panels.length === 0) {
       this.phaseIndex = 0;
       return;
     }
-    if (!this.phaseSelectionTouched && run?.currentPhaseId) {
-      const current = panels.findIndex((panel) => panel.id === run.currentPhaseId);
-      if (current >= 0) this.phaseIndex = current;
+    if (!this.phaseSelectionTouched) {
+      const current = run?.currentPhaseId
+        ? panels.findIndex((panel) => panel.id === run.currentPhaseId)
+        : -1;
+      const activeRunActivity = panels.findIndex(
+        (panel) => panel.kind === "unphased" && isActiveStatus(panel.status),
+      );
+      if (current >= 0 && isActiveStatus(panels[current]!.status)) {
+        this.phaseIndex = current;
+      } else if (activeRunActivity >= 0) {
+        this.phaseIndex = activeRunActivity;
+      } else if (current >= 0) {
+        this.phaseIndex = current;
+      }
     }
     this.phaseIndex = Math.max(0, Math.min(this.phaseIndex, panels.length - 1));
   }
@@ -1132,6 +1297,7 @@ export class FabricDashboard implements Component, Focusable {
   private resetSelection(): void {
     this.phaseIndex = 0;
     this.entityIndex = 0;
+    this.selectedEntityId = undefined;
     this.phaseSelectionTouched = false;
     this.detailId = undefined;
     this.detailScroll = 0;

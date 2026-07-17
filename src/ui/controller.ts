@@ -81,24 +81,36 @@ export class FabricUiController {
     if (!this.#context) this.start(context);
     else this.#refresh();
     const modelSource = buildModelSource(context.modelRegistry);
+    const reportUpdate = (message: string, update: Promise<unknown>): void => {
+      void update
+        .then(() => {
+          context.ui.notify(message, "info");
+          this.#refresh();
+        })
+        .catch((error) =>
+          context.ui.notify(error instanceof Error ? error.message : String(error), "error"),
+        );
+    };
     const onActorModel = (actorId: string, model: string | undefined): void => {
-      this.state.actors.setModel(actorId, model).catch(() => undefined);
+      reportUpdate("Actor model updated", this.state.actors.setModel(actorId, model));
     };
     const onActorThinking = (actorId: string, thinking: FabricThinking | undefined): void => {
-      this.state.actors.setThinking(actorId, thinking).catch(() => undefined);
+      reportUpdate("Actor thinking level updated", this.state.actors.setThinking(actorId, thinking));
     };
     const onActorEvents = (actorId: string, events: FabricActorHostEvent[]): void => {
-      this.state.actors.setEvents(actorId, events).catch(() => undefined);
+      reportUpdate("Actor event subscriptions updated", this.state.actors.setEvents(actorId, events));
     };
     const onClearMessages = (actorId: string): void => {
-      this.state.actors.clearMessages(actorId).catch(() => undefined);
+      reportUpdate("Actor mailbox cleared", this.state.actors.clearMessages(actorId));
     };
     const onActorInstructions = (actorId: string, instructions: string): void => {
-      this.state.actors.setInstructions(actorId, instructions).catch(() => undefined);
+      reportUpdate("Actor instructions updated", this.state.actors.setInstructions(actorId, instructions));
     };
     const onGlobalInstructions = (globalActorId: string, instructions: string): void => {
       try {
         this.state.globalActors.update(globalActorId, { instructions });
+        context.ui.notify("Global actor instructions updated", "info");
+        this.#refresh();
       } catch (error) {
         context.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
@@ -108,9 +120,10 @@ export class FabricUiController {
       if (!def) return;
       this.state.actors
         .create(this.state.globalActors.toRequest(def))
-        .then((actor) =>
-          context.ui.notify(`Imported global actor "${def.name}" as ${actor.name}`, "info"),
-        )
+        .then((actor) => {
+          context.ui.notify(`Imported global actor "${def.name}" as ${actor.name}`, "info");
+          this.#refresh();
+        })
         .catch((error) =>
           context.ui.notify(error instanceof Error ? error.message : String(error), "error"),
         );
@@ -120,6 +133,7 @@ export class FabricUiController {
         const def = this.state.actors.definition(actorId);
         const template = this.state.globalActors.create(def);
         context.ui.notify(`Exported "${template.name}" to global actors`, "info");
+        this.#refresh();
       } catch (error) {
         context.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
@@ -131,6 +145,7 @@ export class FabricUiController {
           result.removed ? "Removed global actor template" : "Global actor not found",
           result.removed ? "info" : "warning",
         );
+        this.#refresh();
       } catch (error) {
         context.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
