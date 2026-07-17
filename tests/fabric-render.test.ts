@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { initHighlighting } from "../src/ui/highlight.js";
 import {
@@ -7,6 +7,7 @@ import {
   modelReadHint,
   nestedCallTitle,
   nestedEditDiff,
+  renderBoundedLines,
   renderFabricMulticallPartial,
 } from "../src/ui/fabric-render.js";
 
@@ -158,6 +159,17 @@ b`, theme)).toBe("");
     );
     expect(title).toContain("no_args");
     expect(title).not.toContain("3");
+  });
+
+  it("preserves the enclosing Box background when bounded rows are truncated", () => {
+    const box = new Box(1, 0, (text) => "\x1b[42m" + text + "\x1b[49m");
+    box.addChild(renderBoundedLines(["x".repeat(40)]));
+
+    const line = box.render(20)[0]!;
+    expect(line).toBe(
+      "\x1b[42m " + "x".repeat(18) + "\x1b[22;23;24;27;29;39m \x1b[49m",
+    );
+    expect(visibleWidth(line)).toBe(20);
   });
 
   it("keeps multicall progress inline without adding completion-only rows", () => {

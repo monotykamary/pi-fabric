@@ -18,6 +18,8 @@ const EXPAND_KEYBINDING = "app.tools.expand" as AppKeybinding;
 const NUMBERED_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const COLLAPSED_MULTICALL_LIMIT = 8;
 const EXPANDED_MULTICALL_LIMIT = 30;
+const FULL_SGR_RESET = "\x1b[0m";
+const TEXT_SGR_RESET = "\x1b[22;23;24;27;29;39m";
 
 export const safeTerminalText = (value: string): string =>
   value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (character) => {
@@ -25,12 +27,21 @@ export const safeTerminalText = (value: string): string =>
     return `\\x${code}`;
   });
 
+const truncateBoundedLine = (line: string, width: number): string => {
+  const truncated = truncateToWidth(line, width, "");
+  if (!truncated.endsWith(FULL_SGR_RESET)) return truncated;
+
+  // truncateToWidth adds a full reset when clipping. Inside Pi's default tool Box,
+  // that reset clears the enclosing background before the right padding cell.
+  return truncated.slice(0, -FULL_SGR_RESET.length) + TEXT_SGR_RESET;
+};
+
 class BoundedLineList implements Component {
   constructor(readonly lines: string[]) {}
 
   render(width: number): string[] {
     if (width <= 0) return [];
-    return this.lines.map((line) => truncateToWidth(line, width, ""));
+    return this.lines.map((line) => truncateBoundedLine(line, width));
   }
 
   invalidate(): void {}
