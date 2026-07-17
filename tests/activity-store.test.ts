@@ -81,6 +81,33 @@ describe("FabricActivityStore", () => {
     expect(listener).toHaveBeenCalled();
   });
 
+  it("keeps item phase ownership stable unless an update explicitly moves it", () => {
+    const store = new FabricActivityStore();
+    store.start("run-item-phase");
+    const launch = store.phase("run-item-phase", { name: "Launch" });
+    store.upsertItem("run-item-phase", {
+      id: "worker",
+      label: "Worker",
+      status: "running",
+    });
+
+    const collect = store.phase("run-item-phase", { name: "Collect" });
+    store.upsertItem("run-item-phase", {
+      id: "worker",
+      label: "Worker",
+      status: "completed",
+    });
+    expect(store.get("run-item-phase")?.items[0]?.phaseId).toBe(launch.id);
+
+    store.upsertItem("run-item-phase", {
+      id: "worker",
+      label: "Worker",
+      status: "completed",
+      phase: collect.id,
+    });
+    expect(store.get("run-item-phase")?.items[0]?.phaseId).toBe(collect.id);
+  });
+
   it("summarizes finished call results into a detail field", () => {
     const store = new FabricActivityStore();
     store.start("run-d");

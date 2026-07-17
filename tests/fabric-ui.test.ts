@@ -758,6 +758,79 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("shows lifecycle calls in a later phase than their linked agent", () => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    run.currentPhaseId = "implement";
+    run.phases = [
+      {
+        id: "spawn",
+        name: "Spawn agents",
+        status: "completed",
+        total: 1,
+        startedAt: current.now - 10_000,
+        updatedAt: current.now - 9_000,
+        finishedAt: current.now - 9_000,
+      },
+      {
+        id: "implement",
+        name: "Implement",
+        status: "running",
+        total: 1,
+        startedAt: current.now - 9_000,
+        updatedAt: current.now,
+      },
+    ];
+    run.calls = [
+      {
+        id: "spawn-agent",
+        ref: "agents.spawn",
+        label: "worker",
+        kind: "agent",
+        status: "completed",
+        phaseId: "spawn",
+        entityId: "agent-1",
+        startedAt: current.now - 10_000,
+        updatedAt: current.now - 9_000,
+        finishedAt: current.now - 9_000,
+      },
+      {
+        id: "wait-agent",
+        ref: "agents.wait",
+        label: "wait for worker",
+        kind: "agent",
+        status: "running",
+        phaseId: "implement",
+        entityId: "agent-1",
+        startedAt: current.now - 8_000,
+        updatedAt: current.now,
+      },
+    ];
+    run.items = [];
+    current.agents[0] = {
+      ...current.agents[0]!,
+      name: "worker",
+      phaseId: "spawn",
+    };
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn() } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      const rendered = dashboard.render(120).join("\n");
+      expect(rendered).toContain("Implement");
+      expect(rendered).toContain("wait for worker");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("keeps the selected run stable when newer activity reorders the run list", () => {
     const current = snapshot();
     const newest = current.runs[0]!;

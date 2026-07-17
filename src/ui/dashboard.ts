@@ -191,25 +191,24 @@ const entitiesFor = (
   }
 
   const calls = callsForPanel(run, panel);
-  const linkedAgents: Entity[] = snapshot.agents
-    .filter((agent) => {
-      const ownedByPanel =
-        agent.runId === run?.id &&
-        (panel.kind === "unphased" ? !agent.phaseId : agent.phaseId === panel.id);
-      return ownedByPanel || (!agent.runId && calls.some((call) => linkedAgent(call, agent)));
-    })
-    .map((agent) => ({
-      id: `agent:${agent.id}`,
-      kind: "agent",
-      label: agent.name,
-      status: agent.status,
-      value: agent,
-    }));
+  const panelAgents = snapshot.agents.filter((agent) => {
+    const ownedByPanel =
+      agent.runId === run?.id &&
+      (panel.kind === "unphased" ? !agent.phaseId : agent.phaseId === panel.id);
+    return ownedByPanel || (!agent.runId && calls.some((call) => linkedAgent(call, agent)));
+  });
+  const linkedAgents: Entity[] = panelAgents.map((agent) => ({
+    id: `agent:${agent.id}`,
+    kind: "agent",
+    label: agent.name,
+    status: agent.status,
+    value: agent,
+  }));
   const visibleCalls: Entity[] = calls
     .filter(
       (call) =>
         (call.kind !== "agent" && call.kind !== "actor") ||
-        !snapshot.agents.some((agent) => linkedAgent(call, agent)),
+        !panelAgents.some((agent) => linkedAgent(call, agent)),
     )
     .map((call) => ({
       id: `call:${call.id}`,

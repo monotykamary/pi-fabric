@@ -239,7 +239,10 @@ export class FabricActivityStore {
     const now = Date.now();
     const status = input.status ?? "running";
     let item = run.items.find((candidate) => candidate.id === id);
-    const phaseId = this.#resolvePhaseId(run, input.phase);
+    const phaseId =
+      input.phase !== undefined
+        ? this.#resolvePhaseId(run, input.phase)
+        : item?.phaseId ?? run.currentPhaseId;
     const detail = cleanText(input.detail, MAX_DETAIL_CHARS);
     const current = cleanText(input.current, MAX_DETAIL_CHARS);
     const total =
