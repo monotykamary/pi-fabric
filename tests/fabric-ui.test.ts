@@ -867,6 +867,50 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("opens a live transcript preview and toggles back to summary", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 28 } } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+      {
+        agentTranscript: () => ({
+          truncated: true,
+          entries: [
+            { id: "message-1", kind: "assistant", label: "Agent", text: "## Live review\n\nReviewing the **event stream**.\n\n| Area | Status |\n| --- | --- |\n| Tail | Active |", status: "running" },
+            { id: "tool-1", kind: "tool", label: "pi.read", text: "src/ui/dashboard.ts", status: "running" },
+          ],
+        }),
+      },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      expect(dashboard.render(120).join("\n")).toContain("space live peek");
+      dashboard.handleInput(" ");
+      const transcript = dashboard.render(80).join("\n");
+      expect(transcript).toContain("transcript · live");
+      expect(transcript).toContain("earlier activity omitted");
+      expect(transcript).toContain("Live review");
+      expect(transcript).toContain("Reviewing the event stream");
+      expect(transcript).toContain("Tail");
+      expect(transcript).toContain("Active");
+      expect(transcript).not.toContain("| --- | --- |");
+      expect(transcript).toContain("pi.read · running · src/ui/dashboard.ts");
+      expect(transcript.split("\n").filter((line) => line.includes("pi.read"))).toHaveLength(1);
+      expect(transcript).toContain("G follow:on");
+
+      dashboard.handleInput("k");
+      expect(dashboard.render(80).join("\n")).toContain("G follow:off");
+      dashboard.handleInput("G");
+      expect(dashboard.render(80).join("\n")).toContain("G follow:on");
+      dashboard.handleInput("t");
+      expect(dashboard.render(80).join("\n")).toContain("Review the migration for security defects");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("pins an inspected entity to its run and phase during live reordering", () => {
     const current = snapshot();
     const inspectedRun = current.runs[0]!;

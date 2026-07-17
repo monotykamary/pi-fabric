@@ -111,7 +111,7 @@ describe("dashboard snapshot agent ownership", () => {
   });
 
   it("includes recursively nested agents with inherited ownership", () => {
-    const grandchild = record("agent-grandchild");
+    const grandchild = { ...record("agent-grandchild"), logFile: "/tmp/agent-grandchild/events.jsonl" };
     const child = record("agent-child", [grandchild]);
     const parent = record("agent-parent", [child]);
     const launch = run("launch-run", "agents.spawn", parent.id, 100, "investigate");
@@ -121,6 +121,7 @@ describe("dashboard snapshot agent ownership", () => {
       parentId: child.id,
       runId: "launch-run",
       phaseId: "investigate",
+      logFile: "/tmp/agent-grandchild/events.jsonl",
     });
   });
 

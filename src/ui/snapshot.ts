@@ -85,6 +85,7 @@ export const createDashboardSnapshot = (
       ...(record.model ? { model: record.model } : {}),
       ...(record.thinking ? { thinking: record.thinking } : {}),
       ...(record.attachCommand ? { attachCommand: record.attachCommand } : {}),
+      ...(isRunRecord(record) && record.logFile ? { logFile: record.logFile } : {}),
       ...(record.branch ? { branch: record.branch } : {}),
       ...(record.worktree ? { worktree: record.worktree } : {}),
       ...(record.actorId ? { actorId: record.actorId } : {}),

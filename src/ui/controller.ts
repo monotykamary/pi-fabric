@@ -9,6 +9,7 @@ import { buildModelSource } from "./model-picker.js";
 import { createDashboardSnapshot } from "./snapshot.js";
 import { type FabricDashboardSnapshot } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
+import { AgentTranscriptReader } from "./transcript.js";
 
 const WIDGET_ID = "pi-fabric";
 
@@ -33,6 +34,7 @@ export class FabricUiController {
   #widgetTui: TUI | undefined;
   #widgetMounted = false;
   #widget: FabricWidget | undefined;
+  readonly #transcripts = new AgentTranscriptReader();
 
   constructor(readonly state: FabricState) {}
 
@@ -67,6 +69,7 @@ export class FabricUiController {
     this.#events = [];
     this.#meshOffset = 0;
     this.#snapshot = emptySnapshot();
+    this.#transcripts.clear();
   }
 
   async openDashboard(context: ExtensionContext): Promise<void> {
@@ -169,6 +172,7 @@ export class FabricUiController {
           onAgentSteer,
           onAgentFollowUp,
           onAgentStop,
+          agentTranscript: (agent) => this.#transcripts.read(agent),
           onActorModel,
           onActorThinking,
           onActorEvents,

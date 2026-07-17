@@ -3,10 +3,12 @@ import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import {
   Editor,
   getKeybindings,
+  Markdown,
   Key,
   matchesKey,
   truncateToWidth,
   type EditorTheme,
+  type MarkdownTheme,
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type {
@@ -29,6 +31,8 @@ import type {
   FabricUiStateEntry,
 } from "./types.js";
 import { isActiveStatus } from "./types.js";
+import type { FabricAgentTranscript } from "./transcript.js";
+import { highlightCode } from "./highlight.js";
 
 type PanelKind = "phase" | "unphased" | "session";
 
@@ -96,6 +100,26 @@ const editorTheme = (theme: Theme): EditorTheme => ({
     scrollInfo: (text: string) => theme.fg("muted", text),
     noMatch: (text: string) => theme.fg("muted", text),
   },
+});
+
+const transcriptMarkdownTheme = (theme: Theme, invalidate: () => void): MarkdownTheme => ({
+  heading: (text) => theme.fg("mdHeading", text),
+  link: (text) => theme.fg("mdLink", text),
+  linkUrl: (text) => theme.fg("mdLinkUrl", text),
+  code: (text) => theme.fg("mdCode", text),
+  codeBlock: (text) => theme.fg("mdCodeBlock", text),
+  codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+  quote: (text) => theme.fg("mdQuote", text),
+  quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+  hr: (text) => theme.fg("mdHr", text),
+  listBullet: (text) => theme.fg("mdListBullet", text),
+  bold: (text) => theme.bold(text),
+  italic: (text) => theme.italic(text),
+  underline: (text) => theme.underline(text),
+  strikethrough: (text) => theme.strikethrough(text),
+  highlightCode: (code, lang) =>
+    highlightCode(code, lang ?? "", invalidate) ??
+    code.split("\n").map((line) => theme.fg("mdCodeBlock", line)),
 });
 
 const UNPHASED_PANEL_ID = "__fabric_unphased";
@@ -423,6 +447,9 @@ export class FabricDashboard implements Component, Focusable {
   private selectedPhaseId: string | undefined;
   private detailId: string | undefined;
   private detailScroll = 0;
+  private detailView: "summary" | "transcript" = "summary";
+  private transcriptFollowing = true;
+  private readonly transcriptMarkdown = new Map<string, { text: string; component: Markdown }>();
   private readonly refreshTimer: NodeJS.Timeout;
   private mode:
     | "overview"
@@ -446,6 +473,7 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onAgentSteer: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentFollowUp: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentStop: ((agentId: string) => void) | undefined;
+  private readonly agentTranscript: ((agent: FabricUiAgent) => FabricAgentTranscript) | undefined;
   private readonly onActorModel:
     | ((actorId: string, model: string | undefined) => void)
     | undefined;
@@ -477,6 +505,7 @@ export class FabricDashboard implements Component, Focusable {
       onAgentSteer?: (agentId: string, message: string) => void;
       onAgentFollowUp?: (agentId: string, message: string) => void;
       onAgentStop?: (agentId: string) => void;
+      agentTranscript?: (agent: FabricUiAgent) => FabricAgentTranscript;
       onActorModel?: (actorId: string, model: string | undefined) => void;
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
@@ -493,6 +522,7 @@ export class FabricDashboard implements Component, Focusable {
     this.onAgentSteer = options.onAgentSteer;
     this.onAgentFollowUp = options.onAgentFollowUp;
     this.onAgentStop = options.onAgentStop;
+    this.agentTranscript = options.agentTranscript;
     this.onActorModel = options.onActorModel;
     this.onActorThinking = options.onActorThinking;
     this.onActorEvents = options.onActorEvents;
@@ -571,11 +601,25 @@ export class FabricDashboard implements Component, Focusable {
       ) {
         this.detailId = undefined;
         this.detailScroll = 0;
+        this.detailView = "summary";
+        this.transcriptFollowing = true;
+      } else if (data === "t") {
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
+        if (detail?.kind === "agent" && this.agentTranscript) {
+          this.detailView = this.detailView === "summary" ? "transcript" : "summary";
+          this.detailScroll = 0;
+          this.transcriptFollowing = true;
+        }
       } else if (matchesKey(data, Key.up) || data === "k") {
+        if (this.detailView === "transcript") this.transcriptFollowing = false;
         this.detailScroll = Math.max(0, this.detailScroll - 1);
       } else if (matchesKey(data, Key.down) || data === "j") {
+        if (this.detailView === "transcript") this.transcriptFollowing = false;
         this.detailScroll++;
+      } else if (data === "G" && this.detailView === "transcript") {
+        this.transcriptFollowing = true;
       } else if (matchesKey(data, Key.home) || data === "g") {
+        if (this.detailView === "transcript") this.transcriptFollowing = false;
         this.detailScroll = 0;
       } else if (data === "s" || data === "u") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
@@ -687,12 +731,22 @@ export class FabricDashboard implements Component, Focusable {
           this.openInstructionsEditor(selected);
         }
       }
+    } else if (data === " " && this.pane === "entities") {
+      const selected = entities[this.entityIndex];
+      if (selected?.kind === "agent" && this.agentTranscript) {
+        this.detailId = selected.id;
+        this.detailView = "transcript";
+        this.detailScroll = 0;
+        this.transcriptFollowing = true;
+      }
     } else if (matchesKey(data, Key.enter)) {
       if (this.pane === "phases") {
         this.pane = "entities";
       } else if (entities[this.entityIndex]) {
         this.detailId = entities[this.entityIndex]?.id;
+        this.detailView = "summary";
         this.detailScroll = 0;
+        this.transcriptFollowing = true;
       }
     } else if (data === "f") {
       const next = (filters.indexOf(this.filter) + 1) % filters.length;
@@ -763,7 +817,9 @@ export class FabricDashboard implements Component, Focusable {
     return this.renderOverview(width, snapshot, run, panels, panel, entities);
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.transcriptMarkdown.clear();
+  }
 
   dispose(): void {
     clearInterval(this.refreshTimer);
@@ -772,6 +828,7 @@ export class FabricDashboard implements Component, Focusable {
     this.editorActorName = undefined;
     this.agentMessageTarget = undefined;
     this.pendingStop = undefined;
+    this.transcriptMarkdown.clear();
     this.mode = "overview";
   }
 
@@ -833,6 +890,7 @@ export class FabricDashboard implements Component, Focusable {
     if (width < 24) return this.renderNarrowFallback(width, "dashboard help", "? or esc close");
     const lines = [this.topBorder(width, "Fabric dashboard help")];
     const agentActions = [
+      this.agentTranscript ? "space live peek" : undefined,
       this.onAgentSteer ? "s steer now" : undefined,
       this.onAgentFollowUp ? "u queue follow-up" : undefined,
       this.onAgentStop ? "x twice stop" : undefined,
@@ -1206,6 +1264,7 @@ export class FabricDashboard implements Component, Focusable {
     if (entity.kind === "agent") {
       const armed = this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > Date.now();
       const actions = [
+        this.agentTranscript ? "space live peek" : undefined,
         isActiveStatus(entity.status) && this.onAgentSteer ? "s steer" : undefined,
         this.onAgentFollowUp ? "u follow-up" : undefined,
         isActiveStatus(entity.status) && this.onAgentStop
@@ -1315,13 +1374,20 @@ export class FabricDashboard implements Component, Focusable {
   ): string[] {
     if (width < 24) return this.renderNarrowFallback(width, entity.label, "esc back · ? help");
     const innerWidth = width - 2;
+    const transcriptView = entity.kind === "agent" && this.detailView === "transcript";
     const actionLines = wrapPlainText(this.detailActionHint(entity), Math.max(1, innerWidth - 2), 3);
-    const lines = [this.topBorder(width, `${entity.kind} · ${entity.label}`)];
-    const content = this.detailLines(entity, innerWidth, snapshot.now);
+    const viewLabel = transcriptView
+      ? ` · transcript · ${isActiveStatus(entity.status) ? "live" : entity.status}`
+      : "";
+    const lines = [this.topBorder(width, `${entity.kind} · ${entity.label}${viewLabel}`)];
+    const content = transcriptView
+      ? this.transcriptLines(entity.value, innerWidth)
+      : this.detailLines(entity, innerWidth, snapshot.now);
     const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
     const maxBody = Math.max(1, Math.min(24, terminalRows - 8 - actionLines.length));
     const maxScroll = Math.max(0, content.length - maxBody);
-    this.detailScroll = Math.max(0, Math.min(this.detailScroll, maxScroll));
+    if (transcriptView && this.transcriptFollowing) this.detailScroll = maxScroll;
+    else this.detailScroll = Math.max(0, Math.min(this.detailScroll, maxScroll));
     const visible = content.slice(this.detailScroll, this.detailScroll + maxBody);
     for (const line of visible) lines.push(this.row(width, line));
     while (lines.length < maxBody + 1) lines.push(this.row(width, ""));
@@ -1330,12 +1396,103 @@ export class FabricDashboard implements Component, Focusable {
       content.length > maxBody
         ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}`
         : "";
-    lines.push(this.row(width, this.theme.fg("dim", `↑↓/jk scroll · esc back${range}`)));
+    const navigation = transcriptView
+      ? `↑↓/jk scroll · G follow:${this.transcriptFollowing ? "on" : "off"} · t summary · esc back${range}`
+      : `↑↓/jk scroll · ${entity.kind === "agent" && this.agentTranscript ? "t transcript · " : ""}esc back${range}`;
+    lines.push(this.row(width, this.theme.fg("dim", navigation)));
     for (const actionLine of actionLines) {
       lines.push(this.row(width, this.theme.fg("muted", `  ${actionLine}`)));
     }
     lines.push(this.bottomBorder(width));
     return lines.map((line) => truncateToWidth(line, width, ""));
+  }
+
+  private transcriptLines(agent: FabricUiAgent, width: number): string[] {
+    const transcript = this.agentTranscript?.(agent);
+    if (!transcript || transcript.entries.length === 0) {
+      return [
+        this.theme.fg(
+          "dim",
+          isActiveStatus(agent.status)
+            ? "Waiting for streamed agent activity…"
+            : "No retained transcript is available for this agent.",
+        ),
+      ];
+    }
+    const lines: string[] = [];
+    if (transcript.truncated) lines.push(this.theme.fg("dim", "… earlier activity omitted"));
+    for (const entry of transcript.entries) {
+      const glyph =
+        entry.kind === "assistant"
+          ? this.theme.fg("accent", "◆")
+          : entry.kind === "error"
+            ? this.theme.fg("error", "✗")
+            : colorStatus(this.theme, entry.status ?? "completed", statusGlyph(entry.status ?? "completed"));
+      const status =
+        entry.status === "running" ? " · running" : entry.status === "failed" ? " · failed" : "";
+      if (entry.kind === "tool") {
+        const detail = entry.text ? ` · ${safeText(entry.text)}` : "";
+        lines.push(
+          truncateToWidth(
+            `${glyph} ${this.theme.fg("muted", `${safeText(entry.label)}${status}${detail}`)}`,
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+      lines.push(
+        truncateToWidth(
+          `${glyph} ${this.theme.fg(entry.kind === "assistant" ? "accent" : "muted", safeText(entry.label))}`,
+          width,
+          "",
+        ),
+      );
+      if (!entry.text) continue;
+      if (entry.kind === "assistant") {
+        lines.push(...this.markdownTranscriptLines(agent.id, entry.id, entry.text, width));
+        continue;
+      }
+      for (const paragraph of entry.text.split("\n")) {
+        const wrapped = wrapPlainText(paragraph, Math.max(1, width - 2), 100);
+        for (const line of wrapped) lines.push(truncateToWidth(`  ${line}`, width, ""));
+      }
+    }
+    return lines;
+  }
+
+  private markdownTranscriptLines(
+    agentId: string,
+    entryId: string,
+    text: string,
+    width: number,
+  ): string[] {
+    const key = `${agentId}:${entryId}`;
+    let cached = this.transcriptMarkdown.get(key);
+    if (!cached || cached.text !== text) {
+      cached = {
+        text,
+        component: new Markdown(
+          text,
+          0,
+          0,
+          transcriptMarkdownTheme(this.theme, () => {
+            this.transcriptMarkdown.delete(key);
+            this.tui.requestRender();
+          }),
+        ),
+      };
+      this.transcriptMarkdown.delete(key);
+      this.transcriptMarkdown.set(key, cached);
+      while (this.transcriptMarkdown.size > 128) {
+        const oldest = this.transcriptMarkdown.keys().next().value as string | undefined;
+        if (!oldest) break;
+        this.transcriptMarkdown.delete(oldest);
+      }
+    }
+    return cached.component
+      .render(Math.max(1, width - 2))
+      .map((line) => truncateToWidth(`  ${line}`, width, ""));
   }
 
   private detailActionHint(entity: Entity): string {
@@ -1561,6 +1718,8 @@ export class FabricDashboard implements Component, Focusable {
     this.selectedPhaseId = undefined;
     this.detailId = undefined;
     this.detailScroll = 0;
+    this.detailView = "summary";
+    this.transcriptFollowing = true;
     this.pane = "phases";
   }
 
