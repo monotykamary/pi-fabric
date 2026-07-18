@@ -60,6 +60,11 @@ const refFromFile = (file: string): SessionRef => {
 
 const sessionsDirRoot = (agentDir: string): string => path.join(agentDir, SESSIONS_SUBDIR);
 
+const compareRefsByRecency = (left: SessionRef, right: SessionRef): number => {
+  if (right.mtime !== left.mtime) return right.mtime - left.mtime;
+  return left.file < right.file ? -1 : left.file > right.file ? 1 : 0;
+};
+
 /**
  * Enumerate every session JSONL file under the agent dir, newest first by
  * file mtime. Bounded by `maxSessions`. Returns refs with resolved cwd and
@@ -82,7 +87,7 @@ export const enumerateAllSessions = (agentDir: string, maxSessions: number): Ses
   }
   return files
     .map(refFromFile)
-    .sort((left, right) => right.mtime - left.mtime)
+    .sort(compareRefsByRecency)
     .slice(0, Math.max(1, maxSessions));
 };
 
@@ -91,7 +96,7 @@ const newestSessionInDir = (dir: string): SessionRef | null => {
   if (files.length === 0) return null;
   return files
     .map(refFromFile)
-    .sort((left, right) => right.mtime - left.mtime)[0]!;
+    .sort(compareRefsByRecency)[0]!;
 };
 
 const findSessionByIdOrPath = (
@@ -131,7 +136,7 @@ export const resolveScope = (input: ResolveScopeInput): SessionRef[] => {
     const dir = sessionDirForCwd(input.cwd, input.agentDir);
     return listJsonlInDir(dir)
       .map(refFromFile)
-      .sort((left, right) => right.mtime - left.mtime)
+      .sort(compareRefsByRecency)
       .slice(0, Math.max(1, input.maxSessions));
   }
   // default: session

@@ -314,37 +314,36 @@ export const expandSessionEntry = (
   sessionFile: string,
   index: number,
 ): string | null => {
-  let content: string;
-  try {
-    content = fs.readFileSync(sessionFile, "utf8");
-  } catch {
-    return null;
-  }
-  let cursor = 0;
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let raw: Record<string, unknown>;
-    try {
-      raw = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (asString(raw.type) === "session") continue;
-    const type = asString(raw.type);
-    if (
-      type !== "message" &&
-      type !== "compaction" &&
-      type !== "branch_summary" &&
-      type !== "custom_message"
-    ) {
-      continue;
-    }
-    const { role } = entryRoleAndTool(raw);
-    const fullText = extractFullText(raw);
-    if (!fullText.trim() && role === null) continue;
-    if (cursor === index) return fullText;
-    cursor += 1;
-  }
-  return null;
+  const { entries } = normalizeSession(sessionFile, Number.MAX_SAFE_INTEGER);
+  return entries.find((entry) => entry.index === index)?.text ?? null;
+};
+
+export interface ExpandSessionSelection {
+  indices?: number[];
+  entryIds?: string[];
+  entryRange?: { first: number; last: number };
+}
+
+export interface ExpandedSessionEntry {
+  index: number;
+  entryId: string | null;
+  text: string;
+}
+
+/** Re-read source once and resolve index, stable entry-id, or inclusive range addresses. */
+export const expandSessionEntries = (
+  sessionFile: string,
+  selection: ExpandSessionSelection,
+): ExpandedSessionEntry[] => {
+  const { entries } = normalizeSession(sessionFile, Number.MAX_SAFE_INTEGER);
+  const indices = new Set(selection.indices ?? []);
+  const entryIds = new Set(selection.entryIds ?? []);
+  const range = selection.entryRange;
+  return entries
+    .filter((entry) =>
+      indices.has(entry.index) ||
+      (entry.entryId !== null && entryIds.has(entry.entryId)) ||
+      (range !== undefined && entry.index >= range.first && entry.index <= range.last),
+    )
+    .map((entry) => ({ index: entry.index, entryId: entry.entryId, text: entry.text }));
 };

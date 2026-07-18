@@ -11,7 +11,7 @@ import {
   type ResolveScopeInput,
   type SessionRef,
 } from "../memory/discovery.js";
-import { expandSessionEntry } from "../memory/normalize.js";
+import { expandSessionEntries } from "../memory/normalize.js";
 import {
   DEFAULT_HOT_SESSIONS,
   loadTieredIndex,
@@ -21,7 +21,6 @@ import { formatSearchResult, searchMemoryIndex, type SearchItem } from "../memor
 
 const RECALL_DEFAULT_PAGE_SIZE = 25;
 const RECALL_MAX_PAGE_SIZE = 200;
-const RECALL_BROWSE_LIMIT = 25;
 const SESSIONS_MAX = 500;
 
 const descriptors: FabricActionDescriptor[] = [
@@ -44,6 +43,17 @@ const descriptors: FabricActionDescriptor[] = [
         tool: { type: "string" },
         since: { type: "number" },
         until: { type: "number" },
+        entryRange: {
+          type: "object",
+          description:
+            "Inclusive normalized-entry range for an explicit session:<id> hydration.",
+          properties: {
+            first: { type: "number", minimum: 0 },
+            last: { type: "number", minimum: 0 },
+          },
+          required: ["first", "last"],
+          additionalProperties: false,
+        },
       },
       additionalProperties: false,
     },
@@ -53,14 +63,24 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "expand",
     description:
-      "Re-read full, untruncated text for specific entry indices of a session (re-reads the source JSONL on demand).",
+      "Re-read full, untruncated text by entry indices, stable entry ids, or an inclusive entry range.",
     inputSchema: {
       type: "object",
       properties: {
         session: { type: "string", description: "Session file path or id." },
         indices: { type: "array", items: { type: "number", minimum: 0 } },
+        entryIds: { type: "array", items: { type: "string" } },
+        entryRange: {
+          type: "object",
+          properties: {
+            first: { type: "number", minimum: 0 },
+            last: { type: "number", minimum: 0 },
+          },
+          required: ["first", "last"],
+          additionalProperties: false,
+        },
       },
-      required: ["session", "indices"],
+      required: ["session"],
       additionalProperties: false,
     },
     risk: "read",
@@ -105,13 +125,17 @@ const resolveTierRefs = (refs: SessionRef[], context: MemoryProviderContext): Se
   return all;
 };
 
-const resolveRefs = (scope: string | undefined, context: MemoryProviderContext): SessionRef[] => {
+const resolveRefs = (
+  scope: string | undefined,
+  context: MemoryProviderContext,
+  boundedBrowse: boolean,
+): SessionRef[] => {
   const effectiveScope = scope ?? "session";
   const input: ResolveScopeInput = {
     agentDir: context.agentDir,
     cwd: context.cwd,
     scope: effectiveScope,
-    maxSessions: context.config.maxSessions,
+    maxSessions: boundedBrowse ? context.config.maxSessions : Number.MAX_SAFE_INTEGER,
   };
   if (context.sessionId) input.sessionId = context.sessionId;
   if (context.sessionFile) input.sessionFile = context.sessionFile;
@@ -191,23 +215,32 @@ export class MemoryProvider implements FabricProvider {
         ? Math.min(Math.floor(args.pageSize), RECALL_MAX_PAGE_SIZE)
         : RECALL_DEFAULT_PAGE_SIZE;
 
-    const refs = resolveRefs(scope, this.context);
-    if (refs.length === 0) {
-      return {
-        scope: scope ?? "session",
-        query: query ?? null,
-        segments: [],
-        text: query ? `No matches for "${query}".` : "No entries in scope.",
-      };
-    }
-
+    const boundedBrowse = query === undefined || query.trim().length === 0;
+    const refs = resolveRefs(scope, this.context, boundedBrowse);
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
     const hydrate = scope?.trim().startsWith("session:") ?? false;
-    const { shards, digests } = loadTieredIndex(
+    const rawRange = args.entryRange;
+    const entryRange = rawRange && typeof rawRange === "object" && !Array.isArray(rawRange)
+      ? rawRange as Record<string, unknown>
+      : undefined;
+    const first = typeof entryRange?.first === "number" ? Math.floor(entryRange.first) : undefined;
+    const last = typeof entryRange?.last === "number" ? Math.floor(entryRange.last) : undefined;
+    if ((first === undefined) !== (last === undefined)) {
+      throw new Error("memory.recall entryRange requires both first and last");
+    }
+    if ((first !== undefined || last !== undefined) && !hydrate) {
+      throw new Error("memory.recall entryRange requires scope session:<id-or-path>");
+    }
+    if (first !== undefined && last !== undefined && (first < 0 || last < first)) {
+      throw new Error("memory.recall entryRange requires 0 <= first <= last");
+    }
+    const selectedRange = first !== undefined && last !== undefined ? { first, last } : undefined;
+    const { shards, digests, coverage } = loadTieredIndex(
       refs,
       resolveTierRefs(refs, this.context),
       options,
       hydrate,
+      selectedRange,
     );
     const limit = page * pageSize;
     const filters: { role?: string; tool?: string; since?: number; until?: number } = {};
@@ -243,9 +276,11 @@ export class MemoryProvider implements FabricProvider {
       segmentCount: result.segmentCount,
       segments: pagedSegments,
       digestHits: pagedDigests,
+      items: pagedItems,
       page,
       pageSize,
-      text: formatSearchResult(displayResult, query),
+      coverage,
+      text: formatSearchResult(displayResult, query, coverage),
     };
     invocationContext.update(
       query
@@ -259,24 +294,60 @@ export class MemoryProvider implements FabricProvider {
     const session = typeof args.session === "string" ? args.session : "";
     const indices = Array.isArray(args.indices)
       ? args.indices.filter((index): index is number => typeof index === "number" && index >= 0)
+        .map((index) => Math.floor(index))
       : [];
+    const entryIds = Array.isArray(args.entryIds)
+      ? args.entryIds.filter(
+          (entryId): entryId is string => typeof entryId === "string" && entryId.length > 0,
+        )
+      : [];
+    const rawRange = args.entryRange;
+    const rangeRecord = rawRange && typeof rawRange === "object" && !Array.isArray(rawRange)
+      ? rawRange as Record<string, unknown>
+      : undefined;
+    const first = typeof rangeRecord?.first === "number" ? Math.floor(rangeRecord.first) : undefined;
+    const last = typeof rangeRecord?.last === "number" ? Math.floor(rangeRecord.last) : undefined;
     if (!session) throw new Error("memory.expand requires a session");
-    if (indices.length === 0) return { session, expanded: [] };
+    if ((first === undefined) !== (last === undefined)) {
+      throw new Error("memory.expand entryRange requires both first and last");
+    }
+    if (first !== undefined && last !== undefined && (first < 0 || last < first)) {
+      throw new Error("memory.expand entryRange requires 0 <= first <= last");
+    }
+    if (
+      indices.length === 0 &&
+      entryIds.length === 0 &&
+      (first === undefined || last === undefined)
+    ) {
+      return { session, expanded: [] };
+    }
 
     const file = findSessionFile(session, this.context);
     if (!file) {
       return { session, error: `Session not found: ${session}`, expanded: [] };
     }
-    const expanded = indices.map((index) => ({
-      index,
-      text: expandSessionEntry(file, index),
-    }));
+    const selection: {
+      indices?: number[];
+      entryIds?: string[];
+      entryRange?: { first: number; last: number };
+    } = {};
+    if (indices.length > 0) selection.indices = indices;
+    if (entryIds.length > 0) selection.entryIds = entryIds;
+    if (first !== undefined && last !== undefined) selection.entryRange = { first, last };
+    const expanded = expandSessionEntries(file, selection);
+    if (indices.length > 0 && entryIds.length === 0 && selection.entryRange === undefined) {
+      const byIndex = new Map(expanded.map((entry) => [entry.index, entry]));
+      return {
+        session: file,
+        expanded: indices.map((index) => byIndex.get(index) ?? { index, entryId: null, text: null }),
+      };
+    }
     return { session: file, expanded };
   }
 
   private async sessions(args: Record<string, unknown>): Promise<unknown> {
     const scope = typeof args.scope === "string" ? args.scope : undefined;
-    const refs = resolveRefs(scope, this.context).slice(0, SESSIONS_MAX);
+    const refs = resolveRefs(scope, this.context, true).slice(0, SESSIONS_MAX);
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
     const index = loadTieredIndex(refs, resolveTierRefs(refs, this.context), options);
     const shards = new Map(index.shards.map((shard) => [shard.sessionFile, shard]));

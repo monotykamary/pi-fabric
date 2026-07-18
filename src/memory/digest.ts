@@ -1,7 +1,14 @@
 import type { NormalizedEntry } from "./normalize.js";
+import { compareLexical, tokenizeLexical } from "./tokenize.js";
 
 export const DEFAULT_DIGEST_TERMS = 200;
 const DEFAULT_FILES_TOUCHED_LIMIT = 50;
+
+/** Compact tuple: index, entry id, role, tool name, timestamp. */
+export type DigestEntryAddress = [number, string | null, string | null, string | null, number | null];
+
+/** Compact tuple: normalized lexical term and the sorted entry indices containing it. */
+type DigestVocabularyAddress = [string, number[]];
 
 export interface SessionDigest {
   sessionId: string;
@@ -10,11 +17,15 @@ export interface SessionDigest {
   firstTs: number | null;
   lastTs: number | null;
   entryCount: number;
-  goalLine: string;
   filesTouched: string[];
   toolHistogram: Record<string, number>;
   errorCount: number;
+  /** DF-weighted terms retained only for ranking/display compatibility. */
   terms: string[];
+  /** Every unique canonical lexical term, sorted with exact entry addresses. */
+  vocabulary: DigestVocabularyAddress[];
+  /** Structural address metadata; no normalized entry text is retained. */
+  addresses: DigestEntryAddress[];
 }
 
 export interface DigestInput {
@@ -29,48 +40,40 @@ export interface DigestInput {
 interface TermStats {
   documentFrequency: number;
   frequency: number;
+  indices: number[];
 }
 
-const tokenizeDigestText = (text: string): string[] =>
-  text
-    .toLowerCase()
-    .split(/[^a-z0-9_]+/)
-    .filter((term) => term.length > 1 && !/^\d+$/.test(term));
-
-const extractTerms = (entries: NormalizedEntry[], limit: number): string[] => {
+const collectTermStats = (entries: NormalizedEntry[]): Map<string, TermStats> => {
   const stats = new Map<string, TermStats>();
   for (const entry of entries) {
-    const terms = tokenizeDigestText(entry.text);
     const seen = new Set<string>();
-    for (const term of terms) {
-      const current = stats.get(term) ?? { documentFrequency: 0, frequency: 0 };
+    for (const term of tokenizeLexical(entry.text)) {
+      const current = stats.get(term) ?? { documentFrequency: 0, frequency: 0, indices: [] };
       current.frequency += 1;
       if (!seen.has(term)) {
         current.documentFrequency += 1;
+        current.indices.push(entry.index);
         seen.add(term);
       }
       stats.set(term, current);
     }
   }
-  return [...stats.entries()]
+  return stats;
+};
+
+const extractTopTerms = (stats: Map<string, TermStats>, limit: number): string[] =>
+  [...stats.entries()]
     .sort(([leftTerm, left], [rightTerm, right]) => {
       if (right.documentFrequency !== left.documentFrequency) {
         return right.documentFrequency - left.documentFrequency;
       }
       if (right.frequency !== left.frequency) return right.frequency - left.frequency;
-      return leftTerm.localeCompare(rightTerm);
+      return compareLexical(leftTerm, rightTerm);
     })
     .slice(0, Math.max(0, limit))
     .map(([term]) => term);
-};
 
-const firstUserLine = (entries: NormalizedEntry[]): string => {
-  const user = entries.find((entry) => entry.role === "user");
-  if (!user) return "";
-  return user.text.split(/\r?\n/, 1)[0]?.trim() ?? "";
-};
-
-/** Purely fold normalized session entries into a compact, deterministic digest. */
+/** Purely fold normalized session entries into lexical/address metadata. */
 export const foldSessionDigest = (input: DigestInput): SessionDigest => {
   let firstTs: number | null = null;
   let lastTs: number | null = null;
@@ -96,9 +99,20 @@ export const foldSessionDigest = (input: DigestInput): SessionDigest => {
     }
   }
 
+  const termStats = collectTermStats(input.entries);
+  const vocabulary: DigestVocabularyAddress[] = [...termStats.entries()]
+    .sort(([left], [right]) => compareLexical(left, right))
+    .map(([term, stats]) => [term, stats.indices]);
   const toolHistogram = Object.fromEntries(
-    [...tools.entries()].sort(([left], [right]) => left.localeCompare(right)),
+    [...tools.entries()].sort(([left], [right]) => compareLexical(left, right)),
   );
+  const addresses: DigestEntryAddress[] = input.entries.map((entry) => [
+    entry.index,
+    entry.entryId,
+    entry.role,
+    entry.toolName,
+    entry.timestamp,
+  ]);
 
   return {
     sessionId: input.sessionId,
@@ -107,10 +121,11 @@ export const foldSessionDigest = (input: DigestInput): SessionDigest => {
     firstTs,
     lastTs,
     entryCount: input.entries.length,
-    goalLine: firstUserLine(input.entries),
     filesTouched,
     toolHistogram,
     errorCount,
-    terms: extractTerms(input.entries, input.digestTerms ?? DEFAULT_DIGEST_TERMS),
+    terms: extractTopTerms(termStats, input.digestTerms ?? DEFAULT_DIGEST_TERMS),
+    vocabulary,
+    addresses,
   };
 };
