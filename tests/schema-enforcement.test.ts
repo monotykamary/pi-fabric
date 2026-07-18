@@ -554,6 +554,32 @@ return tools.call({
 });
 
 describe("Schema central gate", () => {
+  it("applies existing Schema policy to synthetic top-level SDK custom-tool refs", async () => {
+    const off = fixture("off");
+    await expect(
+      off.controller.authorize("schema.top_level_tool.sdk_custom_tool", "call-off"),
+    ).resolves.toBeUndefined();
+
+    const audit = fixture("audit");
+    await expect(
+      audit.controller.authorize("schema.top_level_tool.sdk_custom_tool", "call-audit"),
+    ).resolves.toBeUndefined();
+    expect(audit.mesh.read({ topic: "fabric.schema" })).toEqual([
+      expect.objectContaining({
+        kind: "would_block",
+        data: expect.objectContaining({
+          ref: "schema.top_level_tool.sdk_custom_tool",
+          parentToolCallId: "call-audit",
+        }),
+      }),
+    ]);
+
+    const enforce = fixture("enforce");
+    await expect(
+      enforce.controller.authorize("schema.top_level_tool.sdk_custom_tool", "call-enforce"),
+    ).rejects.toThrow("would block schema.top_level_tool.sdk_custom_tool");
+  });
+
   it("preserves direct mutation in off mode and allows with would-block reporting in audit mode", async () => {
     const off = await runService("off", 'return pi.write({ path: "off.txt", content: "off" });');
     expect(off.result.success).toBe(true);

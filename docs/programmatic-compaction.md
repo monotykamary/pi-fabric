@@ -33,9 +33,11 @@ Pi Fabric therefore exposes compaction as **two separable acts**:
 2. **Committed** — the host, at a boundary it knows to be safe, forwards the
    intent to `ExtensionContext.compact()` (host) or to the child pi's `compact`
    RPC frame (child). For the host, that boundary is `agent_settled`: the
-   agent run is fully settled, no automatic retry, compaction retry, or queued
-   continuation remains. For a child, it is the child's *own* turn boundary —
-   pi core applies the compaction between the child's turns, never mid-turn.
+   handler awaits Pi's callback completion or error before Pi publishes its
+   public settled event. For a child, the worker waits for the child's own
+   `agent_settled`, then sends a correlated compact request and keeps the RPC
+   channel open until it observes both the response and `compaction_end`. It
+   never sends compact while the child turn is active.
 
 There is exactly one write path from intent to action. The model cannot
 compact the running context directly; it can only ask. The ask is a single
@@ -71,7 +73,7 @@ await compact.request({
 // Read the pending intent and the last committed/failed compaction info.
 const status = await compact.status();
 // { pending?: { reason?, instructions?, preserve?, requestedBy, requestedAt },
-//   last?:   { at, requestedBy, status: "committed"|"failed"|"cancelled",
+//   last?:   { at, requestedBy, status: "committed"|"failed",
 //             summary?, tokensBefore?, estimatedTokensAfter?, error? } }
 
 // Clear a pending intent before the host commits it.
@@ -104,9 +106,11 @@ items.
 
 #### Commit semantics
 
-- `maybeCommit(context)` is invoked from the host's `agent_settled` handler —
-  never mid-turn, never while a turn is in flight.
-- It is a no-op when nothing is pending or a commit is already in flight.
+- `maybeCommit(context)` is awaited from the host's `agent_settled` handler —
+  never mid-turn, never while a turn is in flight. The returned Promise settles
+  on `onComplete`, `onError`, a synchronous startup throw, or a pre-start abort.
+- It is a no-op when nothing is pending. Reentrant calls share the in-flight
+  Promise rather than starting a second compaction.
 - A new `request()` while a commit is in flight is allowed: it replaces the
   pending intent. The in-flight commit proceeds with the intent it captured; on
   completion it clears *that* intent (by identity), leaving any newer intent for
@@ -127,7 +131,7 @@ const handle = await agents.spawn({
   tools: ["read", "grep", "find", "ls"],
 });
 
-// Advisory: the child pi applies compaction between its own turns.
+// Advisory: the worker queues this until the child is fully settled.
 await agents.compact({ id: handle.id, instructions: "Keep the finding list." });
 
 return await agents.wait({ id: handle.id });
@@ -137,13 +141,18 @@ return await agents.wait({ id: handle.id });
   orchestrator (or any peer via the mesh relay) can request a child compaction
   without stopping or respawning it, preserving the child's accumulated
   context.
-- The worker tails `steer.jsonl` and forwards a single RPC frame to the child
-  pi's stdin: `{"type":"compact","customInstructions":"..."}` (the
-  `customInstructions` field is omitted when no instructions were given). See
-  pi's [RPC `compact`](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/rpc.md).
-- **Advisory semantics**: the child pi core applies the compaction safely
-  between its *own* turns — never mid-turn. Fabric only forwards the intent;
-  it does not wait for or observe the child's compaction.
+- The worker tails `steer.jsonl` but does not forward compact during an active
+  child turn. It waits for `agent_settled`, then sends
+  `{"id":"...","type":"compact","customInstructions":"..."}` (the
+  instructions field is omitted when absent). See pi's [RPC `compact`](https://github.com/earendil-works/pi-coding-agent/blob/main/docs/rpc.md).
+- The worker correlates the compact response by `id`, observes the matching
+  compaction lifecycle through `compaction_end`, records queued/in-flight/
+  completed/failed status, and only then closes stdin for one-shot shutdown.
+  A rejected response, aborted compaction, or `compaction_end.errorMessage` is
+  recorded as failed without aborting the child turn.
+- Multiple requests waiting before the boundary coalesce to one request with
+  the latest instructions. Requests arriving during an in-flight compaction
+  coalesce into one deterministic follow-on request before shutdown.
 - **Claude-runner children are rejected** with a clear error: the official
   Claude Code CLI exposes no compact RPC, so a fresh run is the only way to
   reset a Claude child's context. Compaction is a Pi-runner primitive.
@@ -158,13 +167,16 @@ return await agents.wait({ id: handle.id });
 - **Mesh**: when the mesh is enabled, the host controller publishes best-effort
   events to the durable `fabric.compact` topic on each transition:
   `kind: "requested"` when an intent is recorded, and
-  `kind: "committed" | "failed" | "cancelled"` when the host commits. Other
+  `kind: "committed" | "failed"` when the host commits. Pi's benign
+  `"Compaction cancelled"` / `"Already compacted"` outcomes clear quietly and
+  do not publish a commit event. Other
   Fabric participants (persistent actors, peer sessions) can subscribe to
   observe compaction transitions. Activity-only sessions (mesh disabled)
   silently skip this.
-- **Status query**: `compact.status()` is the durable, context-independent
-  record of the pending intent and the last commit. It survives compaction
-  itself (it lives on the controller, not in the context).
+- **Status query**: `compact.status()` is the context-independent, in-memory
+  record of the pending intent and the last commit for the current initialized
+  extension session. It survives compaction itself, but not extension reload,
+  session replacement, process restart, or shutdown.
 
 ## Configuration
 
@@ -183,5 +195,6 @@ configuration to be safe.
 | `src/index.ts` | Invokes `state.compact.maybeCommit(context)` in the existing `agent_settled` handler. |
 | `src/subagents/types.ts` | `SubagentSteerEntry["type"]` extended with `"compact"`; optional `instructions` field. |
 | `src/subagents/manager.ts` | `compact(id, instructions?)` appends a compact entry through the steer channel; rejects Claude-runner children. |
-| `src/worker.ts` | Maps a compact steer entry to a `{"type":"compact","customInstructions":...}` RPC frame on the child pi's stdin. |
+| `src/worker.ts` | Feeds compact controls into the child boundary coordinator and observes Pi RPC lifecycle events. |
+| `src/subagents/compact-control.ts` | Coalesces child requests, waits for `agent_settled`, correlates compact response + `compaction_end`, records outcome, and gates one-shot stdin close. |
 | `src/providers/agents-provider.ts` | `agents.compact({id, instructions?})` action (risk: agent) with activity audit. |

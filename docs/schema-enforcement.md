@@ -28,8 +28,8 @@ Global Fabric configuration is trusted host input. Project `.pi/fabric.json` is 
 ## Modes
 
 - **off** preserves existing action authorization and tool visibility. The `schema.*` control plane is available but does not gate other actions.
-- **audit** allows existing behavior and publishes a durable `would_block` event to `fabric.schema` for every action enforce mode would deny.
-- **enforce** keeps `fabric_exec` as the sole model-visible top-level tool and applies a central action gate after provider/action resolution. Direct provider refs and computed `tools.call` refs therefore share the same decision.
+- **audit** allows existing behavior and publishes a durable `would_block` event to `fabric.schema` for every nested Fabric action or top-level Pi tool call enforce mode would deny.
+- **enforce** permits only this extension's exact, source-provenanced `fabric_exec` definition at the top level. A `tool_call` gate blocks every other built-in, external-extension, and SDK `customTools` call before execution. Nested calls are admitted only while an owned outer invocation is active and their id begins with Fabric's generated `NESTED_TOOL_CALL_ID_PREFIX`; those calls have already passed registry authorization. The central resolved-action gate remains authoritative inside Fabric, so direct refs and computed `tools.call` refs share the same decision.
 
 Enforce mode allows discovery and workflow display operations plus these exact host-owned actions:
 
@@ -42,7 +42,7 @@ Enforce mode allows discovery and workflow display operations plus these exact h
 
 It blocks `pi.edit`, `pi.write`, `pi.bash`, all agent/actor actions, mesh and state writes or execution, `compact.request` and `compact.cancel`, MCP, captured extensions, and every external provider regardless of its declared risk. A provider claiming `risk: "read"` does not bypass this exact-reference policy. Guard failures are recorded in the existing typed execution trace with `failureStage: "guard"`.
 
-Persistent actors are not restored and host-event actor dispatch is disabled for an enforce session. Subagent execution is disabled and agent actions are blocked. Capture `keepVisible` configuration cannot create another model-visible tool in enforce mode.
+Persistent actors are not restored and host-event actor dispatch is disabled for an enforce session. Subagent execution is disabled and agent actions are blocked. Capture `keepVisible`, descriptor risk, claimed source metadata, or tool visibility cannot authorize a second top-level path. A colliding external or SDK tool named `fabric_exec` is blocked unless Pi's canonical `sourceInfo.path` identifies this extension entry exactly.
 
 ## Transaction protocol
 
@@ -143,12 +143,13 @@ A clean commit advances the Schema generation and best-effort appends a normal s
 
 ## Exact guarantee and limitations
 
-Subject to the host process, filesystem, trusted Fabric configuration, and configured trusted commands behaving as trusted components, enforce mode guarantees that **model-originated mutation of regular files under the initialized local workspace can be authorized only by one same-`fabric_exec`, fresh-certificate `schema.commit` path**, with explicit preconditions, declared paths, bounded captured before images, nonempty typed postconditions, single-use CAS consumption, and rollback reporting.
+Subject to the host process, filesystem, trusted Fabric configuration, configured trusted commands, and Pi's canonical tool lifecycle/provenance behaving as trusted components, enforce mode guarantees that **model-originated mutation of regular files under the initialized local workspace can be authorized only by this extension's source-provenanced top-level `fabric_exec` and one same-invocation, fresh-certificate `schema.commit` path**, with explicit preconditions, declared paths, bounded captured before images, nonempty typed postconditions, single-use CAS consumption, and rollback reporting.
 
 The guarantee is deliberately narrower than “all effects are transactional”:
 
 - it does not cover remote services, network calls, databases, device files, other processes, or writes performed outside Fabric; enforce mode blocks model access to those provider channels rather than pretending to roll them back;
-- it does not provide a kernel sandbox against a malicious extension or host process;
+- it does not provide a kernel sandbox against a malicious extension, SDK host, or host process; trusted host code can invoke effects without model tool calls or falsify lifecycle/provenance data;
+- nested-call admission relies on Pi delivering Fabric's reserved generated id prefix unchanged and on Fabric tracking an active owned outer invocation; arbitrary top-level ids with that prefix are still sent through the gate when no owned outer call is active;
 - trusted commands are an explicit TCB and can have effects if configured unsafely;
 - filesystem rollback cannot be perfectly atomic across process death or hostile concurrent writers; journals recover declared regular files and quarantine failures;
 - file postconditions and tests are scoped evidence, not proof;

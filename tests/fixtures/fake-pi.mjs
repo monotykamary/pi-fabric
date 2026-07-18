@@ -10,7 +10,56 @@ const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n");
 process.stdin.resume();
 process.stdin.on("data", () => {});
 
+const runCompactionLifecycle = (fail) => {
+  process.stdin.removeAllListeners("data");
+  let buffer = "";
+  let settled = false;
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      let raw = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+      if (!raw) continue;
+      const frame = JSON.parse(raw);
+      if (frame.type === "prompt") {
+        emit({ type: "agent_start" });
+        emit({ type: "message_end", message: { role: "assistant", content: "ready" } });
+        setTimeout(() => {
+          settled = true;
+          emit({ type: "agent_settled" });
+        }, 500);
+      } else if (frame.type === "compact") {
+        emit({
+          type: "fake_compact_received",
+          requestId: frame.id,
+          customInstructions: frame.customInstructions,
+          afterSettled: settled,
+        });
+        emit({ type: "compaction_start", reason: "manual" });
+        emit({
+          type: "compaction_end",
+          reason: "manual",
+          result: fail ? null : { summary: "child compacted", firstKeptEntryId: "entry-1", tokensBefore: 100 },
+          aborted: false,
+          willRetry: false,
+          ...(fail ? { errorMessage: "child summary failed" } : {}),
+        });
+        emit({ type: "response", id: frame.id, command: "compact", success: true });
+      }
+    }
+  });
+};
+
 switch (behavior) {
+  case "compact-success":
+    runCompactionLifecycle(false);
+    break;
+  case "compact-failure":
+    runCompactionLifecycle(true);
+    break;
   case "exit-clean":
     process.exit(0);
   case "exit-error":

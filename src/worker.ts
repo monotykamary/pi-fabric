@@ -13,6 +13,13 @@ import type {
 } from "./subagents/types.js";
 
 type ClaudeCliModule = typeof import("./subagents/claude-cli.js");
+type CompactControlModule = typeof import("./subagents/compact-control.js");
+
+const loadCompactControl = async (): Promise<CompactControlModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./subagents/compact-control.js");
+  const sourceModulePath = "./subagents/compact-control.ts";
+  return import(sourceModulePath) as Promise<CompactControlModule>;
+};
 
 const loadClaudeCli = async (): Promise<ClaudeCliModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./subagents/claude-cli.js");
@@ -379,6 +386,23 @@ const main = async (): Promise<void> => {
     atomicWrite(options.statusFile, record);
   };
 
+  const { ChildCompactControl } = await loadCompactControl();
+  const compactControl = new ChildCompactControl(options.id, {
+    send(frame) {
+      if (!child.stdin || child.stdin.writableEnded || child.stdin.destroyed) {
+        throw new Error("Child Pi stdin closed before compaction could start");
+      }
+      child.stdin.write(`${JSON.stringify(frame)}\n`);
+    },
+    close() {
+      child.stdin?.end();
+    },
+    update(status) {
+      record.compaction = status;
+      update();
+    },
+  });
+
   // Preemptive per-child token guard. timeoutMs bounds wall time and budgetUsd
   // bounds cost, but a single runaway child can still blow its own context
   // before Pi core compacts. When maxTokens is set and the child's cumulative
@@ -648,6 +672,7 @@ const main = async (): Promise<void> => {
       processClaudeEvent(event);
       return;
     }
+    compactControl.observe(event);
     if (event.type === "agent_start") {
       retryPending = false;
       sawAgentError = false;
@@ -732,7 +757,13 @@ const main = async (): Promise<void> => {
       return;
     }
     if (event.type === "agent_settled") {
-      if (!retryPending) child.stdin?.end();
+      if (!retryPending) {
+        // Pull controls that landed with the final stream events before deciding
+        // whether this one-shot child can close. A queued compact keeps stdin
+        // open until its correlated response and compaction_end are observed.
+        pollSteer();
+        compactControl.childSettled();
+      }
       return;
     }
     if (event.type === "extension_error") {
@@ -823,14 +854,7 @@ const main = async (): Promise<void> => {
           } else if (command.type === "set_follow_up_mode" && typeof command.mode === "string") {
             child.stdin?.write(JSON.stringify({ type: "set_follow_up_mode", mode: command.mode }) + "\n");
           } else if (command.type === "compact") {
-            // Advisory compaction for the child pi's own context. pi core
-            // applies it safely between the child's own turns; the worker only
-            // forwards the intent. customInstructions is optional.
-            const frame: Record<string, unknown> = { type: "compact" };
-            if (typeof command.instructions === "string") {
-              frame.customInstructions = command.instructions;
-            }
-            child.stdin?.write(JSON.stringify(frame) + "\n");
+            compactControl.queue(command.instructions);
           }
         } catch {
           /* stdin closed (settled/stopped child); a late steer is dropped */
@@ -901,6 +925,23 @@ const main = async (): Promise<void> => {
   if (outputBuffer.trim()) processEvent(outputBuffer);
   record.exitCode = exitCode;
   record.stderr = stderr.slice(-MAX_STDERR_CHARS);
+  if (
+    record.compaction?.status === "queued" ||
+    record.compaction?.status === "in_flight"
+  ) {
+    const error = terminalError ?? "Child Pi exited before the queued compaction completed";
+    record.compaction = {
+      ...record.compaction,
+      status: "failed",
+      updatedAt: Date.now(),
+      finishedAt: Date.now(),
+      error,
+    };
+    if (!terminalStatus) {
+      terminalStatus = "failed";
+      terminalError = error;
+    }
+  }
   record.finishedAt = Date.now();
   record.updatedAt = record.finishedAt;
   const childCompleted =

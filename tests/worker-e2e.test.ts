@@ -124,6 +124,49 @@ describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
     }
   });
 
+  it.each([
+    { behavior: "compact-success", outcome: "completed", error: undefined },
+    { behavior: "compact-failure", outcome: "failed", error: "child summary failed" },
+  ])("queues mid-turn compaction and records $behavior after child settlement", async ({ behavior, outcome, error }) => {
+    process.env.FAKE_PI_BEHAVIOR = behavior;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, timeoutMs: 4_000, maxConcurrent: 1 };
+    const manager = new SubagentManager(process.cwd(), config, {
+      workerPath,
+      piBinary,
+      runRoot: root,
+    });
+    managers.push(manager);
+    const handle = await manager.spawn({ task: "compact it", transport: "process" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    manager.compact(handle.id, "first instructions");
+    manager.compact(handle.id, "latest instructions");
+    const result = await manager.wait(handle.id);
+
+    expect(result.status).toBe("completed");
+    expect(result.compaction).toMatchObject({
+      status: outcome,
+      coalescedRequests: 1,
+      attempts: 1,
+      ...(error ? { error } : {}),
+    });
+    const events = fs
+      .readFileSync(result.logFile!, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const settledIndex = events.findIndex((event) => event.type === "agent_settled");
+    const compactIndex = events.findIndex((event) => event.type === "fake_compact_received");
+    expect(settledIndex).toBeGreaterThanOrEqual(0);
+    expect(compactIndex).toBeGreaterThan(settledIndex);
+    expect(events[compactIndex]).toMatchObject({
+      afterSettled: true,
+      customInstructions: "latest instructions",
+    });
+    expect(events.some((event) => event.type === "abort")).toBe(false);
+  });
+
   it("aborts a hanging run as stopped, not exited-without-a-result", async () => {
     process.env.FAKE_PI_BEHAVIOR = "hang";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));

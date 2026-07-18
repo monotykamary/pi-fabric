@@ -30,6 +30,7 @@ process.stdin.on("data", (chunk) => {
       send({ type: "agent_start" });
       send({ type: "queue_update", steering: [], followUp: [] });
       record({ type: "prompt", message: command.message });
+      setTimeout(() => send({ type: "agent_settled" }), 700);
     } else if (command.type === "steer") {
       send({ type: "response", command: "steer", success: true });
       send({ type: "queue_update", steering: [command.message], followUp: [] });
@@ -45,15 +46,22 @@ process.stdin.on("data", (chunk) => {
       send({ type: "response", command: "set_follow_up_mode", success: true });
       record({ type: "set_follow_up_mode", mode: command.mode });
     } else if (command.type === "compact") {
-      // Advisory compaction: pi core applies it between the child's own turns.
-      // The worker only forwards the intent; record it so tests can assert the
-      // frame shape (customInstructions is optional).
       record({
         type: "compact",
+        id: command.id,
         ...(typeof command.customInstructions === "string"
           ? { customInstructions: command.customInstructions }
           : {}),
       });
+      send({ type: "compaction_start", reason: "manual" });
+      send({
+        type: "compaction_end",
+        reason: "manual",
+        result: { summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 100 },
+        aborted: false,
+        willRetry: false,
+      });
+      send({ type: "response", id: command.id, command: "compact", success: true });
     }
   }
 });

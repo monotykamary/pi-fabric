@@ -861,7 +861,7 @@ describe("SubagentManager steering", () => {
     await manager.stop(handle.id);
   });
 
-  it("forwards a compact frame to the child pi over RPC", async () => {
+  it("forwards a correlated compact frame only after child agent_settled", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
     roots.push(root);
     fs.chmodSync(fakePiSteer, 0o755);
@@ -889,30 +889,15 @@ describe("SubagentManager steering", () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(
         forwarded.some(
-          (e) => e.type === "compact" && e.customInstructions === "Preserve the test plan",
+          (e) =>
+            e.type === "compact" &&
+            typeof e.id === "string" &&
+            e.customInstructions === "Preserve the test plan",
         ),
       ).toBe(true);
-      // A compact without instructions forwards a bare { type: "compact" }.
-      manager.compact(handle.id);
-      await waitFor(
-        () =>
-          fs.readFileSync(received, "utf8").split("\n").filter((line) => line.trim())
-            .filter((line) => (JSON.parse(line) as Record<string, unknown>).type === "compact")
-            .length >= 2,
-        3_000,
-      );
-      const compactFrames = forwarded
-        .concat(
-          fs
-            .readFileSync(received, "utf8")
-            .split("\n")
-            .filter((line) => line.trim())
-            .map((line) => JSON.parse(line) as Record<string, unknown>),
-        )
-        .filter((e) => e.type === "compact");
-      expect(compactFrames.length).toBeGreaterThanOrEqual(2);
-      expect(compactFrames.some((e) => !("customInstructions" in e))).toBe(true);
-      await manager.stop(handle.id);
+      const result = await manager.wait(handle.id);
+      expect(result.status).toBe("completed");
+      expect(result.compaction?.status).toBe("completed");
     } finally {
       delete process.env.FAKE_PI_STEER_LOG;
     }

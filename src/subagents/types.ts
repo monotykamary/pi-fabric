@@ -45,6 +45,18 @@ export interface FabricBudgetSummary {
   tokens: number;
 }
 
+export interface SubagentCompactionStatus {
+  status: "queued" | "in_flight" | "completed" | "failed";
+  requestedAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  attempts: number;
+  coalescedRequests: number;
+  queued?: boolean;
+  error?: string;
+}
+
 export interface SubagentRunRecord {
   id: string;
   name: string;
@@ -78,6 +90,7 @@ export interface SubagentRunRecord {
   logFile?: string;
   nestedAgents?: SubagentRunRecord[];
   pendingMessages?: { steering: string[]; followUp: string[] };
+  compaction?: SubagentCompactionStatus;
 }
 
 export interface SubagentRunResult extends SubagentRunRecord {

@@ -32,7 +32,7 @@ export interface CompactPendingIntent {
   requestedAt: number;
 }
 
-type CompactCommitStatus = "committed" | "failed" | "cancelled";
+type CompactCommitStatus = "committed" | "failed";
 
 
 export interface CompactLastCommit {
@@ -75,7 +75,7 @@ const checkedPreserve = (value: unknown): string[] | undefined => {
 export class CompactController {
   #pending: CompactPendingIntent | undefined;
   #last: CompactLastCommit | undefined;
-  #inFlight = false;
+  #inFlight: Promise<void> | undefined;
   readonly #hooks: CompactControllerHooks;
 
   constructor(hooks: CompactControllerHooks = {}) {
@@ -118,16 +118,14 @@ export class CompactController {
     };
   }
 
-  // Commit the pending intent at a safe boundary. Called from the host at
-  // `agent_settled` — never mid-turn. If a commit is already in flight, or no
-  // intent is pending, this is a no-op. Forwards to
-  // `ExtensionContext.compact()`; pi core applies the compaction safely.
-  maybeCommit(context: ExtensionContext): void {
-    if (this.#inFlight) return;
+  // Commit the pending intent at a safe boundary. Called and awaited from the
+  // host `agent_settled` event so Pi cannot publish its public settled event
+  // until the callback-based compaction API has completed or failed.
+  async maybeCommit(context: ExtensionContext): Promise<void> {
+    if (this.#inFlight) return this.#inFlight;
     const pending = this.#pending;
     if (!pending) return;
-    // Capture the intent's fields before forwarding so the async callbacks
-    // below do not depend on closure-narrowed references to `pending`.
+
     const requestedBy = pending.requestedBy;
     const instructions = pending.preserve
       ? encodeCompactionRequest({
@@ -135,63 +133,85 @@ export class CompactController {
           preserve: pending.preserve,
         })
       : pending.instructions;
-    // Hold the exact intent object we are committing. A new request() may
-    // replace `this.#pending` while this commit is in flight; on completion we
-    // only clear the intent we actually committed (by identity), leaving any
-    // newer intent for the next settled boundary.
     const committing = pending;
-    this.#inFlight = true;
     const clearCommittedIntent = (): void => {
       if (this.#pending === committing) this.#pending = undefined;
     };
+
+    let settle!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.#inFlight = completion;
+    let callbackSettled = false;
+    const finish = (apply: () => void): void => {
+      if (callbackSettled) return;
+      callbackSettled = true;
+      try {
+        apply();
+      } finally {
+        settle();
+      }
+    };
+
     try {
-      context.compact({
-        ...(instructions ? { customInstructions: instructions } : {}),
-        onComplete: (result) => {
-          this.#last = {
-            at: Date.now(),
-            requestedBy,
-            status: "committed",
-            summary: result.summary,
-            tokensBefore: result.tokensBefore,
-            ...(result.estimatedTokensAfter !== undefined
-              ? { estimatedTokensAfter: result.estimatedTokensAfter }
-              : {}),
-          };
-          clearCommittedIntent();
-          this.#inFlight = false;
-          this.#hooks.onCommit?.(this.#last);
-        },
-        onError: (error) => {
-          const message = error?.message ?? "Compaction error";
-          // "Compaction cancelled" / "Already compacted": nothing to compact;
-          // clear quietly without recording a failure.
-          if (message === "Compaction cancelled" || message === "Already compacted") {
-            clearCommittedIntent();
-            this.#inFlight = false;
-            return;
-          }
+      if (context.signal?.aborted) {
+        finish(() => {
           this.#last = {
             at: Date.now(),
             requestedBy,
             status: "failed",
-            error: message,
+            error: "Compaction aborted before it started",
           };
           clearCommittedIntent();
-          this.#inFlight = false;
           this.#hooks.onCommit?.(this.#last);
-        },
-      });
+        });
+      } else {
+        context.compact({
+          ...(instructions ? { customInstructions: instructions } : {}),
+          onComplete: (result) => finish(() => {
+            this.#last = {
+              at: Date.now(),
+              requestedBy,
+              status: "committed",
+              summary: result.summary,
+              tokensBefore: result.tokensBefore,
+              ...(result.estimatedTokensAfter !== undefined
+                ? { estimatedTokensAfter: result.estimatedTokensAfter }
+                : {}),
+            };
+            clearCommittedIntent();
+            this.#hooks.onCommit?.(this.#last);
+          }),
+          onError: (error) => finish(() => {
+            const message = error?.message ?? "Compaction error";
+            clearCommittedIntent();
+            if (message === "Compaction cancelled" || message === "Already compacted") return;
+            this.#last = {
+              at: Date.now(),
+              requestedBy,
+              status: "failed",
+              error: message,
+            };
+            this.#hooks.onCommit?.(this.#last);
+          }),
+        });
+      }
+      await completion;
     } catch (error) {
-      this.#inFlight = false;
-      this.#last = {
-        at: Date.now(),
-        requestedBy,
-        status: "failed",
-        error: error instanceof Error ? error.message : "Compaction failed to start",
-      };
-      clearCommittedIntent();
-      this.#hooks.onCommit?.(this.#last);
+      finish(() => {
+        this.#last = {
+          at: Date.now(),
+          requestedBy,
+          status: "failed",
+          error: error instanceof Error ? error.message : "Compaction failed to start",
+        };
+        clearCommittedIntent();
+        this.#hooks.onCommit?.(this.#last);
+      });
+      await completion;
+    } finally {
+      if (this.#inFlight === completion) this.#inFlight = undefined;
     }
   }
 }

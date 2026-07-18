@@ -15,7 +15,11 @@ import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
 import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "./config.js";
 import { registerCompactionHook } from "./compaction/hook.js";
-import { FabricToolOwnership } from "./core/tool-ownership.js";
+import {
+  FabricToolLifecycle,
+  FabricToolOwnership,
+  ownsFabricToolSource,
+} from "./core/tool-ownership.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
@@ -48,8 +52,9 @@ type ResultFormat = (typeof RESULT_FORMATS)[number];
 // Pi processes that load Fabric with -e (subagents and actors) discover the
 // same fabric-exec / fabric-advisor / fabric-council skill references as the
 // main agent, which gets them through the package manifest.
+const FABRIC_EXTENSION_ENTRY_PATH = path.resolve(fileURLToPath(import.meta.url));
 const FABRIC_SKILLS_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
+  path.dirname(FABRIC_EXTENSION_ENTRY_PATH),
   "..",
   "skills",
 );
@@ -546,6 +551,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       },
     }),
   );
+  const fabricToolLifecycle = new FabricToolLifecycle(
+    () => ownsFabricToolSource(pi.getAllTools(), FABRIC_EXTENSION_ENTRY_PATH),
+    () => state.initialized ? state.execution.authorizer : undefined,
+  );
+
   const inactiveCapturePolicy = {
     ...structuredClone(DEFAULT_FABRIC_CONFIG.capture),
     enabled: false,
@@ -650,6 +660,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       fabricUi.stop();
       suspendToolCapture();
       toolOwnership.release();
+      fabricToolLifecycle.clear();
       await state.shutdown();
     } finally {
       toolCapture.dispose();
@@ -679,13 +690,19 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     );
     state.dispatchHostEvent("agent_settled", event, context);
     fabricUi.dismissOnSettle();
-    // Commit any pending host-session compaction intent. Compaction is
-    // advisory-then-committed: a `compact.request` only records an intent; the
-    // host commits it here, at a fully settled boundary — never mid-turn and
-    // never while a turn is in flight. The controller is a no-op when nothing
-    // is pending or a commit is already in flight.
-    state.compact.maybeCommit(context);
+    // Pi's compact API is callback-based. Await the controller's Promise here
+    // so ExtensionRunner does not finish this handler (and Pi does not publish
+    // its public agent_settled event) before compaction settles.
+    await state.compact.maybeCommit(context);
   });
+
+  pi.on("tool_call", (event) => fabricToolLifecycle.toolCall(event));
+
+  // Pi 0.80.6 intentionally ignores `isError` returned by custom-tool
+  // execute(). Patch only finalized, outer Fabric results through the official
+  // result middleware; live partials and nested Fabric lifecycle events never
+  // enter this branch.
+  pi.on("tool_result", (event) => fabricToolLifecycle.toolResult(event));
 
   pi.on("tool_execution_end", async (event, context) => {
     if (state.initialized && event.isError) {

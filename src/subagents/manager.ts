@@ -556,9 +556,9 @@ export class SubagentManager {
   }
 
   // Request an advisory compaction of a running Pi-runner child's context.
-  // Appended to the same steer.jsonl channel as steer(); the worker forwards a
-  // `{"type":"compact","customInstructions":...}` RPC frame to the child pi,
-  // which applies the compaction safely between its own turns. Rejected for
+  // Appended to the same steer.jsonl channel as steer(); the worker queues it
+  // until child agent_settled, then correlates Pi's compact response and
+  // compaction_end before closing the one-shot RPC channel. Rejected for
   // Claude-runner children — the official Claude Code CLI exposes no compact
   // RPC; a fresh run is the only way to reset a Claude child's context.
   compact(id: string, instructions?: string): SubagentSteerResult {

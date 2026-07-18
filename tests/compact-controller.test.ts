@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it, vi } from "vitest";
+import { ExtensionRunner, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeCompactionInstructions, FABRIC_COMPACTION_REQUEST_PREFIX } from "../src/compaction/instructions.js";
 import {
   CompactController,
@@ -100,24 +100,25 @@ describe("CompactController", () => {
     expect(capture.current).toBeUndefined();
   });
 
-  it("maybeCommit is a no-op while a commit is already in flight", () => {
+  it("maybeCommit is a no-op while a commit is already in flight", async () => {
     const capture: CompactCapture = { current: undefined };
     const controller = new CompactController();
     controller.request({ reason: "first" });
-    controller.maybeCommit(fakeContext(capture));
+    const firstCommit = controller.maybeCommit(fakeContext(capture));
     expect(capture.current).toBeDefined();
     const first = capture.current!;
     capture.current = undefined;
     // A second intent arrives while the first commit is still in flight.
     controller.request({ reason: "second" });
-    controller.maybeCommit(fakeContext(capture));
+    const reentrant = controller.maybeCommit(fakeContext(capture));
     expect(capture.current).toBeUndefined();
     // Completing the first commit clears in-flight; the second intent is still
-    // pending and can now be committed.
+    // pending and can now be committed at a later boundary.
     first.onComplete(committed());
+    await Promise.all([firstCommit, reentrant]);
     expect(controller.status().last?.status).toBe("committed");
     expect(controller.status().pending?.reason).toBe("second");
-    controller.maybeCommit(fakeContext(capture));
+    void controller.maybeCommit(fakeContext(capture));
     expect(capture.current).toBeDefined();
   });
 
@@ -196,6 +197,24 @@ describe("CompactController", () => {
     expect(status.last).toMatchObject({ status: "failed", error: "API quota exceeded" });
   });
 
+  it("settles as failed without calling compact when the boundary signal is aborted", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const compact = vi.fn();
+    const controller = new CompactController();
+    controller.request({ reason: "aborted boundary" });
+    await controller.maybeCommit({
+      compact,
+      signal: abort.signal,
+    } as unknown as ExtensionContext);
+    expect(compact).not.toHaveBeenCalled();
+    expect(controller.status().pending).toBeUndefined();
+    expect(controller.status().last).toMatchObject({
+      status: "failed",
+      error: "Compaction aborted before it started",
+    });
+  });
+
   it("records a failure when compact() throws synchronously", () => {
     const controller = new CompactController();
     const throwingContext = {
@@ -221,16 +240,18 @@ describe("CompactController", () => {
     expect(requests.map((r) => r.reason)).toEqual(["a", "b"]);
   });
 
-  it("fires onCommit with committed info on success and failed info on error", () => {
+  it("fires onCommit with committed info on success and failed info on error", async () => {
     const commits: CompactLastCommit[] = [];
     const controller = new CompactController({ onCommit: (info) => commits.push(info) });
     const capture: CompactCapture = { current: undefined };
     controller.request({ reason: "ok" });
-    controller.maybeCommit(fakeContext(capture));
+    const first = controller.maybeCommit(fakeContext(capture));
     capture.current!.onComplete(committed());
+    await first;
     controller.request({ reason: "bad" });
-    controller.maybeCommit(fakeContext(capture));
+    const second = controller.maybeCommit(fakeContext(capture));
     capture.current!.onError(new Error("rate limited"));
+    await second;
     expect(commits.map((c) => c.status)).toEqual(["committed", "failed"]);
     expect(commits[1]?.error ?? "").toBe("rate limited");
   });
@@ -245,16 +266,51 @@ describe("CompactController", () => {
     expect(commits).toHaveLength(0);
   });
 
-  it("resets in-flight after a failed commit so a new intent can be committed", () => {
+  it("resets in-flight after a failed commit so a new intent can be committed", async () => {
     const capture: CompactCapture = { current: undefined };
     const controller = new CompactController();
     controller.request({ reason: "first" });
-    controller.maybeCommit(fakeContext(capture));
+    const first = controller.maybeCommit(fakeContext(capture));
     capture.current!.onError(new Error("API quota exceeded"));
+    await first;
     controller.request({ reason: "second" });
-    controller.maybeCommit(fakeContext(capture));
+    const second = controller.maybeCommit(fakeContext(capture));
     expect(capture.current).toBeDefined();
     capture.current!.onComplete(committed());
+    await second;
     expect(controller.status().last?.status).toBe("committed");
+  });
+
+  it("keeps ExtensionRunner agent_settled pending until compaction completes", async () => {
+    const timeline: string[] = [];
+    const capture: CompactCapture = { current: undefined };
+    const controller = new CompactController();
+    controller.request({ reason: "event order" });
+    const runner = Object.create(ExtensionRunner.prototype) as ExtensionRunner;
+    Object.assign(runner as unknown as Record<string, unknown>, {
+      extensions: [{
+        path: "/extensions/pi-fabric/index.ts",
+        handlers: new Map([["agent_settled", [async () => {
+          timeline.push("handler:start");
+          await controller.maybeCommit(fakeContext(capture));
+          timeline.push("handler:end");
+        }]]]),
+      }],
+      createContext: () => ({}),
+      errorListeners: new Set(),
+    });
+
+    const emitted = runner.emit({ type: "agent_settled" }).then(() => {
+      timeline.push("public:agent_settled");
+    });
+    await Promise.resolve();
+    expect(timeline).toEqual(["handler:start"]);
+    capture.current!.onComplete(committed());
+    await emitted;
+    expect(timeline).toEqual([
+      "handler:start",
+      "handler:end",
+      "public:agent_settled",
+    ]);
   });
 });
