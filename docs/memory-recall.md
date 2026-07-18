@@ -1,190 +1,169 @@
 # Memory & Recall
 
-Pi Fabric's `memory` provider is a search engine over **every Pi session timeline
-on this machine**. It is the redistilled, first-principles version of
-pi-vcc's `recall` — no pi-vcc dependency, no regex over prose in the core path.
+Pi Fabric's `memory` provider searches Pi session JSONL files. Session JSONL is
+the source of truth; the memory index is derived, disposable state.
 
-## Why: the context is a cache, not the store
+The index uses structural extraction only. It does not classify goals,
+preferences, errors, or other prose concepts with regexes. Roles, tool names,
+timestamps, entry IDs, tool errors, and tool argument paths come from typed
+session fields.
 
-Principle 0 of the schema work: *the context window is a cache*. Ground truth
-persists outside it — in the session JSONL files Pi already appends to, the
-mesh log, the filesystem, git. Memory is the **re-fetch path** that brings
-back what compaction or eviction dropped from the cache.
+## Cache V2
 
-Memory never copies re-fetchable content into long-term state either. The
-normalized index stores **addresses and a working set** (session file, entry
-index, role, tool name, truncated text), not full transcripts. Full text is
-re-read on demand via `memory.expand`.
-
-## Design
-
-```
-session JSONL (append-only truth)
-        │  normalize.ts        structural extraction only
-        ▼
-NormalizedEntry[]  ──►  hot entry shards ────────► entry BM25
-        │
-        └──────────►  cold session digests ──────► digest BM25
-                                                       │
-                                                       ▼
-                                           segments + session pointers
-                                                       │
-                                                       ▼
-                          memory.recall / memory.expand / memory.sessions
-```
-
-The four properties the schema harness proved:
-
-1. **Derived views are pure functions of the log.** A shard is a deterministic
-   projection of one session file's current bytes; nothing about a previous view
-   is read.
-2. **Structure over semantics.** `normalize.ts` extracts only what typed event
-   structure gives — `role`, `toolName`, content-array `text` parts, tool-call
-   name + arg summary, tool-result content, `bashExecution` command + output,
-   `isError`, timestamps. No regex over prose lives in core code.
-3. **Salience is computed, not remembered.** BM25 scores every query fresh from
-   the loaded shards.
-4. **Erasure is a first-class objective.** The index has a sleep cycle: recent
-   sessions retain entry detail, while old sessions discard that derived detail
-   and retain only a compact address-bearing digest. The source JSONL is never
-   erased and can always rehydrate the detail.
-
-Determinism: same input bytes ⇒ same output bytes, stable ordering. Entry and
-session-digest BM25 are implemented by hand with no dependencies. Ordering is
-`score desc → session mtime desc → entry index asc`; at equal score and mtime,
-a digest hit sorts after an entry hit, followed by source-file lexical order.
-
-## Scopes
-
-`memory.recall({ scope })` selects which session files to search:
-
-| Scope | Meaning |
-| ----- | ------- |
-| `session` (default) | The current session file — from the invocation context if available, else the newest session for the current cwd. |
-| `project` | All sessions stored under the current cwd's default session dir (`<agentDir>/sessions/<encoded-cwd>/`). |
-| `global` | All sessions under the agent dir, newest first, bounded by `memory.maxSessions`. |
-| `session:<id-or-path>` | One specific session, by its header UUID, file stem, or absolute `.jsonl` path. If cold, its source JSONL is hydrated and searched at entry granularity without promoting or persisting a shard. |
-
-Session discovery resolves the agent dir the same way fabric does
-(`getAgentDir()`), and the cwd → directory encoding matches Pi's own
-(`--<cwd-with-separators-replaced-by-dashes>--` under `<agentDir>/sessions/`).
-
-## Query syntax
-
-`memory.recall({ query })`:
-
-- **No query** → browse mode: the 25 most recent entries in scope (newest
-  session mtime first), each marked with `>`.
-- **Query compiles as a regex** → applied directly (case-insensitive) against
-  `role toolName text`. Use this for `error code 4[0-9]`, `TODO:.*auth`, etc.
-- **Otherwise** → split into multiword OR terms, ranked by BM25 over the
-  normalized entry texts.
-
-Optional filters narrow the candidate set *before* scoring, structurally:
-
-- `role` — e.g. `"user"`, `"assistant"`, `"toolResult"`, `"bashExecution"`.
-- `tool` — matches `toolName` (assistant tool-call name, tool-result name, or
-  `bash` for bash executions).
-- `since` / `until` — Unix-ms timestamp bounds on the entry timestamp.
-
-## Result shape: segments
-
-Hits are grouped into **conversation segments** (turns). A segment begins at a
-`user`, `bashExecution`, or `compaction` entry and runs to the next one —
-computed from typed entry roles, never by regex over rendered text. Matched
-entries are prefixed with `>`; the other entries in the same segment are
-included as context (prefix ` `) so the caller sees the conversation flow
-around each hit.
-
-```
-3 matches across 2 segments for "auth":
-
---- #0-#1 (2/2 match) ---
-> #0 [user] remember the auth refactor
-> #1 [assistant] the auth refactor touched login.ts
-
---- #2-#4 (1/3 match) ---
-  #2 [user] now check the deployment scripts
-  #3 [assistant] checking deploy.sh
-> #4 [assistant] auth also appears here in a comment …[truncated]
-```
-
-Pagination: `page` (1-based, default 1) and `pageSize` (default 25, max 200)
-slice the combined entry-segment and cold-pointer result list.
-
-## Indexing behavior and the sleep cycle
-
-`index.ts` keeps derived cache files under `memory.indexDir` (default
-`<agentDir>/fabric/memory-index/`). The `memory.hotSessions` most
-recently-**modified** source sessions are hot and retain per-entry shards.
-Every other session is cold and retains a session digest. The default hot
-boundary is 50 sessions; source mtime, not last message timestamp, determines
-the boundary.
-
-On refresh, a shard crossing out of the hot set is folded into a digest and the
-shard is deleted. A cold session crossing back into the hot set drops its
-digest and rebuilds a shard when selected. Both cache forms are keyed by source
-path + current `mtime` + `size`; append or rewrite invalidates either form.
-There is no background daemon.
-
-This is memory garbage collection rather than unbounded accumulation: hot
-sessions retain recent detail, cold sessions retain compact addresses, and the
-session JSONL remains the truth. Explicit `session:<id-or-path>` recall parses a
-cold JSONL into an ephemeral shard, searches its entries, and does not promote
-or persist it. Stored hot entry text is truncated to `memory.maxEntryChars`
-(default 2000); `memory.expand` also re-reads the source.
-
-### Digest format
-
-A digest is the deterministic pure fold of one session's normalized entries:
+Cache records are JSON with an explicit `cacheVersion: 2` and `kind`. A V1 or
+otherwise invalid record is rejected and rebuilt from its source JSONL; V1 data
+is never interpreted as V2 or migrated.
 
 ```ts
+// Hot shard
 {
+  cacheVersion: 2,
+  kind: "shard",
+  sessionFile, sessionId,
+  mtime, size, sourceHash,
+  entries: NormalizedEntry[]
+}
+
+// Cold digest
+{
+  cacheVersion: 2,
+  kind: "digest",
   sessionId, file, cwd,
+  mtime, size, sourceHash,
   firstTs, lastTs, entryCount,
-  goalLine,       // first user message, first line
-  filesTouched,   // unique structurally extracted tool-argument paths, capped at 50
-  toolHistogram, errorCount,
-  terms           // top memory.digestTerms terms, DF-weighted
+  filesTouched, toolHistogram, errorCount,
+  terms,       // bounded DF/frequency-ranked terms; ranking metadata only
+  vocabulary,  // sorted [normalizedTerm, sortedEntryIndices[]][]; complete
+  addresses    // [index, entryId, role, toolName, timestamp][]
 }
 ```
 
-The persisted cache record additionally carries source `mtime` and `size` for
-invalidation. `terms` are ranked by the number of session entries containing
-them, then frequency, then lexical order. Cold BM25 searches `goalLine`,
-`filesTouched`, and `terms`; a hit is a session-level pointer, never copied
-transcript content:
+A cold digest contains no normalized entry text, first-message prose, or full
+transcript. `vocabulary` is an exact lexical address index over the full
+normalized text of every entry before hot-text truncation. `addresses` retains
+only structural metadata needed to resolve hits and apply filters. `terms`
+remains separately bounded by `memory.digestTerms`; it is not used as the
+truth-coverage gate.
 
+The source fingerprint is SHA-256 in addition to mtime and size. An append or
+rewrite, including a same-size rewrite with a preserved mtime, rebuilds the
+record. Refresh also removes cache records whose source session was deleted.
+Cache directories and files are created/chmodded to `0700` and `0600` on a
+best-effort basis.
+
+## Exact lexical guarantee
+
+`tokenize.ts` is the one tokenizer used by hot BM25, cold vocabulary creation,
+and plain-query planning. It applies Unicode NFKC normalization, Unicode-aware
+letter/number/underscore tokenization, and lowercase normalization.
+
+For every cold session that coverage reports as indexed:
+
+- every unique canonical token in normalized source entry text occurs in its
+  sorted `vocabulary`;
+- every vocabulary token points to every normalized entry containing it;
+- a plain query token therefore cannot disappear because it fell outside
+  `memory.digestTerms`;
+- a regex matching a canonical token is tested against the complete cold
+  vocabulary and produces a cold pointer.
+
+This guarantee is **lexical, not semantic**. There is no stemming, synonym
+expansion, intent classification, or regex over transcript prose. Cold regex
+matching operates on individual canonical vocabulary tokens because entry text
+and token order are intentionally discarded; phrase/punctuation regexes are
+only exact against hydrated/hot entry text.
+
+## Tiers and refresh
+
+The `memory.hotSessions` most recently modified sessions are hot and retain
+truncated normalized entries for BM25 and segment display. Older sessions are
+cold and retain only the V2 digest metadata above. A session crossing the hot
+boundary loses its shard after its digest is written. A selected cold session
+never requires retained transcript content: its source JSONL remains the truth.
+
+The default index directory is `<agentDir>/fabric/memory-index`. Refresh is
+synchronous; there is no background daemon or new database dependency.
+
+## Scopes and coverage
+
+| Scope | Meaning |
+| --- | --- |
+| `session` | Current session, or newest session for the current cwd. |
+| `project` | Sessions in the current cwd's Pi session directory. |
+| `global` | Sessions under the agent directory. |
+| `session:<id-or-path>` | One source session, explicitly hydrated without promotion. |
+
+For a query, `project` and `global` discover and search **all** eligible
+sessions. `memory.maxSessions` is not a search-coverage cutoff. It only bounds
+no-query browsing and session listing.
+
+Every recall response includes:
+
+```ts
+coverage: {
+  complete: boolean,
+  indexedSessions: number,
+  eligibleSessions: number,
+  staleSessions: number
+}
 ```
-> session abc (cold, /work/project, 2025-01-02T03:04:05.000Z) matched — re-run with scope "session:abc" to search its entries.
+
+`eligibleSessions` is the complete discovered query scope. `indexedSessions`
+is the number successfully refreshed or validated against source.
+`staleSessions` counts eligible sources that could not be indexed. `complete`
+is true only when no eligible source is stale. `No matches` is authoritative
+only with complete coverage; incomplete empty results say `No indexed matches`
+and report the gap.
+
+`page` and `pageSize` deterministically slice the globally ranked combined list
+of hot segments and cold pointers. Ranking tie-breaks remain score descending,
+source mtime descending, entry before digest, entry index ascending, then source
+path lexical order.
+
+## Queries
+
+`memory.recall({ query })` supports:
+
+- no query: bounded recent-entry browse;
+- plain text: canonical token OR search ranked with BM25-style scoring;
+- existing regex syntax: case-insensitive regex against hot entry text and
+  against each complete cold vocabulary token.
+
+`role`, `tool`, `since`, and `until` filters are structural. Cold filtering uses
+the address metadata rather than retained prose.
+
+A hot hit is returned as a conversation segment. A cold hit is a session
+pointer containing `matchedEntries`, an inclusive `entryRange`, and up to 50
+stable `entryIds` when available (`entryIdsTruncated` reports overflow). This
+keeps pointer output bounded. It does not include transcript content.
+
+## Explicit hydration and expansion
+
+A cold pointer is hydrated only by an explicit `session:<id-or-path>` scope.
+Hydration re-reads source JSONL, does not promote or persist a hot shard, and is
+bounded in returned results by pagination. An optional inclusive `entryRange`
+can constrain the hydrated address surface:
+
+```ts
+memory.recall({
+  scope: "session:abc",
+  query: "rare_token",
+  entryRange: { first: 12, last: 16 }
+})
 ```
 
-## Actions
+`memory.expand` re-reads full, untruncated source text. Existing index addresses
+remain supported, and stable entry IDs or an inclusive range can be used:
 
-All `memory.*` actions are **read risk** — they read local session files and
-the on-disk index, and write only to the index cache.
+```ts
+memory.expand({ session: "abc", indices: [12, 14] })
+memory.expand({ session: "abc", entryIds: ["entry-uuid"] })
+memory.expand({ session: "abc", entryRange: { first: 12, last: 16 } })
+```
 
-### `memory.recall({ query?, scope?, page?, pageSize?, role?, tool?, since?, until? })`
-
-Returns `{ scope, query, matchedCount, segmentCount, segments[], digestHits[], page, pageSize, text }`.
-Hot matches appear as entry segments. Cold matches appear in `digestHits` and
-as hydration pointers in `text`, which is ready to drop into model context.
-
-### `memory.expand({ session, indices })`
-
-Re-reads the source JSONL and returns full, untruncated text for the given
-entry indices. `session` is a file path, header UUID, or file stem. Use this
-when a recalled entry shows `…[truncated]` and you need the complete content.
-
-### `memory.sessions({ scope? })`
-
-Lists known sessions in scope as `{ id, file, cwd, mtime, entryCount, tier }[]`,
-where `tier` is `hot` or `cold`. Entry counts come from the corresponding shard
-or digest.
+The result contains `{ index, entryId, text }` records in source order.
 
 ## Configuration
-
-Append a `memory` block to `fabric.json` (global or project):
 
 ```json
 {
@@ -199,31 +178,10 @@ Append a `memory` block to `fabric.json` (global or project):
 }
 ```
 
-- `enabled` (default `true`) registers the `memory` provider. Set `false` to
-  disable without uninstalling.
-- `indexDir` (optional) overrides the shard cache location. Defaults to
-  `<agentDir>/fabric/memory-index/`.
-- `maxSessions` (default 500) bounds how many session files `global` scope
-  loads, newest first.
-- `maxEntryChars` (default 2000) truncates stored entry text; full text is
-  re-read on expand.
-- `hotSessions` (default 50) retains entry shards for the N most recently
-  modified sessions. Set 0 to keep every selected session cold.
-- `digestTerms` (default 200) caps the DF-weighted ranking terms in each cold
-  digest.
-
-## Integration
-
-The provider is registered in `FabricState.initialize()` (guarded on
-`config.memory.enabled`) alongside `McpProvider` and `MeshProvider`. From a
-`fabric_exec` program it is reachable through the generic provider protocol:
-
-```ts
-const actions = await tools.search({ query: "memory recall" });
-const schema = await tools.describe({ ref: actions[0].ref });
-const result = await tools.call({
-  ref: "memory.recall",
-  args: { query: "auth login", scope: "project" },
-});
-return result.text;
-```
+- `enabled`: registers the provider.
+- `indexDir`: cache location override.
+- `maxSessions`: no-query browse/session-list budget only.
+- `maxEntryChars`: stored hot entry-text limit; expand re-reads full source.
+- `hotSessions`: number of globally newest source sessions retaining hot shards.
+- `digestTerms`: bounded ranking-term count; it never limits cold lexical
+  discoverability.

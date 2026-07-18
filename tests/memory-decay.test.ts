@@ -117,7 +117,7 @@ describe("memory sleep cycle", () => {
     expect(fs.existsSync(digestPathForSession(oldest, indexDir))).toBe(true);
   });
 
-  it("folds goal, files, errors, tools, timestamps, and DF-weighted terms", () => {
+  it("folds exact vocabulary, addresses, files, errors, tools, timestamps, and ranking terms", () => {
     const file = seed("digest.jsonl", "digest", [
       message("u1", null, 0, userMessage("Ship auth cleanup\nwith a second line")),
       message("a1", "u1", 1, assistantToolCall("call-1", "read", { path: "src/auth.ts" })),
@@ -134,7 +134,7 @@ describe("memory sleep cycle", () => {
       digestTerms: 10,
     });
 
-    expect(digest.goalLine).toBe("Ship auth cleanup");
+    expect(digest).not.toHaveProperty("goalLine");
     expect(digest.filesTouched).toEqual(["src/auth.ts"]);
     expect(digest.entryCount).toBe(5);
     expect(digest.errorCount).toBe(1);
@@ -143,6 +143,11 @@ describe("memory sleep cycle", () => {
     expect(digest.lastTs).toBe(Date.parse(timestamp(4)));
     expect(digest.terms[0]).toBe("auth");
     expect(new Set(digest.terms).size).toBe(digest.terms.length);
+    expect(digest.vocabulary.map(([term]) => term)).toContain("implementation");
+    expect(digest.vocabulary).toEqual(
+      [...digest.vocabulary].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+    );
+    expect(digest.addresses[0]).toEqual([0, "u1", "user", null, Date.parse(timestamp(0))]);
   });
 
   it("returns a cold session pointer instead of entry matches", async () => {
