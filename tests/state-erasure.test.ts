@@ -173,7 +173,9 @@ describe("evidence-attached complexity transitions", () => {
         project,
       ),
     ).rejects.toThrow(/deleting error handling.*abstraction from vandalism.*remains pending.*state\.verify/s);
-    expect(mesh.read({ topic: STATE_TOPIC })).toHaveLength(1);
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).filter((event) => event.kind === "transition"),
+    ).toHaveLength(1);
     expect(mesh.get(`${COMPLEXITY_KEY_PREFIX}${file}`)?.version).toBe(1);
 
     const accepted = await store.transition(

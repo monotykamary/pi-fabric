@@ -12,9 +12,9 @@ These are separate states:
 2. **Evidence attachment** stores shell commands on the transition. Attachment means only that the commands can be replayed; it does not mean they ran or passed.
 3. **Certification** occurs only when `state.verify` selects at least one transition, runs at least one evidence command, and every result is `confirmed` (exit 0). A successful verification emits a durable `state.certified` event.
 
-Verification fails closed. A missing current or requested target, empty evidence, non-zero exit, spawn error, timeout, or cancellation returns `certified: false` and `violated: true`, and emits `state.violated` with every blocking reason. `violated` is preserved for compatibility; callers should make the positive check `if (!verification.certified)`.
+Verification fails closed. A missing current or requested target, empty evidence, non-zero exit, spawn error, timeout, cancellation, or certification-publish failure returns `certified: false` and `violated: true`, and attempts to emit `state.violated` with every blocking reason. Violation reporting is best effort: if mesh publication also fails, the report is still returned and includes `reportingError`. In that exceptional case no durable failure event exists, so an earlier durable certificate cannot be revoked in storage; callers must treat the returned report as authoritative. `violated` is preserved for compatibility; callers should make the positive check `if (!verification.certified)`. A successful result is durable only after `state.certified` is published.
 
-Evidence commands are arbitrary shell commands and are trusted workflow input. They execute with the invoking process's authority. Tests, type checks, and greps can be strong, useful evidence for a scoped claim, but passing tests are evidence rather than proof.
+Evidence commands are arbitrary shell commands and are legacy trusted workflow input. They execute with the invoking process's authority. The state layer executes the command exactly as shell input and does not parse, classify, or infer meaning from its prose or output. Tests, type checks, and greps can be strong, useful evidence for a scoped claim, but passing tests are evidence rather than proof.
 
 ## Schema-inspired mapping
 
@@ -39,14 +39,16 @@ Storage is mesh-native. Raw mesh reads can inspect all state-layer records.
 
 The append-only JSONL event log contains:
 
-- **`transition`** — `data: { label, from?, to, summary, evidence?, tags?, kind?, complexity?, certificationStatus?, ts }`.
-- **`state.certified`** — emitted only after successful verification. Its data contains `targets`, the verification-time `head`, `evidenceDigest`, `resultDigest`, `certificationStatus: "certified"`, and `ts`.
-- **`state.violated`** — emitted for every failed-closed verification. Its data contains non-confirmed `results`, all blocking `reasons`, selected `targets`, and both digests.
+- **`transition`** — a versioned proposal: `data: { protocolVersion: 1, phase: "proposed", label, from?, to, summary, evidence?, tags?, kind?, complexity?, certificationStatus?, ts }`.
+- **`transition.committed`** — makes its referenced proposal visible after all ledger and head CAS writes succeed.
+- **`transition.rejected`** — records a failed proposal and its rollback/quarantine status. A proposal is never visible merely because this marker exists.
+- **`state.certified`** — emitted only after successful verification. Its data contains bounded `targets`, the verification-time `head`, `evidenceDigest`, `resultDigest`, `certificationStatus: "certified"`, and `ts`.
+- **`state.violated`** — best-effort reporting for failed-closed verification. Its data contains bounded non-confirmed `results`, blocking `reasons`, selected `targets`, the verification-time `head`, and both digests.
 - **`state.goal.met`** — emitted when the executable goal predicate passes.
 
-A certificate target includes the transition's stable `transitionId`, `label`, and `to`. When verification has a head, the certificate also records its `transitionId`, label, destination, and CAS `version`. Certificate currentness is derived by comparing that identity with the current head. Advancing the head leaves the old certificate durable but makes `current: false`; an old certificate is never presented as certification of a changed head.
+A certificate target includes the transition's stable `transitionId`, `label`, and `to`. When verification has a head, the certificate also records its `transitionId`, label, destination, and CAS `version`. Certification and violation events are folded in sequence for each target. A transition receives a certified overlay only when its latest durable verification outcome is `state.certified`; a later `state.violated` removes that overlay. Certificate currentness additionally requires the complete recorded head identity—transition ID, label, destination, and CAS version—to equal the committed current head. Advancing the head leaves the old certificate durable but makes `current: false`; an old certificate is never presented as certification of a changed head.
 
-Both digests use SHA-256 and a `sha256:<hex>` representation. `evidenceDigest` deterministically covers the ordered target identities and attached commands. `resultDigest` deterministically covers the exact ordered results and failures. The result digest therefore changes when command output or failure details change.
+Both digests use SHA-256 and a `sha256:<hex>` representation. `evidenceDigest` deterministically covers the full ordered target identities and attached commands. `resultDigest` deterministically covers the ordered statuses, full-output digests and byte counts, bounded prefixes, omitted-byte metadata, command/claim digests, and failures. The result digest therefore changes when any byte of command output or failure details changes even when the returned output prefix is truncated.
 
 Inspect the raw values with:
 
@@ -62,6 +64,7 @@ The compare-and-swap head contains the transition identity and claim:
 
 ```json
 {
+  "protocolVersion": 1,
   "label": "applied-auth-patch",
   "to": "guard-applied",
   "summary": "Refresh-token rotation now holds the lock",
@@ -73,7 +76,7 @@ The compare-and-swap head contains the transition identity and claim:
 }
 ```
 
-The mesh entry's `version` is exposed as `head.version`. A complexity-reduction head initially stores `certificationStatus: "pending"`. `state.get` overlays a later matching certificate for read purposes without rewriting or silently advancing the head.
+The mesh entry's `version` is exposed as `head.version`. Versioned heads are readable only while their transition has a visible commit marker; a head tied to an uncommitted/quarantined proposal fails closed as absent. A complexity-reduction head initially stores `certificationStatus: "pending"`. `state.get` overlays a later matching latest certificate for read purposes without rewriting or silently advancing the head.
 
 ### Keys `state/complexity/<file>`
 
@@ -105,7 +108,7 @@ Actions are discovered through `tools.call({ ref: "state.<action>", args })`.
 
 `{ label, from?, to, summary, evidence?, tags?, kind?, complexity?: { files: string[] }, force? }`
 
-The provider validates `from` against the current head's `to` when supplied, appends a transition, then CAS-advances `state/current`. `force: true` preserves the existing mismatch/contention override behavior.
+The provider validates `from` against the current committed head's `to` when supplied, appends a versioned proposal, CAS-writes complexity ledgers, CAS-advances `state/current`, and finally appends its commit marker. `force: true` preserves the existing mismatch/contention override behavior. Reads, history, verification selection, and certificate targeting ignore proposed or rejected transitions. Legacy transition events with no `phase` remain committed for compatibility.
 
 When `complexity.files` is present, project-relative TS/JS/TSX/JSX files are counted immediately. The first supported observation is a baseline; later observations compare with and update the ledger. Unsupported files are reported but do not enter the ledger.
 
@@ -121,7 +124,7 @@ Returns `{ head, goal, complexity, certification, recentLabels }`. `certificatio
 
 ### `state.history` — risk: `read`
 
-`{ label?, limit?, includeArchived? }` folds transitions into the ordered label graph and returns `{ transitions, labels, certifications }`. Matching transitions expose a later certificate and `certificationStatus: "certified"`; a reduction without one remains `pending`.
+`{ label?, limit?, includeArchived? }` folds transitions into the ordered label graph and returns `{ transitions, labels, certifications }`. Matching committed transitions expose a certificate only when it is their latest verification outcome and `certificationStatus: "certified"`; a committed reduction without a latest successful outcome remains `pending`. Proposals and rejected transitions never appear.
 
 The fold finds the last representation transition and excludes earlier transitions and their certificates by default. `includeArchived: true` reveals the full append-only transition history and permits archived certificates to be shown. A `label` filter matches `label`, `from`, or `to` within the selected archive view.
 
@@ -133,7 +136,7 @@ The fold finds the last representation transition and excludes earlier transitio
 
 `{ labels?, includeArchived?, timeoutMs? }` selects the current head when `labels` is omitted, or active transitions matching the supplied labels. Archived transitions are excluded unless `includeArchived: true`.
 
-Commands run sequentially with a per-command timeout (default 30 seconds). Each result is `{ claim, command, status, exitCode, output, error? }`, where `status` is:
+Commands run sequentially with a per-command timeout (default 30 seconds). Combined stdout/stderr is streamed rather than accumulated without limit. Each report retains at most a 32 KiB UTF-8 prefix per command and includes `outputBytes`, `outputOmittedBytes`, and a digest of the complete byte stream. Claims, commands, and errors are also byte-bounded in results and carry digests/omission metadata. Verification events use smaller bounded prefixes, bounded result/reason arrays, and target chunks so each payload stays comfortably below the default 256 KiB mesh limit. Each result includes `{ claim, command, status, exitCode, output, outputBytes, outputOmittedBytes, outputDigest, error? }`, where `status` is:
 
 - `confirmed` for exit 0;
 - `violated` for a non-zero exit;
@@ -141,7 +144,9 @@ Commands run sequentially with a per-command timeout (default 30 seconds). Each 
 
 The report adds `{ certified, violated, certificationStatus, evidenceDigest, resultDigest, failures, certificate? }`. `certified` is true if and only if one or more evidence commands ran and every result was confirmed. All other outcomes are blocking and publish `state.violated`. A successful run publishes `state.certified` and returns its certificate.
 
-An explicitly empty `labels` array is an empty selection and fails closed. Requesting an archived label without `includeArchived` also fails closed as a missing active target.
+An explicitly empty `labels` array is an empty selection and fails closed. Requesting an archived, proposed, rejected, or otherwise uncommitted label without a visible committed match also fails closed as a missing active target.
+
+On POSIX, each command shell is the leader of a detached process group; timeout or abort sends `SIGKILL` to that group and waits for the shell/stdio close before returning. This covers descendants that remain in that process group, but cannot cover a descendant that deliberately creates a different process group/session. On Windows, timeout/abort awaits a bounded `taskkill /T /F` attempt and falls back to direct child termination; Windows cleanup is explicitly best effort and does not claim that every independently detached descendant is gone.
 
 ### `state.goal` — risk: `write`
 
@@ -149,7 +154,7 @@ An explicitly empty `labels` array is an empty selection and fails closed. Reque
 
 ### `state.checkGoal` — risk: `execute`
 
-`{ timeoutMs? }` runs the goal predicate and reports `{ passed, output, exitCode, error? }`. It publishes `state.goal.met` when the command exits 0. Goal checks are separate from state certification.
+`{ timeoutMs? }` runs the goal predicate and reports `{ passed, output, exitCode, error? }`. It uses the same 32 KiB command-output cap; a passing `state.goal.met` event stores a smaller bounded prefix plus full-stream digest and omission metadata. Goal checks are separate from state certification.
 
 ## Complexity rule
 
@@ -164,12 +169,12 @@ Strings, template/JSX prose, regular-expression literals, and comments are skipp
 
 ## Determinism and contention
 
-The head is CAS-advanced with a bounded eight-attempt retry loop. Transition events are durable before the head moves, so the head remains recomputable from the log. On CAS failure the layer re-reads and re-validates `from`:
+The head is CAS-advanced with a bounded eight-attempt retry loop. A proposal is not history until its commit marker follows successful ledger and head writes. On ledger, head, or commit-marker failure, the layer CAS-restores each completed write from its captured before-value (or CAS-deletes a newly created value) and best-effort emits `transition.rejected`. Deleted-key versions are carried in rejection metadata so later CAS creation remains version-aware. On CAS failure the layer re-reads and re-validates `from`:
 
 - if the transition still chains from the new head, it retries with the new version;
 - if the chain is broken, it raises a contention error naming the actual head.
 
-`force: true` skips both the pre-append mismatch check and contention re-validation. Certification adds events but does not alter this transition, history, or archive behavior.
+`force: true` skips both the pre-append mismatch check and contention re-validation. If every restoration succeeds, the rejected proposal stays invisible and prior ledger/head values are restored. If restoration or rejected-marker publication fails, the thrown error explicitly reports rollback quarantine/reporting failure; the proposal still has no commit marker and is never folded into history or verification. Certification adds events but does not alter transition or archive ordering.
 
 ## Activity
 

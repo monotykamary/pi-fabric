@@ -2,9 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import {
+  COMPLEXITY_KEY_PREFIX,
   CURRENT_KEY,
   GOAL_KEY,
   StateStore,
@@ -66,12 +67,21 @@ describe("StateStore", () => {
     expect(entry?.value).toMatchObject({ to: "reviewed", label: "review" });
 
     const events = mesh.read({ topic: STATE_TOPIC });
-    expect(events).toHaveLength(2);
-    expect(events[0]?.kind).toBe("transition");
-    expect(events[1]?.data).toMatchObject({
+    expect(events.map((event) => event.kind)).toEqual([
+      "transition",
+      "transition.committed",
+      "transition",
+      "transition.committed",
+    ]);
+    expect(events[2]?.data).toMatchObject({
+      phase: "proposed",
       label: "review",
       from: "drafted",
       to: "reviewed",
+    });
+    expect(events[3]?.data).toMatchObject({
+      phase: "committed",
+      transitionId: events[2]?.id,
     });
   });
 
@@ -93,9 +103,11 @@ describe("StateStore", () => {
       `State from-mismatch: head is at "drafted", but transition declares from "wrong"`,
     );
 
-    // The head must not have moved, and no event was appended.
+    // The head must not have moved, and no proposal was appended.
     expect(store.get().head?.to).toBe("drafted");
-    expect(mesh.read({ topic: STATE_TOPIC })).toHaveLength(1);
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).filter((event) => event.kind === "transition"),
+    ).toHaveLength(1);
   });
 
   it("overrides the from-mismatch and contention guards with force", async () => {
@@ -291,6 +303,41 @@ describe("StateStore", () => {
     }
   });
 
+  it("revokes a successful certificate when the latest verification fails", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-revoke-"));
+    roots.push(project);
+    const marker = path.join(project, "passing");
+    fs.writeFileSync(marker, "yes");
+
+    const transition = await store.transition(
+      {
+        label: "mutable-check",
+        to: "checked",
+        summary: "the marker exists",
+        evidence: ["test -f passing"],
+      },
+      identity,
+      project,
+    );
+    expect((await store.verify({ cwd: project, identity })).certified).toBe(true);
+    expect(store.get().certification.current).not.toBeNull();
+
+    fs.rmSync(marker);
+    const failed = await store.verify({ cwd: project, identity });
+    expect(failed).toMatchObject({ certified: false, violated: true });
+    expect(store.get().certification.current).toBeNull();
+    expect(store.get().certification.recent[0]).toMatchObject({
+      current: false,
+      targets: [{ transitionId: transition.event.id }],
+    });
+    expect(store.history().transitions[0]).not.toHaveProperty("certificate");
+    expect(store.history().transitions[0]).not.toMatchObject({
+      certificationStatus: "certified",
+    });
+  });
+
   it("publishes deterministic certificates and does not report them current after head changes", async () => {
     const mesh = createStore();
     const store = new StateStore(mesh);
@@ -389,6 +436,87 @@ describe("StateStore", () => {
     expect(results[0]?.status).toBe("violated");
   });
 
+  it("bounds huge failing output and returns fail-closed when violation reporting fails", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    await store.transition(
+      {
+        label: "huge-failure",
+        to: "failed",
+        summary: "large output must remain reportable",
+        evidence: [
+          `node -e "process.stderr.write('x'.repeat(350000), () => process.exit(2))"`,
+        ],
+      },
+      identity,
+    );
+
+    const report = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(report).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [{ status: "violated", outputBytes: 350000 }],
+    });
+    expect(report.results[0]?.outputOmittedBytes).toBeGreaterThan(300_000);
+    const violation = mesh
+      .read({ topic: STATE_TOPIC })
+      .reverse()
+      .find((event) => event.kind === "state.violated");
+    expect(violation).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(violation), "utf8")).toBeLessThan(64 * 1024);
+
+    const publish = mesh.publish.bind(mesh);
+    vi.spyOn(mesh, "publish").mockImplementation((input) =>
+      input.kind === "state.violated"
+        ? Promise.reject(new Error("injected reporting outage"))
+        : publish(input),
+    );
+    const reportingFailure = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(reportingFailure).toMatchObject({
+      certified: false,
+      violated: true,
+      reportingError: "injected reporting outage",
+      results: [{ status: "violated" }],
+    });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "kills the POSIX evidence process group on timeout",
+    async () => {
+      const mesh = createStore();
+      const store = new StateStore(mesh);
+      const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-process-group-"));
+      roots.push(project);
+      const marker = path.join(project, "descendant-survived");
+      fs.writeFileSync(
+        path.join(project, "child.mjs"),
+        `import fs from "node:fs"; setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, "leaked"), 180);`,
+      );
+      fs.writeFileSync(
+        path.join(project, "parent.mjs"),
+        `import { spawn } from "node:child_process"; spawn(process.execPath, ["child.mjs"], { stdio: "ignore" }); setInterval(() => {}, 1000);`,
+      );
+      await store.transition(
+        {
+          label: "process-tree",
+          to: "timed-out",
+          summary: "descendants are terminated with the shell group",
+          evidence: ["node parent.mjs"],
+        },
+        identity,
+        project,
+      );
+
+      const report = await store.verify({ cwd: project, timeoutMs: 40, identity });
+      expect(report).toMatchObject({
+        certified: false,
+        results: [{ status: "error", error: "timeout after 40ms" }],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 260));
+      expect(fs.existsSync(marker)).toBe(false);
+    },
+  );
+
   it("sets a goal and reports pass/fail with a state.goal.met event", async () => {
     const mesh = createStore();
     const store = new StateStore(mesh);
@@ -423,6 +551,273 @@ describe("StateStore", () => {
     await expect(
       store.checkGoal({ cwd: os.tmpdir(), identity }),
     ).rejects.toThrow("No goal set");
+  });
+
+  it("excludes uncommitted proposals, rejects explicit ghost verification, and reads legacy transitions", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const ghost = await mesh.publish({
+      topic: STATE_TOPIC,
+      kind: "transition",
+      from: identity,
+      text: "ghost",
+      data: {
+        protocolVersion: 1,
+        phase: "proposed",
+        label: "ghost-label",
+        to: "ghost-state",
+        summary: "never committed",
+        evidence: ["true"],
+        ts: Date.now(),
+      },
+    });
+    await mesh.publish({
+      topic: STATE_TOPIC,
+      kind: "transition",
+      from: identity,
+      text: "legacy",
+      data: {
+        label: "legacy-label",
+        to: "legacy-state",
+        summary: "legacy events are committed",
+        evidence: ["true"],
+        ts: Date.now(),
+      },
+    });
+
+    expect(store.history({ includeArchived: true }).transitions.map((item) => item.label)).toEqual([
+      "legacy-label",
+    ]);
+    const report = await store.verify({
+      labels: ["ghost-label"],
+      includeArchived: true,
+      cwd: os.tmpdir(),
+      identity,
+    });
+    expect(report).toMatchObject({
+      certified: false,
+      failures: [{ reason: "missing-target" }],
+    });
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).some(
+        (event) =>
+          event.kind === "transition.committed" &&
+          (event.data as { transitionId?: string }).transitionId === ghost.id,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects a proposal on ledger failure and rolls back prior ledger writes", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-ledger-failure-"));
+    roots.push(project);
+    fs.mkdirSync(path.join(project, "src"));
+    fs.writeFileSync(path.join(project, "src/a.ts"), "if (a) run();\n");
+    fs.writeFileSync(path.join(project, "src/b.ts"), "if (b) run();\n");
+    const put = mesh.put.bind(mesh);
+    vi.spyOn(mesh, "put").mockImplementation((input) =>
+      input.key === `${COMPLEXITY_KEY_PREFIX}src/b.ts`
+        ? Promise.reject(new Error("injected ledger failure"))
+        : put(input),
+    );
+
+    await expect(
+      store.transition(
+        {
+          label: "ledger-ghost",
+          to: "uncommitted",
+          summary: "both ledgers must commit",
+          complexity: { files: ["src/a.ts", "src/b.ts"] },
+        },
+        identity,
+        project,
+      ),
+    ).rejects.toThrow("State transition rejected: injected ledger failure");
+    expect(mesh.list(COMPLEXITY_KEY_PREFIX)).toEqual([]);
+    expect(store.getHead()).toBeNull();
+    expect(store.history({ includeArchived: true }).transitions).toEqual([]);
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).reverse().find(
+        (event) => event.kind === "transition.rejected",
+      )?.data,
+    ).toMatchObject({
+      phase: "rejected",
+      rollback: { restored: true },
+      quarantine: false,
+    });
+  });
+
+  it("restores the previous head and ledgers when the commit marker fails", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-commit-failure-"));
+    roots.push(project);
+    fs.mkdirSync(path.join(project, "src"));
+    const file = "src/value.ts";
+    fs.writeFileSync(path.join(project, file), "if (a) run();\n");
+    const baseline = await store.transition(
+      {
+        label: "baseline",
+        to: "before",
+        summary: "baseline",
+        complexity: { files: [file] },
+      },
+      identity,
+      project,
+    );
+    const beforeLedger = mesh.get(`${COMPLEXITY_KEY_PREFIX}${file}`)?.value;
+    fs.writeFileSync(path.join(project, file), "if (a) run();\nwhile (b) run();\n");
+    const publish = mesh.publish.bind(mesh);
+    let injected = false;
+    vi.spyOn(mesh, "publish").mockImplementation((input) => {
+      if (input.kind === "transition.committed" && !injected) {
+        injected = true;
+        return Promise.reject(new Error("injected commit marker failure"));
+      }
+      return publish(input);
+    });
+
+    await expect(
+      store.transition(
+        {
+          label: "commit-ghost",
+          from: "before",
+          to: "after",
+          summary: "must not become visible",
+          complexity: { files: [file] },
+        },
+        identity,
+        project,
+      ),
+    ).rejects.toThrow("injected commit marker failure");
+    expect(store.getHead()).toMatchObject({
+      transitionId: baseline.event.id,
+      to: "before",
+    });
+    expect(mesh.get(`${COMPLEXITY_KEY_PREFIX}${file}`)?.value).toEqual(beforeLedger);
+    expect(store.history({ includeArchived: true }).transitions.map((item) => item.label)).toEqual([
+      "baseline",
+    ]);
+  });
+
+  it("quarantines a rejected proposal when CAS restoration fails", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-quarantine-"));
+    roots.push(project);
+    fs.mkdirSync(path.join(project, "src"));
+    const file = "src/quarantine.ts";
+    const key = `${COMPLEXITY_KEY_PREFIX}${file}`;
+    fs.writeFileSync(path.join(project, file), "if (a) run();\n");
+    await store.transition(
+      {
+        label: "baseline",
+        to: "before",
+        summary: "baseline",
+        complexity: { files: [file] },
+      },
+      identity,
+      project,
+    );
+    fs.writeFileSync(path.join(project, file), "if (a) run();\nwhile (b) run();\n");
+    const put = mesh.put.bind(mesh);
+    vi.spyOn(mesh, "put").mockImplementation((input) => {
+      if (
+        input.key === CURRENT_KEY &&
+        (input.value as { label?: string }).label === "quarantined"
+      ) {
+        return Promise.reject(new Error("injected head failure"));
+      }
+      if (input.key === key && (input.value as { count?: number }).count === 1) {
+        return Promise.reject(new Error("injected rollback failure"));
+      }
+      return put(input);
+    });
+
+    await expect(
+      store.transition(
+        {
+          label: "quarantined",
+          from: "before",
+          to: "after",
+          summary: "rollback cannot restore the ledger",
+          complexity: { files: [file] },
+        },
+        identity,
+        project,
+      ),
+    ).rejects.toThrow(/rollback quarantine.*injected rollback failure/);
+    expect(store.history({ includeArchived: true }).transitions.map((item) => item.label)).toEqual([
+      "baseline",
+    ]);
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).reverse().find(
+        (event) => event.kind === "transition.rejected",
+      )?.data,
+    ).toMatchObject({
+      quarantine: true,
+      rollback: {
+        restored: false,
+        errors: [expect.stringContaining("injected rollback failure")],
+      },
+    });
+  });
+
+  it("rejects a proposed transition when contention breaks its chain", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    await store.transition(
+      { label: "baseline", to: "drafted", summary: "baseline" },
+      identity,
+    );
+    const put = mesh.put.bind(mesh);
+    let injected = false;
+    vi.spyOn(mesh, "put").mockImplementation(async (input) => {
+      if (
+        input.key === CURRENT_KEY &&
+        (input.value as { label?: string }).label === "contended" &&
+        !injected
+      ) {
+        injected = true;
+        await put({
+          key: CURRENT_KEY,
+          value: {
+            label: "concurrent",
+            to: "merged",
+            summary: "concurrent advance",
+            kind: "state",
+            transitionId: "legacy-concurrent-head",
+            ts: Date.now(),
+          },
+          ifVersion: 1,
+          identity,
+        });
+      }
+      return put(input);
+    });
+
+    await expect(
+      store.transition(
+        {
+          label: "contended",
+          from: "drafted",
+          to: "reviewed",
+          summary: "loses contention",
+        },
+        identity,
+      ),
+    ).rejects.toThrow(
+      `State contention: head is at "merged", cannot transition from "drafted"`,
+    );
+    expect(store.history({ includeArchived: true }).transitions.map((item) => item.label)).toEqual([
+      "baseline",
+    ]);
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).reverse().find(
+        (event) => event.kind === "transition.rejected",
+      )?.data,
+    ).toMatchObject({ quarantine: false, rollback: { restored: true } });
   });
 
   it("retries the CAS when contention lands on a compatible head", async () => {

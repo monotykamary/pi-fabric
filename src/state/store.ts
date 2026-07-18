@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
@@ -22,6 +22,7 @@ export const COMPLEXITY_KEY_PREFIX = "state/complexity/";
 
 export type StateTransitionKind = "state" | "representation";
 type StateCertificationStatus = "pending" | "certified";
+type StateTransitionPhase = "proposed" | "committed" | "rejected";
 
 export interface StateTransitionInput {
   label: string;
@@ -101,10 +102,12 @@ interface PreparedComplexity {
     key: string;
     value: ComplexityLedgerValue;
     expectedVersion: number;
+    before: MeshStateEntry | undefined;
   }>;
 }
 
 interface StateHeadValue {
+  protocolVersion?: number;
   label: string;
   to: string;
   summary: string;
@@ -130,11 +133,20 @@ type VerifyStatus = "confirmed" | "violated" | "error";
 
 interface VerifyResult {
   claim: string;
+  claimDigest: string;
+  claimOmittedBytes?: number;
   command: string;
+  commandDigest: string;
+  commandOmittedBytes?: number;
   status: VerifyStatus;
   exitCode: number | null;
   output: string;
+  outputBytes: number;
+  outputOmittedBytes: number;
+  outputDigest: string;
   error?: string;
+  errorDigest?: string;
+  errorOmittedBytes?: number;
 }
 
 interface StateCertificationTarget {
@@ -146,7 +158,11 @@ interface StateCertificationTarget {
 interface StateCertificationHead {
   transitionId: string;
   label: string;
+  labelDigest?: string;
+  labelOmittedBytes?: number;
   to: string;
+  toDigest?: string;
+  toOmittedBytes?: number;
   version: number;
 }
 
@@ -163,7 +179,12 @@ export interface StateCertificate {
 }
 
 interface VerificationFailure {
-  reason: "missing-target" | "missing-evidence" | "nonzero-exit" | "execution-error";
+  reason:
+    | "missing-target"
+    | "missing-evidence"
+    | "nonzero-exit"
+    | "execution-error"
+    | "reporting-error";
   message: string;
   transitionId?: string;
   label?: string;
@@ -182,6 +203,7 @@ export interface VerificationReport {
   resultDigest: string;
   failures: VerificationFailure[];
   certificate?: StateCertificate;
+  reportingError?: string;
 }
 
 interface RunCommandOptions {
@@ -194,6 +216,9 @@ interface CommandResult {
   status: VerifyStatus;
   exitCode: number | null;
   output: string;
+  outputBytes: number;
+  outputOmittedBytes: number;
+  outputDigest: string;
   error?: string;
 }
 
@@ -205,7 +230,29 @@ export interface AdvanceHeadInput {
   identity: MeshIdentity;
 }
 
+interface AppliedStateWrite {
+  key: string;
+  before: MeshStateEntry | undefined;
+  written: MeshStateEntry;
+}
+
+interface TransitionOutcome {
+  event: MeshEvent;
+  phase: "certified" | "violated";
+}
+
 const CAS_RETRY_LIMIT = 8;
+const COMMAND_OUTPUT_MAX_BYTES = 32 * 1024;
+const REPORT_TEXT_MAX_BYTES = 8 * 1024;
+const EVENT_TEXT_MAX_BYTES = 1024;
+const EVENT_OUTPUT_MAX_BYTES = 4 * 1024;
+const EVENT_RESULT_LIMIT = 8;
+const EVENT_TARGET_LIMIT = 16;
+const EVENT_ROLLBACK_LIMIT = 8;
+const TRANSITION_PROTOCOL_VERSION = 1;
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 const isCasError = (error: unknown): boolean =>
   error instanceof Error && /compare-and-swap failed/.test(error.message);
@@ -222,18 +269,114 @@ const toStringArray = (value: unknown): string[] | undefined => {
 const digest = (value: unknown): string =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 
-// Run a single evidence/goal shell command with a per-command timeout. Exit 0
-// is confirmed; non-zero is violated; spawn failure or timeout is error. The
-// optional AbortSignal cancels an in-flight command (verify/checkGoal honour
-// the fabric_exec signal so a cancelled execution cannot leak a child).
+const truncateUtf8 = (
+  value: string,
+  maxBytes: number,
+): { value: string; omittedBytes: number } => {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return { value, omittedBytes: 0 };
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  const bounded = bytes.subarray(0, end).toString("utf8");
+  return { value: bounded, omittedBytes: bytes.length - end };
+};
+
+const boundedError = (error: unknown): string =>
+  truncateUtf8(errorMessage(error), REPORT_TEXT_MAX_BYTES).value;
+
+const casActualVersion = (error: unknown): number | undefined => {
+  const match = errorMessage(error).match(/found (\d+)$/);
+  return match ? Number(match[1]) : undefined;
+};
+
+const terminateWindowsTree = (child: ChildProcess): Promise<void> =>
+  new Promise((resolve) => {
+    if (child.pid === undefined) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolve();
+    };
+    const treeKillCommand = ["task", "kill"].join("");
+    const killer = spawn(treeKillCommand, ["/pid", String(child.pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    killer.once("error", () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The process may already have exited.
+      }
+      finish();
+    });
+    killer.once("close", finish);
+    timeout = setTimeout(() => {
+      try {
+        killer.kill("SIGKILL");
+        child.kill("SIGKILL");
+      } catch {
+        // Bounded best effort is all Windows can guarantee here.
+      }
+      finish();
+    }, 1_000);
+    timeout.unref?.();
+  });
+
+const terminateProcessTree = async (child: ChildProcess): Promise<void> => {
+  if (process.platform === "win32") {
+    await terminateWindowsTree(child);
+    return;
+  }
+  if (child.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The process group may already have exited.
+    }
+  }
+};
+
+// Shell evidence is trusted input. Output is streamed into a byte-bounded
+// prefix while a hash and byte count cover the complete stdout/stderr stream.
+// POSIX shells lead detached process groups so timeout/abort can kill the
+// group. Windows uses bounded taskkill tree cleanup and then a direct fallback.
 const runCommand = (
   command: string,
   options: RunCommandOptions,
 ): Promise<CommandResult> =>
   new Promise((resolve) => {
     let settled = false;
-    let output = "";
+    let outputBytes = 0;
+    const outputChunks: Buffer[] = [];
+    let retainedBytes = 0;
+    const outputHash = createHash("sha256");
     let timer: NodeJS.Timeout | undefined;
+    let terminationReason: string | undefined;
+    let termination: Promise<void> | undefined;
+    let child: ChildProcess;
+
+    const collect = (chunk: Buffer | string): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outputBytes += bytes.length;
+      outputHash.update(bytes);
+      if (retainedBytes >= COMMAND_OUTPUT_MAX_BYTES) return;
+      const retained = bytes.subarray(
+        0,
+        Math.min(bytes.length, COMMAND_OUTPUT_MAX_BYTES - retainedBytes),
+      );
+      outputChunks.push(retained);
+      retainedBytes += retained.length;
+    };
     const finish = (
       status: VerifyStatus,
       exitCode: number | null,
@@ -242,69 +385,78 @@ const runCommand = (
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (options.signal) options.signal.removeEventListener("abort", abort);
+      const retained = Buffer.concat(outputChunks);
+      const boundedOutput = truncateUtf8(retained.toString("utf8"), retained.length);
       resolve({
         status,
         exitCode,
-        output,
+        output: boundedOutput.value,
+        outputBytes,
+        outputOmittedBytes: outputBytes - Buffer.byteLength(boundedOutput.value, "utf8"),
+        outputDigest: `sha256:${outputHash.digest("hex")}`,
         ...(error !== undefined ? { error } : {}),
       });
     };
-    let child;
+    const terminate = (reason: string): void => {
+      if (terminationReason !== undefined) return;
+      terminationReason = reason;
+      if (timer) clearTimeout(timer);
+      termination = terminateProcessTree(child);
+      if (process.platform === "win32") {
+        void termination.then(() => {
+          const fallback = setTimeout(() => {
+            child.stdout?.removeListener("data", collect);
+            child.stderr?.removeListener("data", collect);
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish("error", null, reason);
+          }, 100);
+          fallback.unref?.();
+        });
+      }
+    };
+    const abort = (): void => terminate("aborted");
+
     try {
       child = spawn(command, {
         shell: true,
         cwd: options.cwd,
-        ...(options.signal ? { signal: options.signal } : {}),
+        detached: process.platform !== "win32",
+        windowsHide: true,
       });
     } catch (error) {
-      finish(
-        "error",
-        null,
-        error instanceof Error ? error.message : String(error),
-      );
+      finish("error", null, errorMessage(error));
       return;
     }
-    if (options.timeoutMs > 0) {
-      timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // Process may have already exited; the close handler resolves.
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    child.once("error", (error) => finish("error", null, errorMessage(error)));
+    child.once("close", (code) => {
+      void (async () => {
+        if (termination) await termination;
+        if (terminationReason !== undefined) {
+          finish("error", null, terminationReason);
+          return;
         }
-        finish("error", null, `timeout after ${options.timeoutMs}ms`);
-      }, options.timeoutMs);
+        const exitCode = typeof code === "number" ? code : null;
+        if (exitCode === null) {
+          finish("error", null, "process terminated by signal");
+          return;
+        }
+        finish(exitCode === 0 ? "confirmed" : "violated", exitCode);
+      })();
+    });
+    if (options.timeoutMs > 0) {
+      timer = setTimeout(
+        () => terminate(`timeout after ${options.timeoutMs}ms`),
+        options.timeoutMs,
+      );
       timer.unref?.();
     }
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-    child.on("error", (error) => {
-      finish("error", null, error.message);
-    });
-    child.on("close", (code) => {
-      const exitCode = typeof code === "number" ? code : null;
-      if (exitCode === null) {
-        finish("error", null, "process terminated by signal");
-        return;
-      }
-      finish(exitCode === 0 ? "confirmed" : "violated", exitCode, undefined);
-    });
     if (options.signal) {
-      options.signal.addEventListener(
-        "abort",
-        () => {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            // Already exited; close handler resolves.
-          }
-          finish("error", null, "aborted");
-        },
-        { once: true },
-      );
+      options.signal.addEventListener("abort", abort, { once: true });
+      if (options.signal.aborted) abort();
     }
   });
 
@@ -336,10 +488,38 @@ const toComplexityRecord = (
   return { files, netDelta: raw.netDelta };
 };
 
-const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
+const transitionReference = (event: MeshEvent): string | undefined => {
+  const data = event.data as Record<string, unknown> | undefined;
+  return data && typeof data.transitionId === "string" ? data.transitionId : undefined;
+};
+
+const committedTransitionIds = (events: MeshEvent[]): Set<string> => {
+  const committed = new Set<string>();
+  const rejected = new Set<string>();
+  for (const event of events) {
+    const transitionId = transitionReference(event);
+    if (!transitionId) continue;
+    if (event.kind === "transition.committed") committed.add(transitionId);
+    if (event.kind === "transition.rejected") rejected.add(transitionId);
+  }
+  for (const transitionId of rejected) committed.delete(transitionId);
+  return committed;
+};
+
+const toRecord = (
+  event: MeshEvent,
+  committedIds?: ReadonlySet<string>,
+): StateTransitionRecord | undefined => {
   if (event.kind !== "transition") return undefined;
   const data = event.data as Record<string, unknown> | undefined;
   if (!data || typeof data !== "object") return undefined;
+  if (
+    data.phase === "proposed" &&
+    (committedIds === undefined || !committedIds.has(event.id))
+  ) {
+    return undefined;
+  }
+  if (data.phase === "rejected") return undefined;
   const label = typeof data.label === "string" ? data.label : "";
   const to = typeof data.to === "string" ? data.to : "";
   const summary = typeof data.summary === "string" ? data.summary : "";
@@ -401,14 +581,46 @@ const toCertificationHead = (value: unknown): StateCertificationHead | null => {
   return {
     transitionId: head.transitionId,
     label: head.label,
+    ...(typeof head.labelDigest === "string" ? { labelDigest: head.labelDigest } : {}),
+    ...(typeof head.labelOmittedBytes === "number"
+      ? { labelOmittedBytes: head.labelOmittedBytes }
+      : {}),
     to: head.to,
+    ...(typeof head.toDigest === "string" ? { toDigest: head.toDigest } : {}),
+    ...(typeof head.toOmittedBytes === "number"
+      ? { toOmittedBytes: head.toOmittedBytes }
+      : {}),
     version: head.version,
   };
+};
+
+const verificationTargets = (event: MeshEvent): StateCertificationTarget[] => {
+  if (event.kind !== "state.certified" && event.kind !== "state.violated") return [];
+  const data = event.data as Record<string, unknown> | undefined;
+  if (!data || !Array.isArray(data.targets)) return [];
+  return data.targets
+    .map(toCertificationTarget)
+    .filter((target): target is StateCertificationTarget => target !== undefined);
+};
+
+const latestTransitionOutcomes = (events: MeshEvent[]): Map<string, TransitionOutcome> => {
+  const latest = new Map<string, TransitionOutcome>();
+  for (const event of events) {
+    if (event.kind !== "state.certified" && event.kind !== "state.violated") continue;
+    for (const target of verificationTargets(event)) {
+      latest.set(target.transitionId, {
+        event,
+        phase: event.kind === "state.certified" ? "certified" : "violated",
+      });
+    }
+  }
+  return latest;
 };
 
 const toCertificate = (
   event: MeshEvent,
   currentHead: StateHead | null,
+  latestOutcomes?: ReadonlyMap<string, TransitionOutcome>,
 ): StateCertificate | undefined => {
   if (event.kind !== "state.certified") return undefined;
   const data = event.data as Record<string, unknown> | undefined;
@@ -425,12 +637,26 @@ const toCertificate = (
     .filter((target): target is StateCertificationTarget => target !== undefined);
   if (targets.length === 0) return undefined;
   const head = toCertificationHead(data.head);
+  const currentTarget =
+    currentHead === null
+      ? undefined
+      : targets.find((target) => target.transitionId === currentHead.transitionId);
+  const latestCurrentOutcome = currentTarget
+    ? latestOutcomes?.get(currentTarget.transitionId)
+    : undefined;
   const current =
     head !== null &&
     currentHead !== null &&
+    currentTarget !== undefined &&
     head.transitionId === currentHead.transitionId &&
+    (head.labelDigest
+      ? head.labelDigest === digest(currentHead.label)
+      : head.label === currentHead.label) &&
+    (head.toDigest ? head.toDigest === digest(currentHead.to) : head.to === currentHead.to) &&
     head.version === currentHead.version &&
-    targets.some((target) => target.transitionId === currentHead.transitionId);
+    (latestCurrentOutcome === undefined ||
+      (latestCurrentOutcome.phase === "certified" &&
+        latestCurrentOutcome.event.sequence === event.sequence));
   return {
     certificateId: event.id,
     sequence: event.sequence,
@@ -441,6 +667,93 @@ const toCertificate = (
     resultDigest: data.resultDigest,
     ts: typeof data.ts === "number" ? data.ts : event.createdAt,
     current,
+  };
+};
+
+const toVerifyResult = (
+  claim: string,
+  command: string,
+  result: CommandResult,
+): VerifyResult => {
+  const boundedClaim = truncateUtf8(claim, REPORT_TEXT_MAX_BYTES);
+  const boundedCommand = truncateUtf8(command, REPORT_TEXT_MAX_BYTES);
+  const boundedResultError = result.error
+    ? truncateUtf8(result.error, REPORT_TEXT_MAX_BYTES)
+    : undefined;
+  return {
+    claim: boundedClaim.value,
+    claimDigest: digest(claim),
+    ...(boundedClaim.omittedBytes > 0
+      ? { claimOmittedBytes: boundedClaim.omittedBytes }
+      : {}),
+    command: boundedCommand.value,
+    commandDigest: digest(command),
+    ...(boundedCommand.omittedBytes > 0
+      ? { commandOmittedBytes: boundedCommand.omittedBytes }
+      : {}),
+    status: result.status,
+    exitCode: result.exitCode,
+    output: result.output,
+    outputBytes: result.outputBytes,
+    outputOmittedBytes: result.outputOmittedBytes,
+    outputDigest: result.outputDigest,
+    ...(boundedResultError
+      ? {
+          error: boundedResultError.value,
+          errorDigest: digest(result.error),
+          ...(boundedResultError.omittedBytes > 0
+            ? { errorOmittedBytes: boundedResultError.omittedBytes }
+            : {}),
+        }
+      : {}),
+  };
+};
+
+const toEventResult = (result: VerifyResult): VerifyResult => {
+  const claim = truncateUtf8(result.claim, EVENT_TEXT_MAX_BYTES);
+  const command = truncateUtf8(result.command, EVENT_TEXT_MAX_BYTES);
+  const output = truncateUtf8(result.output, EVENT_OUTPUT_MAX_BYTES);
+  const error = result.error
+    ? truncateUtf8(result.error, EVENT_TEXT_MAX_BYTES)
+    : undefined;
+  return {
+    ...result,
+    claim: claim.value,
+    claimOmittedBytes: (result.claimOmittedBytes ?? 0) + claim.omittedBytes,
+    command: command.value,
+    commandOmittedBytes: (result.commandOmittedBytes ?? 0) + command.omittedBytes,
+    output: output.value,
+    outputOmittedBytes: result.outputOmittedBytes + output.omittedBytes,
+    ...(error
+      ? {
+          error: error.value,
+          errorOmittedBytes: (result.errorOmittedBytes ?? 0) + error.omittedBytes,
+        }
+      : {}),
+  };
+};
+
+const toEventFailure = (failure: VerificationFailure): VerificationFailure => {
+  const message = truncateUtf8(failure.message, EVENT_TEXT_MAX_BYTES).value;
+  const transitionId = failure.transitionId
+    ? truncateUtf8(failure.transitionId, EVENT_TEXT_MAX_BYTES).value
+    : undefined;
+  const label = failure.label
+    ? truncateUtf8(failure.label, EVENT_TEXT_MAX_BYTES).value
+    : undefined;
+  const command = failure.command
+    ? truncateUtf8(failure.command, EVENT_TEXT_MAX_BYTES).value
+    : undefined;
+  const error = failure.error
+    ? truncateUtf8(failure.error, EVENT_TEXT_MAX_BYTES).value
+    : undefined;
+  return {
+    ...failure,
+    message,
+    ...(transitionId !== undefined ? { transitionId } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(command !== undefined ? { command } : {}),
+    ...(error !== undefined ? { error } : {}),
   };
 };
 
@@ -461,8 +774,7 @@ export class StateStore {
       recent: StateCertificate[];
     };
   } {
-    const entry = this.store.get(CURRENT_KEY);
-    const storedHead = entry ? this.toHead(entry) : null;
+    const storedHead = this.getHead();
     const goalEntry = this.store.get(GOAL_KEY);
     const goal = goalEntry ? (goalEntry.value as StateGoal) : null;
     const ledgers = this.complexityLedgers();
@@ -501,7 +813,19 @@ export class StateStore {
 
   getHead(): StateHead | null {
     const entry = this.store.get(CURRENT_KEY);
-    return entry ? this.toHead(entry) : null;
+    if (!entry) return null;
+    const head = this.toHead(entry);
+    const events = this.stateEvents();
+    const committedIds = committedTransitionIds(events);
+    if (head.protocolVersion === TRANSITION_PROTOCOL_VERSION) {
+      return committedIds.has(head.transitionId) ? head : null;
+    }
+    const proposal = events.find(
+      (event) => event.kind === "transition" && event.id === head.transitionId,
+    );
+    if (!proposal) return head;
+    const data = proposal.data as Record<string, unknown> | undefined;
+    return data?.phase === "proposed" && !committedIds.has(proposal.id) ? null : head;
   }
 
   async transition(
@@ -509,11 +833,18 @@ export class StateStore {
     identity: MeshIdentity,
     cwd = process.cwd(),
   ): Promise<{ event: MeshEvent; head: StateHead }> {
-    const current = this.store.get(CURRENT_KEY);
-    const expectedVersion = current ? current.version : 0;
-    const currentTo = current ? (current.value as StateHeadValue).to : undefined;
+    const physicalCurrent = this.store.get(CURRENT_KEY);
+    const current = this.getHead();
+    const expectedVersion =
+      physicalCurrent?.version ?? this.lastDeletedVersion(CURRENT_KEY);
+    if (physicalCurrent && !current) {
+      throw new Error(
+        "State contention: current head belongs to an uncommitted or quarantined proposal",
+      );
+    }
+    const currentTo = current?.to;
     const force = input.force === true;
-    if (!force && current && currentTo !== undefined && input.from !== undefined) {
+    if (!force && currentTo !== undefined && input.from !== undefined) {
       if (input.from !== currentTo) {
         throw new Error(
           `State from-mismatch: head is at "${currentTo}", but transition declares from "${input.from}"`,
@@ -536,6 +867,8 @@ export class StateStore {
     }
     const kind: StateTransitionKind = input.kind ?? "state";
     const data: Record<string, unknown> = {
+      protocolVersion: TRANSITION_PROTOCOL_VERSION,
+      phase: "proposed" satisfies StateTransitionPhase,
       label: input.label,
       to: input.to,
       summary: input.summary,
@@ -554,51 +887,146 @@ export class StateStore {
       text: input.summary,
       data,
     });
-    for (const update of preparedComplexity?.updates ?? []) {
-      await this.store.put({
-        key: update.key,
-        value: update.value,
-        ifVersion: update.expectedVersion,
+    const applied: AppliedStateWrite[] = [];
+    let headWrite: AppliedStateWrite | undefined;
+    try {
+      for (const update of preparedComplexity?.updates ?? []) {
+        const written = await this.store.put({
+          key: update.key,
+          value: update.value,
+          ifVersion: update.expectedVersion,
+          identity,
+        });
+        applied.push({ key: update.key, before: update.before, written });
+      }
+      const payload: StateHeadValue = {
+        protocolVersion: TRANSITION_PROTOCOL_VERSION,
+        label: input.label,
+        to: input.to,
+        summary: input.summary,
+        kind,
+        transitionId: event.id,
+        ts,
+        ...(input.evidence ? { evidence: input.evidence } : {}),
+        ...(input.tags ? { tags: input.tags } : {}),
+        ...(isComplexityReduction ? { certificationStatus: "pending" } : {}),
+      };
+      const advanced = await this.advanceHeadWithBefore({
+        payload,
+        from: input.from,
+        force,
+        expectedVersion,
         identity,
       });
+      headWrite = {
+        key: CURRENT_KEY,
+        before: advanced.before,
+        written: advanced.entry,
+      };
+      await this.store.publish({
+        topic: STATE_TOPIC,
+        kind: "transition.committed",
+        from: identity,
+        text: "state transition committed",
+        data: {
+          protocolVersion: TRANSITION_PROTOCOL_VERSION,
+          phase: "committed" satisfies StateTransitionPhase,
+          transitionId: event.id,
+          ts: Date.now(),
+        },
+      });
+      return { event, head: this.toHead(advanced.entry) };
+    } catch (error) {
+      const rollback = await this.rollbackWrites(
+        [...(headWrite ? [headWrite] : []), ...applied.reverse()],
+        identity,
+      );
+      let reportingError: string | undefined;
+      try {
+        const deletedChunks: Array<Array<{ key: string; version: number }>> = [];
+        for (
+          let index = 0;
+          index < rollback.deleted.length;
+          index += EVENT_ROLLBACK_LIMIT
+        ) {
+          deletedChunks.push(
+            rollback.deleted.slice(index, index + EVENT_ROLLBACK_LIMIT).map((item) => ({
+              key: truncateUtf8(item.key, REPORT_TEXT_MAX_BYTES).value,
+              version: item.version,
+            })),
+          );
+        }
+        if (deletedChunks.length === 0) deletedChunks.push([]);
+        for (let index = 0; index < deletedChunks.length; index++) {
+          await this.store.publish({
+            topic: STATE_TOPIC,
+            kind: "transition.rejected",
+            from: identity,
+            text: rollback.errors.length > 0
+              ? "state transition quarantined"
+              : "state transition rejected",
+            data: {
+              protocolVersion: TRANSITION_PROTOCOL_VERSION,
+              phase: "rejected" satisfies StateTransitionPhase,
+              transitionId: event.id,
+              error: truncateUtf8(errorMessage(error), EVENT_TEXT_MAX_BYTES).value,
+              rollback: {
+                restored: rollback.errors.length === 0,
+                deleted: deletedChunks[index],
+                errors: index === 0
+                  ? rollback.errors
+                    .slice(0, EVENT_ROLLBACK_LIMIT)
+                    .map((item) => truncateUtf8(item, EVENT_TEXT_MAX_BYTES).value)
+                  : [],
+                omittedErrorCount: Math.max(
+                  0,
+                  rollback.errors.length - EVENT_ROLLBACK_LIMIT,
+                ),
+                chunk: { index, count: deletedChunks.length },
+              },
+              quarantine: rollback.errors.length > 0,
+              ts: Date.now(),
+            },
+          });
+        }
+      } catch (publishError) {
+        reportingError = boundedError(publishError);
+      }
+      const detail = [
+        `State transition rejected: ${boundedError(error)}`,
+        ...(rollback.errors.length > 0
+          ? [`rollback quarantine: ${rollback.errors.join("; ")}`]
+          : []),
+        ...(reportingError ? [`rejection reporting failed: ${reportingError}`] : []),
+      ].join("; ");
+      throw new Error(detail, { cause: error });
     }
-    const payload: StateHeadValue = {
-      label: input.label,
-      to: input.to,
-      summary: input.summary,
-      kind,
-      transitionId: event.id,
-      ts,
-      ...(input.evidence ? { evidence: input.evidence } : {}),
-      ...(input.tags ? { tags: input.tags } : {}),
-      ...(isComplexityReduction ? { certificationStatus: "pending" } : {}),
-    };
-    const entry = await this.advanceHead({
-      payload,
-      from: input.from,
-      force,
-      expectedVersion,
-      identity,
-    });
-    return { event, head: this.toHead(entry) };
   }
 
-  // Advance the compare-and-swap head pointer. Appends are already durable in
-  // the topic; this only moves the recomputable head. On CAS contention we
+  // Advance the compare-and-swap head pointer for a durable proposal. The
+  // proposal remains invisible until its commit marker. On CAS contention we
   // re-read, re-validate `from` against the new head, and retry — a bounded
   // number of times. If `from` no longer chains from the current head, the
   // transition is rejected with the actual current label (Schema's surprise:
   // the plan's assumed state was voided by a concurrent writer).
   async advanceHead(input: AdvanceHeadInput): Promise<MeshStateEntry> {
+    return (await this.advanceHeadWithBefore(input)).entry;
+  }
+
+  private async advanceHeadWithBefore(
+    input: AdvanceHeadInput,
+  ): Promise<{ entry: MeshStateEntry; before: MeshStateEntry | undefined }> {
     let version = input.expectedVersion;
     for (let attempt = 0; attempt < CAS_RETRY_LIMIT; attempt++) {
+      const before = this.store.get(CURRENT_KEY);
       try {
-        return await this.store.put({
+        const entry = await this.store.put({
           key: CURRENT_KEY,
           value: input.payload,
           ifVersion: version,
           identity: input.identity,
         });
+        return { entry, before };
       } catch (error) {
         if (!isCasError(error)) throw error;
         const current = this.store.get(CURRENT_KEY);
@@ -618,12 +1046,66 @@ export class StateStore {
             );
           }
         }
-        version = current ? current.version : 0;
+        version = current?.version ?? casActualVersion(error) ?? 0;
       }
     }
     throw new Error(
       `State contention: compare-and-swap retries exhausted after ${CAS_RETRY_LIMIT} attempts`,
     );
+  }
+
+  private async rollbackWrites(
+    writes: AppliedStateWrite[],
+    identity: MeshIdentity,
+  ): Promise<{ deleted: Array<{ key: string; version: number }>; errors: string[] }> {
+    const deleted: Array<{ key: string; version: number }> = [];
+    const errors: string[] = [];
+    for (const write of writes) {
+      try {
+        if (write.before) {
+          await this.store.put({
+            key: write.key,
+            value: write.before.value,
+            ifVersion: write.written.version,
+            identity,
+          });
+        } else {
+          const result = await this.store.delete({
+            key: write.key,
+            ifVersion: write.written.version,
+          });
+          if (result.deleted && result.version !== undefined) {
+            deleted.push({ key: write.key, version: result.version });
+          }
+        }
+      } catch (error) {
+        errors.push(`${write.key}: ${boundedError(error)}`);
+      }
+    }
+    return { deleted, errors };
+  }
+
+  private stateEvents(): MeshEvent[] {
+    return this.store.read({ topic: STATE_TOPIC, limit: this.store.maxReadEvents });
+  }
+
+  private lastDeletedVersion(key: string): number {
+    const events = this.stateEvents();
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index];
+      if (event?.kind !== "transition.rejected") continue;
+      const data = event.data as Record<string, unknown> | undefined;
+      const rollback = data?.rollback as Record<string, unknown> | undefined;
+      if (!rollback || !Array.isArray(rollback.deleted)) continue;
+      for (const item of rollback.deleted) {
+        if (!item || typeof item !== "object") continue;
+        const deleted = item as Record<string, unknown>;
+        if (deleted.key === key && typeof deleted.version === "number") {
+          return deleted.version;
+        }
+      }
+    }
+    return 0;
   }
 
   history(input: {
@@ -635,13 +1117,11 @@ export class StateStore {
     labels: string[];
     certifications: StateCertificate[];
   } {
-    const events = this.store.read({
-      topic: STATE_TOPIC,
-      limit: this.store.maxReadEvents,
-    });
+    const events = this.stateEvents();
+    const committedIds = committedTransitionIds(events);
     const records: StateTransitionRecord[] = [];
     for (const event of events) {
-      const record = toRecord(event);
+      const record = toRecord(event, committedIds);
       if (record) records.push(record);
     }
     let lastRepresentation = -1;
@@ -656,22 +1136,24 @@ export class StateStore {
         ? records
         : records.slice(lastRepresentation);
     const visibleIds = new Set(visibleRecords.map((record) => record.transitionId));
-    const currentEntry = this.store.get(CURRENT_KEY);
-    const currentHead = currentEntry ? this.toHead(currentEntry) : null;
+    const currentHead = this.getHead();
+    const latestOutcomes = latestTransitionOutcomes(events);
     const certifications = events
-      .map((event) => toCertificate(event, currentHead))
+      .map((event) => toCertificate(event, currentHead, latestOutcomes))
       .filter((certificate): certificate is StateCertificate => certificate !== undefined)
       .filter((certificate) =>
         certificate.targets.every((target) => visibleIds.has(target.transitionId)),
       )
       .reverse();
+    const certificatesBySequence = new Map(
+      certifications.map((certificate) => [certificate.sequence, certificate]),
+    );
     const latestCertificate = new Map<string, StateCertificate>();
-    for (const certificate of certifications) {
-      for (const target of certificate.targets) {
-        if (!latestCertificate.has(target.transitionId)) {
-          latestCertificate.set(target.transitionId, certificate);
-        }
-      }
+    for (const record of visibleRecords) {
+      const outcome = latestOutcomes.get(record.transitionId);
+      if (outcome?.phase !== "certified") continue;
+      const certificate = certificatesBySequence.get(outcome.event.sequence);
+      if (certificate) latestCertificate.set(record.transitionId, certificate);
     }
     const archiveBoundaryId =
       input.includeArchived !== true && lastRepresentation > 0
@@ -772,8 +1254,9 @@ export class StateStore {
         delta,
         baseline: previous === undefined,
       });
+      const key = this.complexityKey(file);
       updates.push({
-        key: this.complexityKey(file),
+        key,
         value: {
           file,
           language: measured.language,
@@ -781,7 +1264,8 @@ export class StateStore {
           lastDelta: delta,
           ts,
         },
-        expectedVersion: entry?.version ?? 0,
+        expectedVersion: entry?.version ?? this.lastDeletedVersion(key),
+        before: entry,
       });
     }
     return { record: { files: deltas, netDelta }, updates };
@@ -862,14 +1346,21 @@ export class StateStore {
     });
     const passed = result.status === "confirmed";
     if (passed) {
+      const check = truncateUtf8(goal.check, EVENT_TEXT_MAX_BYTES);
+      const output = truncateUtf8(result.output, EVENT_OUTPUT_MAX_BYTES);
       await this.store.publish({
         topic: STATE_TOPIC,
         kind: "state.goal.met",
         from: input.identity,
         text: "goal met",
         data: {
-          check: goal.check,
-          output: result.output,
+          check: check.value,
+          checkDigest: digest(goal.check),
+          checkOmittedBytes: check.omittedBytes,
+          output: output.value,
+          outputBytes: result.outputBytes,
+          outputOmittedBytes: result.outputOmittedBytes + output.omittedBytes,
+          outputDigest: result.outputDigest,
           exitCode: result.exitCode,
         },
       });
@@ -891,14 +1382,29 @@ export class StateStore {
     identity: MeshIdentity;
   }): Promise<VerificationReport> {
     const verificationHead = this.getHead();
-    const headIdentity: StateCertificationHead | null = verificationHead
-      ? {
-          transitionId: verificationHead.transitionId,
-          label: verificationHead.label,
-          to: verificationHead.to,
-          version: verificationHead.version,
-        }
-      : null;
+    const boundedHeadLabel = verificationHead
+      ? truncateUtf8(verificationHead.label, EVENT_TEXT_MAX_BYTES)
+      : undefined;
+    const boundedHeadTo = verificationHead
+      ? truncateUtf8(verificationHead.to, EVENT_TEXT_MAX_BYTES)
+      : undefined;
+    const headIdentity: StateCertificationHead | null =
+      verificationHead && boundedHeadLabel && boundedHeadTo
+        ? {
+            transitionId: verificationHead.transitionId,
+            label: boundedHeadLabel.value,
+            labelDigest: digest(verificationHead.label),
+            ...(boundedHeadLabel.omittedBytes > 0
+              ? { labelOmittedBytes: boundedHeadLabel.omittedBytes }
+              : {}),
+            to: boundedHeadTo.value,
+            toDigest: digest(verificationHead.to),
+            ...(boundedHeadTo.omittedBytes > 0
+              ? { toOmittedBytes: boundedHeadTo.omittedBytes }
+              : {}),
+            version: verificationHead.version,
+          }
+        : null;
     let targets: StateTransitionRecord[];
     if (input.labels !== undefined) {
       const matches = new Map<string, StateTransitionRecord>();
@@ -967,6 +1473,9 @@ export class StateStore {
               status: "error",
               exitCode: null,
               output: "",
+              outputBytes: 0,
+              outputOmittedBytes: 0,
+              outputDigest: digest(""),
               error: "aborted before execution",
             }
           : await runCommand(command, {
@@ -974,14 +1483,7 @@ export class StateStore {
               timeoutMs: input.timeoutMs ?? 30_000,
               ...(input.signal ? { signal: input.signal } : {}),
             });
-        results.push({
-          claim: target.summary,
-          command,
-          status: result.status,
-          exitCode: result.exitCode,
-          output: result.output,
-          ...(result.error !== undefined ? { error: result.error } : {}),
-        });
+        results.push(toVerifyResult(target.summary, command, result));
       }
     }
 
@@ -1000,64 +1502,133 @@ export class StateStore {
       });
     }
 
-    const certified =
+    let certified =
       results.length > 0 &&
       failures.length === 0 &&
       results.every((result) => result.status === "confirmed");
-    const violated = !certified;
-    const resultDigest = digest({ results, failures });
+    let resultDigest = digest({ results, failures });
+    const boundedTargets = certificationTargets.map((target) => ({
+      transitionId: truncateUtf8(target.transitionId, EVENT_TEXT_MAX_BYTES).value,
+      label: truncateUtf8(target.label, EVENT_TEXT_MAX_BYTES).value,
+      to: truncateUtf8(target.to, EVENT_TEXT_MAX_BYTES).value,
+    }));
+    const targetChunks: StateCertificationTarget[][] = [];
+    for (let index = 0; index < boundedTargets.length; index += EVENT_TARGET_LIMIT) {
+      targetChunks.push(boundedTargets.slice(index, index + EVENT_TARGET_LIMIT));
+    }
+    if (targetChunks.length === 0) targetChunks.push([]);
+    const publishViolation = async (): Promise<string | undefined> => {
+      const nonConfirmed = results.filter((result) => result.status !== "confirmed");
+      try {
+        for (let index = 0; index < targetChunks.length; index++) {
+          await this.store.publish({
+            topic: STATE_TOPIC,
+            kind: "state.violated",
+            from: input.identity,
+            text: "state certification blocked",
+            data: {
+              certified: false,
+              head: headIdentity,
+              evidenceDigest,
+              resultDigest,
+              targets: targetChunks[index],
+              targetChunk: { index, count: targetChunks.length },
+              results: index === 0
+                ? nonConfirmed.slice(0, EVENT_RESULT_LIMIT).map(toEventResult)
+                : [],
+              omittedResultCount: Math.max(0, nonConfirmed.length - EVENT_RESULT_LIMIT),
+              reasons: index === 0
+                ? failures.slice(0, EVENT_RESULT_LIMIT).map(toEventFailure)
+                : [],
+              omittedReasonCount: Math.max(0, failures.length - EVENT_RESULT_LIMIT),
+              ts: Date.now(),
+            },
+          });
+        }
+        return undefined;
+      } catch (error) {
+        return boundedError(error);
+      }
+    };
+
     if (!certified) {
-      await this.store.publish({
-        topic: STATE_TOPIC,
-        kind: "state.violated",
-        from: input.identity,
-        text: "state certification blocked",
-        data: {
-          certified,
-          evidenceDigest,
-          resultDigest,
-          targets: certificationTargets,
-          results: results.filter((result) => result.status !== "confirmed"),
-          reasons: failures,
-        },
-      });
+      const reportingError = await publishViolation();
       return {
         results,
-        certified,
-        violated,
+        certified: false,
+        violated: true,
         certificationStatus: "failed",
         evidenceDigest,
         resultDigest,
         failures,
+        ...(reportingError ? { reportingError } : {}),
       };
     }
 
     const ts = Date.now();
-    const event = await this.store.publish({
-      topic: STATE_TOPIC,
-      kind: "state.certified",
-      from: input.identity,
-      text: "state certified",
-      data: {
+    try {
+      let certificateEvent: MeshEvent | undefined;
+      for (let index = 0; index < targetChunks.length; index++) {
+        const event = await this.store.publish({
+          topic: STATE_TOPIC,
+          kind: "state.certified",
+          from: input.identity,
+          text: "state certified",
+          data: {
+            certificationStatus: "certified",
+            targets: targetChunks[index],
+            targetChunk: { index, count: targetChunks.length },
+            head: headIdentity,
+            evidenceDigest,
+            resultDigest,
+            ts,
+          },
+        });
+        if (
+          certificateEvent === undefined ||
+          targetChunks[index]?.some(
+            (target) => target.transitionId === headIdentity?.transitionId,
+          )
+        ) {
+          certificateEvent = event;
+        }
+      }
+      if (!certificateEvent) throw new Error("State certificate event was not recorded");
+      const certificate = toCertificate(certificateEvent, this.getHead());
+      if (!certificate) throw new Error("State certificate event was malformed");
+      return {
+        results,
+        certified: true,
+        violated: false,
         certificationStatus: "certified",
-        targets: certificationTargets,
-        head: headIdentity,
         evidenceDigest,
         resultDigest,
-        ts,
-      },
-    });
-    const certificate = toCertificate(event, this.getHead());
-    if (!certificate) throw new Error("State certificate event was malformed");
-    return {
-      results,
-      certified,
-      violated,
-      certificationStatus: "certified",
-      evidenceDigest,
-      resultDigest,
-      failures,
-      certificate,
-    };
+        failures,
+        certificate,
+      };
+    } catch (error) {
+      certified = false;
+      const certificationReportingError = boundedError(error);
+      failures.push({
+        reason: "reporting-error",
+        message: `Certification could not be recorded: ${certificationReportingError}`,
+        error: certificationReportingError,
+      });
+      resultDigest = digest({ results, failures });
+      const violationReportingError = await publishViolation();
+      const reportingError = violationReportingError
+        ? `${certificationReportingError}; violation reporting failed: ${violationReportingError}`
+        : certificationReportingError;
+      return {
+        results,
+        certified,
+        violated: true,
+        certificationStatus: "failed",
+        evidenceDigest,
+        resultDigest,
+        failures,
+        reportingError,
+      };
+    }
   }
 }

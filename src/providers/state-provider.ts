@@ -314,7 +314,9 @@ export class StateProvider implements FabricProvider {
         context.update(
           result.certified
             ? `State certified: ${result.results.length} evidence command(s) confirmed`
-            : "State certification blocked; violation details were published",
+            : result.reportingError
+              ? `State certification blocked; violation reporting failed: ${result.reportingError}`
+              : "State certification blocked; violation details were published",
         );
         return result;
       }
