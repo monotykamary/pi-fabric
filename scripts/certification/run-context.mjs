@@ -3,10 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { Buffer } from "node:buffer";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { compileFabricSummary } from "../../dist/compaction/hook.js";
 import { encodeCwdDir } from "../../dist/memory/discovery.js";
 import { normalizeSession } from "../../dist/memory/normalize.js";
 import { MemoryProvider } from "../../dist/providers/memory-provider.js";
+import {
+  contextEntriesMatch,
+  expectedContextEntriesAfterCompaction,
+  invokeRegisteredFabricCompactor,
+  PI_COMPACTION_API,
+  prepareEligibleCompaction,
+} from "./pi-compaction.mjs";
 import {
   evaluateCertification,
   evaluateFixtureOracle,
@@ -15,7 +21,7 @@ import {
   snapshotFiles,
 } from "./context-lib.mjs";
 
-const POISON = "PRIOR_SUMMARY_POISON_991";
+const POISON_PREFIX = "PRIOR_SUMMARY_POISON_991";
 const GOAL = "Goal: stabilize compaction and cross-session memory certification.";
 const CONSTRAINT = "Constraint: never modify forbidden.txt and keep all work offline.";
 const RARE_FACT = "Pinned fact: quasarneedle_7f91 maps to Ωmega雪 and port 43117.";
@@ -49,12 +55,13 @@ const assistantCall = (id, name, arguments_) => ({
   stopReason: "toolUse",
   timestamp: Date.now(),
 });
-const toolResult = (toolCallId, toolName, text, isError = false) => ({
+const toolResult = (toolCallId, toolName, text, isError = false, details) => ({
   role: "toolResult",
   toolCallId,
   toolName,
   content: [{ type: "text", text }],
   isError,
+  ...(details === undefined ? {} : { details }),
   timestamp: Date.now(),
 });
 
@@ -104,6 +111,33 @@ const invocationContext = (cwd) => ({
   update() {},
 });
 
+const compileEligibleManager = (manager, customInstructions) => {
+  const eligibility = prepareEligibleCompaction(manager);
+  if (!eligibility.eligible) throw new Error("Fixture was not eligible under Pi shouldCompact semantics");
+  if (!eligibility.preparation) throw new Error("Pi prepareCompaction returned undefined for an eligible fixture");
+  if (!contextEntriesMatch(eligibility.builtEntries, eligibility.publicBuiltEntries)) {
+    throw new Error("SessionManager and public buildContextEntries disagree");
+  }
+  const invoked = invokeRegisteredFabricCompactor({
+    preparation: eligibility.preparation,
+    branchEntries: eligibility.branchEntries,
+    customInstructions,
+  });
+  if (!invoked.result || !("compaction" in invoked.result)) {
+    throw new Error("Registered Fabric hook did not return a compaction");
+  }
+  return { eligibility, invoked, compaction: invoked.result.compaction };
+};
+
+const appendAndCheckContext = (manager, expected, append) => {
+  const entryId = append();
+  const entry = manager.getEntry(entryId);
+  const nextExpected = entry ? [...expected, entry] : expected;
+  const matches = entry !== undefined
+    && contextEntriesMatch(manager.buildContextEntries(), nextExpected);
+  return { entryId, expected: nextExpected, matches };
+};
+
 const createContextCertification = (sessionDir, cwd) => {
   const manager = SessionManager.create(cwd, sessionDir);
   manager.appendMessage(user(`${GOAL}\n${CONSTRAINT}\n${RARE_FACT}`));
@@ -122,29 +156,52 @@ const createContextCertification = (sessionDir, cwd) => {
   let callResultSplitCount = 0;
   let invalidFirstKeptCount = 0;
   let poisonLeakCount = 0;
+  let poisonStoredCount = 0;
   let byteMismatchCount = 0;
+  let eligibleCycleCount = 0;
+  let prepareUndefinedCount = 0;
+  let builtContextMismatchCount = 0;
+  let priorSummaryObservedCount = 0;
+  let priorSummaryFedAsInput = false;
+  let previousStoredSummary;
+  let previousPoison;
 
   for (let cycle = 0; cycle < 100; cycle += 1) {
-    const branch = manager.getBranch();
-    const first = compileFabricSummary(branch, 10_000);
-    const second = compileFabricSummary(branch, 10_000);
-    if (!("compaction" in first) || !("compaction" in second)) {
-      throw new Error(`Compaction cancelled at cycle ${cycle + 1}`);
+    const eligibility = prepareEligibleCompaction(manager);
+    eligibleCycleCount += eligibility.eligible ? 1 : 0;
+    prepareUndefinedCount += eligibility.preparation ? 0 : 1;
+    builtContextMismatchCount += contextEntriesMatch(
+      eligibility.builtEntries,
+      eligibility.publicBuiltEntries,
+    ) ? 0 : 1;
+    if (!eligibility.eligible || !eligibility.preparation) {
+      throw new Error(`Pi compaction was ineligible at cycle ${cycle + 1}`);
     }
-    const compacted = first.compaction;
+    if (cycle > 0 && eligibility.preparation.previousSummary === previousStoredSummary) {
+      priorSummaryObservedCount += 1;
+    }
+
+    const invoked = invokeRegisteredFabricCompactor({
+      preparation: eligibility.preparation,
+      branchEntries: eligibility.branchEntries,
+    });
+    priorSummaryFedAsInput ||= invoked.instrumentation.priorSummaryFedAsInput;
+    if (!invoked.result || !("compaction" in invoked.result)) {
+      throw new Error(`Fabric compaction cancelled at cycle ${cycle + 1}`);
+    }
+    const compacted = invoked.result.compaction;
     const summary = compacted.summary;
     const details = compacted.details;
     summaryBytes.push(Buffer.byteLength(summary, "utf8"));
     goalRetained &&= summary.includes(GOAL);
     constraintsRetained &&= summary.includes(CONSTRAINT);
     rareFactRetained &&= summary.includes(RARE_FACT);
-    poisonLeakCount += summary.includes(POISON) ? 1 : 0;
-    byteMismatchCount += summary === second.compaction.summary
-      && JSON.stringify(details) === JSON.stringify(second.compaction.details) ? 0 : 1;
-    if (compacted.firstKeptEntryId && !branch.some((entry) => entry.id === compacted.firstKeptEntryId)) {
+    poisonLeakCount += previousPoison && summary.includes(previousPoison) ? 1 : 0;
+    if (compacted.firstKeptEntryId
+      && !eligibility.branchEntries.some((entry) => entry.id === compacted.firstKeptEntryId)) {
       invalidFirstKeptCount += 1;
     }
-    callResultSplitCount += pairSplitCount(branch, compacted.firstKeptEntryId);
+    callResultSplitCount += pairSplitCount(eligibility.branchEntries, compacted.firstKeptEntryId);
 
     const sourceRange = details.coverage.cumulativeSourceRange;
     const stableRange = details.stableAddresses.cumulativeSourceRange;
@@ -152,13 +209,13 @@ const createContextCertification = (sessionDir, cwd) => {
       && sourceRange.last !== ""
       && stableRange.first === sourceRange.first
       && stableRange.last === sourceRange.last
-      && branch.some((entry) => entry.id === sourceRange.first)
-      && branch.some((entry) => entry.id === sourceRange.last)
+      && eligibility.branchEntries.some((entry) => entry.id === sourceRange.first)
+      && eligibility.branchEntries.some((entry) => entry.id === sourceRange.last)
       && summary.includes("original.ts")
       && summary.includes("rare-missing.ts")
       && summary.includes("ENOENT certification-open-error");
 
-    for (const entry of branch) {
+    for (const entry of eligibility.branchEntries) {
       if (entry.type === "message" && summary.includes(entry.id)) emittedEntryIds.add(entry.id);
     }
     for (const address of [
@@ -171,11 +228,46 @@ const createContextCertification = (sessionDir, cwd) => {
       if (address) emittedEntryIds.add(address);
     }
 
-    manager.appendCompaction(summary, compacted.firstKeptEntryId, compacted.tokensBefore, details, true);
+    const poison = `${POISON_PREFIX}_cycle_${String(cycle + 1).padStart(3, "0")}`;
+    const storedSummary = `${summary}\n${poison}`;
+    const compactionId = manager.appendCompaction(
+      storedSummary,
+      compacted.firstKeptEntryId,
+      compacted.tokensBefore,
+      details,
+      true,
+    );
+    const compactionEntry = manager.getEntry(compactionId);
+    if (!compactionEntry || compactionEntry.type !== "compaction") {
+      throw new Error("Pi did not persist the CompactionEntry");
+    }
+    poisonStoredCount += compactionEntry.summary.endsWith(poison) ? 1 : 0;
+    const expectedAfterCompaction = expectedContextEntriesAfterCompaction(
+      eligibility.branchEntries,
+      compactionEntry,
+    );
+    builtContextMismatchCount += contextEntriesMatch(
+      manager.buildContextEntries(),
+      expectedAfterCompaction,
+    ) ? 0 : 1;
+    byteMismatchCount += compactionEntry.summary === storedSummary
+      && JSON.stringify(compactionEntry.details) === JSON.stringify(details) ? 0 : 1;
+
     const callId = `cycle-write-${cycle}`;
-    manager.appendMessage(assistantCall(callId, "write", { path: `src/cycles/file-${String(cycle).padStart(3, "0")}.ts` }));
-    manager.appendMessage(toolResult(callId, "write", `wrote deterministic cycle ${cycle}`));
-    manager.appendMessage(user(`Cycle boundary ${cycle + 1}`));
+    let checked = appendAndCheckContext(manager, expectedAfterCompaction, () =>
+      manager.appendMessage(assistantCall(callId, "write", {
+        path: `src/cycles/file-${String(cycle).padStart(3, "0")}.ts`,
+      })));
+    builtContextMismatchCount += checked.matches ? 0 : 1;
+    checked = appendAndCheckContext(manager, checked.expected, () =>
+      manager.appendMessage(toolResult(callId, "write", `wrote deterministic cycle ${cycle}`)));
+    builtContextMismatchCount += checked.matches ? 0 : 1;
+    checked = appendAndCheckContext(manager, checked.expected, () =>
+      manager.appendMessage(user(`Cycle boundary ${cycle + 1}`)));
+    builtContextMismatchCount += checked.matches ? 0 : 1;
+
+    previousStoredSummary = storedSummary;
+    previousPoison = poison;
   }
 
   const entries = manager.getEntries();
@@ -184,11 +276,16 @@ const createContextCertification = (sessionDir, cwd) => {
     : entry.parentId === entries[index - 1].id);
   cumulativeAddressesValid &&= parentLinksValid
     && entries.filter((entry) => entry.type === "compaction").length === 100;
+  const sessionFile = manager.getSessionFile();
+  if (!sessionFile) throw new Error("Expected a persisted context session");
   return {
-    manager,
+    session: { id: manager.getSessionId(), file: sessionFile },
     emittedEntryIds,
     metrics: {
       cycles: 100,
+      eligibleCycleCount,
+      prepareUndefinedCount,
+      builtContextMismatchCount,
       summaryBytes,
       maxSummaryBytes: Math.max(...summaryBytes),
       goalRetained,
@@ -198,10 +295,169 @@ const createContextCertification = (sessionDir, cwd) => {
       callResultSplitCount,
       invalidFirstKeptCount,
       poisonLeakCount,
+      poisonStoredCount,
       byteMismatchCount,
       parentLinksValid,
-      priorSummaryFedAsInput: false,
+      priorSummaryObservedCount,
+      priorSummaryFedAsInput,
     },
+  };
+};
+
+const createClosureFixtures = (sessionDir, cwd) => {
+  const counts = {
+    normal: 0,
+    compactAll: 0,
+    splitTurn: 0,
+    parallelDelayed: 0,
+    reverseOrder: 0,
+    malformedBoundary: 0,
+  };
+
+  const normal = SessionManager.create(cwd, sessionDir);
+  normal.appendMessage(user("normal old turn " + "雪".repeat(80)));
+  normal.appendMessage(assistantText("normal completion " + "界".repeat(80)));
+  normal.appendMessage(user("normal kept turn"));
+  const normalResult = compileEligibleManager(normal);
+  if (normalResult.compaction.firstKeptEntryId
+    && pairSplitCount(normalResult.eligibility.branchEntries, normalResult.compaction.firstKeptEntryId) === 0) {
+    counts.normal += 1;
+  }
+
+  const compactAll = SessionManager.create(cwd, sessionDir);
+  compactAll.appendMessage(user("single turn " + "雪界".repeat(120)));
+  compactAll.appendMessage(assistantText("single response " + "界雪".repeat(120)));
+  const compactAllResult = compileEligibleManager(compactAll);
+  if (compactAllResult.compaction.firstKeptEntryId === "") counts.compactAll += 1;
+
+  const splitTurn = SessionManager.create(cwd, sessionDir);
+  splitTurn.appendMessage(user("split request " + "雪界".repeat(200)));
+  splitTurn.appendMessage(assistantText("split response " + "界雪".repeat(200)));
+  const splitResult = compileEligibleManager(splitTurn);
+  if (splitResult.eligibility.preparation.isSplitTurn
+    && pairSplitCount(splitResult.eligibility.branchEntries, splitResult.compaction.firstKeptEntryId) === 0) {
+    counts.splitTurn += 1;
+  }
+
+  const parallel = SessionManager.create(cwd, sessionDir);
+  parallel.appendMessage(user("parallel delayed request " + "雪".repeat(80)));
+  parallel.appendMessage(assistantCall("parallel-a", "read", { path: "src/a.ts" }));
+  parallel.appendMessage(assistantCall("parallel-b", "read", { path: "src/b.ts" }));
+  parallel.appendMessage(toolResult("parallel-b", "read", "b"));
+  parallel.appendMessage(user("candidate boundary"));
+  parallel.appendMessage(assistantText("work continues"));
+  parallel.appendMessage(toolResult("parallel-a", "read", "delayed a"));
+  parallel.appendMessage(assistantText("delayed result observed"));
+  const parallelResult = compileEligibleManager(parallel);
+  if (parallelResult.compaction.firstKeptEntryId === ""
+    && pairSplitCount(parallelResult.eligibility.branchEntries, parallelResult.compaction.firstKeptEntryId) === 0) {
+    counts.parallelDelayed += 1;
+  }
+
+  const reverse = SessionManager.create(cwd, sessionDir);
+  reverse.appendMessage(user("reverse malformed ordering " + "界".repeat(80)));
+  reverse.appendMessage(toolResult("reverse-call", "read", "result before call"));
+  reverse.appendMessage(assistantCall("reverse-call", "read", { path: "src/reverse.ts" }));
+  reverse.appendMessage(user("reverse kept boundary"));
+  const reverseResult = compileEligibleManager(reverse);
+  if (pairSplitCount(reverseResult.eligibility.branchEntries, reverseResult.compaction.firstKeptEntryId) === 0) {
+    counts.reverseOrder += 1;
+  }
+
+  const malformed = SessionManager.create(cwd, sessionDir);
+  malformed.appendMessage(user("historical malformed boundary"));
+  malformed.appendMessage(assistantText("historical response"));
+  malformed.appendCompaction("untrusted prior summary", "orphan-kept-entry", 100, {}, true);
+  malformed.appendMessage(user("live after orphan " + "雪".repeat(80)));
+  malformed.appendMessage(assistantText("live response " + "界".repeat(80)));
+  malformed.appendMessage(user("malformed boundary kept turn"));
+  const malformedResult = compileEligibleManager(malformed);
+  if (malformedResult.eligibility.branchEntries.some(
+    (entry) => entry.type === "compaction" && entry.firstKeptEntryId === "orphan-kept-entry",
+  ) && pairSplitCount(
+    malformedResult.eligibility.branchEntries,
+    malformedResult.compaction.firstKeptEntryId,
+  ) === 0) counts.malformedBoundary += 1;
+
+  return counts;
+};
+
+const createMaximalMultibyteFixture = (sessionDir, cwd) => {
+  const manager = SessionManager.create(cwd, sessionDir);
+  manager.appendMessage(user([
+    `目标 ${"雪界Ω".repeat(900)}`,
+    `约束 ${"漢字é".repeat(900)}`,
+    `事实 ${"🚀霜".repeat(900)}`,
+  ].join("\n")));
+  for (let index = 0; index < 48; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    manager.appendMessage(assistantCall(`max-write-${suffix}`, "write", {
+      path: `src/${"多字节".repeat(30)}-${suffix}.ts`,
+    }));
+    manager.appendMessage(toolResult(
+      `max-write-${suffix}`,
+      "write",
+      `写入成功 ${"内容雪界".repeat(70)}`,
+    ));
+    manager.appendMessage(assistantCall(`max-read-${suffix}`, "read", {
+      path: `missing/${"错误雪".repeat(30)}-${suffix}.ts`,
+    }));
+    manager.appendMessage(toolResult(
+      `max-read-${suffix}`,
+      "read",
+      `读取失败 ${"罕见错误Ω雪".repeat(70)}`,
+      true,
+    ));
+    manager.appendMessage(user(`范围变更 ${suffix} ${"继续保持多字节事实".repeat(55)}`));
+  }
+  const trace = {
+    kind: "pi-fabric.execution",
+    version: 1,
+    outcome: "succeeded",
+    phases: Array.from({ length: 20 }, (_, index) => `阶段${index} ${"并行多字节".repeat(20)}`),
+    operations: Array.from({ length: 40 }, (_, index) => ({
+      type: "call",
+      sequence: index,
+      ref: `extensions.action${index}`,
+      provider: "extensions",
+      action: `action${index}`,
+      args: { label: `活动 ${"雪界漢字".repeat(24)}` },
+      outcome: "succeeded",
+      result: { status: `完成 ${"Ω霜".repeat(20)}` },
+    })),
+    counts: { droppedValues: 0, truncatedValues: 0, redactedValues: 0, droppedOperations: 0 },
+  };
+  manager.appendMessage(assistantCall("max-fabric", "fabric_exec", { source: "return exact typed trace" }));
+  manager.appendMessage(toolResult(
+    "max-fabric",
+    "fabric_exec",
+    "typed trace persisted",
+    false,
+    { trace },
+  ));
+  manager.appendMessage(user(`最终范围 ${"保持最大多字节上下文".repeat(80)}`));
+  const compiled = compileEligibleManager(manager, `保留请求 ${"雪界漢字Ω".repeat(1800)}`);
+  const summary = compiled.compaction.summary;
+  const encoded = Buffer.from(summary, "utf8");
+  let validUtf8 = false;
+  try {
+    validUtf8 = new TextDecoder("utf-8", { fatal: true }).decode(encoded) === summary;
+  } catch {
+    validUtf8 = false;
+  }
+  const sectionBytes = Object.fromEntries(
+    summary.split(/\n\n(?=\[)/u).map((section) => [
+      section.slice(0, section.indexOf("]") + 1),
+      Buffer.byteLength(section, "utf8"),
+    ]),
+  );
+  return {
+    sourceBytes: fs.statSync(manager.getSessionFile()).size,
+    summaryBytes: encoded.length,
+    validUtf8,
+    limitBytes: 32 * 1024,
+    nearBound: encoded.length >= 24 * 1024,
+    sectionBytes,
   };
 };
 
@@ -225,13 +481,12 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
       rareEntryId = entryId;
     }
   }
-  const contextFile = contextResult.manager.getSessionFile();
-  if (!contextFile) throw new Error("Expected a persisted context session");
-  fs.utimesSync(contextFile, baseSeconds + 2_000, baseSeconds + 2_000);
+  fs.utimesSync(contextResult.session.file, baseSeconds + 2_000, baseSeconds + 2_000);
 
   const provider = new MemoryProvider({
     agentDir,
     cwd,
+    sessionId: contextResult.session.id,
     config: {
       enabled: true,
       indexDir,
@@ -246,7 +501,9 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
     { scope: "global", query: "cold_exact_quasar_7f91 ΩMEGA雪", pageSize: 20 },
     invocationContext(cwd),
   );
-  const rareHit = recalled.digestHits.find((hit) => hit.sessionId === SessionManager.open(rareSessionFile).getSessionId());
+  const rareHit = recalled.digestHits.find(
+    (hit) => hit.sessionId === SessionManager.open(rareSessionFile).getSessionId(),
+  );
   const rareHydration = rareHit
     ? await provider.invoke(
       "recall",
@@ -263,8 +520,7 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
   const hydratedEntryIds = rareHydration.segments.flatMap((segment) =>
     segment.entries
       .filter((item) => item.matched && item.entry.entryId)
-      .map((item) => item.entry.entryId),
-  );
+      .map((item) => item.entry.entryId));
   const rareExpansion = rareHit
     ? await provider.invoke(
       "expand",
@@ -278,14 +534,23 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
     : { expanded: [], error: { code: "missing_cold_pointer" } };
 
   const sourceById = new Map(
-    normalizeSession(contextFile, Number.MAX_SAFE_INTEGER).entries
+    normalizeSession(contextResult.session.file, Number.MAX_SAFE_INTEGER).entries
       .filter((entry) => entry.entryId !== null)
       .map((entry) => [entry.entryId, entry.text]),
   );
   const emittedIds = [...contextResult.emittedEntryIds];
+  const contextPointer = await provider.invoke(
+    "expand",
+    { session: contextResult.session.id },
+    invocationContext(cwd),
+  );
   const expandedAddresses = await provider.invoke(
     "expand",
-    { session: contextFile, entryIds: emittedIds },
+    {
+      session: contextResult.session.id,
+      expectedSourceHash: contextPointer.sourceHash,
+      entryIds: emittedIds,
+    },
     invocationContext(cwd),
   );
   const expandedById = new Map(expandedAddresses.expanded.map((entry) => [entry.entryId, entry.text]));
@@ -309,6 +574,10 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
     emittedAddresses: emittedIds.length,
     expandedAddresses: expandedCorrectly,
     addressExpansionRate: emittedIds.length === 0 ? 0 : expandedCorrectly / emittedIds.length,
+    integrityBoundExpansion: typeof contextPointer.sourceHash === "string"
+      && contextPointer.sourceHash.length === 64
+      && expandedAddresses.sourceHash === contextPointer.sourceHash,
+    cacheVersionBehavior: "V4 sourceHash checked for cold hydration and address expansion",
     cacheBytes: directoryBytes(indexDir),
     sourceBytes: directoryBytes(sourceRoot),
   };
@@ -354,7 +623,51 @@ const fixtures = [
   },
 ];
 
-const createContinuationCertification = async ({ root, sessionDir, cwd, memoryProvider }) => {
+const memoryConfig = (indexDir) => ({
+  enabled: true,
+  indexDir,
+  maxSessions: 25,
+  maxEntryChars: 256,
+  hotSessions: 8,
+  digestTerms: 8,
+});
+
+const resumeContinuationFromPersistedHandoff = async ({ handoffFile, root, agentDir, cwd, indexDir }) => {
+  const persisted = JSON.parse(fs.readFileSync(handoffFile, "utf8"));
+  const provider = new MemoryProvider({
+    agentDir,
+    cwd,
+    sessionId: persisted.currentSession.id,
+    config: memoryConfig(indexDir),
+  });
+  const memory = {
+    currentSessionPointer: async () => {
+      const result = await provider.invoke(
+        "expand",
+        { session: persisted.currentSession.id },
+        invocationContext(cwd),
+      );
+      if (result.error) return undefined;
+      return { session: result.session, sourceHash: result.sourceHash };
+    },
+    expand: ({ pointer, entryIds }) => provider.invoke(
+      "expand",
+      {
+        session: pointer.session,
+        expectedSourceHash: pointer.sourceHash,
+        entryIds,
+      },
+      invocationContext(cwd),
+    ),
+  };
+  return runDeterministicHandoff({
+    root,
+    compactedContext: persisted.compactedContext,
+    memory,
+  });
+};
+
+const createContinuationCertification = async ({ root, sessionDir, cwd, agentDir, indexDir }) => {
   const results = [];
   for (const fixture of fixtures) {
     const fixtureRoot = path.join(root, "continuation", fixture.name);
@@ -365,32 +678,51 @@ const createContinuationCertification = async ({ root, sessionDir, cwd, memoryPr
     }
     const forbiddenBefore = snapshotFiles(fixtureRoot, fixture.forbiddenPaths);
     const manager = SessionManager.create(cwd, sessionDir);
-    const taskText = `CERT_TASK_V1\n${JSON.stringify({ ...fixture.task, padding: "x".repeat(1_500) })}`;
+    const taskText = `CERT_TASK_V1\n${JSON.stringify({ ...fixture.task, padding: "雪".repeat(1_500) })}`;
     manager.appendMessage(user(taskText));
-    manager.appendMessage(assistantText("Task accepted; retain the source address for deterministic continuation."));
+    manager.appendMessage(assistantText("Task accepted; exact source remains memory-addressable."));
     manager.appendMessage(user("Compact before continuation"));
-    const compiled = compileFabricSummary(manager.getBranch(), 8_000);
-    if (!("compaction" in compiled)) throw new Error(`Could not compact fixture ${fixture.name}`);
-    const compactedContext = {
-      summary: compiled.compaction.summary,
-      details: compiled.compaction.details,
-    };
-    const handoff = await runDeterministicHandoff({
-      root: fixtureRoot,
-      compactedContext,
-      recall: async ({ entryIds }) => {
-        const result = await memoryProvider.invoke(
-          "expand",
-          { session: manager.getSessionFile(), entryIds },
-          invocationContext(cwd),
-        );
-        return result.expanded;
+    const compiled = compileEligibleManager(manager);
+    const compactionId = manager.appendCompaction(
+      compiled.compaction.summary,
+      compiled.compaction.firstKeptEntryId,
+      compiled.compaction.tokensBefore,
+      compiled.compaction.details,
+      true,
+    );
+    const compactionEntry = manager.getEntry(compactionId);
+    const expected = expectedContextEntriesAfterCompaction(
+      compiled.eligibility.branchEntries,
+      compactionEntry,
+    );
+    if (!contextEntriesMatch(manager.buildContextEntries(), expected)) {
+      throw new Error(`Built continuation context mismatch for ${fixture.name}`);
+    }
+    const handoffFile = path.join(root, "handoffs", `${fixture.name}.json`);
+    fs.mkdirSync(path.dirname(handoffFile), { recursive: true });
+    fs.writeFileSync(handoffFile, JSON.stringify({
+      currentSession: { id: manager.getSessionId() },
+      compactedContext: {
+        summary: compiled.compaction.summary,
+        details: compiled.compaction.details,
       },
+    }), "utf8");
+
+    const handoff = await resumeContinuationFromPersistedHandoff({
+      handoffFile,
+      root: fixtureRoot,
+      agentDir,
+      cwd,
+      indexDir,
     });
     const oracle = evaluateFixtureOracle(fixtureRoot, fixture, forbiddenBefore);
     results.push({
       name: fixture.name,
-      handoff: { operationCount: handoff.operationCount, addressResolved: true },
+      handoff: {
+        operationCount: handoff.operationCount,
+        taskAddress: handoff.taskAddress,
+        addressResolved: handoff.addressResolved,
+      },
       oracle: { passed: oracle.passed, failures: oracle.failures, testStatus: oracle.test.status },
     });
   }
@@ -399,7 +731,9 @@ const createContinuationCertification = async ({ root, sessionDir, cwd, memoryPr
     totalFixtures: results.length,
     passedFixtures,
     passRate: results.length === 0 ? 0 : passedFixtures / results.length,
+    addressesResolved: results.length > 0 && results.every((result) => result.handoff.addressResolved),
     primaryMetric: "executable filesystem, forbidden-change, and process-test oracle",
+    simulatorInputs: "persisted compacted context plus fresh integrity-bound MemoryProvider APIs",
     results,
   };
 };
@@ -413,16 +747,20 @@ export const runContextCertification = async () => {
   fs.mkdirSync(cwd, { recursive: true });
   try {
     const contextResult = createContextCertification(sessionDir, cwd);
+    contextResult.metrics.closureFixtureCounts = createClosureFixtures(sessionDir, cwd);
+    contextResult.metrics.maximalMultibyte = createMaximalMultibyteFixture(sessionDir, cwd);
     const memory = await createMemoryCertification({ agentDir, cwd, sessionDir, contextResult, indexDir });
-    const memoryProvider = new MemoryProvider({
-      agentDir,
+    const continuation = await createContinuationCertification({
+      root,
+      sessionDir,
       cwd,
-      config: { enabled: true, indexDir, maxSessions: 25, maxEntryChars: 256, hotSessions: 8, digestTerms: 8 },
+      agentDir,
+      indexDir,
     });
-    const continuation = await createContinuationCertification({ root, sessionDir, cwd, memoryProvider });
     const report = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       deterministic: true,
+      piApi: PI_COMPACTION_API,
       context: contextResult.metrics,
       memory,
       continuation,

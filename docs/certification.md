@@ -20,21 +20,30 @@ The package command builds `dist/` first, then runs `scripts/certify-context.mjs
 
 ### Compaction endurance
 
-The harness creates a persisted session through Pi's `SessionManager`, appends messages and compactions through its public methods, and reads the active parent-linked branch with `getBranch()`. It performs exactly 100 Fabric compactions. A prior summary is stored only in the real `compaction` entry; it is never passed as prose to the next compile.
+The harness creates a persisted session through Pi's `SessionManager`, appends messages and compactions through its public methods, and reads the active parent-linked branch with `getBranch()`. It performs exactly 100 Fabric compactions under deterministic settings (`contextWindow=64`, `reserveTokens=63`, `keepRecentTokens=1`). Before every hook event it calculates Pi's built context, applies `shouldCompact`, and requires Pi's own `prepareCompaction` to return a preparation. It then invokes the callback registered by `registerCompactionHook` with Pi's event shape, branch, preparation token count, reason, retry state, and signal.
 
-Every cycle checks:
+Pi 0.80.6 publicly exports `SessionManager`, `buildContextEntries`, `buildSessionContext`, and `shouldCompact`. It implements and declares `prepareCompaction`, and `AgentSession` uses it, but the package root/export map does not export it. Certification therefore resolves the exact installed 0.80.6 internal module, verifies the installed version and function shape, and reports `prepareCompactionPubliclyExported: false`. There is no public API that supplies a preparation without running an `AgentSession` with a model; claiming otherwise would be inaccurate.
+
+Every persisted summary receives a cycle-unique `PRIOR_SUMMARY_POISON_991_…` suffix in the actual `CompactionEntry`. On the next cycle Pi's preparation must expose that exact stored previous summary. A proxy around the event preparation records whether the registered Fabric callback reads `previousSummary`; the result is derived from those accesses rather than hardcoded. Fabric must not read it or emit its poison. No summary is manually converted to a user message.
+
+Every cycle also checks:
 
 - the original goal, constraint, and pinned Unicode rare fact;
 - cumulative source, file, and unresolved-error addresses;
 - tool-call/result closure at the kept boundary;
-- that a nonempty `firstKeptEntryId` exists on the active branch;
-- exclusion of a poison marker from prior summary prose;
-- byte-identical summary and details from duplicate compilation of the same branch;
-- a UTF-8 summary size no larger than 32 KiB.
+- that every nonempty `firstKeptEntryId` exists on the active branch;
+- exact persisted summary/details round trips;
+- `SessionManager.buildContextEntries()` and public `buildContextEntries()` agreement;
+- after the compaction and after each subsequent append, the built context is exactly the latest `compaction` entry followed by the retained live entries;
+- a valid UTF-8 summary size no larger than 32 KiB.
 
 The last 20 summary sizes must have a range no larger than 512 bytes and an absolute least-squares slope no larger than 16 bytes per cycle. These bounds detect late unbounded growth without requiring every cycle to have the same size.
 
-This proves deterministic cumulative projection and boundary behavior for the generated typed event stream. It does not prove semantic quality for arbitrary human conversations or model behavior.
+Six explicit eligible closure fixtures must each execute at least once: normal, compact-all, Pi split-turn preparation, parallel/delayed results, reverse-order call/result, and malformed prior boundary. Every resulting Fabric cut is checked for call/result closure.
+
+A separate approximately 330 KiB maximal source uses multibyte goals, instructions, paths, errors, turns, and typed Fabric activity. It must produce at least 24 KiB of summary output, remain at most 32 KiB, and round-trip through a fatal UTF-8 decoder. This exercises the bound near its reachable projection saturation rather than relying on the endurance fixture's natural approximately 5.8 KiB plateau.
+
+This proves deterministic cumulative projection, actual Pi eligibility/context behavior, closure handling for the named fixtures, and byte-safe saturation for the generated typed event streams. It does not prove semantic quality for arbitrary human conversations or model behavior.
 
 ### Cross-layer memory
 
@@ -46,7 +55,8 @@ The pass conditions are:
 - exact lexical recall of the cold rare fact;
 - exact source expansion by its stable entry ID;
 - exact expansion of every distinct entry ID emitted by the 100 compaction summaries or their structured details;
-- 100% address expansion agreement with a fresh normalization of the source JSONL.
+- 100% address expansion agreement with a fresh normalization of the source JSONL;
+- V4 `sourceHash` integrity checks on both cold hydration and context address expansion.
 
 The JSON report includes eligible/indexed/stale counts, emitted/expanded address counts, and cache/source byte sizes.
 
@@ -57,11 +67,13 @@ This proves addressability through the current cache, digest, search, and source
 Continuation QA creates two small temporary repositories. Each has exact expected final files, an executable Node oracle, and files that must remain byte-identical. A no-model handoff simulator receives only:
 
 1. the compacted summary and structured compaction details; and
-2. a constrained recall callback.
+2. constrained current-session pointer and expansion APIs backed by `MemoryProvider`.
 
-The simulator follows the cumulative source address, expands the addressed `CERT_TASK_V1` entry through `MemoryProvider`, applies its structured operations, and then runs the external process test. The primary score is exact filesystem state, forbidden-file integrity, and test exit status—not section or substring containment.
+The source phase persists a handoff envelope containing the compacted context and current Pi session ID, not task operations or a captured session path. The resume phase reads that output, constructs a fresh `MemoryProvider`, asks it for a V4 integrity-bound current-session pointer, derives the cumulative source entry ID from compaction details, and expands that address with `expectedSourceHash`. The `addressResolved` score comes from the returned entry, never a constant. No callback closes over `manager.getSessionFile()`.
 
-This proves that the emitted address and an allowed recall operation can carry these mechanically executable tasks across a handoff. It does not claim that arbitrary prose can be converted into operations, that a model will choose to recall, or that the two fixtures represent all software work.
+Only after exact source expansion does the simulator decode `CERT_TASK_V1` and apply its operations. If an exact operation or file payload is unavailable, it throws and fails instead of inventing success. The external oracle then scores exact filesystem state, forbidden-file integrity, and process exit status; it never supplies `task.operations` to the simulator.
+
+This proves that the emitted address, current persisted session identity, and allowed memory operations can carry these mechanically executable tasks across a fresh handoff. Pi's compaction result does not itself expose a session ID or source hash, so those come respectively from persisted current-session context and `MemoryProvider`; the report does not claim they are emitted by Pi. It does not claim that arbitrary prose can be converted into operations, that a model will choose to recall, or that the two fixtures represent all software work.
 
 ## Real Pi RPC benchmark
 
@@ -118,4 +130,5 @@ The neighboring pi-vcc stress scripts informed the useful ideas of repeated comp
 - the default skip gate and complete opt-in gate;
 - deterministic paired order and benchmark confidence/paired reporting;
 - executable continuation oracle passes and forbidden-change failures;
+- certification rejection when eligibility, poison exclusion, address resolution, or the external oracle is sabotaged;
 - certification report threshold failures.
