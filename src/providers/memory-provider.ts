@@ -13,7 +13,7 @@ import {
   type ResolveScopeInput,
   type SessionRef,
 } from "../memory/discovery.js";
-import { expandSessionEntries, normalizeSession } from "../memory/normalize.js";
+import { expandSessionEntriesChecked, normalizeSession } from "../memory/normalize.js";
 import {
   DEFAULT_HOT_SESSIONS,
   fingerprintSource,
@@ -275,8 +275,7 @@ export class MemoryProvider implements FabricProvider {
         ? Math.min(Math.floor(args.pageSize), RECALL_MAX_PAGE_SIZE)
         : RECALL_DEFAULT_PAGE_SIZE;
 
-    const boundedBrowse = query === undefined || query.trim().length === 0;
-    const refs = resolveRefs(scope, this.context, boundedBrowse);
+    const refs = resolveRefs(scope, this.context, false);
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
     const hydrate = scope?.trim().startsWith("session:") ?? false;
     if (expectedSourceHash !== undefined && !hydrate) {
@@ -363,7 +362,6 @@ export class MemoryProvider implements FabricProvider {
       };
     }
 
-    const limit = page * pageSize;
     const filters: { role?: string; tool?: string; since?: number; until?: number } = {};
     if (role) filters.role = role;
     if (tool) filters.tool = tool;
@@ -373,7 +371,6 @@ export class MemoryProvider implements FabricProvider {
       ...(query === undefined ? {} : { query }),
       queryMode,
       filters,
-      limit,
       regexLimits: {
         maxPatternBytes: this.context.config.regexMaxPatternBytes
           ?? DEFAULT_REGEX_MAX_PATTERN_BYTES,
@@ -411,12 +408,15 @@ export class MemoryProvider implements FabricProvider {
       query: query ?? null,
       queryMode,
       matchedCount: result.matchedCount,
+      totalMatches: result.totalMatches,
+      totalItems: result.totalItems,
       segmentCount: result.segmentCount,
       segments: pagedSegments,
       digestHits: pagedDigests,
       items: pagedItems,
       page,
       pageSize,
+      hasNext: start + pageSize < result.totalItems,
       coverage,
       text: formatSearchResult(displayResult, query, coverage),
     };
@@ -534,7 +534,7 @@ export class MemoryProvider implements FabricProvider {
     if (typeof first === "number" && typeof last === "number") {
       selection.entryRange = { first, last };
     }
-    const expanded = expandSessionEntries(ref.file, selection);
+    const expansion = expandSessionEntriesChecked(ref.file, selection);
     const finalState = fingerprintSource(ref.file);
     if (!finalState || finalState.sourceHash !== initialState.sourceHash) {
       return {
@@ -547,7 +547,15 @@ export class MemoryProvider implements FabricProvider {
         expanded: [],
       };
     }
-    return { session: ref.file, sourceHash: finalState.sourceHash, expanded };
+    if ("error" in expansion) {
+      return {
+        session: ref.file,
+        sourceHash: finalState.sourceHash,
+        error: expansion.error,
+        expanded: [],
+      };
+    }
+    return { session: ref.file, sourceHash: finalState.sourceHash, expanded: expansion.expanded };
   }
 
   private async sessions(args: Record<string, unknown>): Promise<unknown> {

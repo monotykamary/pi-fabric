@@ -314,7 +314,7 @@ describe("memory query and pointer hardening", () => {
     const orphan = path.join(indexDir, "orphan.digest.json");
     fs.writeFileSync(malformed, "{broken", "utf8");
     fs.writeFileSync(orphan, JSON.stringify({
-      cacheVersion: 4,
+      cacheVersion: 5,
       kind: "digest",
       file: path.join(agentDir, "missing.jsonl"),
     }), "utf8");

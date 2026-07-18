@@ -464,7 +464,7 @@ describe("memory search pipeline", () => {
     expect(roleFiltered.segments[0]!.entries.find((e) => e.matched)!.entry.role).toBe("user");
   });
 
-  it("browse mode (no query) returns 25 most recent entries with > markers", async () => {
+  it("browse mode (no query) retains all bounded candidates for pagination with > markers", async () => {
     const messages: FixtureEntry[] = [];
     let parent: string | null = null;
     for (let i = 0; i < 30; i += 1) {
@@ -475,7 +475,7 @@ describe("memory search pipeline", () => {
     const file = seedSession("/home/user/browse", "1.jsonl", "b", messages);
     const shards = load([{ file, id: "b", cwd: "/home/user/browse" }]);
     const result = await searchShards(shards, {});
-    expect(result.matchedCount).toBe(25);
+    expect(result.matchedCount).toBe(30);
     expect(result.segments.length).toBeGreaterThan(0);
     expect(result.segments[0]!.entries[0]!.marker).toBe(">");
   });

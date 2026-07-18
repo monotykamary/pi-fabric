@@ -1,4 +1,4 @@
-import type { NormalizedEntry } from "./normalize.js";
+import type { NormalizationCoverage, NormalizedEntry } from "./normalize.js";
 import { compareLexical, tokenizeLexical } from "./tokenize.js";
 
 const DEFAULT_FILES_TOUCHED_LIMIT = 50;
@@ -43,6 +43,7 @@ export interface DigestInput {
   entries: NormalizedEntry[];
   maxVocabularyBytes?: number;
   filesTouchedLimit?: number;
+  normalizationCoverage?: NormalizationCoverage;
 }
 
 const vocabularyJsonBytes = (terms: string[]): number =>
@@ -104,7 +105,9 @@ export const foldSessionDigest = (input: DigestInput): SessionDigest => {
     entry.toolName,
     entry.timestamp,
   ]);
-  const reasons = vocabularyLimitReached ? ["max_cold_vocabulary_bytes"] : [];
+  const reasons = new Set(input.normalizationCoverage?.reasons ?? []);
+  if (vocabularyLimitReached) reasons.add("max_cold_vocabulary_bytes");
+  const sortedReasons = [...reasons].sort(compareLexical);
 
   return {
     sessionId: input.sessionId,
@@ -119,9 +122,9 @@ export const foldSessionDigest = (input: DigestInput): SessionDigest => {
     vocabulary: sortedVocabulary,
     addresses,
     indexCoverage: {
-      complete: reasons.length === 0,
+      complete: sortedReasons.length === 0,
       vocabularyBytes: vocabularyJsonBytes(sortedVocabulary),
-      reasons,
+      reasons: sortedReasons,
     },
   };
 };

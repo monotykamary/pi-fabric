@@ -7,7 +7,7 @@ import type { NormalizedEntry } from "./normalize.js";
 import { normalizeSession } from "./normalize.js";
 import { compareLexical, lexicalTermCounts, tokenizeLexical } from "./tokenize.js";
 
-export const MEMORY_CACHE_VERSION = 4;
+export const MEMORY_CACHE_VERSION = 5;
 export const DEFAULT_HOT_SESSIONS = 50;
 const DEFAULT_MAX_COLD_VOCABULARY_BYTES = 512 * 1024;
 const DEFAULT_MAX_COLD_CACHE_BYTES = 1024 * 1024;
@@ -34,6 +34,7 @@ export interface Shard extends CacheRecord {
   sessionId: string;
   entries: NormalizedEntry[];
   totalEntryCount: number;
+  indexCoverage: { complete: boolean; reasons: string[] };
   tier?: MemoryTier;
   indexReason?: string;
 }
@@ -95,6 +96,11 @@ const readShardFile = (
       parsed.cacheBytes !== stat.size ||
       typeof parsed.cacheSourceRatio !== "number" ||
       typeof parsed.totalEntryCount !== "number" ||
+      typeof parsed.indexCoverage !== "object" ||
+      parsed.indexCoverage === null ||
+      typeof parsed.indexCoverage.complete !== "boolean" ||
+      !Array.isArray(parsed.indexCoverage.reasons) ||
+      !parsed.indexCoverage.reasons.every((reason) => typeof reason === "string") ||
       !Array.isArray(parsed.entries) ||
       !parsed.entries.every((entry) =>
         entry !== null &&
@@ -234,6 +240,7 @@ const missingShard = (ref: SessionRef, reason = "source_unavailable"): Shard => 
   cacheSourceRatio: 0,
   entries: [],
   totalEntryCount: 0,
+  indexCoverage: { complete: false, reasons: [reason] },
   tier: "hot",
   indexReason: reason,
 });
@@ -252,7 +259,7 @@ export const loadShard = (ref: SessionRef, options: MemoryIndexOptions): Shard =
   );
   if (isCacheFresh(cached, state, policy) && cached?.sessionFile === ref.file) return cached;
   if (fs.existsSync(filePath)) removeCacheFile(filePath);
-  const { entries, header } = normalizeSession(ref.file, options.maxEntryChars);
+  const { entries, header, indexCoverage } = normalizeSession(ref.file, options.maxEntryChars);
   const finalState = fingerprintSource(ref.file);
   if (!finalState || finalState.sourceHash !== state.sourceHash) {
     removeCacheFile(filePath);
@@ -269,6 +276,7 @@ export const loadShard = (ref: SessionRef, options: MemoryIndexOptions): Shard =
     cacheSourceRatio: 0,
     entries,
     totalEntryCount: entries.length,
+    indexCoverage,
     tier: "hot",
   });
   writeCacheFile(filePath, shard);
@@ -282,7 +290,7 @@ const hydrateShard = (
 ): Shard => {
   const state = fingerprintSource(ref.file);
   if (!state) return { ...missingShard(ref), tier: "cold" };
-  const { entries, header } = normalizeSession(ref.file, options.maxEntryChars);
+  const { entries, header, indexCoverage } = normalizeSession(ref.file, options.maxEntryChars);
   const finalState = fingerprintSource(ref.file);
   if (!finalState || finalState.sourceHash !== state.sourceHash) {
     return { ...missingShard(ref, "source_changed_during_index"), tier: "cold" };
@@ -301,6 +309,7 @@ const hydrateShard = (
     cacheSourceRatio: 0,
     entries: selected,
     totalEntryCount: entries.length,
+    indexCoverage,
     tier: "cold",
   };
 };
@@ -385,7 +394,7 @@ export const loadDigest = (ref: SessionRef, options: MemoryIndexOptions): Digest
   ) return cached;
   if (fs.existsSync(filePath)) removeCacheFile(filePath);
 
-  const { entries, header } = normalizeSession(ref.file, Number.MAX_SAFE_INTEGER);
+  const { entries, header, indexCoverage } = normalizeSession(ref.file, Number.MAX_SAFE_INTEGER);
   const finalState = fingerprintSource(ref.file);
   if (!finalState || finalState.sourceHash !== state.sourceHash) {
     removeCacheFile(filePath);
@@ -398,6 +407,7 @@ export const loadDigest = (ref: SessionRef, options: MemoryIndexOptions): Digest
     entries,
     maxVocabularyBytes:
       options.maxColdVocabularyBytes ?? DEFAULT_MAX_COLD_VOCABULARY_BYTES,
+    normalizationCoverage: indexCoverage,
   });
   const persisted = fitDigestCache({
     cacheVersion: MEMORY_CACHE_VERSION,
@@ -567,12 +577,20 @@ export const loadTieredIndex = (
         shards.push(shard);
         if (shard.sourceHash) indexedSessions += 1;
         else reasons.add(shard.indexReason ?? "source_unavailable");
+        if (shard.sourceHash && !shard.indexCoverage.complete) {
+          incompleteSessions += 1;
+          for (const reason of shard.indexCoverage.reasons) reasons.add(reason);
+        }
       } else if (tier === "hot") {
         const shard = loadShard(ref, options);
         removeCacheFile(digestPathForSession(ref.file, options.indexDir));
         shards.push(shard);
         if (shard.sourceHash) indexedSessions += 1;
         else reasons.add(shard.indexReason ?? "source_unavailable");
+        if (shard.sourceHash && !shard.indexCoverage.complete) {
+          incompleteSessions += 1;
+          for (const reason of shard.indexCoverage.reasons) reasons.add(reason);
+        }
       } else {
         const digest = loadDigest(ref, options);
         removeCacheFile(shardPathForSession(ref.file, options.indexDir));
@@ -644,12 +662,13 @@ export const bm25Score = (
   shards: Shard[],
   terms: string[],
   filters: SearchFilters,
+  candidateLimit = Number.MAX_SAFE_INTEGER,
 ): ScoredEntry[] => {
   const queryTerms = [...new Set(terms.flatMap((term) => tokenizeLexical(term)))];
   const matching: { entry: NormalizedEntry; mtime: number; counts: Map<string, number> }[] = [];
   for (const shard of shards) {
     for (const entry of shard.entries) {
-      if (matchesFilters(entry, filters)) {
+      if (matchesFilters(entry, filters) && matching.length < candidateLimit) {
         matching.push({ entry, mtime: shard.mtime, counts: lexicalTermCounts(entry.text) });
       }
     }
@@ -710,5 +729,5 @@ export const recentEntries = (
     if (left.entry.index !== right.entry.index) return left.entry.index - right.entry.index;
     return compareLexical(left.entry.sessionFile, right.entry.sessionFile);
   });
-  return all.slice(0, Math.max(1, limit));
+  return all.slice(0, Math.max(0, limit));
 };

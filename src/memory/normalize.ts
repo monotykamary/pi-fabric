@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
+import {
+  readFabricBranchSummaryDetailsV1,
+  type FabricBranchFactV1,
+} from "../compaction/branch-details.js";
 import { readFabricProjectionTrace } from "../compaction/trace-events.js";
 
 /**
@@ -32,12 +36,18 @@ export interface NormalizedEntry {
   action?: string;
   outcome?: FabricExecutionOutcomeV1;
   operation?: NormalizedFabricOperation;
+  branchFact?: NormalizedFabricBranchFact;
+  factAddress?: string;
+  carrierEntryId?: string;
+  carrierParentId?: string | null;
+  carrierFromId?: string | null;
 }
 
 interface NormalizedFabricOperation {
   address: string;
   parentEntryId: string;
-  sequence: number;
+  sequence?: number;
+  subordinal?: string;
   tool: string;
   ref: string;
   provider?: string;
@@ -49,14 +59,49 @@ interface NormalizedFabricOperation {
   resultOmitted?: boolean;
 }
 
+interface NormalizedFabricBranchFact {
+  kind: FabricBranchFactV1["kind"];
+  address: string;
+  entryId: string;
+  subordinal: string;
+  carrierEntryId: string;
+  carrierParentId: string | null;
+  carrierFromId: string | null;
+  text?: string;
+  phase?: string;
+  ref?: string;
+  provider?: string;
+  action?: string;
+  tool?: string;
+  args?: Record<string, FabricTraceJsonValue>;
+  outcome?: FabricExecutionOutcomeV1;
+  error?: string;
+  result?: FabricTraceJsonValue;
+}
+
+export interface NormalizationCoverage {
+  complete: boolean;
+  reasons: string[];
+}
+
 export interface SessionHeaderInfo {
   sessionId: string;
   cwd: string;
   parentSession?: string;
 }
 
-const truncate = (text: string, max: number): { text: string; truncated: boolean } =>
-  text.length <= max ? { text, truncated: false } : { text: text.slice(0, max), truncated: true };
+const truncate = (text: string, max: number): { text: string; truncated: boolean } => {
+  const scalarLimit = Math.max(0, Math.floor(max));
+  if (scalarLimit >= text.length) return { text, truncated: false };
+  let scalarCount = 0;
+  let utf16End = 0;
+  for (const scalar of text) {
+    if (scalarCount >= scalarLimit) return { text: text.slice(0, utf16End), truncated: true };
+    utf16End += scalar.length;
+    scalarCount += 1;
+  }
+  return { text, truncated: false };
+};
 
 const asString = (value: unknown): string =>
   typeof value === "string" ? value : value === undefined || value === null ? "" : String(value);
@@ -80,8 +125,8 @@ const summarizeArgs = (args: unknown, max = 400): string => {
   } catch {
     serialized = String(args);
   }
-  if (serialized.length <= max) return serialized;
-  return `${serialized.slice(0, max)}…`;
+  const bounded = truncate(serialized, max);
+  return bounded.truncated ? `${bounded.text}…` : bounded.text;
 };
 
 const collectPathArguments = (value: unknown, key: string | null, paths: string[]): void => {
@@ -181,6 +226,122 @@ const traceChildren = (
       ...(filesTouched.length > 0 ? { filesTouched } : {}),
     };
   });
+};
+
+const branchDetails = (raw: Record<string, unknown>) => {
+  const type = asString(raw.type);
+  const message = raw.message;
+  const messageRecord = message && typeof message === "object" && !Array.isArray(message)
+    ? message as Record<string, unknown>
+    : undefined;
+  if (type !== "branch_summary" && !(type === "message" && asString(messageRecord?.role) === "branchSummary")) {
+    return undefined;
+  }
+  return readFabricBranchSummaryDetailsV1(raw.details)
+    ?? readFabricBranchSummaryDetailsV1(messageRecord?.details);
+};
+
+const branchFilesTouched = (fact: Extract<FabricBranchFactV1, { kind: "operation" }>): string[] => {
+  const paths: string[] = [];
+  collectPathArguments(fact.args, null, paths);
+  return [...new Set(paths)];
+};
+
+const branchFactChild = (
+  fact: FabricBranchFactV1,
+  base: Omit<NormalizedEntry, "index">,
+  carrierFromId: string | null,
+): Omit<NormalizedEntry, "index"> => {
+  const carrierEntryId = base.entryId!;
+  const carrierParentId = base.parentId;
+  const common: Omit<NormalizedEntry, "index" | "text" | "role" | "toolName" | "isError"> = {
+    sessionFile: base.sessionFile,
+    sessionId: base.sessionId,
+    entryId: fact.address,
+    parentId: base.parentId,
+    type: "fabric_branch_fact",
+    timestamp: base.timestamp,
+    truncated: false,
+    parentEntryId: carrierEntryId,
+    factAddress: fact.address,
+    carrierEntryId,
+    carrierParentId,
+    carrierFromId,
+  };
+  const normalizedFact: NormalizedFabricBranchFact = {
+    kind: fact.kind,
+    address: fact.address,
+    entryId: fact.entryId,
+    subordinal: fact.subordinal,
+    carrierEntryId,
+    carrierParentId,
+    carrierFromId,
+    ...(fact.kind === "user" ? { text: fact.text } : {}),
+    ...(fact.kind === "phase" ? { phase: fact.phase } : {}),
+    ...(fact.kind === "operation" ? {
+      ref: fact.ref,
+      ...(fact.provider ? { provider: fact.provider } : {}),
+      ...(fact.action ? { action: fact.action } : {}),
+      tool: fact.tool,
+      args: fact.args,
+      outcome: fact.outcome,
+      ...(fact.error !== undefined ? { error: fact.error } : {}),
+      ...(fact.result !== undefined ? { result: fact.result } : {}),
+    } : {}),
+  };
+  if (fact.kind === "user") {
+    return {
+      ...common,
+      role: "branchUser",
+      toolName: null,
+      text: fact.text,
+      isError: false,
+      branchFact: normalizedFact,
+    };
+  }
+  if (fact.kind === "phase") {
+    return {
+      ...common,
+      role: "fabricPhase",
+      toolName: null,
+      text: `Fabric phase ${fact.phase}`,
+      isError: false,
+      branchFact: normalizedFact,
+    };
+  }
+  const operation: NormalizedFabricOperation = {
+    address: fact.address,
+    parentEntryId: fact.entryId,
+    subordinal: fact.subordinal,
+    tool: fact.tool,
+    ref: fact.ref,
+    ...(fact.provider ? { provider: fact.provider } : {}),
+    ...(fact.action ? { action: fact.action } : {}),
+    args: fact.args,
+    outcome: fact.outcome,
+    ...(fact.error !== undefined ? { error: fact.error } : {}),
+    ...(fact.result !== undefined ? { result: fact.result } : {}),
+  };
+  if (Buffer.byteLength(JSON.stringify(operation), "utf8") > TRACE_OPERATION_MAX_BYTES && operation.result !== undefined) {
+    delete operation.result;
+    operation.resultOmitted = true;
+  }
+  const filesTouched = branchFilesTouched(fact);
+  return {
+    ...common,
+    role: "fabricOperation",
+    toolName: fact.tool,
+    text: `Fabric branch operation ${fact.ref}\n${JSON.stringify(operation)}`,
+    isError: fact.outcome !== "succeeded",
+    operationAddress: fact.address,
+    ref: fact.ref,
+    ...(fact.provider ? { provider: fact.provider } : {}),
+    ...(fact.action ? { action: fact.action } : {}),
+    outcome: fact.outcome,
+    operation,
+    branchFact: normalizedFact,
+    ...(filesTouched.length > 0 ? { filesTouched } : {}),
+  };
 };
 
 /**
@@ -315,16 +476,18 @@ const parseTimestamp = (raw: unknown): number | null => {
 export const normalizeSession = (
   sessionFile: string,
   maxEntryChars: number,
-): { entries: NormalizedEntry[]; header: SessionHeaderInfo | null } => {
+): { entries: NormalizedEntry[]; header: SessionHeaderInfo | null; indexCoverage: NormalizationCoverage } => {
   let content: string;
   try {
     content = fs.readFileSync(sessionFile, "utf8");
   } catch {
-    return { entries: [], header: null };
+    return { entries: [], header: null, indexCoverage: { complete: false, reasons: ["source_unavailable"] } };
   }
   const lines = content.split("\n");
   let header: SessionHeaderInfo | null = null;
   const entries: NormalizedEntry[] = [];
+  const reasons = new Set<string>();
+  const seenBranchFactAddresses = new Set<string>();
   let index = 0;
   let sessionId = "";
   for (const line of lines) {
@@ -376,14 +539,64 @@ export const normalizeSession = (
       ...(filesTouched.length > 0 ? { filesTouched } : {}),
     };
     entries.push({ ...base, index });
+    if (truncated) reasons.add("max_entry_chars");
     index += 1;
     for (const child of traceChildren(raw, base)) {
       const bounded = truncate(child.text, maxEntryChars);
       entries.push({ ...child, index, text: bounded.text, truncated: bounded.truncated });
+      if (bounded.truncated) reasons.add("max_entry_chars");
       index += 1;
     }
+    const details = branchDetails(raw);
+    if (details && base.entryId !== null) {
+      const localAddresses = new Set<string>();
+      const duplicateAddress = details.facts.find((fact) => {
+        if (localAddresses.has(fact.address)) return true;
+        localAddresses.add(fact.address);
+        return false;
+      });
+      if (duplicateAddress) {
+        reasons.add("duplicate_branch_fact_address");
+        if (duplicateAddress.kind === "operation") reasons.add("duplicate_operation_address");
+      } else {
+        const message = raw.message;
+        const messageRecord = message && typeof message === "object" && !Array.isArray(message)
+          ? message as Record<string, unknown>
+          : undefined;
+        const carrierFromId = typeof raw.fromId === "string"
+          ? raw.fromId
+          : typeof messageRecord?.fromId === "string" ? messageRecord.fromId : null;
+        for (const fact of details.facts) {
+          if (seenBranchFactAddresses.has(fact.address)) continue;
+          seenBranchFactAddresses.add(fact.address);
+          const child = branchFactChild(fact, base, carrierFromId);
+          const bounded = truncate(child.text, maxEntryChars);
+          entries.push({ ...child, index, text: bounded.text, truncated: bounded.truncated });
+          if (bounded.truncated) reasons.add("max_entry_chars");
+          index += 1;
+        }
+      }
+    }
   }
-  return { entries, header };
+
+  const entryIds = new Set<string>();
+  const operationAddresses = new Set<string>();
+  for (const entry of entries) {
+    if (entry.entryId !== null) {
+      if (entryIds.has(entry.entryId)) reasons.add("duplicate_entry_id");
+      entryIds.add(entry.entryId);
+    }
+    if (entry.operationAddress !== undefined) {
+      if (operationAddresses.has(entry.operationAddress)) reasons.add("duplicate_operation_address");
+      operationAddresses.add(entry.operationAddress);
+    }
+  }
+  const sortedReasons = [...reasons].sort();
+  return {
+    entries,
+    header,
+    indexCoverage: { complete: sortedReasons.length === 0, reasons: sortedReasons },
+  };
 };
 
 /** Read only the session header (first JSONL line). */
@@ -438,6 +651,11 @@ export interface ExpandedSessionEntry {
   outcome?: FabricExecutionOutcomeV1;
   filesTouched?: string[];
   operation?: NormalizedFabricOperation;
+  branchFact?: NormalizedFabricBranchFact;
+  factAddress?: string;
+  carrierEntryId?: string;
+  carrierParentId?: string | null;
+  carrierFromId?: string | null;
 }
 
 /** Re-read source once and resolve index, stable entry-id, or inclusive range addresses. */
@@ -470,5 +688,65 @@ export const expandSessionEntries = (
       ...(entry.outcome ? { outcome: entry.outcome } : {}),
       ...(entry.filesTouched ? { filesTouched: entry.filesTouched } : {}),
       ...(entry.operation ? { operation: entry.operation } : {}),
+      ...(entry.branchFact ? { branchFact: entry.branchFact } : {}),
+      ...(entry.factAddress ? { factAddress: entry.factAddress } : {}),
+      ...(entry.carrierEntryId ? { carrierEntryId: entry.carrierEntryId } : {}),
+      ...(entry.carrierParentId !== undefined ? { carrierParentId: entry.carrierParentId } : {}),
+      ...(entry.carrierFromId !== undefined ? { carrierFromId: entry.carrierFromId } : {}),
     }));
+};
+
+interface ExpansionAddressError {
+  code: "ambiguous_address" | "address_not_found";
+  message: string;
+  addressType: "entry_id" | "operation_address";
+  address: string;
+  matches: number;
+}
+
+export type ExpandSessionResult =
+  | { expanded: ExpandedSessionEntry[] }
+  | { expanded: []; error: ExpansionAddressError };
+
+/** Resolve every requested stable address exactly once, refusing missing or ambiguous identities. */
+export const expandSessionEntriesChecked = (
+  sessionFile: string,
+  selection: ExpandSessionSelection,
+): ExpandSessionResult => {
+  const { entries } = normalizeSession(sessionFile, Number.MAX_SAFE_INTEGER);
+  for (const address of new Set(selection.entryIds ?? [])) {
+    const matches = entries.filter((entry) => entry.entryId === address).length;
+    if (matches !== 1) {
+      return {
+        expanded: [],
+        error: {
+          code: matches === 0 ? "address_not_found" : "ambiguous_address",
+          message: matches === 0
+            ? `Entry address ${JSON.stringify(address)} was not found.`
+            : `Entry address ${JSON.stringify(address)} resolves to ${matches} records.`,
+          addressType: "entry_id",
+          address,
+          matches,
+        },
+      };
+    }
+  }
+  for (const address of new Set(selection.operationAddresses ?? [])) {
+    const matches = entries.filter((entry) => entry.operationAddress === address).length;
+    if (matches !== 1) {
+      return {
+        expanded: [],
+        error: {
+          code: matches === 0 ? "address_not_found" : "ambiguous_address",
+          message: matches === 0
+            ? `Operation address ${JSON.stringify(address)} was not found.`
+            : `Operation address ${JSON.stringify(address)} resolves to ${matches} records.`,
+          addressType: "operation_address",
+          address,
+          matches,
+        },
+      };
+    }
+  }
+  return { expanded: expandSessionEntries(sessionFile, selection) };
 };

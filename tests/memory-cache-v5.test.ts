@@ -27,7 +27,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (name: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v4-${name}-`));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v5-${name}-`));
   temporaryDirectories.push(directory);
   return directory;
 };
@@ -35,8 +35,8 @@ const temporaryDirectory = (name: string): string => {
 const invocationContext = (cwd: string): FabricInvocationContext => ({
   cwd,
   signal: undefined,
-  parentToolCallId: "memory-v4",
-  nestedToolCallId: "memory-v4-nested",
+  parentToolCallId: "memory-v5",
+  nestedToolCallId: "memory-v5-nested",
   extensionContext: {} as FabricInvocationContext["extensionContext"],
   update() {},
 });
@@ -52,7 +52,7 @@ const message = (id: string, text: string, offset = 0) =>
 const directorySize = (directory: string): number =>
   fs.readdirSync(directory).reduce((total, name) => total + fs.statSync(path.join(directory, name)).size, 0);
 
-describe("memory cache V4", () => {
+describe("memory cache V5", () => {
   let agentDir: string;
   let indexDir: string;
   let cwd: string;
@@ -149,7 +149,7 @@ describe("memory cache V4", () => {
     expect(fs.statSync(digestPathForSession(oldest, indexDir)).mode & 0o777).toBe(0o600);
   }, 30_000);
 
-  it("keeps no-query browsing bounded while query coverage is complete", async () => {
+  it("paginates no-query browsing without a pre-pagination session cap while query coverage is complete", async () => {
     const sessionDirectory = path.join(agentDir, "sessions", encodeCwdDir(cwd));
     const base = Math.floor(Date.now() / 1_000) - 100;
     for (let index = 0; index < 20; index += 1) {
@@ -163,8 +163,8 @@ describe("memory cache V4", () => {
       matchedCount: number;
       coverage: { eligibleSessions: number };
     };
-    expect(browse.coverage.eligibleSessions).toBe(10);
-    expect(browse.matchedCount).toBe(10);
+    expect(browse.coverage.eligibleSessions).toBe(20);
+    expect(browse.matchedCount).toBe(20);
 
     const search = await provider({ hotSessions: 1 }).invoke(
       "recall",
@@ -175,7 +175,7 @@ describe("memory cache V4", () => {
     expect(search.digestHits[0]!.sessionId).toBe("browse-0");
   });
 
-  it("rebuilds rewritten and V1 caches and removes caches for deleted sources", async () => {
+  it("rebuilds rewritten and V4 caches and removes caches for deleted sources", async () => {
     const sessionDirectory = path.join(agentDir, "sessions", encodeCwdDir(cwd));
     const file = writeSessionFile(sessionDirectory, "rewrite.jsonl", [
       sessionHeader("rewrite", cwd),
@@ -186,8 +186,8 @@ describe("memory cache V4", () => {
     const ref = resolveScope({ agentDir, cwd, scope: "project", maxSessions: 100 })[0]!;
     const options = { indexDir, maxEntryChars: 2_000, hotSessions: 0, digestTerms: 2 };
     const first = loadDigest(ref, options);
-    const v1 = { ...first, cacheVersion: 1, vocabulary: undefined, addresses: undefined };
-    fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v1), "utf8");
+    const v4 = { ...first, cacheVersion: 4, indexCoverage: undefined };
+    fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v4), "utf8");
     const rebuilt = loadDigest(ref, options);
     expect(rebuilt.cacheVersion).toBe(MEMORY_CACHE_VERSION);
     expect(rebuilt.vocabulary).toContain("originalword");
@@ -195,7 +195,7 @@ describe("memory cache V4", () => {
     const shard = loadShard(ref, { ...options, hotSessions: 1 });
     fs.writeFileSync(
       shardPathForSession(file, indexDir),
-      JSON.stringify({ ...shard, cacheVersion: 1, entries: [] }),
+      JSON.stringify({ ...shard, cacheVersion: 4, indexCoverage: undefined, entries: [] }),
       "utf8",
     );
     const rebuiltShard = loadShard(ref, { ...options, hotSessions: 1 });

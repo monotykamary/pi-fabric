@@ -8,10 +8,10 @@ preferences, errors, or other prose concepts with regexes. Roles, tool names,
 timestamps, entry IDs, operation addresses, tool errors, and tool argument
 paths come from typed session fields.
 
-## Cache V4
+## Cache V5
 
-Cache records use `cacheVersion: 4`. Older or malformed records are removed and
-rebuilt from source; they are never migrated or interpreted as V4. Refresh also
+Cache records use `cacheVersion: 5`. Older or malformed records are removed and
+rebuilt from source; they are never migrated or interpreted as V5. Refresh also
 removes orphan records, records whose encoded cache path does not match their
 source identity, and records for deleted source sessions.
 
@@ -20,11 +20,12 @@ Every cache record contains the exact session file path and a SHA-256
 preserved mtime therefore invalidates the record. Cache directories and files
 are created with `0700` and `0600` permissions on a best-effort basis.
 
-A hot shard contains bounded normalized entry text. A cold digest contains:
+A hot shard contains bounded normalized entry text plus `indexCoverage`. A cold
+digest contains:
 
 ```ts
 {
-  cacheVersion: 4,
+  cacheVersion: 5,
   kind: "digest",
   sessionId, file, cwd,
   mtime, size, sourceHash,
@@ -75,6 +76,14 @@ remain exactly discoverable as long as the configured vocabulary and cache
 bounds are not exceeded. If a bound is exceeded, an empty result is explicitly
 non-authoritative.
 
+Hot text is limited by Unicode scalar count, not raw UTF-16 code units. The cut
+therefore cannot split a surrogate pair and always remains valid UTF-8. Because
+hot shards do not retain a separate complete tail vocabulary, truncating any
+normalized entry sets shard `indexCoverage.complete: false` with reason
+`max_entry_chars`. A token occurring only after the cut cannot produce an
+authoritative no-match; recall says `No indexed matches` and includes that
+reason. Expansion still re-reads the complete source record.
+
 ## Bounded regular expressions
 
 Regex mode runs JavaScript regex only in a disposable worker thread. The host
@@ -108,8 +117,13 @@ Cache cleanup is bounded by inspected cache files and aggregate cache bytes
 additional indexing and sets `coverage.complete: false`; all eligible sessions
 remain counted. There is no unbounded background job or database dependency.
 
-For a query, `project` and `global` still discover all eligible sessions.
-`memory.maxSessions` limits only no-query browsing and session listing. Coverage
+Recall discovers all eligible sessions for query and no-query browse modes.
+`memory.maxSessions` limits session listing only. Search materialization has
+explicit deterministic per-call budgets: 50,000 filtered hot entry candidates,
+10,000 cold digest candidates, and 10,000 grouped result items. Reaching one
+sets coverage incomplete with `candidate_entry_budget`,
+`candidate_digest_budget`, or `candidate_item_budget`. Totals then describe the
+retained deterministic candidate set, not unknown omitted candidates. Coverage
 reports:
 
 ```ts
@@ -127,7 +141,8 @@ coverage: {
 `No matches` is authoritative only when both cache/index coverage and query
 execution coverage are complete. Otherwise the response says
 `No indexed matches` and reports reasons such as source unavailability,
-vocabulary/cache caps, synchronization budgets, or regex limits.
+`max_entry_chars`, duplicate identities, vocabulary/cache caps, candidate or
+synchronization budgets, or regex limits.
 
 ## Scopes
 
@@ -140,7 +155,11 @@ vocabulary/cache caps, synchronization budgets, or regex limits.
 
 Duplicate session IDs are ambiguous. `session:<id>` and `memory.expand` refuse
 an ambiguous ID with `ambiguous_session` and list candidate paths. Use the exact
-session file path from the cold pointer.
+session file path from the cold pointer. Duplicate normalized entry IDs and
+operation addresses also make index coverage incomplete (`duplicate_entry_id`
+or `duplicate_operation_address`). Stable-address expansion requires exactly
+one record: zero matches return `address_not_found`, and multiple matches return
+`ambiguous_address`; neither case returns source records.
 
 ## Pointers, hydration, and expansion
 
@@ -169,7 +188,13 @@ memory.recall({
 ```
 
 Hydrated/hot segments include `exactMatches` with exact normalized entry index,
-entry ID, and operation address. An optional inclusive `entryRange` may bound
+entry ID, and operation address. Recall first groups all retained hot matches
+into entry segments, combines those segments with cold pointers, globally ranks
+the combined item stream, and only then applies `page`/`pageSize`. Thus several
+matches in one segment consume one item, not several pages. Responses expose
+stable `totalItems`, `totalMatches`, and `hasNext` for that retained stream.
+No-query browse follows the same pagination path and has no earlier 25-entry or
+`maxSessions` cap. An optional inclusive `entryRange` may bound
 hydration, but both endpoints must be valid session indices. Out-of-range or
 negative addresses return structured `index_out_of_bounds` errors rather than
 being clamped or silently dropped.
@@ -196,8 +221,18 @@ record per operation immediately after the outer normalized entry. Each child
 keeps `parentEntryId`, `operationAddress`, exact `toolName`, `ref`, `provider`,
 `action`, typed `filesTouched`, `outcome`, and a bounded structured `operation`
 object. Expansion re-reads and re-normalizes source rather than reconstructing
-operations from output prose. Unknown or malformed traces and branch-summary
-prose are not indexed as structured facts.
+operations from output prose.
+
+Valid `FabricBranchSummaryDetailsV1` envelopes emit typed child records for
+user, phase, and operation facts. Children preserve the original fact address,
+ref/provider/action/tool/outcome/arguments and structurally derived paths, plus
+`carrierEntryId`, `carrierParentId`, and `carrierFromId`. Operation facts expand
+by their original operation address; user and phase facts use that address as
+their stable entry ID. Repeated nested summaries are deduplicated by exact fact
+address in source order, so the earliest carrier is deterministic. Addresses
+must be unique within each consumed details envelope; a duplicate rejects that
+envelope and marks coverage incomplete. Unknown or malformed details and all
+branch-summary prose remain non-semantic.
 
 ## Configuration
 
@@ -222,8 +257,10 @@ prose are not indexed as structured facts.
 }
 ```
 
-- `maxSessions`: no-query browse and session-list budget only.
-- `maxEntryChars`: persisted hot entry-text limit; expand re-reads full source.
+- `maxSessions`: session-list discovery budget only; recall uses candidate and
+  indexing budgets instead.
+- `maxEntryChars`: persisted hot entry-text Unicode-scalar limit; any cut marks
+  lexical coverage incomplete, while expand re-reads full source.
 - `hotSessions`: globally newest sessions retaining hot shards.
 - `maxColdVocabularyBytes`: per-session canonical vocabulary bound.
 - `maxColdCacheBytes`: hard per-session cold cache-file bound.
