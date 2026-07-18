@@ -1813,16 +1813,18 @@ export class StateStore {
       }
     };
     const recordViolation = async (): Promise<string | undefined> => {
+      let revocationError: string | undefined;
+      if (targetsCurrentHead && verificationHead) {
+        try {
+          await this.revokeCurrentCertificate(verificationHead, input.identity);
+        } catch (error) {
+          revocationError = `current certificate revocation failed: ${boundedError(error)}`;
+        }
+      }
       const publishError = await publishViolation();
-      if (publishError || !targetsCurrentHead || !verificationHead) {
-        return publishError;
-      }
-      try {
-        await this.revokeCurrentCertificate(verificationHead, input.identity);
-        return undefined;
-      } catch (error) {
-        return `current certificate revocation failed: ${boundedError(error)}`;
-      }
+      return [revocationError, publishError]
+        .filter((value): value is string => value !== undefined)
+        .join("; ") || undefined;
     };
 
     if (!certified) {

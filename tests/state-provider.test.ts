@@ -338,6 +338,44 @@ describe("StateStore", () => {
     });
   });
 
+  it("revokes the durable current certificate even when violation publication fails", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-revoke-reporting-"));
+    roots.push(project);
+    const markerFile = path.join(project, "passing");
+    fs.writeFileSync(markerFile, "yes");
+
+    await store.transition(
+      {
+        label: "reporting-outage-check",
+        to: "certified",
+        summary: "the marker initially exists",
+        evidence: ["test -f passing"],
+      },
+      identity,
+      project,
+    );
+    expect((await store.verify({ cwd: project, identity })).certified).toBe(true);
+    expect(store.get().certification.current).not.toBeNull();
+
+    fs.rmSync(markerFile);
+    const publish = mesh.publish.bind(mesh);
+    vi.spyOn(mesh, "publish").mockImplementation((input) =>
+      input.kind === "state.violated"
+        ? Promise.reject(new Error("injected reporting outage"))
+        : publish(input),
+    );
+    const failed = await store.verify({ cwd: project, identity });
+    expect(failed).toMatchObject({
+      certified: false,
+      violated: true,
+      reportingError: "injected reporting outage",
+    });
+    expect(store.get().certification.current).toBeNull();
+    expect(store.getHead()).not.toHaveProperty("certificate");
+  });
+
   it("publishes deterministic certificates and does not report them current after head changes", async () => {
     const mesh = createStore();
     const store = new StateStore(mesh);
