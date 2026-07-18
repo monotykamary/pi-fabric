@@ -37,6 +37,7 @@ import type { FabricAgentTranscript } from "./transcript.js";
 import { highlightCode } from "./highlight.js";
 import { formatJsonAsYaml } from "./structured.js";
 import { nestedEditDiff } from "./fabric-render.js";
+import { buildRunFlowRows, windowRunFlowRows } from "./run-flow.js";
 
 type Entity =
   | { id: string; kind: "agent"; label: string; status: string; value: FabricUiAgent }
@@ -68,6 +69,7 @@ interface PhasePanel {
 }
 
 type Pane = "phases" | "entities";
+type OverviewView = "activity" | "flow";
 
 type EntityGroupKind = FabricActivityKind | "globalActor" | "state";
 
@@ -312,6 +314,23 @@ const entitiesFor = (
   return orderEntitiesByGroup([...linkedAgents, ...visibleCalls, ...items]);
 };
 
+const flowEntitiesFor = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+): Entity[] => {
+  if (!run) return [];
+  const agents = orderAgentsByCreation(snapshot.agents).filter((agent) => agent.runId === run.id);
+  return buildRunFlowRows(run, agents)
+    .filter((row) => row.kind === "agent")
+    .map((row) => ({
+      id: row.entityId,
+      kind: "agent" as const,
+      label: row.agent.name,
+      status: row.agent.status,
+      value: row.agent,
+    }));
+};
+
 const panelStatus = (entities: Entity[], fallback: string): string => {
   if (entities.some((entity) => ["failed", "timed_out", "error"].includes(entity.status))) {
     return "failed";
@@ -528,6 +547,7 @@ const entityTail = (entity: Entity, now: number): string => {
 export class FabricDashboard implements Component, Focusable {
   focused = false;
   private pane: Pane = "phases";
+  private overviewView: OverviewView = "activity";
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -682,9 +702,12 @@ export class FabricDashboard implements Component, Focusable {
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const allEntities = entitiesFor(snapshot, run, panel);
+    const allEntities =
+      this.overviewView === "flow"
+        ? flowEntitiesFor(snapshot, run)
+        : entitiesFor(snapshot, run, panel);
     const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
-    this.syncEntitySelection(entities);
+    this.syncEntitySelection(entities, this.overviewView === "flow");
 
     if (data === "?") {
       this.mode = "help";
@@ -786,21 +809,37 @@ export class FabricDashboard implements Component, Focusable {
       return;
     }
 
+    if (data === "r") {
+      this.overviewView = this.overviewView === "activity" ? "flow" : "activity";
+      this.pane = this.overviewView === "flow" ? "entities" : "phases";
+      this.entityIndex = 0;
+      this.selectedEntityId = undefined;
+      this.pendingStop = undefined;
+      this.tui.requestRender();
+      return;
+    }
+
     if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
-      if (this.pane === "entities") {
+      if (this.overviewView === "activity" && this.pane === "entities") {
         this.pane = "phases";
       } else {
         this.done();
         return;
       }
-    } else if (matchesKey(data, Key.tab)) {
+    } else if (matchesKey(data, Key.tab) && this.overviewView === "activity") {
       this.pane = this.pane === "phases" ? "entities" : "phases";
-    } else if (matchesKey(data, Key.left) || data === "h") {
+    } else if (
+      this.overviewView === "activity" &&
+      (matchesKey(data, Key.left) || data === "h")
+    ) {
       this.pane = "phases";
-    } else if (matchesKey(data, Key.right) || data === "l") {
+    } else if (
+      this.overviewView === "activity" &&
+      (matchesKey(data, Key.right) || data === "l")
+    ) {
       this.pane = "entities";
     } else if (matchesKey(data, Key.up) || data === "k") {
-      if (this.pane === "phases") {
+      if (this.overviewView === "activity" && this.pane === "phases") {
         this.phaseIndex = Math.max(0, this.phaseIndex - 1);
         this.phaseSelectionTouched = true;
         this.entityIndex = 0;
@@ -809,7 +848,7 @@ export class FabricDashboard implements Component, Focusable {
         this.entityIndex = Math.max(0, this.entityIndex - 1);
       }
     } else if (matchesKey(data, Key.down) || data === "j") {
-      if (this.pane === "phases") {
+      if (this.overviewView === "activity" && this.pane === "phases") {
         this.phaseIndex = Math.min(Math.max(0, panels.length - 1), this.phaseIndex + 1);
         this.phaseSelectionTouched = true;
         this.entityIndex = 0;
@@ -851,7 +890,7 @@ export class FabricDashboard implements Component, Focusable {
         this.transcriptFollowing = true;
       }
     } else if (matchesKey(data, Key.enter)) {
-      if (this.pane === "phases") {
+      if (this.overviewView === "activity" && this.pane === "phases") {
         this.pane = "entities";
       } else {
         const selected = entities[this.entityIndex];
@@ -882,7 +921,7 @@ export class FabricDashboard implements Component, Focusable {
       this.tui.requestRender();
       return;
     } else if (data === "G") {
-      if (this.pane === "phases") {
+      if (this.overviewView === "activity" && this.pane === "phases") {
         this.phaseIndex = Math.max(0, panels.length - 1);
         this.phaseSelectionTouched = true;
         this.entityIndex = 0;
@@ -891,7 +930,7 @@ export class FabricDashboard implements Component, Focusable {
         this.entityIndex = Math.max(0, entities.length - 1);
       }
     } else if (data === "g") {
-      if (this.pane === "phases") {
+      if (this.overviewView === "activity" && this.pane === "phases") {
         this.phaseIndex = 0;
         this.phaseSelectionTouched = true;
         this.entityIndex = 0;
@@ -901,7 +940,9 @@ export class FabricDashboard implements Component, Focusable {
       }
     }
     if (this.phaseSelectionTouched) this.selectedPhaseId = panels[this.phaseIndex]?.id;
-    if (this.detailId) this.pinDetailSelection(run, panel);
+    if (this.detailId) {
+      this.pinDetailSelection(run, panel, this.overviewView === "activity");
+    }
     if (this.pane === "entities") {
       this.selectedEntityId = entities[this.entityIndex]?.id;
     }
@@ -928,15 +969,18 @@ export class FabricDashboard implements Component, Focusable {
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const allEntities = entitiesFor(snapshot, run, panel);
+    const allEntities =
+      this.overviewView === "flow"
+        ? flowEntitiesFor(snapshot, run)
+        : entitiesFor(snapshot, run, panel);
     const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
-    this.syncEntitySelection(entities);
+    this.syncEntitySelection(entities, this.overviewView === "flow");
     if (this.detailId) {
       const detail = allEntities.find((entity) => entity.id === this.detailId);
       if (detail) return this.renderDetail(width, snapshot, detail);
       this.closeDetail();
     }
-    return this.renderOverview(width, snapshot, run, panels, entities);
+    return this.renderOverview(width, snapshot, run, panels, entities, allEntities);
   }
 
   invalidate(): void {
@@ -1032,7 +1076,8 @@ export class FabricDashboard implements Component, Focusable {
       this.onRemoveGlobalActor ? "d delete" : undefined,
     ].filter((value): value is string => Boolean(value));
     const help = [
-      ["Navigate", "↑↓/jk select · ←→/tab switch pane · enter inspect · esc back"],
+      ["Navigate", "↑↓/jk select · ←→/tab switch Activity pane · enter inspect · esc back"],
+      ["Views", "r toggles Activity/Run flow · flow follows selection and summarizes hidden agents"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
       ...(actorActions.length > 0 ? [["Actors", actorActions.join(" · ")]] : []),
@@ -1228,13 +1273,15 @@ export class FabricDashboard implements Component, Focusable {
     run: FabricActivityRun | undefined,
     panels: PhasePanel[],
     entities: Entity[],
+    allEntities: Entity[],
   ): string[] {
     if (width < 24) {
       return [truncateToWidth("too narrow · need 24 cols", width)];
     }
     const innerWidth = width - 2;
     const lines: string[] = [];
-    lines.push(this.topBorder(width, `Fabric · ${run?.name ?? "session"}`));
+    const viewName = this.overviewView === "flow" ? "Run flow" : "Activity";
+    lines.push(this.topBorder(width, `Fabric · ${run?.name ?? "session"} · ${viewName}`));
 
     const runAgents = run
       ? snapshot.agents.filter((agent) => agent.runId === run.id)
@@ -1277,7 +1324,18 @@ export class FabricDashboard implements Component, Focusable {
 
     const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
     const maxBody = Math.max(2, Math.min(22, terminalRows - 12));
-    if (innerWidth >= 88) {
+    if (this.overviewView === "flow") {
+      for (const line of this.renderRunFlowPanel(
+        run,
+        allEntities,
+        entities,
+        innerWidth,
+        maxBody,
+        snapshot.now,
+      )) {
+        lines.push(this.row(width, line));
+      }
+    } else if (innerWidth >= 88) {
       const leftWidth = Math.min(38, Math.max(28, Math.floor((innerWidth - 1) * 0.34)));
       const rightWidth = innerWidth - leftWidth - 1;
       const leftLines = this.renderPhasePanel(panels, leftWidth, maxBody);
@@ -1341,15 +1399,11 @@ export class FabricDashboard implements Component, Focusable {
     }
 
     lines.push(this.middleBorder(width));
-    lines.push(
-      this.row(
-        width,
-        this.theme.fg(
-          "dim",
-          `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · [ older · ] newer · ? help · esc close`,
-        ),
-      ),
-    );
+    const navigationHint =
+      this.overviewView === "flow"
+        ? `↑↓/jk agent · enter inspect · f filter:${this.filter} · r activity · [ older · ] newer · ? help · esc close`
+        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · r run flow · [ older · ] newer · ? help · esc close`;
+    lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];
     const actionHint =
       this.pane === "entities" && selectedEntity
@@ -1400,6 +1454,180 @@ export class FabricDashboard implements Component, Focusable {
       return `agent actions: ${actions.join(" · ")}`;
     }
     return "enter details";
+  }
+
+  private renderRunFlowPanel(
+    run: FabricActivityRun | undefined,
+    allEntities: Entity[],
+    entities: Entity[],
+    width: number,
+    height: number,
+    now: number,
+  ): string[] {
+    const selectableEntityIds = new Set(entities.map((entity) => entity.id));
+    const allAgents = allEntities.flatMap((entity) =>
+      entity.kind === "agent" ? [entity.value] : [],
+    );
+    const agentById = new Map(allAgents.map((agent) => [agent.id, agent] as const));
+    const displayedEntityIds = new Set(selectableEntityIds);
+    for (const entity of entities) {
+      if (entity.kind !== "agent") continue;
+      let parentId = entity.value.parentId;
+      const visited = new Set<string>();
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        displayedEntityIds.add(`agent:${parentId}`);
+        parentId = agentById.get(parentId)?.parentId;
+      }
+    }
+    const displayEntities = allEntities.filter((entity) => displayedEntityIds.has(entity.id));
+    const agents = displayEntities.flatMap((entity) =>
+      entity.kind === "agent" ? [entity.value] : [],
+    );
+    const selectableAgents = entities.flatMap((entity) =>
+      entity.kind === "agent" ? [entity.value] : [],
+    );
+    const selected = entities.find((entity) => entity.id === this.selectedEntityId);
+    const selectedPhase =
+      selected?.kind === "agent" && selected.value.phaseId
+        ? run?.phases.find((phase) => phase.id === selected.value.phaseId)?.name ??
+          selected.value.phaseId
+        : undefined;
+    const currentPhase = run?.currentPhaseId
+      ? run.phases.find((phase) => phase.id === run.currentPhaseId)?.name ?? run.currentPhaseId
+      : undefined;
+    const active = selectableAgents.filter(
+      (agent) => isActiveStatus(agent.status) && agent.status !== "blocked",
+    ).length;
+    const blocked = selectableAgents.filter((agent) => agent.status === "blocked").length;
+    const failed = selectableAgents.filter((agent) =>
+      ["failed", "timed_out", "error"].includes(agent.status),
+    ).length;
+    const stats = [
+      `${selectableAgents.length} agent${selectableAgents.length === 1 ? "" : "s"}`,
+      currentPhase ? `current ${currentPhase}` : undefined,
+      active > 0 ? `${active} active` : undefined,
+      blocked > 0 ? `${blocked} blocked` : undefined,
+      failed > 0 ? `${failed} failed` : undefined,
+      selectedPhase && selectedPhase !== currentPhase ? `focus ${selectedPhase}` : undefined,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" · ");
+    const lines = [
+      truncateToWidth(
+        `${this.theme.fg("accent", "▸ Run flow")}${stats ? ` · ${this.theme.fg("dim", stats)}` : ""}`,
+        width,
+        "",
+      ),
+    ];
+    const available = Math.max(0, height - 1);
+    if (available === 0) return lines.slice(0, height);
+    if (!run) {
+      lines.push(this.theme.fg("dim", "  (no Fabric run selected)"));
+      while (lines.length < height) lines.push("");
+      return lines.slice(0, height);
+    }
+
+    const rows = buildRunFlowRows(run, agents, {
+      includeEmptyPhases: this.filter === "all",
+    });
+    if (rows.length === 0) {
+      const label = this.filter === "all" ? "agents" : `${this.filter} agents`;
+      lines.push(this.theme.fg("dim", `  (no ${label} linked to this run)`));
+      while (lines.length < height) lines.push("");
+      return lines.slice(0, height);
+    }
+
+    const entityById = new Map(allEntities.map((entity) => [entity.id, entity] as const));
+    const visibleRows = windowRunFlowRows(rows, this.selectedEntityId, available);
+    for (const row of visibleRows) {
+      if (row.kind === "omission") {
+        const direction =
+          row.direction === "before" ? "↑" : row.direction === "after" ? "↓" : "↕";
+        const compact = width < 56;
+        const hidden =
+          row.agents > 0
+            ? compact
+              ? `${row.agents} hidden`
+              : `${row.agents} agent${row.agents === 1 ? "" : "s"} hidden`
+            : compact
+              ? `${row.rows} rows hidden`
+              : `${row.rows} flow row${row.rows === 1 ? "" : "s"} hidden`;
+        const context =
+          row.context && row.context.length > 0
+            ? `${compact ? "" : "path "}${row.context
+                .map((part) => safeText(part))
+                .join(" › ")}`
+            : undefined;
+        const detail = [
+          row.active > 0 ? (compact ? `a:${row.active}` : `${row.active} active`) : undefined,
+          row.blocked > 0 ? (compact ? `b:${row.blocked}` : `${row.blocked} blocked`) : undefined,
+          row.failed > 0 ? (compact ? `f:${row.failed}` : `${row.failed} failed`) : undefined,
+          row.phases > 0
+            ? compact
+              ? `p:${row.phases}`
+              : `${row.phases} phase${row.phases === 1 ? "" : "s"}`
+            : undefined,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+        const summary = [hidden, context, detail || undefined]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+        lines.push(
+          truncateToWidth(
+            this.theme.fg("muted", `  ${direction} … ${summary}`),
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+      if (row.kind === "phase") {
+        const count = `${row.agentCount} agent${row.agentCount === 1 ? "" : "s"}`;
+        lines.push(
+          truncateToWidth(
+            `  ${colorStatus(this.theme, row.status, statusGlyph(row.status))} ${this.theme.bold(
+              safeText(row.name),
+            )}  ${this.theme.fg("dim", count)}`,
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+
+      const entity = entityById.get(row.entityId);
+      const selectedRow = row.entityId === this.selectedEntityId;
+      const contextRow = !selectableEntityIds.has(row.entityId);
+      const prefix = selectedRow ? "› " : "  ";
+      const maxIndentLevels = Math.max(0, Math.min(8, Math.floor((width - 24) / 3)));
+      const hiddenDepth = Math.max(0, row.ancestorLast.length - maxIndentLevels);
+      const visibleAncestors =
+        maxIndentLevels > 0 ? row.ancestorLast.slice(-maxIndentLevels) : [];
+      const tree =
+        (hiddenDepth > 0 ? "… " : "") +
+        visibleAncestors.map((isLast) => (isLast ? "   " : "│  ")).join("") +
+        (row.isLast ? "└─ " : "├─ ");
+      const name = contextRow
+        ? this.theme.fg("muted", safeText(row.agent.name))
+        : safeText(row.agent.name);
+      const lead = `${prefix}${this.theme.fg("borderMuted", tree)}${colorStatus(
+        this.theme,
+        row.agent.status,
+        statusGlyph(row.agent.status),
+      )} ${name}`;
+      const entitySummary = entity ? safeText(entityTail(entity, now)) : "";
+      const tail = [contextRow ? "context" : undefined, entitySummary]
+        .filter((value): value is string => Boolean(value))
+        .join(" · ");
+      let line = tail ? `${lead}  ${this.theme.fg("dim", tail)}` : lead;
+      if (selectedRow) line = this.theme.bg("selectedBg", padToWidth(line, width));
+      lines.push(truncateToWidth(line, width, ""));
+    }
+
+    while (lines.length < height) lines.push("");
+    return lines.slice(0, height);
   }
 
   private renderPhasePanel(panels: PhasePanel[], width: number, height: number): string[] {
@@ -1883,7 +2111,7 @@ export class FabricDashboard implements Component, Focusable {
     return lines.length > 0 ? lines : [this.theme.fg("dim", "No details")];
   }
 
-  private syncEntitySelection(entities: Entity[]): void {
+  private syncEntitySelection(entities: Entity[], preferAttention = false): void {
     if (entities.length === 0) {
       this.entityIndex = 0;
       this.selectedEntityId = undefined;
@@ -1892,10 +2120,25 @@ export class FabricDashboard implements Component, Focusable {
     const retainedIndex = this.selectedEntityId
       ? entities.findIndex((entity) => entity.id === this.selectedEntityId)
       : -1;
+    const failedIndex = preferAttention
+      ? entities.findIndex((entity) =>
+          ["failed", "timed_out", "error"].includes(entity.status),
+        )
+      : -1;
+    const blockedIndex = preferAttention
+      ? entities.findIndex((entity) => entity.status === "blocked")
+      : -1;
+    const activeIndex = preferAttention
+      ? entities.findIndex((entity) => isActiveStatus(entity.status))
+      : -1;
+    const attentionIndex =
+      failedIndex >= 0 ? failedIndex : blockedIndex >= 0 ? blockedIndex : activeIndex;
     this.entityIndex =
       retainedIndex >= 0
         ? retainedIndex
-        : Math.max(0, Math.min(this.entityIndex, entities.length - 1));
+        : attentionIndex >= 0
+          ? attentionIndex
+          : Math.max(0, Math.min(this.entityIndex, entities.length - 1));
     this.selectedEntityId = entities[this.entityIndex]?.id;
   }
 
@@ -1968,12 +2211,13 @@ export class FabricDashboard implements Component, Focusable {
     this.detailSelectionRestore = undefined;
     this.detailView = "summary";
     this.transcriptFollowing = true;
-    this.pane = "phases";
+    this.pane = this.overviewView === "flow" ? "entities" : "phases";
   }
 
   private pinDetailSelection(
     run: FabricActivityRun | undefined,
     panel: PhasePanel | undefined,
+    pinPhase: boolean,
   ): void {
     this.detailSelectionRestore ??= {
       runSelectionTouched: this.runSelectionTouched,
@@ -1981,8 +2225,10 @@ export class FabricDashboard implements Component, Focusable {
     };
     this.runSelectionTouched = true;
     this.selectedRunId = run?.id;
-    this.phaseSelectionTouched = true;
-    this.selectedPhaseId = panel?.id;
+    if (pinPhase) {
+      this.phaseSelectionTouched = true;
+      this.selectedPhaseId = panel?.id;
+    }
   }
 
   private closeDetail(): void {

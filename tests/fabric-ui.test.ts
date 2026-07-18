@@ -1594,6 +1594,196 @@ describe("Fabric dynamic UI", () => {
     expect(wrapPlainText("👩‍💻x", 2)).toEqual(["👩‍💻", "x"]);
   });
 
+  it("renders recursive agents in a phase-grouped Run Flow", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.events = [];
+    const parent = {
+      ...current.agents[0]!,
+      id: "flow-parent",
+      name: "flow-parent",
+      status: "completed",
+      startedAt: current.now - 50_000,
+      finishedAt: current.now - 20_000,
+    };
+    const child = {
+      ...current.agents[0]!,
+      id: "flow-child",
+      name: "flow-child",
+      parentId: parent.id,
+      status: "running",
+      startedAt: current.now - 19_000,
+    };
+    current.agents = [parent, child];
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("r");
+      const flowLines = dashboard.render(120);
+      const flow = flowLines.join("\n");
+      expect(flow).toContain("Run flow");
+      expect(flow).toContain("Discover");
+      expect(flow).toContain("Audit");
+      expect(flow).toContain("flow-parent");
+      expect(flow).toContain("flow-child");
+      expect(flow.indexOf("flow-parent")).toBeLessThan(flow.indexOf("flow-child"));
+      expect(flow).toMatch(/[├└]─ .*flow-child/);
+      expect(flowLines.every((line) => visibleWidth(line) <= 120)).toBe(true);
+
+      dashboard.handleInput("\r");
+      expect(dashboard.render(120).join("\n")).toContain("agent · flow-child");
+
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("f");
+      const activeFlow = dashboard.render(120).join("\n");
+      expect(activeFlow).toContain("flow-parent");
+      expect(activeFlow).toContain("flow-child");
+      expect(activeFlow).toContain("context");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("keeps an empty current phase visible in the Run Flow heading", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.events = [];
+    current.agents[0] = {
+      ...current.agents[0]!,
+      status: "completed",
+      phaseId: "discover",
+      finishedAt: current.now - 1_000,
+    };
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 12 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("r");
+      expect(dashboard.render(80).join("\n")).toContain("current Audit");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("centers a large Run Flow on attention and summarizes omitted agents", () => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.events = [];
+    run.phases = [
+      {
+        id: "fanout",
+        name: "Fan out",
+        status: "running",
+        total: 80,
+        startedAt: current.now - 80_000,
+        updatedAt: current.now,
+      },
+    ];
+    run.currentPhaseId = "fanout";
+    run.calls = [];
+    run.items = [];
+    const base = current.agents[0]!;
+    current.agents = Array.from({ length: 80 }, (_, index) => ({
+      ...base,
+      id: `flow-worker-${index}`,
+      name: `flow-worker-${index}`,
+      status: index === 56 ? "running" as const : "completed" as const,
+      phaseId: "fanout",
+      startedAt: current.now - 80_000 + index,
+      ...(index === 56 ? {} : { finishedAt: current.now - 1_000 }),
+    }));
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("r");
+      const centeredLines = dashboard.render(120);
+      const centered = centeredLines.join("\n");
+      expect(centered).toContain("flow-worker-56");
+      expect(centered).toContain("agents hidden");
+      expect(centered).not.toContain("flow-worker-0 ");
+      expect(centeredLines.length).toBeLessThanOrEqual(24);
+      expect(centeredLines.every((line) => visibleWidth(line) <= 120)).toBe(true);
+
+      dashboard.handleInput("G");
+      const bottom = dashboard.render(120).join("\n");
+      expect(bottom).toContain("flow-worker-79");
+      expect(bottom).toContain("↑ …");
+
+      dashboard.handleInput("g");
+      const top = dashboard.render(120).join("\n");
+      expect(top).toContain("flow-worker-0");
+      expect(top).toContain("↓ …");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("keeps a deeply nested selected agent readable in a narrow Run Flow", () => {
+    const current = snapshot();
+    const run = current.runs[0]!;
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.events = [];
+    run.phases = [
+      {
+        id: "deep",
+        name: "Deep recursion",
+        status: "running",
+        startedAt: current.now - 30_000,
+        updatedAt: current.now,
+      },
+    ];
+    run.currentPhaseId = "deep";
+    const base = current.agents[0]!;
+    current.agents = Array.from({ length: 20 }, (_, index) => ({
+      ...base,
+      id: `deep-node-${index}`,
+      name: `deep-node-${index}`,
+      status: index === 19 ? "running" as const : "completed" as const,
+      phaseId: "deep",
+      startedAt: current.now - 30_000 + index,
+      ...(index > 0 ? { parentId: `deep-node-${index - 1}` } : {}),
+    }));
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("r");
+      const lines = dashboard.render(40);
+      expect(lines.join("\n")).toContain("deep-node-19");
+      expect(lines.join("\n")).toContain("10 hidden");
+      expect(lines.join("\n")).toContain("Deep recursion");
+      expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+    } finally {
+      dashboard.dispose();
+    }
+  });
 });
 
 describe("Fabric dashboard global actors and instructions editor", () => {

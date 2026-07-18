@@ -87,6 +87,56 @@ describe("SubagentManager", () => {
     expect(status.nestedAgents?.[0]?.nestedAgents?.[0]?.logFile).toBe(
       path.join(grandchildDirectory, "events.jsonl"),
     );
+
+    status.nestedAgents![0]!.name = "caller mutation";
+    fs.rmSync(path.join(runDirectory, "nested"), { recursive: true, force: true });
+    const retained = manager.status(result.id) as SubagentRunRecord;
+    expect(retained.nestedAgents?.[0]?.name).toBe("child");
+    expect(retained.nestedAgents?.[0]?.nestedAgents?.[0]?.name).toBe("grandchild");
+  });
+
+  it("captures recursive leaves before the child process removes their directories", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+    const handle = await manager.spawn({
+      task: "HANG while nested agents finish",
+      transport: "process",
+      recursive: true,
+    });
+    const runDirectory = manager.runDirectory(handle.id)!;
+    const statusFile = path.join(runDirectory, "status.json");
+    const deadline = Date.now() + 2_000;
+    while (!fs.existsSync(statusFile) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const parentStatus = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+    const leafDirectory = path.join(runDirectory, "nested", "finished-leaf");
+    fs.mkdirSync(leafDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(leafDirectory, "status.json"),
+      JSON.stringify({
+        ...parentStatus,
+        id: "finished-leaf",
+        name: "finished leaf",
+        status: "completed",
+        finishedAt: Date.now(),
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    fs.rmSync(path.join(runDirectory, "nested"), { recursive: true, force: true });
+    const retained = manager.status(handle.id) as SubagentRunRecord;
+    expect(retained.nestedAgents?.[0]).toMatchObject({
+      id: "finished-leaf",
+      name: "finished leaf",
+      status: "completed",
+    });
+    await manager.stop(handle.id);
   });
 
   it("keeps direct tools native for ordinary children and full code mode for recursion", async () => {

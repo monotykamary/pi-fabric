@@ -47,6 +47,7 @@ import {
 import type { BudgetLedgerState } from "./budget-ledger.js";
 
 const STATUS_POLL_MS = 100;
+const NESTED_SNAPSHOT_POLL_MS = 500;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
 const MAX_NAME_LENGTH = 60;
 
@@ -55,6 +56,7 @@ interface ManagedSubagent {
   name: string;
   task: string;
   runner: FabricAgentRunner;
+  recursive: boolean;
   cwd: string;
   statusFile: string;
   runDirectory: string;
@@ -71,6 +73,8 @@ interface ManagedSubagent {
   runnerSessionId?: string;
   branch?: string;
   worktree?: string;
+  nestedSnapshot?: SubagentRunRecord[];
+  nestedSnapshotAt?: number;
   settled: boolean;
   background: boolean;
 }
@@ -417,6 +421,7 @@ export class SubagentManager {
         name,
         task: request.task,
         runner,
+        recursive,
         cwd: agentCwd,
         statusFile,
         runDirectory,
@@ -615,6 +620,7 @@ export class SubagentManager {
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
       const record = readRecord(managed.statusFile);
+      if (managed.recursive) this.#nestedAgents(managed);
       if (record?.runnerSessionId && !managed.runnerSessionId) {
         managed.runnerSessionId = record.runnerSessionId;
       }
@@ -769,8 +775,33 @@ export class SubagentManager {
     };
   }
 
+  // Recursive child processes remove their nested run directories on shutdown.
+  // Preserve the last bounded status tree so completed leaves remain visible
+  // in the parent run until that parent is explicitly cleaned up.
+  #nestedAgents(managed: ManagedSubagent, force = false): SubagentRunRecord[] {
+    const now = Date.now();
+    const needsInitialDiscovery =
+      managed.nestedSnapshot === undefined &&
+      fs.existsSync(path.join(managed.runDirectory, "nested"));
+    if (
+      !force &&
+      !needsInitialDiscovery &&
+      managed.nestedSnapshotAt !== undefined &&
+      now - managed.nestedSnapshotAt < NESTED_SNAPSHOT_POLL_MS
+    ) {
+      return managed.nestedSnapshot ? structuredClone(managed.nestedSnapshot) : [];
+    }
+    managed.nestedSnapshotAt = now;
+    const discovered = readNestedAgents(managed.runDirectory);
+    if (discovered.length > 0) managed.nestedSnapshot = discovered;
+    return managed.nestedSnapshot ? structuredClone(managed.nestedSnapshot) : [];
+  }
+
   #withTransportMetadata(record: SubagentRunRecord, managed: ManagedSubagent): SubagentRunRecord {
-    const nestedAgents = readNestedAgents(managed.runDirectory);
+    const nestedAgents = this.#nestedAgents(
+      managed,
+      terminalStatuses.has(record.status) && !managed.settled,
+    );
     const budget = this.#budgetSummary();
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     return {
