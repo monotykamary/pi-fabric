@@ -102,18 +102,21 @@ describe("memory Fabric trace records", () => {
     const options = { indexDir, maxEntryChars: 2_000, hotSessions: 1, digestTerms: 2 };
     const shard = loadShard(ref, options);
 
-    const reads = searchShards([shard], { query: "read", filters: { tool: "read" } });
+    const reads = await searchShards([shard], { query: "read", filters: { tool: "read" } });
     expect(reads.matchedCount).toBeGreaterThan(0);
     expect(reads.segments.flatMap((segment) => segment.entries)
       .filter((item) => item.matched)
       .every((item) => item.entry.toolName === "read")).toBe(true);
-    const bash = searchShards([shard], { query: "pnpm", filters: { tool: "bash" } });
+    const bash = await searchShards([shard], { query: "pnpm", filters: { tool: "bash" } });
     expect(bash.matchedCount).toBe(2);
+    expect(bash.segments.flatMap((segment) => segment.exactMatches)
+      .map((match) => match.operationAddress)
+      .filter(Boolean)).toEqual(["e2/5", "e2/6"]);
     for (const query of ["agents", "state", "mesh"]) {
-      expect(searchShards([shard], { query }).matchedCount).toBeGreaterThan(0);
+      expect((await searchShards([shard], { query })).matchedCount).toBeGreaterThan(0);
     }
-    expect(searchShards([shard], { query: "source-only" }).matchedCount).toBeGreaterThan(0);
-    expect(searchShards([shard], { query: "BRANCH_SUMMARY_PROSE_POISON" }).matchedCount).toBe(0);
+    expect((await searchShards([shard], { query: "source-only" })).matchedCount).toBeGreaterThan(0);
+    expect((await searchShards([shard], { query: "BRANCH_SUMMARY_PROSE_POISON" })).matchedCount).toBe(0);
 
     const expanded = expandSessionEntries(file, { operationAddresses: ["e2/5"] });
     expect(expanded).toHaveLength(1);
@@ -128,7 +131,7 @@ describe("memory Fabric trace records", () => {
     expect(expanded[0]!.operation?.error).toBe("typed test failure");
 
     const digest = loadDigest(ref, { ...options, hotSessions: 0 });
-    const vocabulary = new Set(digest.vocabulary.map(([term]) => term));
+    const vocabulary = new Set(digest.vocabulary);
     for (const term of ["agents", "state", "mesh", "bash", "read"]) expect(vocabulary.has(term)).toBe(true);
     expect(digest.toolHistogram).toMatchObject({ read: 1, bash: 2, run: 1, get: 1, query: 1 });
 

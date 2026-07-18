@@ -13,26 +13,19 @@ export const lexicalTermCounts = (text: string): Map<string, number> => {
   return counts;
 };
 
+export type MemoryQueryMode = "literal" | "regex";
+
 export type MemoryQueryPlan =
   | { kind: "browse" }
   | { kind: "terms"; terms: string[] }
-  | { kind: "regex"; regex: RegExp };
+  | { kind: "regex"; pattern: string };
 
-const tryCompileRegex = (query: string): RegExp | null => {
-  try {
-    return new RegExp(query, "iu");
-  } catch {
-    return null;
-  }
-};
-
-/** Preserve the existing regex syntax while centralizing lexical query planning. */
-export const planMemoryQuery = (query: string | undefined): MemoryQueryPlan => {
-  const trimmed = query?.trim();
-  if (!trimmed) return { kind: "browse" };
-  if (/[|*+?{}()[\]\\^$.]/.test(trimmed)) {
-    const regex = tryCompileRegex(trimmed);
-    if (regex) return { kind: "regex", regex };
-  }
-  return { kind: "terms", terms: [...new Set(tokenizeLexical(trimmed))] };
+/** Plan only the explicitly selected query mode. Literal input is never compiled as regex. */
+export const planMemoryQuery = (
+  query: string | undefined,
+  queryMode: MemoryQueryMode = "literal",
+): MemoryQueryPlan => {
+  if (query === undefined || query.trim().length === 0) return { kind: "browse" };
+  if (queryMode === "regex") return { kind: "regex", pattern: query };
+  return { kind: "terms", terms: [...new Set(tokenizeLexical(query))] };
 };

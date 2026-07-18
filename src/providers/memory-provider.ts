@@ -6,18 +6,31 @@ import type {
 } from "../protocol.js";
 import type { FabricMemoryConfig } from "../config.js";
 import {
+  AmbiguousSessionError,
   enumerateAllSessions,
   resolveScope,
+  resolveSessionTarget,
   type ResolveScopeInput,
   type SessionRef,
 } from "../memory/discovery.js";
-import { expandSessionEntries } from "../memory/normalize.js";
+import { expandSessionEntries, normalizeSession } from "../memory/normalize.js";
 import {
   DEFAULT_HOT_SESSIONS,
+  fingerprintSource,
   loadTieredIndex,
+  type EntryRange,
   type MemoryIndexOptions,
 } from "../memory/index.js";
-import { formatSearchResult, searchMemoryIndex, type SearchItem } from "../memory/search.js";
+import {
+  DEFAULT_REGEX_MAX_HAYSTACK_BYTES,
+  DEFAULT_REGEX_MAX_HAYSTACK_TERMS,
+  DEFAULT_REGEX_MAX_PATTERN_BYTES,
+  DEFAULT_REGEX_TIMEOUT_MS,
+  formatSearchResult,
+  searchMemoryIndex,
+  type SearchItem,
+} from "../memory/search.js";
+import type { MemoryQueryMode } from "../memory/tokenize.js";
 
 const RECALL_DEFAULT_PAGE_SIZE = 25;
 const RECALL_MAX_PAGE_SIZE = 200;
@@ -32,6 +45,15 @@ const descriptors: FabricActionDescriptor[] = [
       type: "object",
       properties: {
         query: { type: "string" },
+        queryMode: {
+          type: "string",
+          enum: ["literal", "regex"],
+          description: "Literal canonical-token matching (default) or explicitly bounded regex.",
+        },
+        expectedSourceHash: {
+          type: "string",
+          description: "SHA-256 from a prior pointer; stale sources are refused.",
+        },
         scope: {
           type: "string",
           description:
@@ -67,7 +89,11 @@ const descriptors: FabricActionDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
-        session: { type: "string", description: "Session file path or id." },
+        session: { type: "string", description: "Exact session file path or unambiguous id." },
+        expectedSourceHash: {
+          type: "string",
+          description: "SHA-256 from a prior pointer; stale sources are refused.",
+        },
         indices: { type: "array", items: { type: "number", minimum: 0 } },
         entryIds: { type: "array", items: { type: "string" } },
         operationAddresses: { type: "array", items: { type: "string" } },
@@ -115,6 +141,13 @@ const resolveIndexOptions = (config: FabricMemoryConfig, agentDir: string): Memo
   maxEntryChars: config.maxEntryChars,
   hotSessions: config.hotSessions ?? DEFAULT_HOT_SESSIONS,
   digestTerms: config.digestTerms ?? 200,
+  ...(config.maxColdVocabularyBytes === undefined
+    ? {} : { maxColdVocabularyBytes: config.maxColdVocabularyBytes }),
+  ...(config.maxColdCacheBytes === undefined ? {} : { maxColdCacheBytes: config.maxColdCacheBytes }),
+  ...(config.maxSyncSessions === undefined ? {} : { maxSyncSessions: config.maxSyncSessions }),
+  ...(config.maxSyncSourceBytes === undefined ? {} : { maxSyncSourceBytes: config.maxSyncSourceBytes }),
+  ...(config.maxCacheCleanupFiles === undefined
+    ? {} : { maxCacheCleanupFiles: config.maxCacheCleanupFiles }),
 });
 
 const resolveTierRefs = (refs: SessionRef[], context: MemoryProviderContext): SessionRef[] => {
@@ -143,19 +176,23 @@ const resolveRefs = (
   return resolveScope(input);
 };
 
-const findSessionFile = (session: string, context: MemoryProviderContext): string | null => {
-  if (session.endsWith(".jsonl")) return session;
-  const refs = resolveScope({
-    agentDir: context.agentDir,
-    cwd: context.cwd,
-    scope: "global",
-    maxSessions: Number.MAX_SAFE_INTEGER,
-  });
-  const byId = refs.find((ref) => ref.id === session);
-  if (byId) return byId.file;
-  const byStem = refs.find((ref) => ref.file.endsWith(`${session}.jsonl`));
-  return byStem?.file ?? null;
-};
+const stalePointerError = (
+  sessionFile: string,
+  expectedSourceHash: string,
+  actualSourceHash: string,
+) => ({
+  code: "stale_pointer",
+  message: "Session source changed after the pointer was issued.",
+  sessionFile,
+  expectedSourceHash,
+  actualSourceHash,
+});
+
+const addressError = (message: string, entryCount?: number) => ({
+  code: "index_out_of_bounds",
+  message,
+  ...(entryCount === undefined ? {} : { entryCount }),
+});
 
 export class MemoryProvider implements FabricProvider {
   readonly name = "memory";
@@ -188,15 +225,29 @@ export class MemoryProvider implements FabricProvider {
     args: Record<string, unknown>,
     invocationContext: FabricInvocationContext,
   ): Promise<unknown> {
-    switch (actionName) {
-      case "recall":
-        return this.recall(args, invocationContext);
-      case "expand":
-        return this.expand(args);
-      case "sessions":
-        return this.sessions(args);
-      default:
-        throw new Error(`Unknown memory action: ${actionName}`);
+    try {
+      switch (actionName) {
+        case "recall":
+          return await this.recall(args, invocationContext);
+        case "expand":
+          return await this.expand(args);
+        case "sessions":
+          return await this.sessions(args);
+        default:
+          throw new Error(`Unknown memory action: ${actionName}`);
+      }
+    } catch (error) {
+      if (error instanceof AmbiguousSessionError) {
+        return {
+          error: {
+            code: error.code,
+            message: error.message,
+            session: error.session,
+            candidates: error.candidates,
+          },
+        };
+      }
+      throw error;
     }
   }
 
@@ -205,6 +256,14 @@ export class MemoryProvider implements FabricProvider {
     invocationContext: FabricInvocationContext,
   ): Promise<unknown> {
     const query = typeof args.query === "string" ? args.query : undefined;
+    const rawQueryMode = args.queryMode;
+    if (rawQueryMode !== undefined && rawQueryMode !== "literal" && rawQueryMode !== "regex") {
+      throw new Error('memory.recall queryMode must be "literal" or "regex"');
+    }
+    const queryMode: MemoryQueryMode = rawQueryMode === "regex" ? "regex" : "literal";
+    const expectedSourceHash = typeof args.expectedSourceHash === "string"
+      ? args.expectedSourceHash
+      : undefined;
     const scope = typeof args.scope === "string" ? args.scope : undefined;
     const role = typeof args.role === "string" ? args.role : undefined;
     const tool = typeof args.tool === "string" ? args.tool : undefined;
@@ -220,41 +279,118 @@ export class MemoryProvider implements FabricProvider {
     const refs = resolveRefs(scope, this.context, boundedBrowse);
     const options = resolveIndexOptions(this.context.config, this.context.agentDir);
     const hydrate = scope?.trim().startsWith("session:") ?? false;
+    if (expectedSourceHash !== undefined && !hydrate) {
+      throw new Error("memory.recall expectedSourceHash requires scope session:<id-or-path>");
+    }
+    if (hydrate && expectedSourceHash !== undefined && refs[0]) {
+      const state = fingerprintSource(refs[0].file);
+      if (state && state.sourceHash !== expectedSourceHash) {
+        return {
+          scope: scope ?? "session",
+          query: query ?? null,
+          error: stalePointerError(refs[0].file, expectedSourceHash, state.sourceHash),
+          segments: [],
+          digestHits: [],
+          items: [],
+        };
+      }
+    }
+
     const rawRange = args.entryRange;
     const entryRange = rawRange && typeof rawRange === "object" && !Array.isArray(rawRange)
       ? rawRange as Record<string, unknown>
       : undefined;
-    const first = typeof entryRange?.first === "number" ? Math.floor(entryRange.first) : undefined;
-    const last = typeof entryRange?.last === "number" ? Math.floor(entryRange.last) : undefined;
+    const first = entryRange?.first;
+    const last = entryRange?.last;
     if ((first === undefined) !== (last === undefined)) {
       throw new Error("memory.recall entryRange requires both first and last");
     }
     if ((first !== undefined || last !== undefined) && !hydrate) {
       throw new Error("memory.recall entryRange requires scope session:<id-or-path>");
     }
-    if (first !== undefined && last !== undefined && (first < 0 || last < first)) {
-      throw new Error("memory.recall entryRange requires 0 <= first <= last");
+    if (first !== undefined && (
+      typeof first !== "number" ||
+      typeof last !== "number" ||
+      !Number.isSafeInteger(first) ||
+      !Number.isSafeInteger(last) ||
+      first < 0 ||
+      last < first
+    )) {
+      return {
+        scope: scope ?? "session",
+        query: query ?? null,
+        error: addressError("Entry range requires safe integers with 0 <= first <= last."),
+        segments: [],
+        digestHits: [],
+        items: [],
+      };
     }
-    const selectedRange = first !== undefined && last !== undefined ? { first, last } : undefined;
-    const { shards, digests, coverage } = loadTieredIndex(
+    const selectedRange: EntryRange | undefined =
+      typeof first === "number" && typeof last === "number" ? { first, last } : undefined;
+    const index = loadTieredIndex(
       refs,
       resolveTierRefs(refs, this.context),
       options,
       hydrate,
       selectedRange,
     );
+    if (hydrate && expectedSourceHash !== undefined && index.shards[0]
+      && index.shards[0].sourceHash !== expectedSourceHash) {
+      return {
+        scope: scope ?? "session",
+        query: query ?? null,
+        error: stalePointerError(
+          index.shards[0].sessionFile,
+          expectedSourceHash,
+          index.shards[0].sourceHash,
+        ),
+        segments: [],
+        digestHits: [],
+        items: [],
+      };
+    }
+    if (hydrate && selectedRange && index.shards[0] && selectedRange.last >= index.shards[0].totalEntryCount) {
+      return {
+        scope: scope ?? "session",
+        query: query ?? null,
+        error: addressError(
+          `Entry range ends at ${selectedRange.last}, but the session has ${index.shards[0].totalEntryCount} entries.`,
+          index.shards[0].totalEntryCount,
+        ),
+        segments: [],
+        digestHits: [],
+        items: [],
+      };
+    }
+
     const limit = page * pageSize;
     const filters: { role?: string; tool?: string; since?: number; until?: number } = {};
     if (role) filters.role = role;
     if (tool) filters.tool = tool;
     if (since !== undefined) filters.since = since;
     if (until !== undefined) filters.until = until;
-    const searchQuery: { query?: string; filters: typeof filters; limit: number } = {
+    const searchQuery = {
+      ...(query === undefined ? {} : { query }),
+      queryMode,
       filters,
       limit,
+      regexLimits: {
+        maxPatternBytes: this.context.config.regexMaxPatternBytes
+          ?? DEFAULT_REGEX_MAX_PATTERN_BYTES,
+        maxHaystackTerms: this.context.config.regexMaxHaystackTerms
+          ?? DEFAULT_REGEX_MAX_HAYSTACK_TERMS,
+        maxHaystackBytes: this.context.config.regexMaxHaystackBytes
+          ?? DEFAULT_REGEX_MAX_HAYSTACK_BYTES,
+        timeoutMs: this.context.config.regexTimeoutMs ?? DEFAULT_REGEX_TIMEOUT_MS,
+      },
     };
-    if (query) searchQuery.query = query;
-    const result = searchMemoryIndex(shards, digests, searchQuery);
+    const result = await searchMemoryIndex(index.shards, index.digests, searchQuery);
+    const coverage = {
+      ...index.coverage,
+      complete: index.coverage.complete && result.queryCoverage.complete,
+      reasons: [...new Set([...index.coverage.reasons, ...result.queryCoverage.reasons])].sort(),
+      ...(result.queryCoverage.error ? { error: result.queryCoverage.error } : {}),
+    };
 
     const start = (page - 1) * pageSize;
     const pagedItems = result.items.slice(start, start + pageSize);
@@ -273,6 +409,7 @@ export class MemoryProvider implements FabricProvider {
     const pagedResult = {
       scope: scope ?? "session",
       query: query ?? null,
+      queryMode,
       matchedCount: result.matchedCount,
       segmentCount: result.segmentCount,
       segments: pagedSegments,
@@ -293,10 +430,18 @@ export class MemoryProvider implements FabricProvider {
 
   private async expand(args: Record<string, unknown>): Promise<unknown> {
     const session = typeof args.session === "string" ? args.session : "";
-    const indices = Array.isArray(args.indices)
-      ? args.indices.filter((index): index is number => typeof index === "number" && index >= 0)
-        .map((index) => Math.floor(index))
-      : [];
+    const expectedSourceHash = typeof args.expectedSourceHash === "string"
+      ? args.expectedSourceHash
+      : undefined;
+    const rawIndices = args.indices;
+    if (rawIndices !== undefined && !Array.isArray(rawIndices)) {
+      throw new Error("memory.expand indices must be an array");
+    }
+    if (Array.isArray(rawIndices) && !rawIndices.every((index) =>
+      typeof index === "number" && Number.isSafeInteger(index) && index >= 0)) {
+      return { session, error: addressError("Every entry index must be a non-negative safe integer."), expanded: [] };
+    }
+    const indices = (rawIndices as number[] | undefined) ?? [];
     const entryIds = Array.isArray(args.entryIds)
       ? args.entryIds.filter(
           (entryId): entryId is string => typeof entryId === "string" && entryId.length > 0,
@@ -311,14 +456,62 @@ export class MemoryProvider implements FabricProvider {
     const rangeRecord = rawRange && typeof rawRange === "object" && !Array.isArray(rawRange)
       ? rawRange as Record<string, unknown>
       : undefined;
-    const first = typeof rangeRecord?.first === "number" ? Math.floor(rangeRecord.first) : undefined;
-    const last = typeof rangeRecord?.last === "number" ? Math.floor(rangeRecord.last) : undefined;
+    const first = rangeRecord?.first;
+    const last = rangeRecord?.last;
     if (!session) throw new Error("memory.expand requires a session");
     if ((first === undefined) !== (last === undefined)) {
       throw new Error("memory.expand entryRange requires both first and last");
     }
-    if (first !== undefined && last !== undefined && (first < 0 || last < first)) {
-      throw new Error("memory.expand entryRange requires 0 <= first <= last");
+    if (first !== undefined && (
+      typeof first !== "number" ||
+      typeof last !== "number" ||
+      !Number.isSafeInteger(first) ||
+      !Number.isSafeInteger(last) ||
+      first < 0 ||
+      last < first
+    )) {
+      return { session, error: addressError("Entry range requires safe integers with 0 <= first <= last."), expanded: [] };
+    }
+
+    const ref = resolveSessionTarget(this.context.agentDir, session);
+    if (!ref) {
+      return {
+        session,
+        error: { code: "session_not_found", message: `Session not found: ${session}` },
+        expanded: [],
+      };
+    }
+    const initialState = fingerprintSource(ref.file);
+    if (!initialState) {
+      return {
+        session: ref.file,
+        error: { code: "source_unavailable", message: `Session source is unavailable: ${ref.file}` },
+        expanded: [],
+      };
+    }
+    if (expectedSourceHash !== undefined && initialState.sourceHash !== expectedSourceHash) {
+      return {
+        session: ref.file,
+        error: stalePointerError(ref.file, expectedSourceHash, initialState.sourceHash),
+        expanded: [],
+      };
+    }
+
+    const entryCount = normalizeSession(ref.file, Number.MAX_SAFE_INTEGER).entries.length;
+    const outOfBounds = indices.find((index) => index >= entryCount);
+    if (outOfBounds !== undefined) {
+      return {
+        session: ref.file,
+        error: addressError(`Entry index ${outOfBounds} is outside 0..${Math.max(0, entryCount - 1)}.`, entryCount),
+        expanded: [],
+      };
+    }
+    if (typeof last === "number" && last >= entryCount) {
+      return {
+        session: ref.file,
+        error: addressError(`Entry range ends at ${last}, but the session has ${entryCount} entries.`, entryCount),
+        expanded: [],
+      };
     }
     if (
       indices.length === 0 &&
@@ -326,13 +519,9 @@ export class MemoryProvider implements FabricProvider {
       operationAddresses.length === 0 &&
       (first === undefined || last === undefined)
     ) {
-      return { session, expanded: [] };
+      return { session: ref.file, sourceHash: initialState.sourceHash, expanded: [] };
     }
 
-    const file = findSessionFile(session, this.context);
-    if (!file) {
-      return { session, error: `Session not found: ${session}`, expanded: [] };
-    }
     const selection: {
       indices?: number[];
       entryIds?: string[];
@@ -342,21 +531,23 @@ export class MemoryProvider implements FabricProvider {
     if (indices.length > 0) selection.indices = indices;
     if (entryIds.length > 0) selection.entryIds = entryIds;
     if (operationAddresses.length > 0) selection.operationAddresses = operationAddresses;
-    if (first !== undefined && last !== undefined) selection.entryRange = { first, last };
-    const expanded = expandSessionEntries(file, selection);
-    if (
-      indices.length > 0
-      && entryIds.length === 0
-      && operationAddresses.length === 0
-      && selection.entryRange === undefined
-    ) {
-      const byIndex = new Map(expanded.map((entry) => [entry.index, entry]));
+    if (typeof first === "number" && typeof last === "number") {
+      selection.entryRange = { first, last };
+    }
+    const expanded = expandSessionEntries(ref.file, selection);
+    const finalState = fingerprintSource(ref.file);
+    if (!finalState || finalState.sourceHash !== initialState.sourceHash) {
       return {
-        session: file,
-        expanded: indices.map((index) => byIndex.get(index) ?? { index, entryId: null, text: null }),
+        session: ref.file,
+        error: stalePointerError(
+          ref.file,
+          expectedSourceHash ?? initialState.sourceHash,
+          finalState?.sourceHash ?? "",
+        ),
+        expanded: [],
       };
     }
-    return { session: file, expanded };
+    return { session: ref.file, sourceHash: finalState.sourceHash, expanded };
   }
 
   private async sessions(args: Record<string, unknown>): Promise<unknown> {

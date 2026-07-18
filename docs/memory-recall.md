@@ -5,88 +5,131 @@ the source of truth; the memory index is derived, disposable state.
 
 The index uses structural extraction only. It does not classify goals,
 preferences, errors, or other prose concepts with regexes. Roles, tool names,
-timestamps, entry IDs, tool errors, and tool argument paths come from typed
-session fields.
+timestamps, entry IDs, operation addresses, tool errors, and tool argument
+paths come from typed session fields.
 
-## Cache V3
+## Cache V4
 
-Cache records are JSON with an explicit `cacheVersion: 3` and `kind`. Older or
-otherwise invalid records are rejected and rebuilt from source JSONL; old data
-is never interpreted as V3 or migrated. V3 accounts for independently indexed
-Fabric trace-operation child records.
+Cache records use `cacheVersion: 4`. Older or malformed records are removed and
+rebuilt from source; they are never migrated or interpreted as V4. Refresh also
+removes orphan records, records whose encoded cache path does not match their
+source identity, and records for deleted source sessions.
+
+Every cache record contains the exact session file path and a SHA-256
+`sourceHash`, in addition to source mtime and size. A same-size rewrite with a
+preserved mtime therefore invalidates the record. Cache directories and files
+are created with `0700` and `0600` permissions on a best-effort basis.
+
+A hot shard contains bounded normalized entry text. A cold digest contains:
 
 ```ts
-// Hot shard
 {
-  cacheVersion: 3,
-  kind: "shard",
-  sessionFile, sessionId,
-  mtime, size, sourceHash,
-  entries: NormalizedEntry[]
-}
-
-// Cold digest
-{
-  cacheVersion: 3,
+  cacheVersion: 4,
   kind: "digest",
   sessionId, file, cwd,
   mtime, size, sourceHash,
   firstTs, lastTs, entryCount,
   filesTouched, toolHistogram, errorCount,
-  terms,       // bounded DF/frequency-ranked terms; ranking metadata only
-  vocabulary,  // sorted [normalizedTerm, sortedEntryIndices[]][]; complete
-  addresses    // [index, entryId, role, toolName, timestamp][]
+  vocabulary,   // sorted unique canonical strings; no posting lists
+  addresses,    // structural entry/operation identities, stored separately
+  indexCoverage,
+  cacheBytes, cacheSourceRatio
 }
 ```
 
-A cold digest contains no normalized entry text, first-message prose, or full
-transcript. `vocabulary` is an exact lexical address index over the full
-normalized text of every outer entry and Fabric operation child before hot-text
-truncation. `addresses` retains only structural metadata needed to resolve hits
-and apply filters. `terms`
-remains separately bounded by `memory.digestTerms`; it is not used as the
-truth-coverage gate.
+Cold vocabulary maps an exact lexical term only to the containing session. It
+does not retain a per-term list of entry indices. Consequently a cold result is
+a session pointer with exact `sessionFile` and `sourceHash`, never an inferred
+entry range. Exact entry IDs, indices, and Fabric operation addresses are
+returned after explicit hydration.
 
-The source fingerprint is SHA-256 in addition to mtime and size. An append or
-rewrite, including a same-size rewrite with a preserved mtime, rebuilds the
-record. Refresh also removes cache records whose source session was deleted.
-Cache directories and files are created/chmodded to `0700` and `0600` on a
-best-effort basis.
+`maxColdVocabularyBytes` bounds vocabulary construction for each session and
+`maxColdCacheBytes` is a hard per-session persisted-cache bound. If either cap
+is reached, `indexCoverage.complete` is false and contains an explicit reason.
+Structural addresses or vocabulary may be retained only as exact prefixes when
+the cache-size cap requires it; this is always reported as
+`max_cold_cache_bytes`, never silently treated as complete. `cacheSourceRatio`
+reports persisted cache bytes divided by source bytes.
 
-## Exact lexical guarantee
+## Exact lexical queries
 
-`tokenize.ts` is the one tokenizer used by hot BM25, cold vocabulary creation,
-and plain-query planning. It applies Unicode NFKC normalization, Unicode-aware
-letter/number/underscore tokenization, and lowercase normalization.
+`queryMode` is explicit:
 
-For every cold session that coverage reports as indexed:
+- `"literal"` is the default;
+- `"regex"` is opt-in.
 
-- every unique canonical token in normalized source entry text occurs in its
-  sorted `vocabulary`;
-- every vocabulary token points to every normalized entry containing it;
-- a plain query token therefore cannot disappear because it fell outside
-  `memory.digestTerms`;
-- a regex matching a canonical token is tested against the complete cold
-  vocabulary and produces a cold pointer.
+Literal mode never inspects punctuation to guess whether input looks like a
+regular expression and never compiles the input with `RegExp`. A path such as
+`src/foo.ts` is therefore literal input.
 
-This guarantee is **lexical, not semantic**. There is no stemming, synonym
-expansion, intent classification, or regex over transcript prose. Cold regex
-matching operates on individual canonical vocabulary tokens because entry text
-and token order are intentionally discarded; phrase/punctuation regexes are
-only exact against hydrated/hot entry text.
+`tokenize.ts` is the single canonical tokenizer used for literal queries, hot
+BM25 scoring, and cold vocabulary creation. It applies Unicode NFKC
+normalization, extracts Unicode letters, numbers, and underscores, then
+lowercases. Literal terms use exact canonical-token equality. Matching is
+lexical OR across the unique query terms; there is no stemming, synonym
+expansion, phrase inference, or semantic regex classification.
 
-## Tiers and refresh
+For a cold session whose coverage is complete, every unique canonical token in
+normalized source text occurs exactly once in the sorted vocabulary. Rare terms
+remain exactly discoverable as long as the configured vocabulary and cache
+bounds are not exceeded. If a bound is exceeded, an empty result is explicitly
+non-authoritative.
 
-The `memory.hotSessions` most recently modified sessions are hot and retain
-truncated normalized entries for BM25 and segment display. Older sessions are
-cold and retain only the V3 digest metadata above. A session crossing the hot
-boundary loses its shard after its digest is written. A selected cold session
-never requires retained transcript content: its source JSONL remains the truth.
+## Bounded regular expressions
 
-The default index directory is `<agentDir>/fabric/memory-index`. Refresh is
-synchronous; there is no background daemon or new database dependency.
+Regex mode runs JavaScript regex only in a disposable worker thread. The host
+never evaluates an untrusted pattern. The worker is forcibly terminated at the
+hard timeout, so catastrophic backtracking cannot continue on the host thread.
+Regex execution is bounded by:
 
-## Scopes and coverage
+- UTF-8 pattern bytes;
+- haystack item count;
+- aggregate UTF-8 haystack bytes;
+- wall-clock worker timeout.
+
+Hot haystacks are normalized entry text. Cold haystacks are individual bounded
+canonical vocabulary terms, not transcript prose. Invalid patterns, oversized
+patterns, haystack truncation, worker failures, and timeouts return structured
+query coverage. A timeout, for example, returns
+`coverage.complete: false`, reason `regex_timeout`, and a structured
+`coverage.error`. No incomplete regex result is presented as an authoritative
+no-match.
+
+## Tiers, refresh, and work budgets
+
+The `memory.hotSessions` most recently modified sessions are hot. Older sessions
+are cold. A session crossing the boundary loses its old derived tier record
+after the replacement is built. Explicit hydration re-reads source without
+promoting a cold session.
+
+Cache synchronization is bounded by session count and aggregate source bytes.
+Cache cleanup is bounded by inspected cache files and aggregate cache bytes
+(the byte budget is shared with `maxSyncSourceBytes`). Reaching a work budget stops
+additional indexing and sets `coverage.complete: false`; all eligible sessions
+remain counted. There is no unbounded background job or database dependency.
+
+For a query, `project` and `global` still discover all eligible sessions.
+`memory.maxSessions` limits only no-query browsing and session listing. Coverage
+reports:
+
+```ts
+coverage: {
+  complete: boolean,
+  indexedSessions: number,
+  eligibleSessions: number,
+  staleSessions: number,
+  incompleteSessions: number,
+  reasons: string[],
+  error?: { code: string, message: string }
+}
+```
+
+`No matches` is authoritative only when both cache/index coverage and query
+execution coverage are complete. Otherwise the response says
+`No indexed matches` and reports reasons such as source unavailability,
+vocabulary/cache caps, synchronization budgets, or regex limits.
+
+## Scopes
 
 | Scope | Meaning |
 | --- | --- |
@@ -95,94 +138,66 @@ synchronous; there is no background daemon or new database dependency.
 | `global` | Sessions under the agent directory. |
 | `session:<id-or-path>` | One source session, explicitly hydrated without promotion. |
 
-For a query, `project` and `global` discover and search **all** eligible
-sessions. `memory.maxSessions` is not a search-coverage cutoff. It only bounds
-no-query browsing and session listing.
+Duplicate session IDs are ambiguous. `session:<id>` and `memory.expand` refuse
+an ambiguous ID with `ambiguous_session` and list candidate paths. Use the exact
+session file path from the cold pointer.
 
-Every recall response includes:
+## Pointers, hydration, and expansion
+
+A cold result has session identity only:
 
 ```ts
-coverage: {
-  complete: boolean,
-  indexedSessions: number,
-  eligibleSessions: number,
-  staleSessions: number
+{
+  tier: "cold",
+  sessionId,
+  sessionFile,
+  sourceHash,
+  matchedTerms
 }
 ```
 
-`eligibleSessions` is the complete discovered query scope. `indexedSessions`
-is the number successfully refreshed or validated against source.
-`staleSessions` counts eligible sources that could not be indexed. `complete`
-is true only when no eligible source is stale. `No matches` is authoritative
-only with complete coverage; incomplete empty results say `No indexed matches`
-and report the gap.
-
-`page` and `pageSize` deterministically slice the globally ranked combined list
-of hot segments and cold pointers. Ranking tie-breaks remain score descending,
-source mtime descending, entry before digest, entry index ascending, then source
-path lexical order.
-
-## Queries
-
-`memory.recall({ query })` supports:
-
-- no query: bounded recent-entry browse;
-- plain text: canonical token OR search ranked with BM25-style scoring;
-- existing regex syntax: case-insensitive regex against hot entry text and
-  against each complete cold vocabulary token.
-
-`role`, `tool`, `since`, and `until` filters are structural. Cold filtering uses
-the address metadata rather than retained prose. Nested `pi.read` and `pi.bash`
-children have exact `toolName` values `read` and `bash`; provider refs such as
-`agents.run`, `state.get`, and `mesh.query` remain naturally searchable through
-their bounded structured record.
-
-A hot hit is returned as a conversation segment. A cold hit is a session
-pointer containing `matchedEntries`, an inclusive `entryRange`, and up to 50
-stable `entryIds` when available (`entryIdsTruncated` reports overflow). This
-keeps pointer output bounded. It does not include transcript content.
-
-## Explicit hydration and expansion
-
-A cold pointer is hydrated only by an explicit `session:<id-or-path>` scope.
-Hydration re-reads source JSONL, does not promote or persist a hot shard, and is
-bounded in returned results by pagination. An optional inclusive `entryRange`
-can constrain the hydrated address surface:
+It does not collapse disjoint term occurrences into a misleading inclusive
+range and does not truncate a hidden list of exact matches. Hydrate the exact
+path and pass the pointer hash:
 
 ```ts
 memory.recall({
-  scope: "session:abc",
-  query: "rare_token",
-  entryRange: { first: 12, last: 16 }
+  scope: `session:${pointer.sessionFile}`,
+  expectedSourceHash: pointer.sourceHash,
+  query: "rare_token"
 })
 ```
 
-`memory.expand` re-reads full, untruncated source text. Existing index addresses
-remain supported, and stable entry IDs or an inclusive range can be used:
+Hydrated/hot segments include `exactMatches` with exact normalized entry index,
+entry ID, and operation address. An optional inclusive `entryRange` may bound
+hydration, but both endpoints must be valid session indices. Out-of-range or
+negative addresses return structured `index_out_of_bounds` errors rather than
+being clamped or silently dropped.
+
+`memory.expand` re-reads full, untruncated source text and accepts indices,
+stable entry IDs, operation addresses, or an inclusive range:
 
 ```ts
-memory.expand({ session: "abc", indices: [12, 14] })
-memory.expand({ session: "abc", entryIds: ["entry-uuid"] })
-memory.expand({ session: "abc", entryRange: { first: 12, last: 16 } })
+memory.expand({
+  session: pointer.sessionFile,
+  expectedSourceHash: pointer.sourceHash,
+  indices: [12, 14]
+})
+memory.expand({ session: pointer.sessionFile, entryIds: ["entry-uuid"] })
+memory.expand({ session: pointer.sessionFile, operationAddresses: ["entry-uuid/7"] })
 ```
 
-The result contains `{ index, entryId, text }` records in source order. Fabric
-operations can also be selected directly by their stable address:
-
-```ts
-memory.expand({ session: "abc", operationAddresses: ["entry-uuid/7"] })
-```
+Hydration and expansion compare `expectedSourceHash` with the current source.
+A rewrite returns structured `stale_pointer` and no source content. Results
+include the current source hash so callers can retain pointer integrity.
 
 A valid `FabricExecutionTraceV1` on an outer `fabric_exec` result emits one child
 record per operation immediately after the outer normalized entry. Each child
 keeps `parentEntryId`, `operationAddress`, exact `toolName`, `ref`, `provider`,
 `action`, typed `filesTouched`, `outcome`, and a bounded structured `operation`
-object. Expansion re-reads and re-normalizes the source JSONL, then returns that
-persisted representation rather than reconstructing it from output prose.
-Results are dropped first if a child would exceed 96 KiB; identity, arguments,
-outcome, and error remain. Unknown/malformed traces and branch-summary prose are
-not indexed as structured facts. The outer `fabric_exec` conversation entry is
-still searchable as normal conversation history.
+object. Expansion re-reads and re-normalizes source rather than reconstructing
+operations from output prose. Unknown or malformed traces and branch-summary
+prose are not indexed as structured facts.
 
 ## Configuration
 
@@ -194,15 +209,26 @@ still searchable as normal conversation history.
     "maxSessions": 500,
     "maxEntryChars": 2000,
     "hotSessions": 50,
-    "digestTerms": 200
+    "maxColdVocabularyBytes": 524288,
+    "maxColdCacheBytes": 1048576,
+    "maxSyncSessions": 10000,
+    "maxSyncSourceBytes": 536870912,
+    "maxCacheCleanupFiles": 100000,
+    "regexMaxPatternBytes": 1024,
+    "regexMaxHaystackTerms": 20000,
+    "regexMaxHaystackBytes": 2097152,
+    "regexTimeoutMs": 250
   }
 }
 ```
 
-- `enabled`: registers the provider.
-- `indexDir`: cache location override.
-- `maxSessions`: no-query browse/session-list budget only.
-- `maxEntryChars`: stored hot entry-text limit; expand re-reads full source.
-- `hotSessions`: number of globally newest source sessions retaining hot shards.
-- `digestTerms`: bounded ranking-term count; it never limits cold lexical
-  discoverability.
+- `maxSessions`: no-query browse and session-list budget only.
+- `maxEntryChars`: persisted hot entry-text limit; expand re-reads full source.
+- `hotSessions`: globally newest sessions retaining hot shards.
+- `maxColdVocabularyBytes`: per-session canonical vocabulary bound.
+- `maxColdCacheBytes`: hard per-session cold cache-file bound.
+- `maxSyncSessions` / `maxSyncSourceBytes`: synchronous indexing work budgets.
+- `maxCacheCleanupFiles`: synchronous cache-file count budget; cleanup bytes use
+  `maxSyncSourceBytes`.
+- `regexMaxPatternBytes`, `regexMaxHaystackTerms`,
+  `regexMaxHaystackBytes`, `regexTimeoutMs`: isolated regex execution bounds.

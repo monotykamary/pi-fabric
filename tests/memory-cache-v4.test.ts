@@ -27,7 +27,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (name: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v3-${name}-`));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v4-${name}-`));
   temporaryDirectories.push(directory);
   return directory;
 };
@@ -35,8 +35,8 @@ const temporaryDirectory = (name: string): string => {
 const invocationContext = (cwd: string): FabricInvocationContext => ({
   cwd,
   signal: undefined,
-  parentToolCallId: "memory-v3",
-  nestedToolCallId: "memory-v3-nested",
+  parentToolCallId: "memory-v4",
+  nestedToolCallId: "memory-v4-nested",
   extensionContext: {} as FabricInvocationContext["extensionContext"],
   update() {},
 });
@@ -52,7 +52,7 @@ const message = (id: string, text: string, offset = 0) =>
 const directorySize = (directory: string): number =>
   fs.readdirSync(directory).reduce((total, name) => total + fs.statSync(path.join(directory, name)).size, 0);
 
-describe("memory cache V3", () => {
+describe("memory cache V4", () => {
   let agentDir: string;
   let indexDir: string;
   let cwd: string;
@@ -60,7 +60,7 @@ describe("memory cache V3", () => {
   beforeEach(() => {
     agentDir = temporaryDirectory("agent");
     indexDir = temporaryDirectory("index");
-    cwd = "/work/cache-v3";
+    cwd = "/work/cache-v4";
   });
 
   afterEach(() => {
@@ -111,6 +111,8 @@ describe("memory cache V3", () => {
         indexedSessions: 1_001,
         eligibleSessions: 1_001,
         staleSessions: 0,
+        incompleteSessions: 0,
+        reasons: [],
       });
       expect(result.items[0]).toEqual(expect.objectContaining({
         kind: "digest",
@@ -121,7 +123,7 @@ describe("memory cache V3", () => {
 
     const regexResult = await provider().invoke(
       "recall",
-      { scope: "project", query: "^rarelexeme_[0-9]{3}$" },
+      { scope: "project", query: "^rarelexeme_[0-9]{3}$", queryMode: "regex" },
       invocationContext(cwd),
     ) as { digestHits: { sessionId: string }[]; coverage: { complete: boolean } };
     expect(regexResult.digestHits.map((hit) => hit.sessionId)).toEqual(["session-0"]);
@@ -141,7 +143,7 @@ describe("memory cache V3", () => {
     expect(digest.kind).toBe("digest");
     expect(digest).not.toHaveProperty("entries");
     expect(digest).not.toHaveProperty("goalLine");
-    expect((digest.vocabulary as [string, number[]][]).map(([term]) => term)).toContain("rarelexeme_000");
+    expect(digest.vocabulary as string[]).toContain("rarelexeme_000");
     expect(directorySize(indexDir)).toBeLessThan(10 * 1024 * 1024);
     expect(fs.statSync(indexDir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(digestPathForSession(oldest, indexDir)).mode & 0o777).toBe(0o600);
@@ -188,7 +190,7 @@ describe("memory cache V3", () => {
     fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v1), "utf8");
     const rebuilt = loadDigest(ref, options);
     expect(rebuilt.cacheVersion).toBe(MEMORY_CACHE_VERSION);
-    expect(rebuilt.vocabulary.map(([term]) => term)).toContain("originalword");
+    expect(rebuilt.vocabulary).toContain("originalword");
 
     const shard = loadShard(ref, { ...options, hotSessions: 1 });
     fs.writeFileSync(
@@ -208,8 +210,8 @@ describe("memory cache V3", () => {
     const rewrittenRef = resolveScope({ agentDir, cwd, scope: "project", maxSessions: 100 })[0]!;
     const refreshed = loadDigest(rewrittenRef, options);
     expect(refreshed.sourceHash).not.toBe(first.sourceHash);
-    expect(refreshed.vocabulary.map(([term]) => term)).toContain("rewrittenxyz");
-    expect(refreshed.vocabulary.map(([term]) => term)).not.toContain("originalword");
+    expect(refreshed.vocabulary).toContain("rewrittenxyz");
+    expect(refreshed.vocabulary).not.toContain("originalword");
 
     const refsBeforeDelete = [rewrittenRef];
     fs.rmSync(file);
@@ -219,8 +221,10 @@ describe("memory cache V3", () => {
       indexedSessions: 0,
       eligibleSessions: 1,
       staleSessions: 1,
+      incompleteSessions: 0,
+      reasons: ["source_unavailable"],
     });
-    const empty = searchMemoryIndex(stale.shards, stale.digests, { query: "rewrittenxyz" });
+    const empty = await searchMemoryIndex(stale.shards, stale.digests, { query: "rewrittenxyz" });
     expect(formatSearchResult(empty, "rewrittenxyz", stale.coverage)).toContain(
       "No indexed matches",
     );
@@ -247,15 +251,20 @@ describe("memory cache V3", () => {
       "recall",
       { scope: "project", query: "bounded" },
       invocationContext(cwd),
-    ) as { digestHits: { entryRange: { first: number; last: number }; entryIds: string[] }[] };
+    ) as { digestHits: { sessionFile: string; sourceHash: string }[] };
     expect(pointer.digestHits[0]).toEqual(expect.objectContaining({
-      entryRange: { first: 1, last: 1 },
-      entryIds: ["entry-b"],
+      sessionFile: old,
+      sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
     }));
 
     const hydrated = await provider({ hotSessions: 1 }).invoke(
       "recall",
-      { scope: "session:old", query: "bounded", entryRange: { first: 1, last: 1 } },
+      {
+        scope: `session:${pointer.digestHits[0]!.sessionFile}`,
+        expectedSourceHash: pointer.digestHits[0]!.sourceHash,
+        query: "bounded",
+        entryRange: { first: 1, last: 1 },
+      },
       invocationContext(cwd),
     ) as { segments: { entries: { entry: { index: number } }[] }[] };
     expect(hydrated.segments.flatMap((segment) => segment.entries).map((entry) => entry.entry.index))

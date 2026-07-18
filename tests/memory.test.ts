@@ -404,7 +404,7 @@ describe("memory search pipeline", () => {
     ).shards;
   };
 
-  it("groups hits into segments bounded by user messages, with context entries", () => {
+  it("groups hits into segments bounded by user messages, with context entries", async () => {
     const file = seedSession("/home/user/seg", "1.jsonl", "s", [
       msg("e1", null, ts(0), userMessage("investigate the auth login flow")),
       msg("e2", "e1", ts(1), assistantText("looking at auth.ts")),
@@ -413,7 +413,7 @@ describe("memory search pipeline", () => {
       msg("e5", "e4", ts(4), assistantText("auth also appears here in a comment")),
     ]);
     const shards = load([{ file, id: "s", cwd: "/home/user/seg" }]);
-    const result = searchShards(shards, { query: "auth", limit: 50 });
+    const result = await searchShards(shards, { query: "auth", limit: 50 });
     // matches at e1, e2, e5; segment 1 = e1+e2 (both match), segment 2 = e3,e4,e5 (e5 matches, e3/e4 context)
     expect(result.matchedCount).toBe(3);
     const segment2 = result.segments.find((s) => s.entries.some((e) => e.entry.index === 4));
@@ -426,18 +426,24 @@ describe("memory search pipeline", () => {
     expect(e5?.marker).toBe(">");
   });
 
-  it("uses a regex query directly when it compiles", () => {
+  it("uses regex only in explicit regex mode", async () => {
     const file = seedSession("/home/user/re", "1.jsonl", "r", [
       msg("e1", null, ts(0), userMessage("error code 42 in module alpha")),
       msg("e2", "e1", ts(1), assistantText("error code 99 in module beta")),
     ]);
     const shards = load([{ file, id: "r", cwd: "/home/user/re" }]);
-    const result = searchShards(shards, { query: "code 4[0-9]", limit: 50 });
+    const literal = await searchShards(shards, { query: "code 4[0-9]", limit: 50 });
+    expect(literal.matchedCount).toBe(2);
+    const result = await searchShards(shards, {
+      query: "code 4[0-9]",
+      queryMode: "regex",
+      limit: 50,
+    });
     expect(result.matchedCount).toBe(1);
     expect(result.segments[0]!.entries[0]!.entry.text).toContain("code 42");
   });
 
-  it("applies role and tool filters structurally", () => {
+  it("applies role and tool filters structurally", async () => {
     const file = seedSession("/home/user/filt", "1.jsonl", "f", [
       msg("e1", null, ts(0), userMessage("grep for TODO")),
       msg("e2", "e1", ts(1), assistantToolCall("c1", "grep", { pattern: "TODO" })),
@@ -445,7 +451,7 @@ describe("memory search pipeline", () => {
       msg("e4", "e3", ts(3), assistantText("found a TODO")),
     ]);
     const shards = load([{ file, id: "f", cwd: "/home/user/filt" }]);
-    const toolFiltered = searchShards(shards, { query: "TODO", filters: { tool: "grep" } });
+    const toolFiltered = await searchShards(shards, { query: "TODO", filters: { tool: "grep" } });
     // grep toolCall + grep toolResult both match (2); user/assistant text do not
     expect(toolFiltered.matchedCount).toBe(2);
     const matchedTools = toolFiltered.segments
@@ -453,12 +459,12 @@ describe("memory search pipeline", () => {
       .filter((e) => e.matched)
       .map((e) => e.entry.toolName);
     expect(matchedTools.every((t) => t === "grep")).toBe(true);
-    const roleFiltered = searchShards(shards, { query: "TODO", filters: { role: "user" } });
+    const roleFiltered = await searchShards(shards, { query: "TODO", filters: { role: "user" } });
     expect(roleFiltered.matchedCount).toBe(1);
     expect(roleFiltered.segments[0]!.entries.find((e) => e.matched)!.entry.role).toBe("user");
   });
 
-  it("browse mode (no query) returns 25 most recent entries with > markers", () => {
+  it("browse mode (no query) returns 25 most recent entries with > markers", async () => {
     const messages: FixtureEntry[] = [];
     let parent: string | null = null;
     for (let i = 0; i < 30; i += 1) {
@@ -468,19 +474,19 @@ describe("memory search pipeline", () => {
     }
     const file = seedSession("/home/user/browse", "1.jsonl", "b", messages);
     const shards = load([{ file, id: "b", cwd: "/home/user/browse" }]);
-    const result = searchShards(shards, {});
+    const result = await searchShards(shards, {});
     expect(result.matchedCount).toBe(25);
     expect(result.segments.length).toBeGreaterThan(0);
     expect(result.segments[0]!.entries[0]!.marker).toBe(">");
   });
 
-  it("formatSearchResult emits deterministic text with segment headers", () => {
+  it("formatSearchResult emits deterministic text with segment headers", async () => {
     const file = seedSession("/home/user/fmt", "1.jsonl", "f", [
       msg("e1", null, ts(0), userMessage("auth bug")),
       msg("e2", "e1", ts(1), assistantText("auth fix applied")),
     ]);
     const shards = load([{ file, id: "f", cwd: "/home/user/fmt" }]);
-    const result = searchShards(shards, { query: "auth", limit: 50 });
+    const result = await searchShards(shards, { query: "auth", limit: 50 });
     const text = formatSearchResult(result, "auth");
     expect(text).toContain('matches across');
     expect(text).toContain("--- #0-#1");

@@ -99,18 +99,32 @@ const newestSessionInDir = (dir: string): SessionRef | null => {
     .sort(compareRefsByRecency)[0]!;
 };
 
-const findSessionByIdOrPath = (
+export class AmbiguousSessionError extends Error {
+  readonly code = "ambiguous_session";
+
+  constructor(
+    readonly session: string,
+    readonly candidates: string[],
+  ) {
+    super(`Session id ${JSON.stringify(session)} is ambiguous; use an exact session file path.`);
+    this.name = "AmbiguousSessionError";
+  }
+}
+
+export const resolveSessionTarget = (
   agentDir: string,
   target: string,
 ): SessionRef | null => {
   if (target.endsWith(".jsonl") && fs.existsSync(target)) {
-    return refFromFile(target);
+    return refFromFile(path.resolve(target));
   }
   const all = enumerateAllSessions(agentDir, Number.MAX_SAFE_INTEGER);
-  const byId = all.find((ref) => ref.id === target);
-  if (byId) return byId;
-  const byFile = all.find((ref) => path.basename(ref.file, ".jsonl") === target);
-  return byFile ?? null;
+  const byId = all.filter((ref) => ref.id === target);
+  if (byId.length > 1) throw new AmbiguousSessionError(target, byId.map((ref) => ref.file));
+  if (byId.length === 1) return byId[0]!;
+  const byStem = all.filter((ref) => path.basename(ref.file, ".jsonl") === target);
+  if (byStem.length > 1) throw new AmbiguousSessionError(target, byStem.map((ref) => ref.file));
+  return byStem[0] ?? null;
 };
 
 /**
@@ -126,7 +140,7 @@ export const resolveScope = (input: ResolveScopeInput): SessionRef[] => {
   const scope = input.scope?.trim();
   if (scope.startsWith("session:")) {
     const target = scope.slice("session:".length).trim();
-    const ref = findSessionByIdOrPath(input.agentDir, target);
+    const ref = resolveSessionTarget(input.agentDir, target);
     return ref ? [ref] : [];
   }
   if (scope === "global") {

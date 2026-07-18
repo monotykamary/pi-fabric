@@ -115,6 +115,15 @@ export interface FabricMemoryConfig {
   maxEntryChars: number;
   hotSessions?: number;
   digestTerms?: number;
+  maxColdVocabularyBytes?: number;
+  maxColdCacheBytes?: number;
+  maxSyncSessions?: number;
+  maxSyncSourceBytes?: number;
+  maxCacheCleanupFiles?: number;
+  regexMaxPatternBytes?: number;
+  regexMaxHaystackTerms?: number;
+  regexMaxHaystackBytes?: number;
+  regexTimeoutMs?: number;
 }
 
 export interface FabricConfig {
@@ -214,6 +223,15 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxEntryChars: 2_000,
     hotSessions: 50,
     digestTerms: 200,
+    maxColdVocabularyBytes: 512 * 1024,
+    maxColdCacheBytes: 1024 * 1024,
+    maxSyncSessions: 10_000,
+    maxSyncSourceBytes: 512 * 1024 * 1024,
+    maxCacheCleanupFiles: 100_000,
+    regexMaxPatternBytes: 1_024,
+    regexMaxHaystackTerms: 20_000,
+    regexMaxHaystackBytes: 2 * 1024 * 1024,
+    regexTimeoutMs: 250,
   },
   schema: {
     mode: "off",
@@ -578,6 +596,60 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         memory.digestTerms,
         DEFAULT_FABRIC_CONFIG.memory.digestTerms ?? 200,
         1,
+        10_000,
+      ),
+      maxColdVocabularyBytes: boundedInteger(
+        memory.maxColdVocabularyBytes,
+        DEFAULT_FABRIC_CONFIG.memory.maxColdVocabularyBytes ?? 512 * 1024,
+        2,
+        64 * 1024 * 1024,
+      ),
+      maxColdCacheBytes: boundedInteger(
+        memory.maxColdCacheBytes,
+        DEFAULT_FABRIC_CONFIG.memory.maxColdCacheBytes ?? 1024 * 1024,
+        512,
+        128 * 1024 * 1024,
+      ),
+      maxSyncSessions: boundedInteger(
+        memory.maxSyncSessions,
+        DEFAULT_FABRIC_CONFIG.memory.maxSyncSessions ?? 10_000,
+        1,
+        1_000_000,
+      ),
+      maxSyncSourceBytes: boundedInteger(
+        memory.maxSyncSourceBytes,
+        DEFAULT_FABRIC_CONFIG.memory.maxSyncSourceBytes ?? 512 * 1024 * 1024,
+        1_024,
+        8 * 1024 * 1024 * 1024,
+      ),
+      maxCacheCleanupFiles: boundedInteger(
+        memory.maxCacheCleanupFiles,
+        DEFAULT_FABRIC_CONFIG.memory.maxCacheCleanupFiles ?? 100_000,
+        1,
+        1_000_000,
+      ),
+      regexMaxPatternBytes: boundedInteger(
+        memory.regexMaxPatternBytes,
+        DEFAULT_FABRIC_CONFIG.memory.regexMaxPatternBytes ?? 1_024,
+        1,
+        64 * 1024,
+      ),
+      regexMaxHaystackTerms: boundedInteger(
+        memory.regexMaxHaystackTerms,
+        DEFAULT_FABRIC_CONFIG.memory.regexMaxHaystackTerms ?? 20_000,
+        1,
+        1_000_000,
+      ),
+      regexMaxHaystackBytes: boundedInteger(
+        memory.regexMaxHaystackBytes,
+        DEFAULT_FABRIC_CONFIG.memory.regexMaxHaystackBytes ?? 2 * 1024 * 1024,
+        1_024,
+        128 * 1024 * 1024,
+      ),
+      regexTimeoutMs: boundedInteger(
+        memory.regexTimeoutMs,
+        DEFAULT_FABRIC_CONFIG.memory.regexTimeoutMs ?? 250,
+        10,
         10_000,
       ),
     },

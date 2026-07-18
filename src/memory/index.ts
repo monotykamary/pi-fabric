@@ -1,14 +1,19 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DEFAULT_DIGEST_TERMS, foldSessionDigest, type SessionDigest } from "./digest.js";
+import { foldSessionDigest, type SessionDigest } from "./digest.js";
 import type { SessionRef } from "./discovery.js";
 import type { NormalizedEntry } from "./normalize.js";
 import { normalizeSession } from "./normalize.js";
 import { compareLexical, lexicalTermCounts, tokenizeLexical } from "./tokenize.js";
 
-export const MEMORY_CACHE_VERSION = 3;
+export const MEMORY_CACHE_VERSION = 4;
 export const DEFAULT_HOT_SESSIONS = 50;
+const DEFAULT_MAX_COLD_VOCABULARY_BYTES = 512 * 1024;
+const DEFAULT_MAX_COLD_CACHE_BYTES = 1024 * 1024;
+const DEFAULT_MAX_SYNC_SESSIONS = 10_000;
+const DEFAULT_MAX_SYNC_SOURCE_BYTES = 512 * 1024 * 1024;
+const DEFAULT_MAX_CACHE_CLEANUP_FILES = 100_000;
 
 type MemoryTier = "hot" | "cold";
 
@@ -18,18 +23,21 @@ interface CacheRecord {
   mtime: number;
   size: number;
   sourceHash: string;
+  policy: string;
+  cacheBytes: number;
+  cacheSourceRatio: number;
 }
 
-/** A normalized shard persisted to disk and loaded into memory. */
 export interface Shard extends CacheRecord {
   kind: "shard";
   sessionFile: string;
   sessionId: string;
   entries: NormalizedEntry[];
+  totalEntryCount: number;
   tier?: MemoryTier;
+  indexReason?: string;
 }
 
-/** A persisted cold digest plus exact source metadata used for invalidation. */
 export interface DigestShard extends SessionDigest, CacheRecord {
   kind: "digest";
 }
@@ -39,6 +47,11 @@ export interface MemoryIndexOptions {
   maxEntryChars: number;
   hotSessions?: number;
   digestTerms?: number;
+  maxColdVocabularyBytes?: number;
+  maxColdCacheBytes?: number;
+  maxSyncSessions?: number;
+  maxSyncSourceBytes?: number;
+  maxCacheCleanupFiles?: number;
 }
 
 export interface EntryRange {
@@ -58,15 +71,37 @@ export const shardPathForSession = (sessionFile: string, indexDir: string): stri
 export const digestPathForSession = (sessionFile: string, indexDir: string): string =>
   path.join(indexDir, `${cacheBaseName(sessionFile)}.digest.json`);
 
-const readShardFile = (filePath: string): Shard | null => {
+const shardPolicy = (options: MemoryIndexOptions): string => `entry:${options.maxEntryChars}`;
+const digestPolicy = (options: MemoryIndexOptions): string =>
+  `vocab:${options.maxColdVocabularyBytes ?? DEFAULT_MAX_COLD_VOCABULARY_BYTES};cache:${options.maxColdCacheBytes ?? DEFAULT_MAX_COLD_CACHE_BYTES}`;
+
+const readShardFile = (
+  filePath: string,
+  maxBytes = DEFAULT_MAX_SYNC_SOURCE_BYTES,
+): Shard | null => {
   try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Shard;
     if (
       parsed.cacheVersion !== MEMORY_CACHE_VERSION ||
       parsed.kind !== "shard" ||
       typeof parsed.sessionFile !== "string" ||
+      typeof parsed.sessionId !== "string" ||
       typeof parsed.sourceHash !== "string" ||
-      !Array.isArray(parsed.entries)
+      parsed.sourceHash.length !== 64 ||
+      typeof parsed.policy !== "string" ||
+      typeof parsed.cacheBytes !== "number" ||
+      parsed.cacheBytes !== stat.size ||
+      typeof parsed.cacheSourceRatio !== "number" ||
+      typeof parsed.totalEntryCount !== "number" ||
+      !Array.isArray(parsed.entries) ||
+      !parsed.entries.every((entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof entry.index === "number" &&
+        typeof entry.sessionFile === "string" &&
+        typeof entry.text === "string")
     ) return null;
     return parsed;
   } catch {
@@ -74,8 +109,13 @@ const readShardFile = (filePath: string): Shard | null => {
   }
 };
 
-const readDigestFile = (filePath: string): DigestShard | null => {
+const readDigestFile = (
+  filePath: string,
+  maxBytes = DEFAULT_MAX_COLD_CACHE_BYTES,
+): DigestShard | null => {
   try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size > maxBytes) return null;
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as DigestShard;
     if (
       parsed.cacheVersion !== MEMORY_CACHE_VERSION ||
@@ -83,10 +123,24 @@ const readDigestFile = (filePath: string): DigestShard | null => {
       typeof parsed.sessionId !== "string" ||
       typeof parsed.file !== "string" ||
       typeof parsed.sourceHash !== "string" ||
+      parsed.sourceHash.length !== 64 ||
+      typeof parsed.policy !== "string" ||
+      typeof parsed.cacheBytes !== "number" ||
+      parsed.cacheBytes !== stat.size ||
+      typeof parsed.cacheSourceRatio !== "number" ||
       !Array.isArray(parsed.filesTouched) ||
-      !Array.isArray(parsed.terms) ||
       !Array.isArray(parsed.vocabulary) ||
+      !parsed.vocabulary.every((term, index) =>
+        typeof term === "string" && (index === 0 || parsed.vocabulary[index - 1]! < term)) ||
       !Array.isArray(parsed.addresses) ||
+      !parsed.addresses.every((address) =>
+        Array.isArray(address) && address.length === 6 && typeof address[0] === "number") ||
+      typeof parsed.indexCoverage !== "object" ||
+      parsed.indexCoverage === null ||
+      typeof parsed.indexCoverage.complete !== "boolean" ||
+      typeof parsed.indexCoverage.vocabularyBytes !== "number" ||
+      !Array.isArray(parsed.indexCoverage.reasons) ||
+      !parsed.indexCoverage.reasons.every((reason) => typeof reason === "string") ||
       typeof parsed.mtime !== "number" ||
       typeof parsed.size !== "number"
     ) return null;
@@ -96,35 +150,56 @@ const readDigestFile = (filePath: string): DigestShard | null => {
   }
 };
 
-const writeCacheFile = (filePath: string, value: Shard | DigestShard): void => {
+const serializedBytes = (value: unknown): number =>
+  Buffer.byteLength(JSON.stringify(value), "utf8");
+
+const applyCacheMetrics = <T extends CacheRecord>(value: T): T => {
+  let previous = -1;
+  for (let iteration = 0; iteration < 5; iteration += 1) {
+    const bytes = serializedBytes(value);
+    value.cacheBytes = bytes;
+    value.cacheSourceRatio = value.size === 0 ? 0 : Number((bytes / value.size).toFixed(6));
+    if (bytes === previous) break;
+    previous = bytes;
+  }
+  value.cacheBytes = serializedBytes(value);
+  value.cacheSourceRatio = value.size === 0
+    ? 0
+    : Number((value.cacheBytes / value.size).toFixed(6));
+  return value;
+};
+
+const writeCacheFile = (filePath: string, value: Shard | DigestShard): boolean => {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
     try { fs.chmodSync(path.dirname(filePath), 0o700); } catch {}
     fs.writeFileSync(filePath, JSON.stringify(value), { encoding: "utf8", mode: 0o600 });
     try { fs.chmodSync(filePath, 0o600); } catch {}
+    return true;
   } catch {
-    // Cache persistence is best effort; source JSONL remains the truth.
+    return false;
   }
 };
 
 const removeCacheFile = (filePath: string): void => {
   try {
-    fs.rmSync(filePath, { force: true });
+    fs.rmSync(filePath, { force: true, recursive: true });
   } catch {
     // Cache cleanup is best effort.
   }
 };
 
-interface SourceState {
+export interface SourceState {
   mtime: number;
   size: number;
   sourceHash: string;
 }
 
-const sourceState = (file: string): SourceState | null => {
+export const fingerprintSource = (file: string): SourceState | null => {
   try {
     const content = fs.readFileSync(file);
     const stat = fs.statSync(file);
+    if (!stat.isFile()) return null;
     return {
       mtime: stat.mtimeMs,
       size: stat.size,
@@ -135,13 +210,18 @@ const sourceState = (file: string): SourceState | null => {
   }
 };
 
-const isCacheFresh = (cache: CacheRecord | null, state: SourceState): boolean =>
+const isCacheFresh = (
+  cache: CacheRecord | null,
+  state: SourceState,
+  policy: string,
+): boolean =>
   cache !== null &&
   cache.mtime === state.mtime &&
   cache.size === state.size &&
-  cache.sourceHash === state.sourceHash;
+  cache.sourceHash === state.sourceHash &&
+  cache.policy === policy;
 
-const missingShard = (ref: SessionRef): Shard => ({
+const missingShard = (ref: SessionRef, reason = "source_unavailable"): Shard => ({
   cacheVersion: MEMORY_CACHE_VERSION,
   kind: "shard",
   sessionFile: ref.file,
@@ -149,40 +229,64 @@ const missingShard = (ref: SessionRef): Shard => ({
   mtime: 0,
   size: 0,
   sourceHash: "",
+  policy: reason,
+  cacheBytes: 0,
+  cacheSourceRatio: 0,
   entries: [],
+  totalEntryCount: 0,
   tier: "hot",
+  indexReason: reason,
 });
 
-/** Build or refresh the shard for a session, parsing lazily only when stale. */
 export const loadShard = (ref: SessionRef, options: MemoryIndexOptions): Shard => {
   const filePath = shardPathForSession(ref.file, options.indexDir);
-  const state = sourceState(ref.file);
-  if (!state) return missingShard(ref);
-  const cached = readShardFile(filePath);
-  if (isCacheFresh(cached, state) && cached) return cached;
+  const state = fingerprintSource(ref.file);
+  if (!state) {
+    removeCacheFile(filePath);
+    return missingShard(ref);
+  }
+  const policy = shardPolicy(options);
+  const cached = readShardFile(
+    filePath,
+    options.maxSyncSourceBytes ?? DEFAULT_MAX_SYNC_SOURCE_BYTES,
+  );
+  if (isCacheFresh(cached, state, policy) && cached?.sessionFile === ref.file) return cached;
+  if (fs.existsSync(filePath)) removeCacheFile(filePath);
   const { entries, header } = normalizeSession(ref.file, options.maxEntryChars);
-  const shard: Shard = {
+  const finalState = fingerprintSource(ref.file);
+  if (!finalState || finalState.sourceHash !== state.sourceHash) {
+    removeCacheFile(filePath);
+    return missingShard(ref, "source_changed_during_index");
+  }
+  const shard = applyCacheMetrics<Shard>({
     cacheVersion: MEMORY_CACHE_VERSION,
     kind: "shard",
     sessionFile: ref.file,
     sessionId: header?.sessionId ?? ref.id,
     ...state,
+    policy,
+    cacheBytes: 0,
+    cacheSourceRatio: 0,
     entries,
+    totalEntryCount: entries.length,
     tier: "hot",
-  };
+  });
   writeCacheFile(filePath, shard);
   return shard;
 };
 
-/** Parse a session into an entry shard without persisting hot state. */
 const hydrateShard = (
   ref: SessionRef,
   options: MemoryIndexOptions,
   entryRange?: EntryRange,
 ): Shard => {
-  const state = sourceState(ref.file);
+  const state = fingerprintSource(ref.file);
   if (!state) return { ...missingShard(ref), tier: "cold" };
   const { entries, header } = normalizeSession(ref.file, options.maxEntryChars);
+  const finalState = fingerprintSource(ref.file);
+  if (!finalState || finalState.sourceHash !== state.sourceHash) {
+    return { ...missingShard(ref, "source_changed_during_index"), tier: "cold" };
+  }
   const selected = entryRange
     ? entries.filter((entry) => entry.index >= entryRange.first && entry.index <= entryRange.last)
     : entries;
@@ -192,12 +296,16 @@ const hydrateShard = (
     sessionFile: ref.file,
     sessionId: header?.sessionId ?? ref.id,
     ...state,
+    policy: shardPolicy(options),
+    cacheBytes: 0,
+    cacheSourceRatio: 0,
     entries: selected,
+    totalEntryCount: entries.length,
     tier: "cold",
   };
 };
 
-const missingDigest = (ref: SessionRef): DigestShard => ({
+const missingDigest = (ref: SessionRef, reason = "source_unavailable"): DigestShard => ({
   cacheVersion: MEMORY_CACHE_VERSION,
   kind: "digest",
   sessionId: ref.id,
@@ -209,36 +317,98 @@ const missingDigest = (ref: SessionRef): DigestShard => ({
   filesTouched: [],
   toolHistogram: {},
   errorCount: 0,
-  terms: [],
   vocabulary: [],
   addresses: [],
+  indexCoverage: { complete: false, vocabularyBytes: 2, reasons: [reason] },
   mtime: 0,
   size: 0,
   sourceHash: "",
+  policy: reason,
+  cacheBytes: 0,
+  cacheSourceRatio: 0,
 });
 
-/** Build or refresh a cold digest from full normalized text, then discard that text. */
+const maxFittingPrefix = <T>(
+  values: T[],
+  fits: (candidate: T[]) => boolean,
+): T[] => {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(values.slice(0, middle))) low = middle;
+    else high = middle - 1;
+  }
+  return values.slice(0, low);
+};
+
+const fitDigestCache = (digest: DigestShard, maxBytes: number): DigestShard => {
+  applyCacheMetrics(digest);
+  if (digest.cacheBytes <= maxBytes) return digest;
+
+  digest.indexCoverage.complete = false;
+  if (!digest.indexCoverage.reasons.includes("max_cold_cache_bytes")) {
+    digest.indexCoverage.reasons.push("max_cold_cache_bytes");
+  }
+  digest.addresses = maxFittingPrefix(digest.addresses, (addresses) => {
+    digest.addresses = addresses;
+    applyCacheMetrics(digest);
+    return digest.cacheBytes <= maxBytes;
+  });
+  applyCacheMetrics(digest);
+  if (digest.cacheBytes <= maxBytes) return digest;
+
+  digest.vocabulary = maxFittingPrefix(digest.vocabulary, (vocabulary) => {
+    digest.vocabulary = vocabulary;
+    digest.indexCoverage.vocabularyBytes = serializedBytes(vocabulary);
+    applyCacheMetrics(digest);
+    return digest.cacheBytes <= maxBytes;
+  });
+  digest.indexCoverage.vocabularyBytes = serializedBytes(digest.vocabulary);
+  return applyCacheMetrics(digest);
+};
+
 export const loadDigest = (ref: SessionRef, options: MemoryIndexOptions): DigestShard => {
   const filePath = digestPathForSession(ref.file, options.indexDir);
-  const state = sourceState(ref.file);
-  if (!state) return missingDigest(ref);
-  const cached = readDigestFile(filePath);
-  if (isCacheFresh(cached, state) && cached) return cached;
+  const state = fingerprintSource(ref.file);
+  if (!state) {
+    removeCacheFile(filePath);
+    return missingDigest(ref);
+  }
+  const policy = digestPolicy(options);
+  const maxCacheBytes = options.maxColdCacheBytes ?? DEFAULT_MAX_COLD_CACHE_BYTES;
+  const cached = readDigestFile(filePath, maxCacheBytes);
+  if (
+    isCacheFresh(cached, state, policy) &&
+    cached?.file === ref.file &&
+    serializedBytes(cached) <= maxCacheBytes
+  ) return cached;
+  if (fs.existsSync(filePath)) removeCacheFile(filePath);
+
   const { entries, header } = normalizeSession(ref.file, Number.MAX_SAFE_INTEGER);
+  const finalState = fingerprintSource(ref.file);
+  if (!finalState || finalState.sourceHash !== state.sourceHash) {
+    removeCacheFile(filePath);
+    return missingDigest(ref, "source_changed_during_index");
+  }
   const digest = foldSessionDigest({
     sessionId: header?.sessionId ?? ref.id,
     file: ref.file,
     cwd: header?.cwd ?? ref.cwd,
     entries,
-    digestTerms: options.digestTerms ?? DEFAULT_DIGEST_TERMS,
+    maxVocabularyBytes:
+      options.maxColdVocabularyBytes ?? DEFAULT_MAX_COLD_VOCABULARY_BYTES,
   });
-  const persisted: DigestShard = {
+  const persisted = fitDigestCache({
     cacheVersion: MEMORY_CACHE_VERSION,
     kind: "digest",
     ...digest,
     ...state,
-  };
-  writeCacheFile(filePath, persisted);
+    policy,
+    cacheBytes: 0,
+    cacheSourceRatio: 0,
+  }, maxCacheBytes);
+  if (persisted.cacheBytes <= maxCacheBytes) writeCacheFile(filePath, persisted);
   return persisted;
 };
 
@@ -247,7 +417,6 @@ const compareRefsByRecency = (left: SessionRef, right: SessionRef): number => {
   return compareLexical(left.file, right.file);
 };
 
-/** Classify sessions by global source mtime, with a lexical tie-break. */
 const classifySessionTiers = (
   refs: SessionRef[],
   hotSessions = DEFAULT_HOT_SESSIONS,
@@ -262,6 +431,8 @@ export interface MemoryCoverage {
   indexedSessions: number;
   eligibleSessions: number;
   staleSessions: number;
+  incompleteSessions: number;
+  reasons: string[];
 }
 
 export interface TieredIndexBundle {
@@ -272,28 +443,81 @@ export interface TieredIndexBundle {
   coverage: MemoryCoverage;
 }
 
-const removeDeletedSourceCaches = (indexDir: string): void => {
-  let names: string[];
+const cleanupCacheDirectory = (
+  indexDir: string,
+  maxFiles: number,
+  maxBytes: number,
+): { complete: boolean; reasons: string[] } => {
+  let directory: fs.Dir;
   try {
-    names = fs.readdirSync(indexDir).filter((name) => name.endsWith(".json"));
+    directory = fs.opendirSync(indexDir);
   } catch {
-    return;
+    return { complete: true, reasons: [] };
   }
-  for (const name of names) {
-    const cacheFile = path.join(indexDir, name);
-    try {
-      const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as Record<string, unknown>;
-      const source = typeof parsed.sessionFile === "string"
-        ? parsed.sessionFile
-        : typeof parsed.file === "string" ? parsed.file : null;
-      if (source && !fs.existsSync(source)) removeCacheFile(cacheFile);
-    } catch {
-      // Invalid cache records are rejected on normal load.
+  let inspected = 0;
+  let inspectedBytes = 0;
+  try {
+    while (true) {
+      const entry = directory.readSync();
+      if (!entry) return { complete: true, reasons: [] };
+      if (!entry.name.endsWith(".json")) continue;
+      if (inspected >= maxFiles) {
+        return { complete: false, reasons: ["cache_cleanup_budget"] };
+      }
+      inspected += 1;
+      const cacheFile = path.join(indexDir, entry.name);
+      if (!entry.isFile()) {
+        removeCacheFile(cacheFile);
+        continue;
+      }
+      let cacheBytes: number;
+      try {
+        cacheBytes = fs.statSync(cacheFile).size;
+      } catch {
+        removeCacheFile(cacheFile);
+        continue;
+      }
+      if (inspectedBytes + cacheBytes > maxBytes) {
+        return { complete: false, reasons: ["cache_cleanup_budget"] };
+      }
+      inspectedBytes += cacheBytes;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8")) as Record<string, unknown>;
+        const kind = parsed.kind;
+        const source = kind === "shard" && typeof parsed.sessionFile === "string"
+          ? parsed.sessionFile
+          : kind === "digest" && typeof parsed.file === "string" ? parsed.file : null;
+        const expected = source && kind === "shard"
+          ? shardPathForSession(source, indexDir)
+          : source && kind === "digest" ? digestPathForSession(source, indexDir) : null;
+        const structurallyValid = kind === "shard"
+          ? readShardFile(cacheFile, cacheBytes) !== null
+          : kind === "digest" ? readDigestFile(cacheFile, cacheBytes) !== null : false;
+        if (
+          parsed.cacheVersion !== MEMORY_CACHE_VERSION ||
+          source === null ||
+          expected !== cacheFile ||
+          !fs.existsSync(source) ||
+          !structurallyValid
+        ) removeCacheFile(cacheFile);
+      } catch {
+        removeCacheFile(cacheFile);
+      }
     }
+  } finally {
+    directory.closeSync();
   }
 };
 
-/** Refresh tier state and load every selected session at its configured tier. */
+const sourceSize = (file: string): number | null => {
+  try {
+    const stat = fs.statSync(file);
+    return stat.isFile() ? stat.size : null;
+  } catch {
+    return null;
+  }
+};
+
 export const loadTieredIndex = (
   refs: SessionRef[],
   allRefs: SessionRef[],
@@ -301,44 +525,69 @@ export const loadTieredIndex = (
   hydrate = false,
   entryRange?: EntryRange,
 ): TieredIndexBundle => {
-  removeDeletedSourceCaches(options.indexDir);
+  const cleanup = cleanupCacheDirectory(
+    options.indexDir,
+    options.maxCacheCleanupFiles ?? DEFAULT_MAX_CACHE_CLEANUP_FILES,
+    options.maxSyncSourceBytes ?? DEFAULT_MAX_SYNC_SOURCE_BYTES,
+  );
   const tierRefs = allRefs.length > 0 ? allRefs : refs;
   const tiers = classifySessionTiers(tierRefs, options.hotSessions ?? DEFAULT_HOT_SESSIONS);
-
-  for (const ref of tierRefs) {
-    const tier = tiers.get(ref.file) ?? "cold";
-    if (tier === "hot") {
-      removeCacheFile(digestPathForSession(ref.file, options.indexDir));
-      continue;
-    }
-    const shardPath = shardPathForSession(ref.file, options.indexDir);
-    if (fs.existsSync(shardPath)) {
-      loadDigest(ref, options);
-      removeCacheFile(shardPath);
-    }
-  }
-
+  const maxSessions = options.maxSyncSessions ?? DEFAULT_MAX_SYNC_SESSIONS;
+  const maxSourceBytes = options.maxSyncSourceBytes ?? DEFAULT_MAX_SYNC_SOURCE_BYTES;
   const shards: Shard[] = [];
   const digests: DigestShard[] = [];
+  const reasons = new Set(cleanup.reasons);
   let indexedSessions = 0;
+  let incompleteSessions = 0;
+  let processedSessions = 0;
+  let processedSourceBytes = 0;
+
   for (const ref of refs) {
+    const size = sourceSize(ref.file);
+    if (size === null) {
+      reasons.add("source_unavailable");
+      continue;
+    }
+    if (processedSessions >= maxSessions) {
+      reasons.add("max_sync_sessions");
+      continue;
+    }
     const tier = tiers.get(ref.file) ?? "cold";
-    if (hydrate) {
-      if (tier === "cold") loadDigest(ref, options);
-      const shard = hydrateShard(ref, options, entryRange);
-      shards.push(shard);
-      if (shard.sourceHash) indexedSessions += 1;
-    } else if (tier === "hot") {
-      const shard = loadShard(ref, options);
-      shards.push(shard);
-      if (shard.sourceHash) indexedSessions += 1;
-    } else {
-      const digest = loadDigest(ref, options);
-      removeCacheFile(shardPathForSession(ref.file, options.indexDir));
-      digests.push(digest);
-      if (digest.sourceHash) indexedSessions += 1;
+    const sourceWorkBytes = size * (hydrate && tier === "cold" ? 6 : 3);
+    if (processedSourceBytes + sourceWorkBytes > maxSourceBytes) {
+      reasons.add("max_sync_source_bytes");
+      continue;
+    }
+    processedSessions += 1;
+    processedSourceBytes += sourceWorkBytes;
+    try {
+      if (hydrate) {
+        if (tier === "cold") loadDigest(ref, options);
+        const shard = hydrateShard(ref, options, entryRange);
+        shards.push(shard);
+        if (shard.sourceHash) indexedSessions += 1;
+        else reasons.add(shard.indexReason ?? "source_unavailable");
+      } else if (tier === "hot") {
+        const shard = loadShard(ref, options);
+        removeCacheFile(digestPathForSession(ref.file, options.indexDir));
+        shards.push(shard);
+        if (shard.sourceHash) indexedSessions += 1;
+        else reasons.add(shard.indexReason ?? "source_unavailable");
+      } else {
+        const digest = loadDigest(ref, options);
+        removeCacheFile(shardPathForSession(ref.file, options.indexDir));
+        digests.push(digest);
+        if (digest.sourceHash) indexedSessions += 1;
+        if (!digest.indexCoverage.complete) {
+          incompleteSessions += 1;
+          for (const reason of digest.indexCoverage.reasons) reasons.add(reason);
+        }
+      }
+    } catch {
+      reasons.add("index_error");
     }
   }
+
   const eligibleSessions = refs.length;
   const staleSessions = eligibleSessions - indexedSessions;
   return {
@@ -347,10 +596,12 @@ export const loadTieredIndex = (
     refs,
     tiers,
     coverage: {
-      complete: staleSessions === 0,
+      complete: cleanup.complete && staleSessions === 0 && incompleteSessions === 0,
       indexedSessions,
       eligibleSessions,
       staleSessions,
+      incompleteSessions,
+      reasons: [...reasons].sort(compareLexical),
     },
   };
 };
@@ -384,13 +635,11 @@ export interface ShardBundle {
   refs: SessionRef[];
 }
 
-/** Load hot shards using the original direct-caller behavior. */
 export const loadShards = (refs: SessionRef[], options: MemoryIndexOptions): ShardBundle => ({
   shards: refs.map((ref) => loadShard(ref, options)),
   refs,
 });
 
-/** Score matching entries with exact-token BM25 and deterministic tie-breaks. */
 export const bm25Score = (
   shards: Shard[],
   terms: string[],
@@ -445,7 +694,6 @@ export const bm25Score = (
   return results;
 };
 
-/** Browse the newest entries across shards. */
 export const recentEntries = (
   shards: Shard[],
   filters: SearchFilters,

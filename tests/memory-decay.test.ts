@@ -131,7 +131,7 @@ describe("memory sleep cycle", () => {
       file,
       cwd,
       entries: normalized.entries,
-      digestTerms: 10,
+      maxVocabularyBytes: 10_000,
     });
 
     expect(digest).not.toHaveProperty("goalLine");
@@ -141,13 +141,17 @@ describe("memory sleep cycle", () => {
     expect(digest.toolHistogram).toEqual({ bash: 1, read: 2 });
     expect(digest.firstTs).toBe(Date.parse(timestamp(0)));
     expect(digest.lastTs).toBe(Date.parse(timestamp(4)));
-    expect(digest.terms[0]).toBe("auth");
-    expect(new Set(digest.terms).size).toBe(digest.terms.length);
-    expect(digest.vocabulary.map(([term]) => term)).toContain("implementation");
-    expect(digest.vocabulary).toEqual(
-      [...digest.vocabulary].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
-    );
-    expect(digest.addresses[0]).toEqual([0, "u1", "user", null, Date.parse(timestamp(0))]);
+    expect(digest.vocabulary).toContain("implementation");
+    expect(new Set(digest.vocabulary).size).toBe(digest.vocabulary.length);
+    expect(digest.vocabulary).toEqual([...digest.vocabulary].sort());
+    expect(digest.addresses[0]).toEqual([
+      0,
+      "u1",
+      null,
+      "user",
+      null,
+      Date.parse(timestamp(0)),
+    ]);
   });
 
   it("returns a cold session pointer instead of entry matches", async () => {
@@ -174,7 +178,7 @@ describe("memory sleep cycle", () => {
     expect(result.segments).toEqual([]);
     expect(result.digestHits).toEqual([expect.objectContaining({ sessionId: "cold", tier: "cold" })]);
     expect(result.text).toContain("session cold (cold,");
-    expect(result.text).toContain('scope "session:cold"');
+    expect(result.text).toContain("expectedSourceHash");
     expect(result.text).not.toContain("#0 [user]");
   });
 
@@ -220,7 +224,7 @@ describe("memory sleep cycle", () => {
     expect(second.mtime).not.toBe(first.mtime);
     expect(second.size).toBeGreaterThan(first.size);
     expect(second.entryCount).toBe(2);
-    expect(second.terms).toContain("meteor");
+    expect(second.vocabulary).toContain("meteor");
   });
 
   it("reports hot and cold tiers from sessions()", async () => {
@@ -257,6 +261,8 @@ describe("memory sleep cycle", () => {
     expect(normalizeFabricConfig({}).memory).toEqual(expect.objectContaining({
       hotSessions: 50,
       digestTerms: 200,
+      maxColdVocabularyBytes: 512 * 1024,
+      maxColdCacheBytes: 1024 * 1024,
     }));
     expect(normalizeFabricConfig({ memory: { hotSessions: -1, digestTerms: 0 } }).memory)
       .toEqual(expect.objectContaining({ hotSessions: 0, digestTerms: 1 }));
