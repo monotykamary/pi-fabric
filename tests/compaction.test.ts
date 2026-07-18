@@ -8,7 +8,14 @@ import {
   fabricCompactionVersion,
   registerCompactionHook,
 } from "../src/compaction/hook.js";
-import { encodeCompactionRequest, FABRIC_COMPACTION_REQUEST_PREFIX } from "../src/compaction/instructions.js";
+import {
+  decodeCompactionInstructions,
+  encodeCompactionRequest,
+  FABRIC_COMPACTION_REQUEST_PREFIX,
+  MAX_PRESERVE_ITEM_CHARS,
+  MAX_PRESERVE_ITEMS,
+  MAX_TYPED_COMPACTION_SOURCE_BYTES,
+} from "../src/compaction/instructions.js";
 import { normalizeEntries } from "../src/compaction/normalize.js";
 import { project, projectOutstanding } from "../src/compaction/projections.js";
 import type {
@@ -259,11 +266,92 @@ describe("compaction instruction parity", () => {
     expect(result.details.instructionPolicy.truncated).toBe(true);
   });
 
-  it("treats a malformed typed prefix as plain text", () => {
-    const malformed = `${FABRIC_COMPACTION_REQUEST_PREFIX}{not-json}`;
-    const result = summaryFor(malformed);
-    expect(result.summary).toContain(malformed);
-    expect(result.details.instructionPolicy.mode).toBe("malformed-typed-prefix");
+  it.each([
+    ["malformed-json", `${FABRIC_COMPACTION_REQUEST_PREFIX}{not-json}`],
+    ["unsupported-version", `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({ version: 2, instructions: "fake goal" })}`],
+    ["unknown-field", `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({ version: 1, goal: "fake goal" })}`],
+    ["invalid-type", `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({ version: 1, preserve: ["ok", 7] })}`],
+  ])("fails closed for %s typed requests", (code, source) => {
+    const decoded = decodeCompactionInstructions(source);
+    expect(decoded).toMatchObject({ ok: false, error: { code } });
+    const result = compileFabricSummary(
+      buildSession(user("real goal"), assistant(textPart("done"))),
+      1000,
+      [],
+      source,
+    );
+    expect(result).toMatchObject({ cancel: true, instructionError: { code } });
+    expect("compaction" in result).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("fake goal");
+  });
+
+  it("rejects typed source bytes before JSON parsing", () => {
+    const source = `${FABRIC_COMPACTION_REQUEST_PREFIX}${" ".repeat(MAX_TYPED_COMPACTION_SOURCE_BYTES)}`;
+    expect(decodeCompactionInstructions(source)).toMatchObject({
+      ok: false,
+      error: { code: "encoded-source-too-large" },
+    });
+  });
+
+  it("rejects instruction bytes plus preserve count and item bounds before canonicalization", () => {
+    const multibyteInstructions = `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({
+      version: 1,
+      instructions: "界".repeat(3000),
+    })}`;
+    const tooMany = `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({
+      version: 1,
+      preserve: Array.from({ length: MAX_PRESERVE_ITEMS + 1 }, () => "x"),
+    })}`;
+    const hugeItem = `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({
+      version: 1,
+      preserve: ["x".repeat(MAX_PRESERVE_ITEM_CHARS + 1)],
+    })}`;
+    expect(decodeCompactionInstructions(multibyteInstructions)).toMatchObject({
+      ok: false,
+      error: { code: "instructions-too-large" },
+    });
+    expect(decodeCompactionInstructions(tooMany)).toMatchObject({
+      ok: false,
+      error: { code: "preserve-too-many" },
+    });
+    expect(decodeCompactionInstructions(hugeItem)).toMatchObject({
+      ok: false,
+      error: { code: "preserve-item-too-large" },
+    });
+  });
+
+  it("rejects aggregate encoded payloads and never renders embedded fake facts", () => {
+    const source = `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({
+      version: 1,
+      instructions: "fake goal",
+      preserve: Array.from({ length: MAX_PRESERVE_ITEMS }, (_, index) =>
+        `fake/path-${index}.ts ${"x".repeat(1100)}`),
+    })}`;
+    const decoded = decodeCompactionInstructions(source);
+    expect(decoded).toMatchObject({ ok: false, error: { code: "encoded-source-too-large" } });
+    expect(decoded.requestLines).toEqual([]);
+  });
+
+  it("cancels and emits a bounded notification for a reserved typed decoding error", () => {
+    let handler: ((event: SessionBeforeCompactEvent, context: unknown) => unknown) | undefined;
+    const notifications: string[] = [];
+    const pi = { on(name: string, candidate: unknown) {
+      if (name === "session_before_compact") handler = candidate as typeof handler;
+    } } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, { getEngine: () => "fabric" });
+    const event = compactionEvent(
+      buildSession(user("real goal"), assistant(textPart("done"))),
+      `${FABRIC_COMPACTION_REQUEST_PREFIX}{\"version\":1,\"goal\":\"fake/path.ts\"}`,
+    );
+    event._piVccOverriding = true;
+    const result = handler!(event, {
+      hasUI: true,
+      ui: { notify: (message: string) => notifications.push(message) },
+    });
+    expect(result).toEqual({ cancel: true });
+    expect(notifications).toHaveLength(1);
+    expect(Buffer.byteLength(notifications[0]!, "utf8")).toBeLessThanOrEqual(512);
+    expect(notifications[0]).not.toContain("fake/path.ts");
   });
 
   it("retains exact pi-vcc sentinel precedence", () => {
@@ -509,7 +597,7 @@ describe("compaction error state machine", () => {
     );
     const events = normalizeEntries(session.slice(0, 5));
     const lines = projectOutstanding(events);
-    expect(lines.some((l) => l.includes("read src/x.ts") && l.includes("[WARN]") && !l.includes("[RESOLVED]"))).toBe(true);
+    expect(lines.some((l) => l.includes("read src/x.ts") && !l.includes("[RESOLVED]"))).toBe(true);
   });
 
   it("marks a bash error [RESOLVED] when the same command is later re-run OK", () => {
@@ -528,10 +616,10 @@ describe("compaction error state machine", () => {
     );
     const events = normalizeEntries(session.slice(0, 5));
     const lines = projectOutstanding(events);
-    expect(lines.some((l) => l.includes("bash: make test") && l.includes("[ERROR]") && l.includes("[RESOLVED]"))).toBe(true);
+    expect(lines.some((l) => l.includes("bash: make test") && l.includes("[RESOLVED]"))).toBe(true);
   });
 
-  it("leaves an error open ([ERROR], no [RESOLVED]) when nothing resolves it", () => {
+  it("leaves an error open without classifying its prose when nothing resolves it", () => {
     resetIds();
     resetCallIds();
     resetClock();
@@ -544,7 +632,7 @@ describe("compaction error state machine", () => {
     );
     const events = normalizeEntries(session.slice(0, 3));
     const lines = projectOutstanding(events);
-    expect(lines.some((l) => l.includes("edit src/y.ts") && l.includes("[ERROR]") && !l.includes("[RESOLVED]"))).toBe(true);
+    expect(lines.some((l) => l.includes("edit src/y.ts") && !l.includes("[RESOLVED]"))).toBe(true);
   });
 });
 
@@ -747,20 +835,25 @@ describe("compaction benchmark", () => {
 });
 
 describe("compaction section composition", () => {
-  it("captures git commit bash calls with their first output line", () => {
+  it.each([
+    ["git commit -m \"ship feature\"", "[main abc1234] ship feature\n 1 file changed"],
+    ["printf 'git commit -m fake'", "[main def5678] fake shell prose"],
+  ])("does not extract commits from shell command/output prose", (command, output) => {
     resetIds();
     resetCallIds();
     resetClock();
     const c = nextCallId();
     const session = buildSession(
-      user("commit it"),
-      assistant(toolCallPart(c, "bash", { command: "git commit -m \"ship feature\"" })),
-      toolResult(c, "bash", "[main abc1234] ship feature\n 1 file changed"),
+      user("run shell"),
+      assistant(toolCallPart(c, "bash", { command })),
+      toolResult(c, "bash", output),
       user("done"),
     );
-    const events = normalizeEntries(session.slice(0, 3));
-    const sections = project(events);
-    expect(sections.commits.some((l) => l.includes("abc1234") && l.includes("ship feature"))).toBe(true);
+    const sections = project(normalizeEntries(session.slice(0, 3)));
+    expect(Object.keys(sections)).not.toContain("commits");
+    const result = compileFabricSummary(session, 1000);
+    if (!("compaction" in result)) throw new Error("expected compaction");
+    expect(result.compaction.summary).not.toContain("[Commits]");
   });
 
   it("renders a stable, section-ordered document", () => {

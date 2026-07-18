@@ -1,3 +1,12 @@
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import {
+  compactionRequestBoundsError,
+  encodeCompactionRequest,
+  MAX_COMPACTION_INSTRUCTIONS_CHARS,
+  MAX_PRESERVE_ITEM_CHARS,
+  MAX_PRESERVE_ITEMS,
+} from "../compaction/instructions.js";
 import { CompactController } from "../core/compact-controller.js";
 import type {
   FabricActionDescriptor,
@@ -12,28 +21,56 @@ import type {
 // cannot compact the running context directly. Always available (no config
 // guard) — it is a first-principles primitive, not an optional capability.
 
-const requestSchema = {
-  type: "object",
-  properties: {
-    reason: {
-      type: "string",
-      description: "Short human-readable reason for the compaction",
-    },
-    instructions: {
-      type: "string",
-      description: "Custom compaction instructions forwarded to Pi core",
-    },
-    preserve: {
-      type: "array",
-      items: { type: "string" },
+const requestSchema = Type.Object({
+  reason: Type.Optional(Type.String({
+    maxLength: 1024,
+    description: "Short human-readable reason for the compaction",
+  })),
+  instructions: Type.Optional(Type.String({
+    maxLength: MAX_COMPACTION_INSTRUCTIONS_CHARS,
+    description: "Custom compaction instructions forwarded to Pi core",
+  })),
+  preserve: Type.Optional(Type.Array(
+    Type.String({ maxLength: MAX_PRESERVE_ITEM_CHARS }),
+    {
+      maxItems: MAX_PRESERVE_ITEMS,
       description: "Explicit bounded facts to preserve, encoded as a typed Fabric compaction request",
     },
-    requestedBy: {
-      type: "string",
-      description: "Who requested the compaction (default: model)",
-    },
-  },
-  additionalProperties: false,
+  )),
+  requestedBy: Type.Optional(Type.String({
+    maxLength: 256,
+    description: "Who requested the compaction (default: model)",
+  })),
+}, { additionalProperties: false });
+
+interface CompactRequestArguments {
+  reason?: string;
+  instructions?: string;
+  preserve?: string[];
+  requestedBy?: string;
+}
+
+const checkedRequestArguments = (args: Record<string, unknown>): CompactRequestArguments => {
+  if (!Value.Check(requestSchema, args)) {
+    const message = [...Value.Errors(requestSchema, args)]
+      .slice(0, 5)
+      .map((error) => error.message)
+      .join("; ");
+    throw new Error(`Invalid compact.request arguments: ${message}`);
+  }
+  const input = args as CompactRequestArguments;
+  const boundsError = compactionRequestBoundsError({
+    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+    ...(input.preserve !== undefined ? { preserve: input.preserve } : {}),
+  });
+  if (boundsError) throw new Error(`Invalid compact.request arguments: ${boundsError.message}`);
+  if (input.preserve !== undefined) {
+    encodeCompactionRequest({
+      ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+      preserve: input.preserve,
+    });
+  }
+  return input;
 };
 
 const emptySchema = {
@@ -47,7 +84,7 @@ const descriptors: FabricActionDescriptor[] = [
     name: "request",
     description:
       "Request an advisory compaction of the host session's context at the next safe boundary (agent_settled). The host commits it only between turns, never mid-turn. A new request replaces any pending one.",
-    inputSchema: requestSchema,
+    inputSchema: requestSchema as unknown as Record<string, unknown>,
     risk: "write",
   },
   {
@@ -98,13 +135,12 @@ export class CompactProvider implements FabricProvider {
   ): Promise<unknown> {
     switch (actionName) {
       case "request": {
+        const input = checkedRequestArguments(args);
         const intent = this.controller.request({
-          ...(typeof args.reason === "string" ? { reason: args.reason } : {}),
-          ...(typeof args.instructions === "string" ? { instructions: args.instructions } : {}),
-          ...(Array.isArray(args.preserve) && args.preserve.every((item) => typeof item === "string")
-            ? { preserve: args.preserve }
-            : {}),
-          ...(typeof args.requestedBy === "string" ? { requestedBy: args.requestedBy } : {}),
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+          ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+          ...(input.preserve !== undefined ? { preserve: input.preserve } : {}),
+          ...(input.requestedBy !== undefined ? { requestedBy: input.requestedBy } : {}),
         });
         context.activity?.({
           type: "entity",

@@ -15,6 +15,10 @@ import {
   readFabricBranchSummaryDetailsV1,
 } from "../src/compaction/branch-details.js";
 import { compileFabricSummary, registerCompactionHook } from "../src/compaction/hook.js";
+import {
+  encodeCompactionRequest,
+  FABRIC_COMPACTION_REQUEST_PREFIX,
+} from "../src/compaction/instructions.js";
 import { normalizeEntries } from "../src/compaction/normalize.js";
 import { project } from "../src/compaction/projections.js";
 import {
@@ -185,6 +189,53 @@ describe("deterministic Fabric branch summaries", () => {
       signal: new AbortController().signal,
     }) as { summary: { details: unknown } };
     expect(readFabricBranchSummaryDetailsV1(result.summary.details)).toBeDefined();
+  });
+
+  it("applies typed instructions fail-closed on the branch path without giving the pi-vcc sentinel tree semantics", () => {
+    const abandoned = traceHistory().slice(0, 3);
+    const typed = compileFabricBranchSummary(abandoned, encodeCompactionRequest({
+      instructions: "Keep typed branch context",
+      preserve: ["EXPLICIT_COMMIT_abc1234", "src/typed.ts"],
+    }));
+    expect(typed?.summary).toContain("Keep typed branch context");
+    expect(typed?.summary).toContain("EXPLICIT_COMMIT_abc1234");
+    expect(typed?.summary).toContain("src/typed.ts");
+
+    const exactSentinel = compileFabricBranchSummary(abandoned, "__pi_vcc__");
+    expect(exactSentinel?.summary).toContain("__pi_vcc__");
+
+    const malformed = `${FABRIC_COMPACTION_REQUEST_PREFIX}${JSON.stringify({
+      version: 1,
+      goal: "FAKE_BRANCH_GOAL",
+      preserve: ["fake/branch.ts"],
+    })}`;
+    expect(compileFabricBranchSummary(abandoned, malformed)).toBeUndefined();
+
+    let handler: ((event: SessionBeforeTreeEvent, context: unknown) => unknown) | undefined;
+    const notifications: string[] = [];
+    const pi = { on(name: string, candidate: unknown) {
+      if (name === "session_before_tree") handler = candidate as typeof handler;
+    } } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, { getEngine: () => "fabric" });
+    const result = handler!({
+      type: "session_before_tree",
+      preparation: {
+        targetId: "target",
+        oldLeafId: "e3",
+        commonAncestorId: "e1",
+        entriesToSummarize: abandoned,
+        userWantsSummary: true,
+        customInstructions: malformed,
+      },
+      signal: new AbortController().signal,
+    }, {
+      hasUI: true,
+      ui: { notify: (message: string) => notifications.push(message) },
+    });
+    expect(result).toEqual({ cancel: true });
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).not.toContain("FAKE_BRANCH_GOAL");
+    expect(notifications[0]).not.toContain("fake/branch.ts");
   });
 
   it("reuses active and nested branch facts structurally without sibling contamination, including a forked path", () => {

@@ -1,5 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import {
+  MAX_COMPACTION_INSTRUCTIONS_CHARS,
+  MAX_PRESERVE_ITEM_CHARS,
+  MAX_PRESERVE_ITEMS,
+} from "../src/compaction/instructions.js";
 import { CompactController } from "../src/core/compact-controller.js";
 import { CompactProvider } from "../src/providers/compact-provider.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
@@ -96,19 +101,48 @@ describe("CompactProvider", () => {
     await expect(provider.invoke("bogus", {}, context)).rejects.toThrow(/Unknown compact action/);
   });
 
-  it("request inputSchema accepts optional reason/instructions/preserve/requestedBy", async () => {
+  it("request inputSchema bounds instructions and preserve before invocation mapping", async () => {
     const { provider } = setup();
     const descriptor = await provider.describe("request", context);
     const schema = descriptor?.inputSchema as {
-      properties: Record<string, unknown>;
+      properties: {
+        instructions: { maxLength: number };
+        preserve: { maxItems: number; items: { maxLength: number } };
+      };
       required?: string[];
       additionalProperties: boolean;
     };
-    expect(schema.properties).toHaveProperty("reason");
-    expect(schema.properties).toHaveProperty("instructions");
-    expect(schema.properties).toHaveProperty("preserve");
-    expect(schema.properties).toHaveProperty("requestedBy");
+    expect(schema.properties.instructions.maxLength).toBe(MAX_COMPACTION_INSTRUCTIONS_CHARS);
+    expect(schema.properties.preserve.maxItems).toBe(MAX_PRESERVE_ITEMS);
+    expect(schema.properties.preserve.items.maxLength).toBe(MAX_PRESERVE_ITEM_CHARS);
     expect(schema.required ?? []).toEqual([]);
     expect(schema.additionalProperties).toBe(false);
+  });
+
+  it("rejects invalid types, unknown fields, and bounded fields before recording an intent", async () => {
+    const { provider, controller } = setup();
+    await expect(provider.invoke("request", { preserve: ["ok", 7] }, context)).rejects.toThrow(/Invalid compact\.request/);
+    await expect(provider.invoke("request", { instructions: "ok", goal: "unknown" }, context)).rejects.toThrow(/Invalid compact\.request/);
+    await expect(provider.invoke("request", {
+      instructions: "x".repeat(MAX_COMPACTION_INSTRUCTIONS_CHARS + 1),
+    }, context)).rejects.toThrow(/Invalid compact\.request/);
+    await expect(provider.invoke("request", {
+      instructions: "界".repeat(3000),
+    }, context)).rejects.toThrow(/UTF-8 bytes/);
+    await expect(provider.invoke("request", {
+      preserve: Array.from({ length: MAX_PRESERVE_ITEMS + 1 }, () => "x"),
+    }, context)).rejects.toThrow(/Invalid compact\.request/);
+    await expect(provider.invoke("request", {
+      preserve: ["x".repeat(MAX_PRESERVE_ITEM_CHARS + 1)],
+    }, context)).rejects.toThrow(/Invalid compact\.request/);
+    expect(controller.status().pending).toBeUndefined();
+  });
+
+  it("rejects an aggregate typed request that exceeds the encoded byte bound", async () => {
+    const { provider, controller } = setup();
+    await expect(provider.invoke("request", {
+      preserve: Array.from({ length: MAX_PRESERVE_ITEMS }, () => "x".repeat(1100)),
+    }, context)).rejects.toThrow(/encoded UTF-8 bytes/);
+    expect(controller.status().pending).toBeUndefined();
   });
 });

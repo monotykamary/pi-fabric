@@ -84,11 +84,23 @@ and `cancel` are `read`.
 `instructions` alone is forwarded as ordinary Pi `customInstructions`, so manual
 `/compact` text and programmatic requests have the same Fabric rendering. When
 `preserve` is present, the controller encodes `{version: 1, instructions?,
-preserve}` behind an exact versioned prefix plus JSON. The compaction hook
-strictly decodes that shape and renders the bounded values under
-`[Compaction Request]`. Unknown versions or malformed payloads are preserved as
-plain instructions rather than partially parsed or silently dropped. The exact
-`__pi_vcc__` value remains reserved for pi-vcc routing.
+preserve}` behind an exact versioned prefix plus JSON. The compaction and branch
+hooks strictly decode that shape and render valid bounded values under
+`[Compaction Request]`.
+
+The prefix is reserved: malformed JSON, unknown fields or versions, invalid
+types, or exceeded limits return a structured decode error and cancel instead
+of falling back to prose. The rejected payload is never rendered. A context
+with UI/RPC notification support receives a bounded error. The exact
+`__pi_vcc__` value retains compaction-routing precedence and has no special
+effect on the tree hook.
+
+`compact.request` uses a bounded TypeBox schema before argument mapping.
+Instructions are limited to 8192 characters and 8192 UTF-8 bytes; `preserve` to
+16 items; each item to 2048 characters and 2048 UTF-8 bytes; and the complete
+encoded prefix-plus-JSON request to 16 KiB. The decoder checks aggregate source
+bytes before parsing JSON and preserve count before iterating or canonicalizing
+items.
 
 #### Commit semantics
 
@@ -166,7 +178,7 @@ configuration to be safe.
 | File | Role |
 | --- | --- |
 | `src/core/compact-controller.ts` | Pending-intent controller: `request`, `cancel`, `status`, `maybeCommit`. Single replaceable slot; typed preserve encoding; in-flight guard; quiet-clear on cancelled/already-compacted. |
-| `src/providers/compact-provider.ts` | Fabric provider exposing `request` (write, including optional `preserve: string[]`), `status` (read), `cancel` (read). Always registered; activity audit. |
+| `src/providers/compact-provider.ts` | Fabric provider exposing bounded TypeBox-validated `request` (write, including optional `preserve: string[]`), `status` (read), `cancel` (read). Always registered; activity audit. |
 | `src/fabric-state.ts` | Constructs the controller with mesh-publish hooks; registers the provider; resets on re-init/shutdown. |
 | `src/index.ts` | Invokes `state.compact.maybeCommit(context)` in the existing `agent_settled` handler. |
 | `src/subagents/types.ts` | `SubagentSteerEntry["type"]` extended with `"compact"`; optional `instructions` field. |

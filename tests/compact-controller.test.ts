@@ -147,6 +147,8 @@ describe("CompactController", () => {
     controller.maybeCommit(fakeContext(capture));
     expect(capture.current?.customInstructions?.startsWith(FABRIC_COMPACTION_REQUEST_PREFIX)).toBe(true);
     const decoded = decodeCompactionInstructions(capture.current?.customInstructions);
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) throw new Error("expected decoded instructions");
     expect(decoded.policy.mode).toBe("typed-v1");
     expect(decoded.requestLines.join("\n")).toContain("rare fact");
     capture.current!.onError(new Error("Already compacted"));
