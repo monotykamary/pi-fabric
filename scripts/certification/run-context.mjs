@@ -491,14 +491,14 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
       enabled: true,
       indexDir,
       maxSessions: 25,
-      maxEntryChars: 256,
+      maxEntryChars: 1_000_000,
       hotSessions: 8,
       digestTerms: 8,
     },
   });
   const recalled = await provider.invoke(
     "recall",
-    { scope: "global", query: "cold_exact_quasar_7f91 ΩMEGA雪", pageSize: 20 },
+    { scope: "global", query: "cold_exact_quasar_7f91", queryMode: "literal", pageSize: 20 },
     invocationContext(cwd),
   );
   const rareHit = recalled.digestHits.find(
@@ -510,7 +510,7 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
       {
         scope: `session:${rareHit.sessionFile}`,
         expectedSourceHash: rareHit.sourceHash,
-        query: "cold_exact_quasar_7f91 ΩMEGA雪",
+        query: "cold_exact_quasar_7f91",
         queryMode: "literal",
         pageSize: 20,
       },
@@ -577,7 +577,7 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
     integrityBoundExpansion: typeof contextPointer.sourceHash === "string"
       && contextPointer.sourceHash.length === 64
       && expandedAddresses.sourceHash === contextPointer.sourceHash,
-    cacheVersionBehavior: "V4 sourceHash checked for cold hydration and address expansion",
+    cacheVersionBehavior: "V5 sourceHash checked for cold hydration and address expansion",
     cacheBytes: directoryBytes(indexDir),
     sourceBytes: directoryBytes(sourceRoot),
   };

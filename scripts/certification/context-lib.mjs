@@ -54,7 +54,7 @@ export const evaluateCertification = (report, thresholds = DEFAULT_THRESHOLDS) =
     ["memory.rareRecall", report.memory.rareRecallExact === true, "cold rare fact recalled and expanded exactly"],
     ["memory.cold", report.memory.rareSessionTier === "cold", `${report.memory.rareSessionTier} === cold`],
     ["memory.addressExpansion", report.memory.addressExpansionRate >= thresholds.minimumAddressExpansionRate, `${report.memory.addressExpansionRate} >= ${thresholds.minimumAddressExpansionRate}`],
-    ["memory.integrityBound", report.memory.integrityBoundExpansion === true, "V4 sourceHash pointer verified during expansion"],
+    ["memory.integrityBound", report.memory.integrityBoundExpansion === true, "V5 sourceHash pointer verified during expansion"],
     ["continuation.address", report.continuation.addressesResolved === true, "every continuation address resolved through MemoryProvider"],
     ["continuation.oracle", report.continuation.passRate >= thresholds.minimumContinuationPassRate, `${report.continuation.passRate} >= ${thresholds.minimumContinuationPassRate}`],
   ].map(([id, passed, evidence]) => ({ id, passed, evidence }));

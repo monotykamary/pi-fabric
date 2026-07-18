@@ -56,7 +56,7 @@ The pass conditions are:
 - exact source expansion by its stable entry ID;
 - exact expansion of every distinct entry ID emitted by the 100 compaction summaries or their structured details;
 - 100% address expansion agreement with a fresh normalization of the source JSONL;
-- V4 `sourceHash` integrity checks on both cold hydration and context address expansion.
+- V5 `sourceHash` integrity checks on both cold hydration and context address expansion.
 
 The JSON report includes eligible/indexed/stale counts, emitted/expanded address counts, and cache/source byte sizes.
 
@@ -69,7 +69,7 @@ Continuation QA creates two small temporary repositories. Each has exact expecte
 1. the compacted summary and structured compaction details; and
 2. constrained current-session pointer and expansion APIs backed by `MemoryProvider`.
 
-The source phase persists a handoff envelope containing the compacted context and current Pi session ID, not task operations or a captured session path. The resume phase reads that output, constructs a fresh `MemoryProvider`, asks it for a V4 integrity-bound current-session pointer, derives the cumulative source entry ID from compaction details, and expands that address with `expectedSourceHash`. The `addressResolved` score comes from the returned entry, never a constant. No callback closes over `manager.getSessionFile()`.
+The source phase persists a handoff envelope containing the compacted context and current Pi session ID, not task operations or a captured session path. The resume phase reads that output, constructs a fresh `MemoryProvider`, asks it for a V5 integrity-bound current-session pointer, derives the cumulative source entry ID from compaction details, and expands that address with `expectedSourceHash`. The `addressResolved` score comes from the returned entry, never a constant. No callback closes over `manager.getSessionFile()`.
 
 Only after exact source expansion does the simulator decode `CERT_TASK_V1` and apply its operations. If an exact operation or file payload is unavailable, it throws and fails instead of inventing success. The external oracle then scores exact filesystem state, forbidden-file integrity, and process exit status; it never supplies `task.operations` to the simulator.
 

@@ -179,6 +179,16 @@ describe("memory final integrity guarantees", () => {
       outcome: "succeeded",
       result: { bytes: 5 },
     };
+    const customMessage = {
+      kind: "customMessage",
+      entryId: "abandoned-custom",
+      subordinal: "custom-message",
+      address: "abandoned-custom/custom-message",
+      customType: "pi-fabric-subagent-complete",
+      text: "Agent completed CUSTOM_MEMORY_BRANCH_51",
+      display: false,
+      details: { status: "completed" },
+    };
     const direct = {
       type: "branch_summary",
       id: "carrier-original",
@@ -186,7 +196,7 @@ describe("memory final integrity guarantees", () => {
       timestamp: timestamp(1),
       fromId: "abandoned-result",
       summary: "prose must not be parsed",
-      details: branchDetails([operation]),
+      details: branchDetails([operation, customMessage]),
     } as FixtureEntry;
     const nested = {
       ...direct,
@@ -203,7 +213,7 @@ describe("memory final integrity guarantees", () => {
     ]);
     const normalized = normalizeSession(file, 20_000);
     const facts = normalized.entries.filter((entry) => entry.type === "fabric_branch_fact");
-    expect(facts).toHaveLength(1);
+    expect(facts).toHaveLength(2);
     expect(facts[0]).toMatchObject({
       entryId: operation.address,
       operationAddress: operation.address,
@@ -215,6 +225,18 @@ describe("memory final integrity guarantees", () => {
       toolName: "write",
       outcome: "succeeded",
       filesTouched: ["src/abandoned.ts"],
+    });
+    expect(facts[1]).toMatchObject({
+      entryId: customMessage.address,
+      factAddress: customMessage.address,
+      carrierEntryId: "carrier-original",
+      role: "branchCustomMessage",
+      text: "[pi-fabric-subagent-complete] Agent completed CUSTOM_MEMORY_BRANCH_51",
+      branchFact: expect.objectContaining({
+        kind: "customMessage",
+        customType: "pi-fabric-subagent-complete",
+        display: false,
+      }),
     });
 
     const provider = new MemoryProvider({ agentDir, cwd, config: config(indexDir) });

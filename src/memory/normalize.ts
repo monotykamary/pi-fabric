@@ -68,6 +68,8 @@ interface NormalizedFabricBranchFact {
   carrierParentId: string | null;
   carrierFromId: string | null;
   text?: string;
+  customType?: string;
+  display?: boolean;
   phase?: string;
   ref?: string;
   provider?: string;
@@ -277,6 +279,11 @@ const branchFactChild = (
     carrierParentId,
     carrierFromId,
     ...(fact.kind === "user" ? { text: fact.text } : {}),
+    ...(fact.kind === "customMessage" ? {
+      text: fact.text,
+      customType: fact.customType,
+      display: fact.display,
+    } : {}),
     ...(fact.kind === "phase" ? { phase: fact.phase } : {}),
     ...(fact.kind === "operation" ? {
       ref: fact.ref,
@@ -295,6 +302,16 @@ const branchFactChild = (
       role: "branchUser",
       toolName: null,
       text: fact.text,
+      isError: false,
+      branchFact: normalizedFact,
+    };
+  }
+  if (fact.kind === "customMessage") {
+    return {
+      ...common,
+      role: "branchCustomMessage",
+      toolName: null,
+      text: fact.customType ? `[${fact.customType}] ${fact.text}` : fact.text,
       isError: false,
       branchFact: normalizedFact,
     };
