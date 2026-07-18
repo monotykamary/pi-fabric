@@ -10,6 +10,7 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   minimumSessions: 1_000,
   minimumAddressExpansionRate: 1,
   minimumContinuationPassRate: 1,
+  minimumMaximalSummaryBytes: 24 * 1024,
 });
 
 export const linearSlope = (values) => {
@@ -32,15 +33,20 @@ export const evaluateCertification = (report, thresholds = DEFAULT_THRESHOLDS) =
   const steadySlope = linearSlope(steadySizes);
   const checks = [
     ["context.cycles", report.context.cycles === thresholds.cycles, `${report.context.cycles} === ${thresholds.cycles}`],
+    ["context.eligibility", report.context.eligibleCycleCount === thresholds.cycles && report.context.prepareUndefinedCount === 0, `${report.context.eligibleCycleCount} eligible; ${report.context.prepareUndefinedCount} undefined preparations`],
+    ["context.builtContext", report.context.builtContextMismatchCount === 0, `${report.context.builtContextMismatchCount} mismatches`],
+    ["context.priorSummaryInput", report.context.priorSummaryFedAsInput === false && report.context.priorSummaryObservedCount === thresholds.cycles - 1, `${report.context.priorSummaryObservedCount} prior summaries observed; fed=${String(report.context.priorSummaryFedAsInput)}`],
     ["context.goal", report.context.goalRetained === true, "original goal retained in every cycle"],
     ["context.constraints", report.context.constraintsRetained === true, "constraints retained in every cycle"],
     ["context.rareFact", report.context.rareFactRetained === true, "pinned rare fact retained in every cycle"],
     ["context.addresses", report.context.cumulativeAddressesValid === true, "cumulative file/error addresses remain valid"],
     ["context.callResultClosure", report.context.callResultSplitCount === 0, `${report.context.callResultSplitCount} split pairs`],
     ["context.firstKept", report.context.invalidFirstKeptCount === 0, `${report.context.invalidFirstKeptCount} invalid ids`],
-    ["context.poison", report.context.poisonLeakCount === 0, `${report.context.poisonLeakCount} leaks`],
+    ["context.poison", report.context.poisonLeakCount === 0 && report.context.poisonStoredCount === thresholds.cycles, `${report.context.poisonLeakCount} leaks; ${report.context.poisonStoredCount} stored`],
     ["context.determinism", report.context.byteMismatchCount === 0, `${report.context.byteMismatchCount} mismatches`],
     ["context.size", report.context.maxSummaryBytes <= thresholds.maxSummaryBytes, `${report.context.maxSummaryBytes} <= ${thresholds.maxSummaryBytes}`],
+    ["context.maximalUtf8", report.context.maximalMultibyte.validUtf8 === true && report.context.maximalMultibyte.summaryBytes >= thresholds.minimumMaximalSummaryBytes && report.context.maximalMultibyte.summaryBytes <= thresholds.maxSummaryBytes, `${report.context.maximalMultibyte.summaryBytes} bytes; valid=${String(report.context.maximalMultibyte.validUtf8)}`],
+    ["context.closureFixtures", Object.values(report.context.closureFixtureCounts).every((count) => count > 0), JSON.stringify(report.context.closureFixtureCounts)],
     ["context.steadyRange", steadyRange <= thresholds.maxSteadyRangeBytes, `${steadyRange} <= ${thresholds.maxSteadyRangeBytes}`],
     ["context.steadySlope", Math.abs(steadySlope) <= thresholds.maxSteadySlopeBytesPerCycle, `${steadySlope.toFixed(3)} <= ±${thresholds.maxSteadySlopeBytesPerCycle}`],
     ["memory.sessions", report.memory.eligibleSessions >= thresholds.minimumSessions, `${report.memory.eligibleSessions} >= ${thresholds.minimumSessions}`],
@@ -48,6 +54,8 @@ export const evaluateCertification = (report, thresholds = DEFAULT_THRESHOLDS) =
     ["memory.rareRecall", report.memory.rareRecallExact === true, "cold rare fact recalled and expanded exactly"],
     ["memory.cold", report.memory.rareSessionTier === "cold", `${report.memory.rareSessionTier} === cold`],
     ["memory.addressExpansion", report.memory.addressExpansionRate >= thresholds.minimumAddressExpansionRate, `${report.memory.addressExpansionRate} >= ${thresholds.minimumAddressExpansionRate}`],
+    ["memory.integrityBound", report.memory.integrityBoundExpansion === true, "V4 sourceHash pointer verified during expansion"],
+    ["continuation.address", report.continuation.addressesResolved === true, "every continuation address resolved through MemoryProvider"],
     ["continuation.oracle", report.continuation.passRate >= thresholds.minimumContinuationPassRate, `${report.continuation.passRate} >= ${thresholds.minimumContinuationPassRate}`],
   ].map(([id, passed, evidence]) => ({ id, passed, evidence }));
   return {
@@ -116,7 +124,7 @@ const resolveInside = (root, relative) => {
   return resolved;
 };
 
-export const runDeterministicHandoff = async ({ root, compactedContext, recall }) => {
+export const runDeterministicHandoff = async ({ root, compactedContext, memory }) => {
   const details = compactedContext.details;
   if (!details || details.stableAddresses?.recall !== "session-entry-id-range") {
     throw new Error("Compacted context has no supported recall address");
@@ -125,13 +133,19 @@ export const runDeterministicHandoff = async ({ root, compactedContext, recall }
   if (typeof taskAddress !== "string" || taskAddress.length === 0) {
     throw new Error("Compacted context has no task address");
   }
-  const expanded = await recall({ entryIds: [taskAddress] });
-  const taskEntry = expanded.find((entry) => entry.entryId === taskAddress);
+  const pointer = await memory.currentSessionPointer();
+  if (!pointer || typeof pointer.session !== "string" || typeof pointer.sourceHash !== "string") {
+    throw new Error("MemoryProvider did not issue an integrity-bound current-session pointer");
+  }
+  const expansion = await memory.expand({ pointer, entryIds: [taskAddress] });
+  if (expansion?.error) throw new Error(`Memory expansion failed: ${String(expansion.error.code)}`);
+  const taskEntry = expansion?.expanded?.find((entry) => entry.entryId === taskAddress);
+  const addressResolved = Boolean(taskEntry);
   if (!taskEntry || !taskEntry.text.startsWith("CERT_TASK_V1\n")) {
-    throw new Error("Address did not expand to a CERT_TASK_V1 task");
+    throw new Error("Address did not expand to an exact CERT_TASK_V1 task");
   }
   const task = JSON.parse(taskEntry.text.slice("CERT_TASK_V1\n".length));
-  if (!Array.isArray(task.operations)) throw new Error("Task operations are missing");
+  if (!Array.isArray(task.operations)) throw new Error("Exact task operations are unavailable after expansion");
   for (const operation of task.operations) {
     if (!operation || typeof operation !== "object" || typeof operation.path !== "string") {
       throw new Error("Invalid task operation");
@@ -145,17 +159,17 @@ export const runDeterministicHandoff = async ({ root, compactedContext, recall }
       if (!before.includes(operation.oldText)) throw new Error(`Replace source not found: ${operation.path}`);
       fs.writeFileSync(target, before.replace(operation.oldText, operation.newText), "utf8");
     } else {
-      throw new Error(`Unsupported task operation: ${String(operation.type)}`);
+      throw new Error(`Exact content unavailable for task operation: ${String(operation.type)}`);
     }
   }
-  return { taskAddress, operationCount: task.operations.length };
+  return { taskAddress, operationCount: task.operations.length, addressResolved };
 };
 
 export const formatHumanReport = (report) => {
   const status = report.evaluation.passed ? "PASS" : "FAIL";
   const lines = [
     `Context + memory certification: ${status}`,
-    `  Compaction: ${report.context.cycles} cycles; ${report.context.maxSummaryBytes} max bytes; ${report.evaluation.derived.steadySlopeBytesPerCycle.toFixed(2)} B/cycle steady slope`,
+    `  Compaction: ${report.context.cycles}/${report.context.eligibleCycleCount} cycles eligible; ${report.context.maxSummaryBytes} endurance / ${report.context.maximalMultibyte.summaryBytes} maximal UTF-8 bytes; ${report.evaluation.derived.steadySlopeBytesPerCycle.toFixed(2)} B/cycle steady slope`,
     `  Memory: ${report.memory.indexedSessions}/${report.memory.eligibleSessions} sessions; ${(report.memory.addressExpansionRate * 100).toFixed(1)}% address expansion; ${report.memory.cacheBytes} cache bytes / ${report.memory.sourceBytes} source bytes`,
     `  Continuation: ${report.continuation.passedFixtures}/${report.continuation.totalFixtures} executable fixtures passed`,
   ];

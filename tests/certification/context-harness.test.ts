@@ -21,8 +21,22 @@ afterEach(() => {
 const passingReport = () => ({
   context: {
     cycles: 100,
+    eligibleCycleCount: 100,
+    prepareUndefinedCount: 0,
+    builtContextMismatchCount: 0,
+    priorSummaryObservedCount: 99,
+    priorSummaryFedAsInput: false,
     summaryBytes: Array.from({ length: 100 }, () => 8_000),
     maxSummaryBytes: 8_000,
+    maximalMultibyte: { summaryBytes: 24_671, validUtf8: true },
+    closureFixtureCounts: {
+      normal: 1,
+      compactAll: 1,
+      splitTurn: 1,
+      parallelDelayed: 1,
+      reverseOrder: 1,
+      malformedBoundary: 1,
+    },
     goalRetained: true,
     constraintsRetained: true,
     rareFactRetained: true,
@@ -30,6 +44,7 @@ const passingReport = () => ({
     callResultSplitCount: 0,
     invalidFirstKeptCount: 0,
     poisonLeakCount: 0,
+    poisonStoredCount: 100,
     byteMismatchCount: 0,
   },
   memory: {
@@ -39,10 +54,11 @@ const passingReport = () => ({
     rareRecallExact: true,
     rareSessionTier: "cold",
     addressExpansionRate: 1,
+    integrityBoundExpansion: true,
     cacheBytes: 10,
     sourceBytes: 20,
   },
-  continuation: { passRate: 1, passedFixtures: 2, totalFixtures: 2 },
+  continuation: { passRate: 1, passedFixtures: 2, totalFixtures: 2, addressesResolved: true },
 });
 
 describe("certification thresholds", () => {
@@ -70,6 +86,21 @@ describe("certification thresholds", () => {
         "continuation.oracle",
       ]));
     expect(formatHumanReport(complete)).toContain("Context + memory certification: FAIL");
+  });
+
+  it.each([
+    ["eligibility", (report: ReturnType<typeof passingReport>) => { report.context.eligibleCycleCount = 99; }, "context.eligibility"],
+    ["poison", (report: ReturnType<typeof passingReport>) => { report.context.poisonLeakCount = 1; }, "context.poison"],
+    ["address", (report: ReturnType<typeof passingReport>) => { report.continuation.addressesResolved = false; }, "continuation.address"],
+    ["oracle", (report: ReturnType<typeof passingReport>) => { report.continuation.passRate = 0; }, "continuation.oracle"],
+  ])("fails certification when %s evidence is sabotaged", (_name, sabotage, failedCheck) => {
+    const report = passingReport();
+    sabotage(report);
+    const evaluation = evaluateCertification(report);
+    expect(evaluation.passed).toBe(false);
+    expect(evaluation.checks.find((check: { id: string }) => check.id === failedCheck)).toMatchObject({
+      passed: false,
+    });
   });
 });
 
