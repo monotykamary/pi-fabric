@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
+import { readFabricProjectionTrace } from "../compaction/trace-events.js";
 
 /**
  * A typed, structure-derived projection of one session JSONL line.
@@ -23,6 +25,28 @@ export interface NormalizedEntry {
   isError: boolean;
   truncated: boolean;
   filesTouched?: string[];
+  parentEntryId?: string | null;
+  operationAddress?: string;
+  ref?: string;
+  provider?: string;
+  action?: string;
+  outcome?: FabricExecutionOutcomeV1;
+  operation?: NormalizedFabricOperation;
+}
+
+interface NormalizedFabricOperation {
+  address: string;
+  parentEntryId: string;
+  sequence: number;
+  tool: string;
+  ref: string;
+  provider?: string;
+  action?: string;
+  args: Record<string, FabricTraceJsonValue>;
+  outcome: FabricExecutionOutcomeV1;
+  error?: string;
+  result?: FabricTraceJsonValue;
+  resultOmitted?: boolean;
 }
 
 export interface SessionHeaderInfo {
@@ -88,6 +112,77 @@ const extractFilesTouched = (raw: Record<string, unknown>): string[] => {
   return [...new Set(paths)];
 };
 
+const TRACE_OPERATION_MAX_BYTES = 96 * 1024;
+const PI_FILE_REFS = new Set(["pi.read", "pi.grep", "pi.find", "pi.ls", "pi.edit", "pi.write"]);
+
+const traceFilesTouched = (ref: string, tool: string, args: Record<string, FabricTraceJsonValue>): string[] => {
+  if (!PI_FILE_REFS.has(ref) || ref !== `pi.${tool}`) return [];
+  const path = args.path ?? args.file ?? args.dir;
+  return typeof path === "string" && path.trim() ? [path.trim()] : [];
+};
+
+const boundedTraceOperation = (
+  parentEntryId: string,
+  operation: NonNullable<ReturnType<typeof readFabricProjectionTrace>>["operations"][number],
+): NormalizedFabricOperation => {
+  const address = `${parentEntryId}/${operation.sequence}`;
+  const normalized: NormalizedFabricOperation = {
+    address,
+    parentEntryId,
+    sequence: operation.sequence,
+    tool: operation.tool,
+    ref: operation.ref,
+    ...(operation.provider ? { provider: operation.provider } : {}),
+    ...(operation.action ? { action: operation.action } : {}),
+    args: operation.args,
+    outcome: operation.outcome,
+    ...(operation.error !== undefined ? { error: operation.error } : {}),
+    ...(operation.result !== undefined ? { result: operation.result } : {}),
+  };
+  if (Buffer.byteLength(JSON.stringify(normalized), "utf8") > TRACE_OPERATION_MAX_BYTES && normalized.result !== undefined) {
+    delete normalized.result;
+    normalized.resultOmitted = true;
+  }
+  return normalized;
+};
+
+const traceChildren = (
+  raw: Record<string, unknown>,
+  base: Omit<NormalizedEntry, "index">,
+): Array<Omit<NormalizedEntry, "index">> => {
+  if (base.type !== "message" || base.role !== "toolResult" || base.toolName !== "fabric_exec") return [];
+  const message = raw.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return [];
+  const nested = readFabricProjectionTrace((message as Record<string, unknown>).details);
+  if (!nested || nested.source !== "trace" || base.entryId === null) return [];
+  return nested.operations.map((operation) => {
+    const normalized = boundedTraceOperation(base.entryId!, operation);
+    const filesTouched = traceFilesTouched(normalized.ref, normalized.tool, normalized.args);
+    const text = `Fabric operation ${normalized.ref}\n${JSON.stringify(normalized)}`;
+    return {
+      sessionFile: base.sessionFile,
+      sessionId: base.sessionId,
+      entryId: normalized.address,
+      parentId: base.parentId,
+      type: "fabric_operation",
+      role: "fabricOperation",
+      toolName: normalized.tool,
+      text,
+      timestamp: base.timestamp,
+      isError: normalized.outcome !== "succeeded",
+      truncated: false,
+      parentEntryId: base.entryId,
+      operationAddress: normalized.address,
+      ref: normalized.ref,
+      ...(normalized.provider ? { provider: normalized.provider } : {}),
+      ...(normalized.action ? { action: normalized.action } : {}),
+      outcome: normalized.outcome,
+      operation: normalized,
+      ...(filesTouched.length > 0 ? { filesTouched } : {}),
+    };
+  });
+};
+
 /**
  * Extract searchable text from a parsed JSONL entry, structurally — from the
  * typed message content arrays, tool-call name + args, tool-result content,
@@ -147,11 +242,11 @@ export const extractFullText = (raw: Record<string, unknown>): string => {
       return customType ? `[${customType}] ${body}` : body;
     }
     if (role === "compactionSummary") return `compaction: ${asString(message.summary)}`;
-    if (role === "branchSummary") return `branchSummary: ${asString(message.summary)}`;
+    if (role === "branchSummary") return "";
     return "";
   }
   if (type === "compaction") return `compaction: ${asString(raw.summary)}`;
-  if (type === "branch_summary") return `branchSummary: ${asString(raw.summary)}`;
+  if (type === "branch_summary") return "";
   if (type === "custom_message") {
     let body = "";
     if (typeof raw.content === "string") body = raw.content;
@@ -266,10 +361,9 @@ export const normalizeSession = (
     if (!text.trim() && role === null) continue;
     const entryId = typeof raw.id === "string" ? raw.id : null;
     const parentId = typeof raw.parentId === "string" ? raw.parentId : null;
-    entries.push({
+    const base: Omit<NormalizedEntry, "index"> = {
       sessionFile,
       sessionId: sessionId || "",
-      index,
       entryId,
       parentId,
       type,
@@ -280,8 +374,14 @@ export const normalizeSession = (
       isError,
       truncated,
       ...(filesTouched.length > 0 ? { filesTouched } : {}),
-    });
+    };
+    entries.push({ ...base, index });
     index += 1;
+    for (const child of traceChildren(raw, base)) {
+      const bounded = truncate(child.text, maxEntryChars);
+      entries.push({ ...child, index, text: bounded.text, truncated: bounded.truncated });
+      index += 1;
+    }
   }
   return { entries, header };
 };
@@ -321,6 +421,7 @@ export const expandSessionEntry = (
 export interface ExpandSessionSelection {
   indices?: number[];
   entryIds?: string[];
+  operationAddresses?: string[];
   entryRange?: { first: number; last: number };
 }
 
@@ -328,6 +429,15 @@ export interface ExpandedSessionEntry {
   index: number;
   entryId: string | null;
   text: string;
+  parentEntryId?: string | null;
+  operationAddress?: string;
+  toolName?: string | null;
+  ref?: string;
+  provider?: string;
+  action?: string;
+  outcome?: FabricExecutionOutcomeV1;
+  filesTouched?: string[];
+  operation?: NormalizedFabricOperation;
 }
 
 /** Re-read source once and resolve index, stable entry-id, or inclusive range addresses. */
@@ -338,12 +448,27 @@ export const expandSessionEntries = (
   const { entries } = normalizeSession(sessionFile, Number.MAX_SAFE_INTEGER);
   const indices = new Set(selection.indices ?? []);
   const entryIds = new Set(selection.entryIds ?? []);
+  const operationAddresses = new Set(selection.operationAddresses ?? []);
   const range = selection.entryRange;
   return entries
     .filter((entry) =>
       indices.has(entry.index) ||
       (entry.entryId !== null && entryIds.has(entry.entryId)) ||
+      (entry.operationAddress !== undefined && operationAddresses.has(entry.operationAddress)) ||
       (range !== undefined && entry.index >= range.first && entry.index <= range.last),
     )
-    .map((entry) => ({ index: entry.index, entryId: entry.entryId, text: entry.text }));
+    .map((entry) => ({
+      index: entry.index,
+      entryId: entry.entryId,
+      text: entry.text,
+      ...(entry.parentEntryId !== undefined ? { parentEntryId: entry.parentEntryId } : {}),
+      ...(entry.operationAddress ? { operationAddress: entry.operationAddress } : {}),
+      ...(entry.toolName ? { toolName: entry.toolName } : {}),
+      ...(entry.ref ? { ref: entry.ref } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
+      ...(entry.action ? { action: entry.action } : {}),
+      ...(entry.outcome ? { outcome: entry.outcome } : {}),
+      ...(entry.filesTouched ? { filesTouched: entry.filesTouched } : {}),
+      ...(entry.operation ? { operation: entry.operation } : {}),
+    }));
 };

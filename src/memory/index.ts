@@ -7,7 +7,7 @@ import type { NormalizedEntry } from "./normalize.js";
 import { normalizeSession } from "./normalize.js";
 import { compareLexical, lexicalTermCounts, tokenizeLexical } from "./tokenize.js";
 
-export const MEMORY_CACHE_VERSION = 2;
+export const MEMORY_CACHE_VERSION = 3;
 export const DEFAULT_HOT_SESSIONS = 50;
 
 type MemoryTier = "hot" | "cold";

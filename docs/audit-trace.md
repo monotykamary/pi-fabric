@@ -48,4 +48,12 @@ V1 records nested provider calls and the existing ordered workflow phase names. 
 
 ## Reading traces
 
-The package exports `isFabricExecutionTraceV1`, `isFabricExecutionTraceOperationV1`, and `readFabricExecutionTraceV1`. The guards reject malformed envelopes, extra fields, oversized data, and unknown versions. Later consumers should treat `readFabricExecutionTraceV1(value) === undefined` as “no supported trace” and may then use a separate legacy compatibility path; they should not reinterpret unknown versions as V1.
+The package exports `isFabricExecutionTraceV1`, `isFabricExecutionTraceOperationV1`, and `readFabricExecutionTraceV1`. The guards reject malformed envelopes, extra fields, oversized data, and unknown versions.
+
+Compaction and memory read only `toolResult.details.trace` through this guard. Compaction emits phases and operations in sequence order with stable `entryId/subordinal` addresses, and memory emits one normalized child per operation with address `<outer-entry-id>/<sequence>`. Neither consumer parses `fabric_exec` source, outer output, operation results, or rendered audit prose to recover calls, files, or failures.
+
+A present but invalid/unknown `trace` blocks legacy reinterpretation. Only when the `trace` field is absent may compaction use its separate strict `details.audits` adapter; that adapter accepts typed `ref`, JSON `args`, boolean `success`, and optional string `error` fields and ignores audit `result`/rendering. Memory indexes trace operations only.
+
+Trace outcomes and `operation.error` are authoritative for nested failures. A later success resolves compaction state only for the exact same action/path, action/command, or generic ref/arguments identity. Write activity is labelled Written unless a typed result explicitly proves creation.
+
+Valid trace-derived facts may also be persisted in bounded Fabric branch-summary V1 details. Later compaction guards and consumes those typed details from the active branch path; branch-summary prose and sibling branch entries are never semantic input.

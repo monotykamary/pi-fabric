@@ -1,9 +1,12 @@
 import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
+import { readFabricProjectionTrace, type FabricProjectionSource } from "./trace-events.js";
+import { readFabricBranchSummaryDetailsV1 } from "./branch-details.js";
 
 // A purely structural, typed view of one session window. Every event carries
 // the 1-based `index` it occupied in the normalized stream (stable, used by the
-// brief-transcript `(#N)` references) and the `entryId` of the SessionEntry it
-// came from (used by the footer's recall range). Normalization extracts ONLY
+// brief-transcript `(#N)` references), a stable fact `entryId`, and the actual
+// `sourceEntryId` that carried it. Normalization extracts ONLY
 // typed structure — roles, tool names, JSON arguments, isError flags, bash
 // commands and exit codes. It never inspects prose. See docs/compaction.md
 // principle 2.
@@ -11,6 +14,7 @@ import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-codin
 interface EventBase {
   index: number;
   entryId: string;
+  sourceEntryId: string;
 }
 
 interface UserEvent extends EventBase {
@@ -52,13 +56,37 @@ interface BashEvent extends EventBase {
   output: string;
 }
 
+interface FabricPhaseEvent extends EventBase {
+  kind: "fabricPhase";
+  subordinal: string;
+  address: string;
+  phase: string;
+}
+
+interface FabricOperationEvent extends EventBase {
+  kind: "fabricOperation";
+  subordinal: string;
+  address: string;
+  ref: string;
+  provider?: string;
+  action?: string;
+  tool: string;
+  args: Record<string, FabricTraceJsonValue>;
+  outcome: FabricExecutionOutcomeV1;
+  error?: string;
+  result?: FabricTraceJsonValue;
+  source: FabricProjectionSource | "branch";
+}
+
 export type CompactionEvent =
   | UserEvent
   | AssistantTextEvent
   | ThinkingEvent
   | ToolCallEvent
   | ToolResultEvent
-  | BashEvent;
+  | BashEvent
+  | FabricPhaseEvent
+  | FabricOperationEvent;
 
 const isMessageEntry = (entry: SessionEntry): entry is Extract<SessionEntry, { type: "message" }> =>
   entry.type === "message";
@@ -103,7 +131,47 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
     events.push({ ...event, index } as CompactionEvent);
   };
 
+  const pushBranchFacts = (entry: SessionEntry & { details?: unknown }): void => {
+    const details = readFabricBranchSummaryDetailsV1(entry.details);
+    if (!details) return;
+    for (const fact of details.facts) {
+      if (fact.kind === "user") {
+        push({ kind: "user", entryId: fact.entryId, sourceEntryId: entry.id, text: fact.text });
+      } else if (fact.kind === "phase") {
+        push({
+          kind: "fabricPhase",
+          entryId: fact.entryId,
+          sourceEntryId: entry.id,
+          subordinal: fact.subordinal,
+          address: fact.address,
+          phase: fact.phase,
+        });
+      } else {
+        push({
+          kind: "fabricOperation",
+          entryId: fact.entryId,
+          sourceEntryId: entry.id,
+          subordinal: fact.subordinal,
+          address: fact.address,
+          ref: fact.ref,
+          ...(fact.provider ? { provider: fact.provider } : {}),
+          ...(fact.action ? { action: fact.action } : {}),
+          tool: fact.tool,
+          args: fact.args,
+          outcome: fact.outcome,
+          ...(fact.error !== undefined ? { error: fact.error } : {}),
+          ...(fact.result !== undefined ? { result: fact.result } : {}),
+          source: "branch",
+        });
+      }
+    }
+  };
+
   for (const entry of entries) {
+    if (entry.type === "branch_summary") {
+      pushBranchFacts(entry as SessionEntry & { details?: unknown });
+      continue;
+    }
     if (!isMessageEntry(entry)) continue;
     const message = entry.message as SessionMessageEntry["message"];
     if (!message || typeof message !== "object") continue;
@@ -111,7 +179,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
     const entryId = entry.id;
 
     if (role === "user") {
-      push({ kind: "user", entryId, text: textOfContent((message as { content: unknown }).content) });
+      push({ kind: "user", entryId, sourceEntryId: entryId, text: textOfContent((message as { content: unknown }).content) });
       continue;
     }
 
@@ -121,13 +189,13 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       for (const part of content) {
         if (!part || typeof part !== "object" || !("type" in part)) continue;
         if (part.type === "text" && typeof part.text === "string") {
-          push({ kind: "assistantText", entryId, text: part.text });
+          push({ kind: "assistantText", entryId, sourceEntryId: entryId, text: part.text });
         } else if (part.type === "thinking" && typeof part.thinking === "string") {
-          push({ kind: "thinking", entryId, text: part.thinking });
+          push({ kind: "thinking", entryId, sourceEntryId: entryId, text: part.thinking });
         } else if (part.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") {
           const args = (part.arguments ?? {}) as Record<string, unknown>;
           calls.set(part.id, { name: part.name, args });
-          push({ kind: "toolCall", entryId, toolCallId: part.id, name: part.name, args });
+          push({ kind: "toolCall", entryId, sourceEntryId: entryId, toolCallId: part.id, name: part.name, args });
         }
       }
       continue;
@@ -139,6 +207,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
         toolName?: string;
         isError?: boolean;
         content?: unknown;
+        details?: unknown;
       };
       const toolCallId = typeof toolResult.toolCallId === "string" ? toolResult.toolCallId : "";
       const toolName = typeof toolResult.toolName === "string" ? toolResult.toolName : "";
@@ -153,6 +222,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
         push({
           kind: "bash",
           entryId,
+          sourceEntryId: entryId,
           toolCallId,
           command,
           isError,
@@ -160,7 +230,42 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
           output: text,
         });
       } else {
-        push({ kind: "toolResult", entryId, toolCallId, toolName, isError, text });
+        push({ kind: "toolResult", entryId, sourceEntryId: entryId, toolCallId, toolName, isError, text });
+      }
+      if (toolName === "fabric_exec") {
+        const nested = readFabricProjectionTrace(toolResult.details);
+        if (nested) {
+          for (let phaseIndex = 0; phaseIndex < nested.phases.length; phaseIndex++) {
+            const subordinal = `phase:${phaseIndex}`;
+            push({
+              kind: "fabricPhase",
+              entryId,
+              sourceEntryId: entryId,
+              subordinal,
+              address: `${entryId}/${subordinal}`,
+              phase: nested.phases[phaseIndex]!,
+            });
+          }
+          for (const operation of nested.operations) {
+            const subordinal = String(operation.sequence);
+            push({
+              kind: "fabricOperation",
+              entryId,
+              sourceEntryId: entryId,
+              subordinal,
+              address: `${entryId}/${subordinal}`,
+              ref: operation.ref,
+              ...(operation.provider ? { provider: operation.provider } : {}),
+              ...(operation.action ? { action: operation.action } : {}),
+              tool: operation.tool,
+              args: operation.args,
+              outcome: operation.outcome,
+              ...(operation.error !== undefined ? { error: operation.error } : {}),
+              ...(operation.result !== undefined ? { result: operation.result } : {}),
+              source: operation.source,
+            });
+          }
+        }
       }
       continue;
     }
@@ -175,6 +280,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       push({
         kind: "bash",
         entryId,
+        sourceEntryId: entryId,
         toolCallId: "",
         command: typeof bash.command === "string" ? bash.command : "",
         isError: exitCode !== null && exitCode !== 0,

@@ -63,13 +63,14 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "expand",
     description:
-      "Re-read full, untruncated text by entry indices, stable entry ids, or an inclusive entry range.",
+      "Re-read full text or a bounded structured Fabric operation by index, entry id, operation address, or inclusive range.",
     inputSchema: {
       type: "object",
       properties: {
         session: { type: "string", description: "Session file path or id." },
         indices: { type: "array", items: { type: "number", minimum: 0 } },
         entryIds: { type: "array", items: { type: "string" } },
+        operationAddresses: { type: "array", items: { type: "string" } },
         entryRange: {
           type: "object",
           properties: {
@@ -301,6 +302,11 @@ export class MemoryProvider implements FabricProvider {
           (entryId): entryId is string => typeof entryId === "string" && entryId.length > 0,
         )
       : [];
+    const operationAddresses = Array.isArray(args.operationAddresses)
+      ? args.operationAddresses.filter(
+          (address): address is string => typeof address === "string" && address.length > 0,
+        )
+      : [];
     const rawRange = args.entryRange;
     const rangeRecord = rawRange && typeof rawRange === "object" && !Array.isArray(rawRange)
       ? rawRange as Record<string, unknown>
@@ -317,6 +323,7 @@ export class MemoryProvider implements FabricProvider {
     if (
       indices.length === 0 &&
       entryIds.length === 0 &&
+      operationAddresses.length === 0 &&
       (first === undefined || last === undefined)
     ) {
       return { session, expanded: [] };
@@ -329,13 +336,20 @@ export class MemoryProvider implements FabricProvider {
     const selection: {
       indices?: number[];
       entryIds?: string[];
+      operationAddresses?: string[];
       entryRange?: { first: number; last: number };
     } = {};
     if (indices.length > 0) selection.indices = indices;
     if (entryIds.length > 0) selection.entryIds = entryIds;
+    if (operationAddresses.length > 0) selection.operationAddresses = operationAddresses;
     if (first !== undefined && last !== undefined) selection.entryRange = { first, last };
     const expanded = expandSessionEntries(file, selection);
-    if (indices.length > 0 && entryIds.length === 0 && selection.entryRange === undefined) {
+    if (
+      indices.length > 0
+      && entryIds.length === 0
+      && operationAddresses.length === 0
+      && selection.entryRange === undefined
+    ) {
       const byIndex = new Map(expanded.map((entry) => [entry.index, entry]));
       return {
         session: file,

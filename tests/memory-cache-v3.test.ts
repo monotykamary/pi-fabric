@@ -27,7 +27,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (name: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v2-${name}-`));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v3-${name}-`));
   temporaryDirectories.push(directory);
   return directory;
 };
@@ -35,8 +35,8 @@ const temporaryDirectory = (name: string): string => {
 const invocationContext = (cwd: string): FabricInvocationContext => ({
   cwd,
   signal: undefined,
-  parentToolCallId: "memory-v2",
-  nestedToolCallId: "memory-v2-nested",
+  parentToolCallId: "memory-v3",
+  nestedToolCallId: "memory-v3-nested",
   extensionContext: {} as FabricInvocationContext["extensionContext"],
   update() {},
 });
@@ -52,7 +52,7 @@ const message = (id: string, text: string, offset = 0) =>
 const directorySize = (directory: string): number =>
   fs.readdirSync(directory).reduce((total, name) => total + fs.statSync(path.join(directory, name)).size, 0);
 
-describe("memory cache V2", () => {
+describe("memory cache V3", () => {
   let agentDir: string;
   let indexDir: string;
   let cwd: string;
@@ -60,7 +60,7 @@ describe("memory cache V2", () => {
   beforeEach(() => {
     agentDir = temporaryDirectory("agent");
     indexDir = temporaryDirectory("index");
-    cwd = "/work/cache-v2";
+    cwd = "/work/cache-v3";
   });
 
   afterEach(() => {
@@ -187,7 +187,7 @@ describe("memory cache V2", () => {
     const v1 = { ...first, cacheVersion: 1, vocabulary: undefined, addresses: undefined };
     fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v1), "utf8");
     const rebuilt = loadDigest(ref, options);
-    expect(rebuilt.cacheVersion).toBe(2);
+    expect(rebuilt.cacheVersion).toBe(MEMORY_CACHE_VERSION);
     expect(rebuilt.vocabulary.map(([term]) => term)).toContain("originalword");
 
     const shard = loadShard(ref, { ...options, hotSessions: 1 });
@@ -197,7 +197,7 @@ describe("memory cache V2", () => {
       "utf8",
     );
     const rebuiltShard = loadShard(ref, { ...options, hotSessions: 1 });
-    expect(rebuiltShard.cacheVersion).toBe(2);
+    expect(rebuiltShard.cacheVersion).toBe(MEMORY_CACHE_VERSION);
     expect(rebuiltShard.entries[0]!.text).toBe("originalword");
 
     const original = fs.readFileSync(file, "utf8");

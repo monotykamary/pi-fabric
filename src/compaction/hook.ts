@@ -2,9 +2,11 @@ import type {
   CompactionResult,
   ExtensionAPI,
   SessionBeforeCompactEvent,
+  SessionBeforeTreeEvent,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
+import { compileFabricBranchSummary } from "./branch-summary.js";
 import {
   decodeCompactionInstructions,
   type CompactionInstructionPolicy,
@@ -274,6 +276,8 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
       "transcript",
       "preserve",
     ])
+    && (value.omittedCounts.activity === undefined
+      || (typeof value.omittedCounts.activity === "number" && Number.isFinite(value.omittedCounts.activity)))
     && typeof value.instructionPolicy.mode === "string"
     && instructionModes.has(value.instructionPolicy.mode)
     && typeof value.instructionPolicy.canonicalized === "boolean"
@@ -305,7 +309,7 @@ const cumulativeSource = (
     : branchEntries.length;
   const prefix = branchEntries.slice(0, boundaryIndex >= 0 ? boundaryIndex : branchEntries.length);
   const events = normalizeEntries(prefix);
-  const contentEntryIds = new Set(events.map((event) => event.entryId));
+  const contentEntryIds = new Set(events.map((event) => event.sourceEntryId));
   const entries = prefix.filter((entry) => contentEntryIds.has(entry.id));
   return {
     entries,
@@ -404,6 +408,7 @@ const SECTION_HEADERS: { key: keyof Sections; header: string }[] = [
   { key: "goal", header: "[Session Goal]" },
   { key: "files", header: "[Files And Changes]" },
   { key: "commits", header: "[Commits]" },
+  { key: "activity", header: "[Fabric Activity]" },
   { key: "outstanding", header: "[Outstanding Context]" },
   { key: "earlierTurns", header: "[Earlier Turns]" },
   { key: "status", header: "[Current Status]" },
@@ -433,5 +438,18 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     }
     (event as SessionBeforeCompactEvent & { _fabricCompaction?: boolean })._fabricCompaction = true;
     return { compaction: result.compaction };
+  });
+
+  pi.on("session_before_tree", (event: SessionBeforeTreeEvent) => {
+    if (options.getEngine() !== "fabric") return;
+    const { preparation } = event;
+    if (!preparation.userWantsSummary) return;
+    const compiled = compileFabricBranchSummary(
+      preparation.entriesToSummarize,
+      preparation.customInstructions,
+      options.enrichers,
+    );
+    if (!compiled) return;
+    return { summary: compiled };
   });
 };

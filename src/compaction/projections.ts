@@ -12,6 +12,7 @@ export interface Sections {
   goal: string[];
   files: string[];
   commits: string[];
+  activity: string[];
   outstanding: string[];
   earlierTurns: string[];
   status: string[];
@@ -33,6 +34,7 @@ const MAX_LATER_GOALS = 24;
 export const MAX_FILES_PER_KIND = 24;
 export const MAX_COMMITS = 20;
 const MAX_OUTSTANDING = 32;
+const MAX_ACTIVITY = 48;
 export const MAX_UNRESOLVED = 24;
 const MAX_RESOLVED = MAX_OUTSTANDING - MAX_UNRESOLVED;
 export const MAX_EARLIER_TURNS = 32;
@@ -42,6 +44,7 @@ export interface ProjectionOmittedCounts {
   goal: number;
   files: number;
   commits: number;
+  activity: number;
   outstanding: number;
   earlierTurns: number;
   transcript: number;
@@ -70,6 +73,98 @@ const trailingEllipsis = (lines: string[], max: number): string[] => {
 const pathOf = (args: Record<string, unknown>): string | undefined => {
   const value = args.path ?? args.file ?? args.dir;
   return typeof value === "string" && value.trim() ? value : undefined;
+};
+
+interface StructuralOperation {
+  index: number;
+  entryId: string;
+  address: string;
+  tool: string;
+  ref: string;
+  provider?: string;
+  action?: string;
+  args: Record<string, unknown>;
+  outcome: "succeeded" | "failed" | "aborted" | "timed_out";
+  error?: string;
+  result?: unknown;
+  output?: string;
+  nested: boolean;
+}
+
+const collectOperations = (events: CompactionEvent[]): StructuralOperation[] => {
+  const calls = new Map<string, ToolCallEvent>();
+  for (const event of events) {
+    if (event.kind === "toolCall") calls.set(event.toolCallId, event);
+  }
+  const operations: StructuralOperation[] = [];
+  for (const event of events) {
+    if (event.kind === "fabricOperation") {
+      operations.push({
+        index: event.index,
+        entryId: event.entryId,
+        address: event.address,
+        tool: event.tool,
+        ref: event.ref,
+        ...(event.provider ? { provider: event.provider } : {}),
+        ...(event.action ? { action: event.action } : {}),
+        args: event.args,
+        outcome: event.outcome,
+        ...(event.error !== undefined ? { error: event.error } : {}),
+        ...(event.result !== undefined ? { result: event.result } : {}),
+        nested: true,
+      });
+      continue;
+    }
+    if (event.kind === "toolResult" && event.toolName !== "bash") {
+      const call = event.toolCallId ? calls.get(event.toolCallId) : undefined;
+      if (!call) continue;
+      operations.push({
+        index: event.index,
+        entryId: call.entryId,
+        address: call.entryId,
+        tool: call.name,
+        ref: call.name,
+        args: call.args,
+        outcome: event.isError ? "failed" : "succeeded",
+        ...(event.isError && event.text ? { error: event.text } : {}),
+        ...(!event.isError ? { output: event.text } : {}),
+        nested: false,
+      });
+      continue;
+    }
+    if (event.kind === "bash") {
+      operations.push({
+        index: event.index,
+        entryId: event.entryId,
+        address: event.entryId,
+        tool: "bash",
+        ref: "bash",
+        args: { command: event.command },
+        outcome: event.isError ? "failed" : "succeeded",
+        ...(event.isError && event.output ? { error: event.output } : {}),
+        ...(!event.isError ? { output: event.output } : {}),
+        nested: false,
+      });
+    }
+  }
+  return operations.sort((left, right) => left.index - right.index);
+};
+
+const isFileOperation = (operation: StructuralOperation): boolean =>
+  FILE_TOOLS.has(operation.tool)
+  && (operation.ref === operation.tool || operation.ref === `pi.${operation.tool}`);
+
+const isBashOperation = (operation: StructuralOperation): boolean =>
+  operation.tool === "bash"
+  && (operation.ref === "bash" || operation.ref === "pi.bash");
+
+const resultProvesCreation = (result: unknown): boolean => {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const record = result as Record<string, unknown>;
+  if (record.created === true) return true;
+  const details = record.details;
+  return Boolean(details && typeof details === "object" && !Array.isArray(details)
+    && (details as Record<string, unknown>).created === true);
 };
 
 // Longest common path prefix (by segment) across a set of paths, returned with
@@ -133,34 +228,28 @@ const projectGoal = (events: CompactionEvent[]): ProjectedSection => {
   return { lines, omitted: sampled.omitted };
 };
 
-// [Files And Changes] — addresses only, never content. A path is recorded when
-// its tool call succeeded (isError=false on the paired result). edit ⇒
-// Modified, write ⇒ Created, read/grep/find/ls ⇒ Read. A path that was modified
-// or created is dropped from Read to avoid redundant weaker entries. Paths are
-// trimmed to their common root.
+// [Files And Changes] uses only successful structural operations. Writes are
+// labelled Written unless a typed result explicitly proves creation.
 interface FileAddress {
   path: string;
   entryId: string;
 }
 
 const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
-  const results = new Map<string, boolean>();
-  for (const e of events) {
-    if (e.kind === "toolResult") results.set(e.toolCallId, e.isError);
-  }
-
   const read = new Map<string, FileAddress>();
   const modified = new Map<string, FileAddress>();
+  const written = new Map<string, FileAddress>();
   const created = new Map<string, FileAddress>();
 
-  for (const e of events) {
-    if (e.kind !== "toolCall" || !FILE_TOOLS.has(e.name)) continue;
-    const path = pathOf(e.args);
-    if (!path || results.get(e.toolCallId) !== false) continue;
-    const address = { path, entryId: e.entryId };
-    if (e.name === "write") {
-      if (!created.has(path)) created.set(path, address);
-    } else if (e.name === "edit") {
+  for (const operation of collectOperations(events)) {
+    if (!isFileOperation(operation) || operation.outcome !== "succeeded") continue;
+    const path = pathOf(operation.args);
+    if (!path) continue;
+    const address = { path, entryId: operation.address };
+    if (operation.tool === "write") {
+      const target = resultProvesCreation(operation.result) ? created : written;
+      if (!target.has(path)) target.set(path, address);
+    } else if (operation.tool === "edit") {
       if (!modified.has(path)) modified.set(path, address);
     } else if (!read.has(path)) {
       read.set(path, address);
@@ -169,6 +258,7 @@ const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
 
   const modifiedSet = new Set<string>();
   for (const path of modified.keys()) modifiedSet.add(path);
+  for (const path of written.keys()) modifiedSet.add(path);
   for (const path of created.keys()) modifiedSet.add(path);
   function* filteredRead(): Generator<FileAddress> {
     for (const item of read.values()) {
@@ -176,9 +266,15 @@ const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
     }
   }
   const sampledCreated = sampleAddressedFrom(created.values(), MAX_FILES_PER_KIND);
+  const sampledWritten = sampleAddressedFrom(written.values(), MAX_FILES_PER_KIND);
   const sampledModified = sampleAddressedFrom(modified.values(), MAX_FILES_PER_KIND);
   const sampledRead = sampleAddressedFrom(filteredRead(), MAX_FILES_PER_KIND);
-  const allSampled = [...sampledCreated.values, ...sampledModified.values, ...sampledRead.values];
+  const allSampled = [
+    ...sampledCreated.values,
+    ...sampledWritten.values,
+    ...sampledModified.values,
+    ...sampledRead.values,
+  ];
   if (allSampled.length === 0) return { lines: [], omitted: 0 };
   const root = commonRoot(allSampled.map((item) => item.path));
   const lines: string[] = [];
@@ -207,6 +303,7 @@ const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
   };
 
   appendKind("Created:", sampledCreated);
+  appendKind("Written:", sampledWritten);
   appendKind("Modified:", sampledModified);
   appendKind("Read:", sampledRead);
   return { lines, omitted };
@@ -216,11 +313,13 @@ const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
 // with the first line of their output (the commit summary the shell prints).
 const projectCommits = (events: CompactionEvent[]): ProjectedSection => {
   const commits: { entryId: string; line: string }[] = [];
-  for (const e of events) {
-    if (e.kind !== "bash" || !e.command.trimStart().startsWith("git commit")) continue;
-    const summary = firstLine(e.output).trim();
-    const line = summary || truncate(firstLine(e.command), MAX_LINE);
-    if (line) commits.push({ entryId: e.entryId, line });
+  for (const operation of collectOperations(events)) {
+    if (!isBashOperation(operation)) continue;
+    const command = typeof operation.args.command === "string" ? operation.args.command : "";
+    if (!command.trimStart().startsWith("git commit")) continue;
+    const summary = operation.nested ? "" : firstLine(operation.output ?? "").trim();
+    const line = summary || truncate(firstLine(command), MAX_LINE);
+    if (line) commits.push({ entryId: operation.address, line });
   }
   const sampled = sampleAddressed(commits, MAX_COMMITS);
   const lines: string[] = [];
@@ -235,6 +334,48 @@ const projectCommits = (events: CompactionEvent[]): ProjectedSection => {
     }
     const commit = sampled.values[index]!;
     lines.push(`- ${commit.line} [entry ${commit.entryId}]`);
+  }
+  return { lines, omitted: sampled.omitted };
+};
+
+interface ActivityItem {
+  entryId: string;
+  line: string;
+}
+
+const projectActivity = (events: CompactionEvent[]): ProjectedSection => {
+  const items: ActivityItem[] = [];
+  for (const event of events) {
+    if (event.kind === "fabricPhase") {
+      items.push({ entryId: event.address, line: `- Phase: ${truncate(event.phase, MAX_LINE)}` });
+    }
+  }
+  for (const operation of collectOperations(events)) {
+    if (!operation.nested || isFileOperation(operation)) continue;
+    const primary = isBashOperation(operation)
+      ? operation.args.command
+      : operation.args.id ?? operation.args.name ?? operation.args.query ?? operation.args.action;
+    const detail = typeof primary === "string" && primary.trim()
+      ? ` (${truncate(firstLine(primary), 72)})`
+      : "";
+    items.push({
+      entryId: operation.address,
+      line: `- ${operation.ref}${detail} → ${operation.outcome}`,
+    });
+  }
+  const sampled = sampleAddressed(items, MAX_ACTIVITY);
+  const lines: string[] = [];
+  for (let index = 0; index < sampled.values.length; index++) {
+    if (sampled.omitted > 0 && index === sampled.splitIndex) {
+      lines.push(omissionLine(
+        sampled.omitted,
+        sampled.omittedFirstEntryId,
+        sampled.omittedLastEntryId,
+        "Fabric activity records",
+      ));
+    }
+    const item = sampled.values[index]!;
+    lines.push(`${item.line} [entry ${item.entryId}]`);
   }
   return { lines, omitted: sampled.omitted };
 };
@@ -256,65 +397,46 @@ const tagFor = (toolName: string, isUserBash: boolean): SourceTag => {
   return "WARN";
 };
 
-// [Outstanding Context] — the error state machine (principle 3). An error is
-// open until a later event resolves it: a file-path error is resolved by a
-// later successful operation on the same path; a bash error is resolved by a
-// later successful run of the same command. Unresolved errors are listed
-// first; resolved ones are tagged [RESOLVED] so the agent can see they were
-// addressed. Open and resolved collections are independently sampled; omitted
-// records retain count and entry-id range addresses.
+// [Outstanding Context] is keyed only by typed operation identity. A later
+// success resolves a failure only when action+path, action+command, or the
+// generic ref+arguments identity is exactly equal.
 const projectOutstandingWithMetadata = (events: CompactionEvent[]): ProjectedSection => {
-  const callById = new Map<string, ToolCallEvent>();
-  for (const e of events) {
-    if (e.kind === "toolCall") callById.set(e.toolCallId, e);
-  }
-  const resultError = new Map<string, boolean>();
-  for (const e of events) {
-    if (e.kind === "toolResult") resultError.set(e.toolCallId, e.isError);
-  }
-
-  // Successful file operations by path (index, path) for resolution lookup.
-  const successByPath: { index: number; path: string }[] = [];
-  for (const e of events) {
-    if (e.kind !== "toolCall" || !FILE_TOOLS.has(e.name)) continue;
-    if (resultError.get(e.toolCallId) !== false) continue;
-    const path = pathOf(e.args);
-    if (path) successByPath.push({ index: e.index, path });
-  }
-
-  // Successful bash commands by command string for resolution lookup.
-  const successBash: { index: number; command: string }[] = [];
-  for (const e of events) {
-    if (e.kind === "bash" && !e.isError && e.command.trim()) {
-      successBash.push({ index: e.index, command: e.command });
-    }
-  }
-
+  const operations = collectOperations(events);
+  const keyOf = (operation: StructuralOperation): string => {
+    const path = isFileOperation(operation) ? pathOf(operation.args) : undefined;
+    if (path) return `file\0${operation.tool}\0${path}`;
+    const command = isBashOperation(operation) && typeof operation.args.command === "string"
+      ? operation.args.command
+      : undefined;
+    if (command !== undefined) return `bash\0${operation.tool}\0${command}`;
+    return `generic\0${operation.ref}\0${JSON.stringify(operation.args)}`;
+  };
+  const successes = operations
+    .filter((operation) => operation.outcome === "succeeded")
+    .map((operation) => ({ index: operation.index, key: keyOf(operation) }));
   const items: ErrorItem[] = [];
 
-  for (const e of events) {
-    if (e.kind === "toolResult" && e.isError) {
-      const call = e.toolCallId ? callById.get(e.toolCallId) : undefined;
-      const path = call ? pathOf(call.args) : undefined;
-      const tag = tagFor(e.toolName, false);
-      const detail = path
-        ? `${e.toolName} ${path}: ${truncate(firstLine(e.text), MAX_LINE)}`
-        : `${e.toolName}: ${truncate(firstLine(e.text), MAX_LINE)}`;
-      let resolved = false;
-      if (path) {
-        resolved = successByPath.some((s) => s.path === path && s.index > e.index);
-      }
-      items.push({ index: e.index, entryId: e.entryId, tag, description: detail, resolved });
-    }
-    if (e.kind === "bash" && e.isError) {
-      const isUserBash = e.toolCallId === "";
-      const tag = tagFor("bash", isUserBash);
-      const detail = `bash: ${truncate(firstLine(e.command), MAX_LINE)}`;
-      const resolved = e.command.trim()
-        ? successBash.some((s) => s.command === e.command && s.index > e.index)
-        : false;
-      items.push({ index: e.index, entryId: e.entryId, tag, description: detail, resolved });
-    }
+  for (const operation of operations) {
+    if (operation.outcome === "succeeded") continue;
+    const path = isFileOperation(operation) ? pathOf(operation.args) : undefined;
+    const command = isBashOperation(operation) && typeof operation.args.command === "string"
+      ? operation.args.command
+      : undefined;
+    const subject = path
+      ? `${operation.ref} ${path}`
+      : command !== undefined
+        ? `${operation.ref}: ${truncate(firstLine(command), MAX_LINE)}`
+        : operation.ref;
+    const error = operation.error ? `: ${truncate(firstLine(operation.error), MAX_LINE)}` : `: ${operation.outcome}`;
+    const key = keyOf(operation);
+    const resolved = successes.some((success) => success.index > operation.index && success.key === key);
+    items.push({
+      index: operation.index,
+      entryId: operation.address,
+      tag: tagFor(operation.tool, false),
+      description: `${subject}${error}`,
+      resolved,
+    });
   }
 
   if (items.length === 0) return { lines: [], omitted: 0 };
@@ -377,7 +499,13 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
         continue;
       }
       if (!currentUser) continue;
-      const name = event.kind === "toolCall" ? event.name : event.kind === "bash" ? "bash" : undefined;
+      const name = event.kind === "toolCall"
+        ? (event.name === "fabric_exec" ? undefined : event.name)
+        : event.kind === "bash"
+          ? "bash"
+          : event.kind === "fabricOperation"
+            ? event.tool
+            : undefined;
       if (!name) continue;
       if (!counts.has(name)) order.push(name);
       counts.set(name, (counts.get(name) ?? 0) + 1);
@@ -410,13 +538,13 @@ const projectStatus = (events: CompactionEvent[]): string[] => {
   if (lastUser) {
     lines.push(`Last request: ${truncate(firstLine(lastUser.text), MAX_STATUS_LINE)}`);
   }
-  let lastModify: ToolCallEvent | undefined;
-  for (const e of events) {
-    if (e.kind === "toolCall" && MODIFYING_TOOLS.has(e.name)) lastModify = e;
+  let lastModify: { tool: string; args: Record<string, unknown> } | undefined;
+  for (const operation of collectOperations(events)) {
+    if (isFileOperation(operation) && MODIFYING_TOOLS.has(operation.tool)) lastModify = operation;
   }
   if (lastModify) {
     const path = pathOf(lastModify.args) ?? "";
-    lines.push(`Last change: ${lastModify.name}${path ? ` ${path}` : ""}`);
+    lines.push(`Last change: ${lastModify.tool}${path ? ` ${path}` : ""}`);
   }
   const lastAssistant = [...events]
     .reverse()
@@ -429,6 +557,7 @@ const projectStatus = (events: CompactionEvent[]): string[] => {
 };
 
 const summarizeArgs = (name: string, args: Record<string, unknown>): string => {
+  if (name === "fabric_exec") return "structured execution";
   const primary =
     name === "bash" ? args.command ?? args.cmd ?? args.shell
     : name === "grep" ? args.pattern ?? args.query ?? args.regex
@@ -474,6 +603,10 @@ const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
     } else if (e.kind === "bash") {
       const status = e.isError ? "error" : "ok";
       lines.push(`${ref} bash(${truncate(firstLine(e.command), MAX_TRANSCRIPT_CMD)}) → ${status}`);
+    } else if (e.kind === "fabricPhase") {
+      lines.push(`${ref} phase(${truncate(e.phase, MAX_TRANSCRIPT_CMD)}) [${e.address}]`);
+    } else if (e.kind === "fabricOperation") {
+      lines.push(`${ref} ${e.ref}(${summarizeArgs(e.tool, e.args)}) → ${e.outcome} [${e.address}]`);
     }
   }
   return { lines, omitted };
@@ -483,6 +616,7 @@ export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult
   const goal = projectGoal(events);
   const files = projectFiles(events);
   const commits = projectCommits(events);
+  const activity = projectActivity(events);
   const outstanding = projectOutstandingWithMetadata(events);
   const earlierTurns = projectEarlierTurns(events);
   const transcript = projectTranscript(events);
@@ -491,6 +625,7 @@ export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult
       goal: goal.lines,
       files: files.lines,
       commits: commits.lines,
+      activity: activity.lines,
       outstanding: outstanding.lines,
       earlierTurns: earlierTurns.lines,
       status: projectStatus(events),
@@ -500,6 +635,7 @@ export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult
       goal: goal.omitted,
       files: files.omitted,
       commits: commits.omitted,
+      activity: activity.omitted,
       outstanding: outstanding.omitted,
       earlierTurns: earlierTurns.omitted,
       transcript: transcript.omitted,

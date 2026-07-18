@@ -5,6 +5,7 @@ const SECTION_ORDER: { key: keyof Sections; header: string; maxBytes: number }[]
   { key: "goal", header: "[Session Goal]", maxBytes: 4096 },
   { key: "files", header: "[Files And Changes]", maxBytes: 4608 },
   { key: "commits", header: "[Commits]", maxBytes: 2048 },
+  { key: "activity", header: "[Fabric Activity]", maxBytes: 2048 },
   { key: "outstanding", header: "[Outstanding Context]", maxBytes: 4608 },
   { key: "earlierTurns", header: "[Earlier Turns]", maxBytes: 3072 },
   { key: "status", header: "[Current Status]", maxBytes: 2048 },
@@ -21,6 +22,7 @@ export interface RenderOptions {
   lastEntryId: string;
   lastTimestamp: string;
   requestLines?: string[];
+  summaryKind?: "compaction" | "branch";
 }
 
 const POINTER_LINE =
@@ -70,10 +72,10 @@ export const renderSummary = (sections: Sections, options: RenderOptions): strin
   const range = options.firstEntryId || options.lastEntryId
     ? `${options.firstEntryId || "(start)"} → ${options.lastEntryId || "(end)"}`
     : "(no entries)";
-  blocks.push(boundedBlock("---", [
-    `[compacted ${timestamp}; cumulative source entries ${range}]`,
-    POINTER_LINE,
-  ], FOOTER_MAX_BYTES));
+  const footer = options.summaryKind === "branch"
+    ? `[branch summarized ${timestamp}; structural source entries ${range}]`
+    : `[compacted ${timestamp}; cumulative source entries ${range}]`;
+  blocks.push(boundedBlock("---", [footer, POINTER_LINE], FOOTER_MAX_BYTES));
 
   const summary = `${blocks.join("\n\n")}\n`;
   if (utf8Bytes(summary) <= MAX_SUMMARY_BYTES) return summary;

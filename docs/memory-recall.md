@@ -8,16 +8,17 @@ preferences, errors, or other prose concepts with regexes. Roles, tool names,
 timestamps, entry IDs, tool errors, and tool argument paths come from typed
 session fields.
 
-## Cache V2
+## Cache V3
 
-Cache records are JSON with an explicit `cacheVersion: 2` and `kind`. A V1 or
-otherwise invalid record is rejected and rebuilt from its source JSONL; V1 data
-is never interpreted as V2 or migrated.
+Cache records are JSON with an explicit `cacheVersion: 3` and `kind`. Older or
+otherwise invalid records are rejected and rebuilt from source JSONL; old data
+is never interpreted as V3 or migrated. V3 accounts for independently indexed
+Fabric trace-operation child records.
 
 ```ts
 // Hot shard
 {
-  cacheVersion: 2,
+  cacheVersion: 3,
   kind: "shard",
   sessionFile, sessionId,
   mtime, size, sourceHash,
@@ -26,7 +27,7 @@ is never interpreted as V2 or migrated.
 
 // Cold digest
 {
-  cacheVersion: 2,
+  cacheVersion: 3,
   kind: "digest",
   sessionId, file, cwd,
   mtime, size, sourceHash,
@@ -40,8 +41,9 @@ is never interpreted as V2 or migrated.
 
 A cold digest contains no normalized entry text, first-message prose, or full
 transcript. `vocabulary` is an exact lexical address index over the full
-normalized text of every entry before hot-text truncation. `addresses` retains
-only structural metadata needed to resolve hits and apply filters. `terms`
+normalized text of every outer entry and Fabric operation child before hot-text
+truncation. `addresses` retains only structural metadata needed to resolve hits
+and apply filters. `terms`
 remains separately bounded by `memory.digestTerms`; it is not used as the
 truth-coverage gate.
 
@@ -77,7 +79,7 @@ only exact against hydrated/hot entry text.
 
 The `memory.hotSessions` most recently modified sessions are hot and retain
 truncated normalized entries for BM25 and segment display. Older sessions are
-cold and retain only the V2 digest metadata above. A session crossing the hot
+cold and retain only the V3 digest metadata above. A session crossing the hot
 boundary loses its shard after its digest is written. A selected cold session
 never requires retained transcript content: its source JSONL remains the truth.
 
@@ -130,7 +132,10 @@ path lexical order.
   against each complete cold vocabulary token.
 
 `role`, `tool`, `since`, and `until` filters are structural. Cold filtering uses
-the address metadata rather than retained prose.
+the address metadata rather than retained prose. Nested `pi.read` and `pi.bash`
+children have exact `toolName` values `read` and `bash`; provider refs such as
+`agents.run`, `state.get`, and `mesh.query` remain naturally searchable through
+their bounded structured record.
 
 A hot hit is returned as a conversation segment. A cold hit is a session
 pointer containing `matchedEntries`, an inclusive `entryRange`, and up to 50
@@ -161,7 +166,23 @@ memory.expand({ session: "abc", entryIds: ["entry-uuid"] })
 memory.expand({ session: "abc", entryRange: { first: 12, last: 16 } })
 ```
 
-The result contains `{ index, entryId, text }` records in source order.
+The result contains `{ index, entryId, text }` records in source order. Fabric
+operations can also be selected directly by their stable address:
+
+```ts
+memory.expand({ session: "abc", operationAddresses: ["entry-uuid/7"] })
+```
+
+A valid `FabricExecutionTraceV1` on an outer `fabric_exec` result emits one child
+record per operation immediately after the outer normalized entry. Each child
+keeps `parentEntryId`, `operationAddress`, exact `toolName`, `ref`, `provider`,
+`action`, typed `filesTouched`, `outcome`, and a bounded structured `operation`
+object. Expansion re-reads and re-normalizes the source JSONL, then returns that
+persisted representation rather than reconstructing it from output prose.
+Results are dropped first if a child would exceed 96 KiB; identity, arguments,
+outcome, and error remain. Unknown/malformed traces and branch-summary prose are
+not indexed as structured facts. The outer `fabric_exec` conversation entry is
+still searchable as normal conversation history.
 
 ## Configuration
 

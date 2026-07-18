@@ -302,7 +302,7 @@ describe("compaction golden determinism", () => {
     expect(first.compaction.summary).toContain("[Session Goal]");
     expect(first.compaction.summary).toContain("[Files And Changes]");
     expect(first.compaction.summary).toContain("(under src/)");
-    expect(first.compaction.summary).toContain("Created:");
+    expect(first.compaction.summary).toContain("Written:");
     expect(first.compaction.summary).toContain("Modified:");
     // No dynamic "now" timestamp: the footer marker is the last entry's timestamp.
     expect(first.compaction.summary).toContain("[compacted 2024-01-0");
@@ -493,7 +493,7 @@ describe("compaction raw branch truth", () => {
 });
 
 describe("compaction error state machine", () => {
-  it("marks a file error [RESOLVED] when the same path is later edited successfully", () => {
+  it("keeps a file error open when a different action later succeeds on the same path", () => {
     resetIds();
     resetCallIds();
     resetClock();
@@ -509,7 +509,7 @@ describe("compaction error state machine", () => {
     );
     const events = normalizeEntries(session.slice(0, 5));
     const lines = projectOutstanding(events);
-    expect(lines.some((l) => l.includes("read src/x.ts") && l.includes("[WARN]") && l.includes("[RESOLVED]"))).toBe(true);
+    expect(lines.some((l) => l.includes("read src/x.ts") && l.includes("[WARN]") && !l.includes("[RESOLVED]"))).toBe(true);
   });
 
   it("marks a bash error [RESOLVED] when the same command is later re-run OK", () => {
