@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
+import {
+  executionOutcomeFromError,
+  type FabricExecutionTraceOperationHandle,
+  type FabricExecutionTraceRecorder,
+} from "../audit/trace.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationActivityUpdate,
@@ -55,6 +60,8 @@ export interface FabricRegistryInvocationContext extends FabricInvocationContext
   approve(action: ResolvedFabricAction): Promise<void>;
   audits: FabricCallAudit[];
   maxResultChars: number;
+  trace?: FabricExecutionTraceRecorder;
+  traceOperation?: FabricExecutionTraceOperationHandle;
   observeInvocation?(event: FabricRegistryActivityEvent): void;
 }
 
@@ -107,6 +114,12 @@ const failedResultError = (value: unknown): string | undefined => {
   if (status !== "failed" && status !== "stopped" && status !== "timed_out") return undefined;
   const error = typeof record.error === "string" ? record.error.trim() : "";
   return error ? truncateString(error, PREVIEW_RESULT_CHARS) : `Fabric action returned ${status}`;
+};
+
+const failedResultOutcome = (value: unknown): "failed" | "aborted" | "timed_out" => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "failed";
+  const status = (value as Record<string, unknown>).status;
+  return status === "timed_out" ? "timed_out" : status === "stopped" ? "aborted" : "failed";
 };
 
 const boundedResult = (
@@ -254,38 +267,51 @@ export class ActionRegistry {
     args: Record<string, unknown>,
     context: FabricRegistryInvocationContext,
   ): Promise<unknown> {
-    const { provider, actionName } = this.#parseRef(ref);
-    const descriptor = await provider.describe(actionName, context);
-    if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
-    const action = resolveDescriptor(provider, descriptor);
-    const preparedArgs = provider.prepareArguments
-      ? await provider.prepareArguments(actionName, args, context)
-      : args;
-    if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
-      throw new Error(`Argument preparation for ${ref} did not return an object`);
-    }
-    const invalid = validationMessage(action.inputSchema, preparedArgs);
-    if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
-    await context.approve(action);
-
-    const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
-    const audit: FabricCallAudit = {
-      ref,
-      nestedToolCallId,
-      startedAt: Date.now(),
-      tool: action.name,
-      provider: action.provider,
-      args: previewArgs(preparedArgs),
-    };
-    context.audits.push(audit);
-    context.observeInvocation?.({
-      type: "call_start",
-      callId: nestedToolCallId,
-      ref,
-      args: preparedArgs,
-    });
-    context.update(`Calling ${ref}`);
+    const traceOperation = context.traceOperation ?? context.trace?.issueCall(ref, args);
+    let failureStage: "resolve" | "prepare" | "validate" | "approve" | "invoke" = "resolve";
+    let audit: FabricCallAudit | undefined;
     try {
+      const { provider, actionName } = this.#parseRef(ref);
+      const descriptor = await provider.describe(actionName, context);
+      if (!descriptor) throw new Error(`Unknown Fabric action: ${ref}`);
+      const action = resolveDescriptor(provider, descriptor);
+      traceOperation?.resolved(action.provider, action.name);
+
+      failureStage = "prepare";
+      const preparedArgs = provider.prepareArguments
+        ? await provider.prepareArguments(actionName, args, context)
+        : args;
+      if (typeof preparedArgs !== "object" || preparedArgs === null || Array.isArray(preparedArgs)) {
+        throw new Error(`Argument preparation for ${ref} did not return an object`);
+      }
+      traceOperation?.prepared(preparedArgs);
+
+      failureStage = "validate";
+      const invalid = validationMessage(action.inputSchema, preparedArgs);
+      if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
+
+      failureStage = "approve";
+      await context.approve(action);
+
+      failureStage = "invoke";
+      const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;
+      const activeAudit: FabricCallAudit = {
+        ref,
+        nestedToolCallId,
+        startedAt: Date.now(),
+        tool: action.name,
+        provider: action.provider,
+        args: previewArgs(preparedArgs),
+      };
+      audit = activeAudit;
+      context.audits.push(activeAudit);
+      context.observeInvocation?.({
+        type: "call_start",
+        callId: nestedToolCallId,
+        ref,
+        args: preparedArgs,
+      });
+      context.update(`Calling ${ref}`);
       const value = await provider.invoke(actionName, preparedArgs, {
         ...context,
         nestedToolCallId,
@@ -306,18 +332,18 @@ export class ActionRegistry {
           });
         },
         attachMedia(blocks, note) {
-          if (!audit.media) audit.media = [];
-          for (const block of blocks) audit.media.push(block);
-          if (note) audit.mediaNote = note;
+          if (!activeAudit.media) activeAudit.media = [];
+          for (const block of blocks) activeAudit.media.push(block);
+          if (note) activeAudit.mediaNote = note;
         },
       });
       const bounded = boundedResult(value, context.maxResultChars);
       const resultError = failedResultError(value);
-      audit.success = resultError === undefined;
-      if (resultError) audit.error = resultError;
-      audit.resultChars = bounded.chars;
-      audit.resultTruncated = bounded.truncated;
-      audit.result = previewResult(bounded.value);
+      activeAudit.success = resultError === undefined;
+      if (resultError) activeAudit.error = resultError;
+      activeAudit.resultChars = bounded.chars;
+      activeAudit.resultTruncated = bounded.truncated;
+      activeAudit.result = previewResult(bounded.value);
       context.observeInvocation?.({
         type: "call_end",
         callId: nestedToolCallId,
@@ -325,19 +351,28 @@ export class ActionRegistry {
         result: value,
         ...(resultError ? { error: resultError } : {}),
       });
+      if (resultError) {
+        traceOperation?.fail("invoke", resultError, failedResultOutcome(value), bounded.value);
+      } else {
+        traceOperation?.succeed(bounded.value);
+      }
       return bounded.value;
     } catch (error) {
-      audit.success = false;
-      audit.error = error instanceof Error ? error.message : String(error);
-      context.observeInvocation?.({
-        type: "call_end",
-        callId: nestedToolCallId,
-        success: false,
-        error: audit.error,
-      });
+      const message = error instanceof Error ? error.message : String(error);
+      traceOperation?.fail(failureStage, error, executionOutcomeFromError(message, context.signal));
+      if (audit) {
+        audit.success = false;
+        audit.error = message;
+        context.observeInvocation?.({
+          type: "call_end",
+          callId: audit.nestedToolCallId,
+          success: false,
+          error: audit.error,
+        });
+      }
       throw error;
     } finally {
-      audit.endedAt = Date.now();
+      if (audit) audit.endedAt = Date.now();
     }
   }
 

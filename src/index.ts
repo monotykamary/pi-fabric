@@ -720,4 +720,5 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   registerFabricCommand(pi, { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture });
 }
 
+export * from "./audit/index.js";
 export * from "./protocol.js";

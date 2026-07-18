@@ -1,4 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  FabricExecutionTraceRecorder,
+  executionOutcomeFromError,
+  type FabricExecutionTraceV1,
+} from "./audit/trace.js";
 import { FabricActivityStore } from "./activity/store.js";
 import type {
   FabricActivityEventInput,
@@ -31,6 +36,7 @@ export interface FabricExecutionResult {
   logs: string[];
   audits: FabricCallAudit[];
   phases: string[];
+  trace: FabricExecutionTraceV1;
   elapsedMs: number;
   typeErrors?: FabricTypeError[];
   error?: string;
@@ -65,6 +71,7 @@ export class FabricExecutionService {
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
     const startedAt = performance.now();
+    const traceRecorder = new FabricExecutionTraceRecorder();
     this.activity?.start(options.parentToolCallId, options.display);
     const checked = typeCheckFabricCode(
       options.code,
@@ -78,6 +85,7 @@ export class FabricExecutionService {
         logs: [],
         audits: [],
         phases: [],
+        trace: traceRecorder.seal("failed", [], "Type checking failed"),
         elapsedMs: performance.now() - startedAt,
         typeErrors: checked.errors,
       };
@@ -181,6 +189,32 @@ export class FabricExecutionService {
           : 0;
       return Math.max(orchestrationTimeoutMs, requestedTimeoutMs);
     };
+    const invokeAction = async (
+      ref: string,
+      args: Record<string, unknown>,
+      callContext: typeof baseContext & { signal: AbortSignal },
+    ): Promise<unknown> => {
+      const traceOperation = traceRecorder.issueCall(ref, args);
+      try {
+        guardFullCodeRef(ref);
+        guardAgentCall(ref);
+      } catch (error) {
+        traceOperation.fail(
+          "guard",
+          error,
+          executionOutcomeFromError(String(error), callContext.signal),
+        );
+        throw error;
+      }
+      return this.registry.invoke(ref, args, {
+        ...callContext,
+        approve: (action) => approval.approve(action),
+        audits,
+        maxResultChars: this.config.executor.maxNestedResultChars,
+        traceOperation,
+        observeInvocation,
+      });
+    };
     let sandboxResult: FabricSandboxResult;
     try {
       sandboxResult = await this.#runtime.execute(
@@ -247,15 +281,7 @@ export class FabricExecutionService {
                   ? (args.args as Record<string, unknown>)
                   : {};
               const targetRef = String(args.ref ?? "");
-              guardFullCodeRef(targetRef);
-              guardAgentCall(targetRef);
-              return this.registry.invoke(targetRef, callArgs, {
-                ...callContext,
-                approve: (action) => approval.approve(action),
-                audits,
-                maxResultChars: this.config.executor.maxNestedResultChars,
-                observeInvocation,
-              });
+              return invokeAction(targetRef, callArgs, callContext);
             }
             case "fabric.$progress":
               update(String(args.message ?? "Working"));
@@ -295,15 +321,7 @@ export class FabricExecutionService {
               return undefined;
             }
             default:
-              guardFullCodeRef(ref);
-              guardAgentCall(ref);
-              return this.registry.invoke(ref, args, {
-                ...callContext,
-                approve: (action) => approval.approve(action),
-                audits,
-                maxResultChars: this.config.executor.maxNestedResultChars,
-                observeInvocation,
-              });
+              return invokeAction(ref, args, callContext);
           }
         },
         {
@@ -323,12 +341,14 @@ export class FabricExecutionService {
     }
 
     this.activity?.finish(options.parentToolCallId, !sandboxResult.error, sandboxResult.error);
+    const runOutcome = executionOutcomeFromError(sandboxResult.error, options.signal);
     return {
       success: !sandboxResult.error,
       value: sandboxResult.value,
       logs: sandboxResult.logs,
       audits,
       phases,
+      trace: traceRecorder.seal(runOutcome, phases, sandboxResult.error),
       elapsedMs: performance.now() - startedAt,
       ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
     };
