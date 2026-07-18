@@ -80,12 +80,6 @@ export const NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
 
 const PREVIEW_ARG_CHARS = 2_000;
-// The write tool's content body can be large; keep enough of it to render a
-// meaningful write-content preview during live partials. Matches the trace
-// recorder's per-string bound (MAX_STRING_BYTES in audit/trace.ts) so the live
-// audit and the persisted trace show the same content window for nested
-// pi.write calls. Other string args keep the compact 2 KiB preview bound.
-const PREVIEW_CONTENT_ARG_CHARS = 16 * 1024;
 const PREVIEW_ARG_KEYS = 32;
 const PREVIEW_RESULT_CHARS = 16_000;
 const MAX_VALIDATION_MESSAGE_CHARS = 2_000;
@@ -98,12 +92,7 @@ const previewArgs = (args: Record<string, unknown>): Record<string, unknown> => 
   let count = 0;
   for (const [key, value] of Object.entries(args)) {
     if (count++ >= PREVIEW_ARG_KEYS) break;
-    if (typeof value === "string") {
-      const max = key === "content" ? PREVIEW_CONTENT_ARG_CHARS : PREVIEW_ARG_CHARS;
-      out[key] = truncateString(value, max);
-    } else {
-      out[key] = value;
-    }
+    out[key] = typeof value === "string" ? truncateString(value, PREVIEW_ARG_CHARS) : value;
   }
   return out;
 };

@@ -24,7 +24,6 @@ import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
-  detectStringBackedWriteCallsFromArgs,
   expandHint,
   fabricMulticallCallLimit,
   isNumberedTool,
@@ -35,10 +34,8 @@ import {
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
-  renderWriteCallPreviewBlock,
   restoreLegacyBashCommands,
   safeTerminalText,
-  writeContentBodyLines,
   type FabricRenderAudit,
 } from "./ui/fabric-render.js";
 import { highlightCode, initHighlighting } from "./ui/highlight.js";
@@ -188,8 +185,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         ),
       }),
       renderCall(params, theme, context) {
-        const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
-        const lines = safeTerminalText(code).split("\n");
+        const lines = safeTerminalText(Array.isArray(params.code) ? params.code.join("\n") : params.code).split("\n");
         const limit = context.expanded ? lines.length : 8;
         const shown = lines.slice(0, limit);
         const width = String(Math.max(1, shown.length)).length;
@@ -208,37 +204,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           hidden > 0
             ? `\n${theme.fg("dim", `… ${countLabel(hidden, "line")} hidden · `)}${expandHint(theme)}`
             : "";
-
-        // Generation-time write-content preview: detect
-        // `pi.write({ path, text: π.key })` calls and render each named string's
-        // content (header + numbered highlighted lines) as it streams in,
-        // mirroring pi-code-previews' write-tool preview. The model often passes
-        // large file bodies via the strings param (π.key) rather than inline in
-        // code, so the code preview alone shows nothing of the body during the
-        // generation wait.
-        const writeBlocks: string[] = [];
-        if (params.strings) {
-          const showWriteContent = context.expanded || codePreviewSettings.writeContentPreview;
-          const writeLimit = context.expanded ? 200 : codePreviewSettings.writeCollapsedLines;
-          for (const call of detectStringBackedWriteCallsFromArgs(params)) {
-            const content = params.strings[call.key];
-            if (typeof content !== "string") continue;
-            writeBlocks.push(
-              renderWriteCallPreviewBlock(
-                call.path,
-                content,
-                showWriteContent,
-                writeLimit,
-                theme,
-                context.invalidate,
-              ),
-            );
-          }
-        }
-        const writeText = writeBlocks.length > 0 ? `\n\n${writeBlocks.join("\n\n")}` : "";
-
         return new Text(
-          `${title}${preview ? `\n${preview}` : ""}${hiddenHint}${writeText}`,
+          `${title}${preview ? `\n${preview}` : ""}${hiddenHint}`,
           0,
           0,
         );
@@ -308,8 +275,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
         if (isPartial) {
           const progress = details.progress;
-          const showWriteContent = expanded || codePreviewSettings.writeContentPreview;
-          const writeLimit = expanded ? 200 : codePreviewSettings.writeCollapsedLines;
           if (audits.length === 0) {
             return new Text(
               theme.fg(
@@ -331,22 +296,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate)}`;
             if (audit.success === false && audit.error) {
               text += nl + `  ${theme.fg("error", safeTerminalText(audit.error))}`;
-            } else if (showWriteContent) {
-              const body = writeContentBodyLines(audit, writeLimit, theme, context?.invalidate);
-              if (body.length > 0) text += nl + body.join(nl);
             }
             if (progress) text += nl + theme.fg("dim", safeTerminalText(progress));
             return new Text(text, 0, 0);
           }
           return renderFabricMulticallPartial(
-            {
-              audits,
-              phases,
-              progress,
-              expanded,
-              writeContentPreview: codePreviewSettings.writeContentPreview,
-              writeCollapsedLines: codePreviewSettings.writeCollapsedLines,
-            },
+            { audits, phases, progress, expanded },
             theme,
             context?.invalidate,
           );
