@@ -135,6 +135,9 @@ describe("CompactProvider", () => {
     await expect(provider.invoke("request", {
       preserve: ["x".repeat(MAX_PRESERVE_ITEM_CHARS + 1)],
     }, context)).rejects.toThrow(/Invalid compact\.request/);
+    await expect(provider.invoke("request", {
+      preserve: [String.fromCharCode(0xd800)],
+    }, context)).rejects.toThrow(/unpaired UTF-16 surrogate/);
     expect(controller.status().pending).toBeUndefined();
   });
 

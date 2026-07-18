@@ -74,6 +74,17 @@ const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV1[] => {
         address: `${event.entryId}/user`,
         text: clipUtf8(event.text, 2 * 1024),
       });
+    } else if (event.kind === "customMessage") {
+      facts.push({
+        kind: "customMessage",
+        entryId: event.entryId,
+        subordinal: "custom-message",
+        address: `${event.entryId}/custom-message`,
+        customType: clipUtf8(event.customType, 256),
+        text: clipUtf8(event.text, 4 * 1024),
+        display: event.display,
+        ...(event.details !== undefined ? { details: event.details } : {}),
+      });
     } else if (event.kind === "fabricPhase") {
       facts.push({
         kind: "phase",
@@ -134,6 +145,7 @@ const boundedDetails = (
   facts: FabricBranchFactV1[],
   sections: string[],
   request: { text: string; sourceBytes: number; truncated: boolean },
+  oldLeafId: string | null,
 ): FabricBranchSummaryDetailsV1 => {
   const sampled = sampleAddressed(facts, FABRIC_BRANCH_SUMMARY_MAX_FACTS);
   const details: FabricBranchSummaryDetailsV1 = {
@@ -143,6 +155,7 @@ const boundedDetails = (
       firstEntryId: sourceEntries[0]?.id ?? "",
       lastEntryId: sourceEntries.at(-1)?.id ?? "",
       entryCount: sourceEntries.length,
+      oldLeafId,
     },
     facts: sampled.values,
     omittedFacts: sampled.omitted,
@@ -174,6 +187,7 @@ export const compileFabricBranchSummary = (
   entriesToSummarize: SessionEntry[],
   customInstructions?: string,
   enrichers: readonly CompactionEnricher[] = NO_BUILTIN_ENRICHERS,
+  oldLeafId: string | null = null,
 ): FabricBranchSummaryCompilation | undefined => {
   const instructions = decodeCompactionInstructions(customInstructions);
   if (!instructions.ok) return undefined;
@@ -199,6 +213,6 @@ export const compileFabricBranchSummary = (
   });
   return {
     summary,
-    details: boundedDetails(entriesToSummarize, factsFromEvents(events), sections, request),
+    details: boundedDetails(entriesToSummarize, factsFromEvents(events), sections, request, oldLeafId),
   };
 };

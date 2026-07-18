@@ -14,7 +14,7 @@ import {
   type CompactionInstructionDecodeError,
   type CompactionInstructionPolicy,
 } from "./instructions.js";
-import { normalizeEntries } from "./normalize.js";
+import { isPiCustomMessageEntry, normalizeEntries } from "./normalize.js";
 import {
   projectWithMetadata,
   type ProjectionOmittedCounts,
@@ -24,10 +24,11 @@ import { renderSummary } from "./render.js";
 
 type CompactionEngine = "pi" | "fabric";
 
-interface MessageEntry {
+interface LiveEntry {
   entry: SessionEntry;
   branchIndex: number;
-  message: {
+  turnBoundary: boolean;
+  message?: {
     role?: unknown;
     content?: unknown;
     toolCallId?: unknown;
@@ -67,41 +68,49 @@ const findLastCompaction = (entries: SessionEntry[]): { index: number; firstKept
   return undefined;
 };
 
-const collectMessages = (entries: SessionEntry[], startIndex: number): MessageEntry[] => {
-  const messages: MessageEntry[] = [];
+const collectContextEntries = (entries: SessionEntry[], startIndex: number): LiveEntry[] => {
+  const contextEntries: LiveEntry[] = [];
   for (let index = Math.max(0, startIndex); index < entries.length; index++) {
     const entry = entries[index]!;
+    if (entry.type === "custom_message") {
+      if (isPiCustomMessageEntry(entry)) {
+        contextEntries.push({ entry, branchIndex: index, turnBoundary: true });
+      }
+      continue;
+    }
     if (!isMessageEntry(entry) || isHiddenEmptyCustom(entry.message)) continue;
-    messages.push({
+    const message = entry.message as NonNullable<LiveEntry["message"]>;
+    contextEntries.push({
       entry,
       branchIndex: index,
-      message: entry.message as MessageEntry["message"],
+      turnBoundary: message.role === "user",
+      message,
     });
   }
-  return messages;
+  return contextEntries;
 };
 
-const collectLive = (entries: SessionEntry[]): MessageEntry[] => {
+const collectLive = (entries: SessionEntry[]): LiveEntry[] => {
   const last = findLastCompaction(entries);
-  if (!last) return collectMessages(entries, 0);
+  if (!last) return collectContextEntries(entries, 0);
   if (last.firstKeptEntryId) {
     const keptIndex = entries.findIndex((entry) => entry.id === last.firstKeptEntryId);
-    if (keptIndex >= 0) return collectMessages(entries, keptIndex);
+    if (keptIndex >= 0) return collectContextEntries(entries, keptIndex);
   }
-  return collectMessages(entries, last.index + 1);
+  return collectContextEntries(entries, last.index + 1);
 };
 
-const previousUserAtOrBefore = (live: MessageEntry[], branchIndex: number): number => {
+const previousBoundaryAtOrBefore = (live: LiveEntry[], branchIndex: number): number => {
   for (let index = live.length - 1; index >= 0; index--) {
     const item = live[index]!;
-    if (item.branchIndex <= branchIndex && item.message.role === "user") return index;
+    if (item.branchIndex <= branchIndex && item.turnBoundary) return index;
   }
   return -1;
 };
 
-const lastUserIndex = (live: MessageEntry[]): number => {
+const lastBoundaryIndex = (live: LiveEntry[]): number => {
   for (let index = live.length - 1; index >= 0; index--) {
-    if (live[index]!.message.role === "user") return index;
+    if (live[index]!.turnBoundary) return index;
   }
   return -1;
 };
@@ -121,7 +130,7 @@ const callResultSpans = (entries: SessionEntry[]): Map<string, { first: number; 
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]!;
     if (!isMessageEntry(entry)) continue;
-    const message = entry.message as MessageEntry["message"];
+    const message = entry.message as NonNullable<LiveEntry["message"]>;
     for (const id of toolCallIdsOf(message)) record(id, index);
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
       record(message.toolCallId, index);
@@ -132,7 +141,7 @@ const callResultSpans = (entries: SessionEntry[]): Map<string, { first: number; 
 
 const closeCut = (
   branchEntries: SessionEntry[],
-  live: MessageEntry[],
+  live: LiveEntry[],
   candidateLiveIndex: number,
 ): number => {
   const spans = callResultSpans(branchEntries);
@@ -146,7 +155,7 @@ const closeCut = (
       }
     }
     if (earliestCrossing === boundaryIndex) return liveIndex;
-    const closed = previousUserAtOrBefore(live, earliestCrossing);
+    const closed = previousBoundaryAtOrBefore(live, earliestCrossing);
     if (closed < 0 || closed >= liveIndex) return 0;
     liveIndex = closed;
   }
@@ -182,9 +191,9 @@ export const computeCut = (branchEntries: SessionEntry[]): CutResult => {
   const live = collectLive(branchEntries);
   if (live.length === 0) return { ok: false, reason: "empty" };
 
-  const lastUser = lastUserIndex(live);
-  if (lastUser <= 0) return boundary(live.map((item) => item.entry), "");
-  const closed = closeCut(branchEntries, live, lastUser);
+  const lastBoundary = lastBoundaryIndex(live);
+  if (lastBoundary <= 0) return boundary(live.map((item) => item.entry), "");
+  const closed = closeCut(branchEntries, live, lastBoundary);
   if (closed <= 0) return boundary(live.map((item) => item.entry), "");
 
   return boundary(
@@ -470,6 +479,10 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     if (options.getEngine() !== "fabric") return;
     const { preparation } = event;
     if (!preparation.userWantsSummary) return;
+    // Pi's replacement mode delegates an arbitrary summarizer prompt. Fabric's
+    // deterministic projections cannot execute it without pretending that it
+    // is append-only context, so leave this explicit mode to the next/default handler.
+    if (preparation.replaceInstructions === true) return;
     const instructions = decodeCompactionInstructions(preparation.customInstructions);
     if (!instructions.ok) {
       notifyInstructionError(context, instructions.error);
@@ -479,6 +492,7 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
       preparation.entriesToSummarize,
       preparation.customInstructions,
       options.enrichers,
+      preparation.oldLeafId,
     );
     if (!compiled) return;
     return { summary: compiled };

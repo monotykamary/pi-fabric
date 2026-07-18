@@ -62,6 +62,25 @@ const truncate = (text: string, max: number): string => {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
 
+const quoted = (text: string, max: number): string => JSON.stringify(truncate(text, max));
+
+const customDetailsSuffix = (details: unknown, max = 160): string => {
+  if (details === undefined) return "";
+  try {
+    return ` details=${truncate(JSON.stringify(details), max)}`;
+  } catch {
+    return "";
+  }
+};
+
+const customMessageLine = (
+  event: Extract<CompactionEvent, { kind: "customMessage" }>,
+  maxText: number,
+): string => {
+  const visibility = event.display ? "visible" : "hidden";
+  return `custom ${quoted(event.customType, 80)} (${visibility}): ${quoted(event.text, maxText)}${customDetailsSuffix(event.details)}`;
+};
+
 const trailingEllipsis = (lines: string[], max: number): string[] => {
   if (lines.length <= max) return lines;
   return [...lines.slice(0, max), "…"];
@@ -423,7 +442,7 @@ export const projectOutstanding = (events: CompactionEvent[]): string[] =>
 
 interface EarlierTurnAddress {
   entryId: string;
-  userLine: string;
+  contextLine: string;
   tools: string;
 }
 
@@ -432,27 +451,29 @@ interface EarlierTurnAddress {
 // entry-range address for any omitted middle turns.
 const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
   function* earlierTurns(): Generator<EarlierTurnAddress> {
-    let currentUser: Extract<CompactionEvent, { kind: "user" }> | undefined;
+    let currentContext: Extract<CompactionEvent, { kind: "user" | "customMessage" }> | undefined;
     let counts = new Map<string, number>();
     let order: string[] = [];
     const completed = (): EarlierTurnAddress | undefined => {
-      if (!currentUser) return undefined;
+      if (!currentContext) return undefined;
       return {
-        entryId: currentUser.entryId,
-        userLine: truncate(firstLine(currentUser.text), MAX_EARLIER_USER),
+        entryId: currentContext.entryId,
+        contextLine: currentContext.kind === "user"
+          ? quoted(firstLine(currentContext.text), MAX_EARLIER_USER)
+          : customMessageLine(currentContext, MAX_EARLIER_USER),
         tools: order.map((name) => `${name}:${counts.get(name) ?? 0}`).join(" "),
       };
     };
     for (const event of events) {
-      if (event.kind === "user") {
+      if (event.kind === "user" || event.kind === "customMessage") {
         const turn = completed();
         if (turn) yield turn;
-        currentUser = event;
+        currentContext = event;
         counts = new Map<string, number>();
         order = [];
         continue;
       }
-      if (!currentUser) continue;
+      if (!currentContext) continue;
       const name = event.kind === "toolCall"
         ? (event.name === "fabric_exec" ? undefined : event.name)
         : event.kind === "bash"
@@ -478,7 +499,7 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
       ));
     }
     const turn = sampled.values[index]!;
-    lines.push(`${turn.tools ? `"${turn.userLine}" | ${turn.tools}` : `"${turn.userLine}"`} [entry ${turn.entryId}]`);
+    lines.push(`${turn.contextLine}${turn.tools ? ` | ${turn.tools}` : ""} [entry ${turn.entryId}]`);
   }
   return { lines, omitted: sampled.omitted };
 };
@@ -487,10 +508,15 @@ const projectEarlierTurns = (events: CompactionEvent[]): ProjectedSection => {
 // the last summarized user request, the last file-modifying tool call, and the
 // last assistant line. Only non-empty fields are emitted.
 const projectStatus = (events: CompactionEvent[]): string[] => {
-  const lastUser = [...events].reverse().find((e): e is Extract<CompactionEvent, { kind: "user" }> => e.kind === "user");
+  const lastContext = [...events].reverse().find(
+    (event): event is Extract<CompactionEvent, { kind: "user" | "customMessage" }> =>
+      event.kind === "user" || event.kind === "customMessage",
+  );
   const lines: string[] = [];
-  if (lastUser) {
-    lines.push(`Last request: ${truncate(firstLine(lastUser.text), MAX_STATUS_LINE)}`);
+  if (lastContext?.kind === "user") {
+    lines.push(`Last request: ${truncate(firstLine(lastContext.text), MAX_STATUS_LINE)}`);
+  } else if (lastContext) {
+    lines.push(`Last context: ${customMessageLine(lastContext, MAX_STATUS_LINE)}`);
   }
   let lastModify: { tool: string; args: Record<string, unknown> } | undefined;
   for (const operation of collectOperations(events)) {
@@ -549,6 +575,8 @@ const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
     } else if (e.kind === "thinking") {
       const t = truncate(firstLine(e.text), MAX_TRANSCRIPT_THINKING);
       if (t) lines.push(`${ref} thinking: ${t}`);
+    } else if (e.kind === "customMessage") {
+      lines.push(`${ref} ${customMessageLine(e, MAX_TRANSCRIPT_LINE)}`);
     } else if (e.kind === "toolCall") {
       lines.push(`${ref} ${e.name}(${summarizeArgs(e.name, e.args)})`);
     } else if (e.kind === "toolResult") {
