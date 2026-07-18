@@ -5,12 +5,17 @@ import { describe, expect, it } from "vitest";
 import { initHighlighting } from "../src/ui/highlight.js";
 import {
   compactProgressPreview,
+  detectStringBackedWriteCalls,
+  detectStringBackedWriteCallsFromArgs,
   modelReadHint,
   nestedCallTitle,
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
+  renderWriteCallPreviewBlock,
+  renderWriteContentLines,
   restoreLegacyBashCommands,
+  writeContentBodyLines,
 } from "../src/ui/fabric-render.js";
 
 const theme = {
@@ -266,4 +271,107 @@ b`, theme)).toBe("");
   it("compacts multiline progress to its latest line", () => {
     expect(compactProgressPreview("one\ntwo\nthree")).toBe("… 2 lines · three");
   });
+
+  it("detects string-backed pi.write calls", () => {
+    const calls = detectStringBackedWriteCalls(
+      `return Promise.all([
+  pi.write({ path: "README.md", text: π.readme }),
+  pi.write({ file: 'docs/a.md', content: π.a }),
+  pi.write({ dir: "x", contents: π["b"] }),
+]);`,
+    );
+    expect(calls).toEqual([
+      { path: "README.md", key: "readme" },
+      { path: "docs/a.md", key: "a" },
+      { path: "x", key: "b" },
+    ]);
+  });
+
+  it("ignores computed paths or text in pi.write calls", () => {
+    const calls = detectStringBackedWriteCalls(
+      `pi.write({ path, text: π.x });
+pi.write({ path: p, text: build() });
+pi.write({ path: "y.md", text: "inline" });`,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("caches detection by the fabric_exec args object", () => {
+    const args = { code: `pi.write({ path: "a.md", text: π.a });` };
+    expect(detectStringBackedWriteCallsFromArgs(args)).toEqual([{ path: "a.md", key: "a" }]);
+    const first = detectStringBackedWriteCallsFromArgs(args);
+    expect(detectStringBackedWriteCallsFromArgs(args)).toBe(first);
+    expect(detectStringBackedWriteCallsFromArgs({})).toEqual([]);
+  });
+
+  it("returns null for write content with no resolvable language", () => {
+    expect(renderWriteContentLines("hello", "notes.unknownext", 10, plainTheme)).toBeNull();
+  });
+
+  it("renders numbered highlighted write content for a known language", async () => {
+    await initHighlighting("dark-plus", true);
+    const rendered = renderWriteContentLines("# Title\nbody", "README.md", 10, plainTheme);
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines[0]!.startsWith("  1 ")).toBe(true);
+    expect(rendered!.lines[0]).toContain("#");
+    expect(rendered!.lines[0]).toContain("\x1b[38;2;");
+    expect(rendered!.hidden).toBe(0);
+  }, 15_000);
+
+  it("falls back to plain toolOutput lines when highlighting is disabled", async () => {
+    await initHighlighting("dark-plus", false);
+    const rendered = renderWriteContentLines("# Title", "README.md", 10, plainTheme);
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines[0]!.startsWith("  1 ")).toBe(true);
+    expect(rendered!.lines[0]).toContain("# Title");
+    expect(rendered!.lines[0]).not.toContain("\x1b[38;2;");
+    await initHighlighting("dark-plus", true);
+  });
+
+  it("limits write content lines and reports the hidden count", async () => {
+    await initHighlighting("dark-plus", true);
+    const content = Array.from({ length: 5 }, (_, i) => `line ${i + 1}`).join("\n");
+    const rendered = renderWriteContentLines(content, "README.md", 2, plainTheme);
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines).toHaveLength(2);
+    expect(rendered!.hidden).toBe(3);
+  }, 15_000);
+
+  it("renders a write call preview block with content and metadata", async () => {
+    await initHighlighting("dark-plus", true);
+    const block = renderWriteCallPreviewBlock("README.md", "# Hi\nbody line", true, 10, plainTheme);
+    expect(block).toContain("write README.md");
+    expect(block).toContain("2 lines");
+    expect(block).toContain("markdown");
+    expect(block.split("\n")[1]!.startsWith("  1 ")).toBe(true);
+  }, 15_000);
+
+  it("renders a write call preview header + hidden hint when content is disabled", () => {
+    const block = renderWriteCallPreviewBlock("README.md", "# Hi", false, 10, plainTheme);
+    expect(block).toContain("write README.md");
+    expect(block).toContain("hidden");
+    expect(block).not.toContain("  1 ");
+  });
+
+  it("returns body lines for write audits and empty for other tools", () => {
+    const writeAudit = { ref: "pi.write", tool: "write", args: { path: "a.md", content: "# x\ny" } };
+    const readAudit = { ref: "pi.read", tool: "read", args: { path: "a.md" } };
+    expect(writeContentBodyLines(writeAudit as never, 10, plainTheme).length).toBeGreaterThan(0);
+    expect(writeContentBodyLines(readAudit as never, 10, plainTheme)).toEqual([]);
+  });
+
+  it("shows nested write content during a multicall partial", async () => {
+    await initHighlighting("dark-plus", true);
+    const audits = [
+      { ref: "pi.write", tool: "write", args: { path: "README.md", content: "# title\nbody" } },
+      { ref: "pi.write", tool: "write", args: { path: "docs/a.md", content: "hello" } },
+    ];
+    const lines = renderFabricMulticallPartial(
+      { audits, phases: [], expanded: false, writeContentPreview: true, writeCollapsedLines: 10 },
+      plainTheme,
+    ).render(120);
+    expect(lines.some((l) => l.includes("write README.md"))).toBe(true);
+    expect(lines.some((l) => l.includes("title"))).toBe(true);
+    expect(lines.some((l) => l.includes("write docs/a.md"))).toBe(true);
+  }, 15_000);
 });

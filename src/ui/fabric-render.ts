@@ -261,6 +261,10 @@ export interface FabricMulticallPartialInput {
   phases: string[];
   progress?: string | undefined;
   expanded: boolean;
+  /** Show nested pi.write content while a multicall partial is running. */
+  writeContentPreview?: boolean;
+  /** Collapsed line cap for nested pi.write content during a partial. */
+  writeCollapsedLines?: number;
 }
 
 export const compactProgressPreview = (progress: string): string => {
@@ -291,6 +295,9 @@ export const renderFabricMulticallPartial = (
     rows.push(theme.fg("dim", input.phases.map((phase) => `◆ ${phase}`).join("  ")));
   }
 
+  const showWriteContent = input.expanded || (input.writeContentPreview ?? false);
+  const writeLimit = input.expanded ? 200 : (input.writeCollapsedLines ?? 10);
+
   const callLimit = fabricMulticallCallLimit(input.expanded);
   const callsShown = input.audits.slice(0, callLimit);
   for (let index = 0; index < callsShown.length; index++) {
@@ -307,6 +314,8 @@ export const renderFabricMulticallPartial = (
       for (const line of safeTerminalText(audit.error).split("\n")) {
         rows.push(`  ${theme.fg("error", line)}`);
       }
+    } else if (showWriteContent) {
+      rows.push(...writeContentBodyLines(audit, writeLimit, theme, invalidate));
     }
   }
 
@@ -348,6 +357,213 @@ export function nestedCallCode(
     return typeof args.content === "string" ? { code: args.content, lang } : null;
   }
   return null;
+}
+
+const countLabel = (count: number, singular: string): string =>
+  `${count} ${count === 1 ? singular : `${singular}s`}`;
+
+const countContentLines = (content: string): number => {
+  if (!content) return 0;
+  const parts = content.split(/\r\n|\n/);
+  return parts[parts.length - 1] === "" ? parts.length - 1 : parts.length;
+};
+
+export interface DetectedWriteCall {
+  path: string;
+  key: string;
+}
+
+const WRITE_PATH_KEYS = new Set(["path", "file", "dir"]);
+const WRITE_CONTENT_KEYS = new Set(["content", "text", "contents"]);
+const detectedWritesCache = new WeakMap<object, DetectedWriteCall[]>();
+
+const isIdentifier = (node: ts.Node, name: string): boolean =>
+  ts.isIdentifier(node) && node.text === name;
+
+const piWriteName = (expression: ts.LeftHandSideExpression): string | undefined => {
+  if (ts.isPropertyAccessExpression(expression) && isIdentifier(expression.expression, "pi")) {
+    return expression.name.text;
+  }
+  return undefined;
+};
+
+const stringLiteralText = (expression: ts.Expression): string | undefined =>
+  ts.isStringLiteralLike(expression) ? expression.text : undefined;
+
+const piNamedStringKey = (expression: ts.Expression): string | undefined => {
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    isIdentifier(expression.expression, "π")
+  ) {
+    return expression.name.text;
+  }
+  if (
+    ts.isElementAccessExpression(expression) &&
+    isIdentifier(expression.expression, "π") &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+  ) {
+    return expression.argumentExpression.text;
+  }
+  return undefined;
+};
+
+/**
+ * Detect `pi.write({ path: <literal>, text|content|contents: π.<key> })` calls
+ * in a fabric_exec program so the call preview can show the named-string content
+ * being written, mirroring pi-code-previews' write-tool preview. Only the static
+ * literal pattern is supported; computed paths or text fall back to the code
+ * preview (the body is not rendered for those during generation).
+ */
+export function detectStringBackedWriteCalls(code: string): DetectedWriteCall[] {
+  const source = ts.createSourceFile(
+    "fabric-exec-writes.ts",
+    code,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const out: DetectedWriteCall[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && piWriteName(node.expression) === "write") {
+      const first = node.arguments[0];
+      if (first && ts.isObjectLiteralExpression(first)) {
+        let path: string | undefined;
+        let key: string | undefined;
+        for (const property of first.properties) {
+          if (!ts.isPropertyAssignment(property)) continue;
+          const propertyName =
+            property.name && ts.isIdentifier(property.name) ? property.name.text : undefined;
+          if (!propertyName) continue;
+          if (WRITE_PATH_KEYS.has(propertyName) && path === undefined) {
+            path = stringLiteralText(property.initializer);
+          } else if (WRITE_CONTENT_KEYS.has(propertyName) && key === undefined) {
+            key = piNamedStringKey(property.initializer);
+          }
+        }
+        if (path !== undefined && key !== undefined) {
+          out.push({ path, key });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return out;
+}
+
+/** Cached detection keyed on the fabric_exec arguments object (mirrors legacyCommandsFrom). */
+export const detectStringBackedWriteCallsFromArgs = (
+  fabricArgs: unknown,
+): DetectedWriteCall[] => {
+  const args = recordOf(fabricArgs);
+  if (!args) return [];
+  const cached = detectedWritesCache.get(args);
+  if (cached) return cached;
+  const rawCode = args.code;
+  const code =
+    typeof rawCode === "string"
+      ? rawCode
+      : Array.isArray(rawCode) && rawCode.every((value) => typeof value === "string")
+        ? rawCode.join("\n")
+        : undefined;
+  const result = code ? detectStringBackedWriteCalls(code) : [];
+  detectedWritesCache.set(args, result);
+  return result;
+};
+
+/**
+ * Render numbered, syntax-highlighted lines for write content, mirroring the
+ * final render's `renderBody` numbered-code path. Returns null when the path
+ * has no resolvable language (matching `nestedCallCode`'s gating).
+ */
+export function renderWriteContentLines(
+  content: string,
+  path: string | undefined,
+  limit: number,
+  theme: Theme,
+  invalidate?: () => void,
+): { lines: string[]; hidden: number } | null {
+  const lang = languageFromPath(path);
+  if (!lang) return null;
+  const highlighted = highlightCode(content, lang, invalidate);
+  let bodyLines: string[];
+  let raw: boolean;
+  if (highlighted) {
+    bodyLines = highlighted.map((line) => line || " ");
+    raw = true;
+  } else {
+    bodyLines = safeTerminalText(content).split("\n");
+    raw = false;
+  }
+  while (bodyLines.length > 0) {
+    const last = bodyLines[bodyLines.length - 1];
+    if (last === undefined || last.trim() === "") bodyLines.pop();
+    else break;
+  }
+  if (bodyLines.length === 0) return null;
+  const shown = bodyLines.slice(0, limit);
+  const lines = shown.map((line, index) => {
+    const body = raw ? line || " " : theme.fg("toolOutput", line || " ");
+    return `${theme.fg("dim", String(index + 1).padStart(3, " "))} ${body}`;
+  });
+  return { lines, hidden: bodyLines.length - shown.length };
+}
+
+/** Compact `write <path> · <n lines> · <lang>` header for the generation preview. */
+function writePreviewHeader(path: string, content: string, theme: Theme): string {
+  const lang = languageFromPath(path);
+  const lineCount = countContentLines(content);
+  const meta: string[] = [`${lineCount} ${lineCount === 1 ? "line" : "lines"}`];
+  if (lang) meta.push(lang);
+  return `${theme.fg("toolTitle", theme.bold("write"))} ${theme.fg("accent", path)}${theme.fg("dim", ` · ${meta.join(" · ")}`)}`;
+}
+
+/**
+ * Build a full generation-time write-content preview block (header + body, or
+ * header + hidden hint when content previews are disabled), mirroring
+ * pi-code-previews' write-tool `renderCall` layout.
+ */
+export function renderWriteCallPreviewBlock(
+  path: string,
+  content: string,
+  showContent: boolean,
+  limit: number,
+  theme: Theme,
+  invalidate?: () => void,
+): string {
+  const header = writePreviewHeader(path, content, theme);
+  if (!showContent) {
+    const total = countContentLines(content);
+    return `${header}\n${theme.fg("dim", `… ${countLabel(total, "line")} hidden · ${expandHint(theme)}`)}`;
+  }
+  const rendered = renderWriteContentLines(content, path, limit, theme, invalidate);
+  if (!rendered) return header;
+  const lines = [...rendered.lines];
+  if (rendered.hidden > 0) {
+    lines.push(theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`));
+  }
+  return `${header}\n${lines.join("\n")}`;
+}
+
+/** Body lines for an in-flight or completed `pi.write` audit, for partial renders. */
+export function writeContentBodyLines(
+  audit: FabricRenderAudit,
+  limit: number,
+  theme: Theme,
+  invalidate?: () => void,
+): string[] {
+  if (audit.tool !== "write") return [];
+  const args = audit.args ?? {};
+  const content = typeof args.content === "string" ? args.content : undefined;
+  const path = typeof args.path === "string" ? args.path : undefined;
+  if (content === undefined || path === undefined) return [];
+  const rendered = renderWriteContentLines(content, path, limit, theme, invalidate);
+  if (!rendered) return [];
+  const out = [...rendered.lines];
+  if (rendered.hidden > 0) {
+    out.push(theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`));
+  }
+  return out;
 }
 
 /** Whether a nested call's body should be rendered with line numbers (reads/searches/listings). */
