@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import {
   MeshStore,
@@ -11,8 +12,8 @@ import { countFileComplexity } from "./complexity.js";
 // The Fabric state layer is the Schema world-model heart: an append-only
 // Timeline of typed, validated transitions stored as mesh events, plus a
 // compare-and-swap head pointer that is recomputable from the log. Raw mesh
-// calls (mesh.read / mesh.get) can inspect everything here — storage is
-// transparent, the typed WRITE path is the only enforced surface.
+// calls (mesh.read / mesh.get) can inspect everything here. The typed state
+// path validates calls that use it; it is not a gate on direct Pi tools.
 
 export const STATE_TOPIC = "fabric.state";
 export const CURRENT_KEY = "state/current";
@@ -20,6 +21,7 @@ export const GOAL_KEY = "state/goal";
 export const COMPLEXITY_KEY_PREFIX = "state/complexity/";
 
 export type StateTransitionKind = "state" | "representation";
+type StateCertificationStatus = "pending" | "certified";
 
 export interface StateTransitionInput {
   label: string;
@@ -80,6 +82,8 @@ export interface StateTransitionRecord {
   tags?: string[];
   kind: StateTransitionKind;
   complexity?: StateTransitionComplexity;
+  certificationStatus?: StateCertificationStatus;
+  certificate?: StateCertificate;
   ts: number;
 }
 
@@ -108,6 +112,8 @@ interface StateHeadValue {
   tags?: string[];
   kind: StateTransitionKind;
   transitionId: string;
+  certificationStatus?: StateCertificationStatus;
+  certificate?: StateCertificate;
   ts: number;
 }
 
@@ -122,13 +128,60 @@ export interface StateGoal {
 
 type VerifyStatus = "confirmed" | "violated" | "error";
 
-export interface VerifyResult {
+interface VerifyResult {
   claim: string;
   command: string;
   status: VerifyStatus;
   exitCode: number | null;
   output: string;
   error?: string;
+}
+
+interface StateCertificationTarget {
+  transitionId: string;
+  label: string;
+  to: string;
+}
+
+interface StateCertificationHead {
+  transitionId: string;
+  label: string;
+  to: string;
+  version: number;
+}
+
+export interface StateCertificate {
+  certificateId: string;
+  sequence: number;
+  certificationStatus: "certified";
+  targets: StateCertificationTarget[];
+  head: StateCertificationHead | null;
+  evidenceDigest: string;
+  resultDigest: string;
+  ts: number;
+  current: boolean;
+}
+
+interface VerificationFailure {
+  reason: "missing-target" | "missing-evidence" | "nonzero-exit" | "execution-error";
+  message: string;
+  transitionId?: string;
+  label?: string;
+  command?: string;
+  status?: VerifyStatus;
+  exitCode?: number | null;
+  error?: string;
+}
+
+export interface VerificationReport {
+  results: VerifyResult[];
+  certified: boolean;
+  violated: boolean;
+  certificationStatus: "certified" | "failed";
+  evidenceDigest: string;
+  resultDigest: string;
+  failures: VerificationFailure[];
+  certificate?: StateCertificate;
 }
 
 interface RunCommandOptions {
@@ -165,6 +218,9 @@ const toStringArray = (value: unknown): string[] | undefined => {
   }
   return items.length > 0 ? items : undefined;
 };
+
+const digest = (value: unknown): string =>
+  `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 
 // Run a single evidence/goal shell command with a per-command timeout. Exit 0
 // is confirmed; non-zero is violated; spawn failure or timeout is error. The
@@ -294,6 +350,8 @@ const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
   const evidence = toStringArray(data.evidence);
   const tags = toStringArray(data.tags);
   const complexity = toComplexityRecord(data.complexity);
+  const certificationStatus =
+    data.certificationStatus === "pending" ? "pending" : undefined;
   if (!label || !to) return undefined;
   return {
     transitionId: event.id,
@@ -306,7 +364,83 @@ const toRecord = (event: MeshEvent): StateTransitionRecord | undefined => {
     ...(tags !== undefined ? { tags } : {}),
     kind,
     ...(complexity !== undefined ? { complexity } : {}),
+    ...(certificationStatus !== undefined ? { certificationStatus } : {}),
     ts,
+  };
+};
+
+const toCertificationTarget = (value: unknown): StateCertificationTarget | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const target = value as Record<string, unknown>;
+  if (
+    typeof target.transitionId !== "string" ||
+    typeof target.label !== "string" ||
+    typeof target.to !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    transitionId: target.transitionId,
+    label: target.label,
+    to: target.to,
+  };
+};
+
+const toCertificationHead = (value: unknown): StateCertificationHead | null => {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return null;
+  const head = value as Record<string, unknown>;
+  if (
+    typeof head.transitionId !== "string" ||
+    typeof head.label !== "string" ||
+    typeof head.to !== "string" ||
+    typeof head.version !== "number"
+  ) {
+    return null;
+  }
+  return {
+    transitionId: head.transitionId,
+    label: head.label,
+    to: head.to,
+    version: head.version,
+  };
+};
+
+const toCertificate = (
+  event: MeshEvent,
+  currentHead: StateHead | null,
+): StateCertificate | undefined => {
+  if (event.kind !== "state.certified") return undefined;
+  const data = event.data as Record<string, unknown> | undefined;
+  if (
+    !data ||
+    !Array.isArray(data.targets) ||
+    typeof data.evidenceDigest !== "string" ||
+    typeof data.resultDigest !== "string"
+  ) {
+    return undefined;
+  }
+  const targets = data.targets
+    .map(toCertificationTarget)
+    .filter((target): target is StateCertificationTarget => target !== undefined);
+  if (targets.length === 0) return undefined;
+  const head = toCertificationHead(data.head);
+  const current =
+    head !== null &&
+    currentHead !== null &&
+    head.transitionId === currentHead.transitionId &&
+    head.version === currentHead.version &&
+    targets.some((target) => target.transitionId === currentHead.transitionId);
+  return {
+    certificateId: event.id,
+    sequence: event.sequence,
+    certificationStatus: "certified",
+    targets,
+    head,
+    evidenceDigest: data.evidenceDigest,
+    resultDigest: data.resultDigest,
+    ts: typeof data.ts === "number" ? data.ts : event.createdAt,
+    current,
   };
 };
 
@@ -322,21 +456,47 @@ export class StateStore {
     head: StateHead | null;
     goal: StateGoal | null;
     complexity: StateComplexitySummary;
+    certification: {
+      current: StateCertificate | null;
+      recent: StateCertificate[];
+    };
   } {
     const entry = this.store.get(CURRENT_KEY);
-    const head = entry ? this.toHead(entry) : null;
+    const storedHead = entry ? this.toHead(entry) : null;
     const goalEntry = this.store.get(GOAL_KEY);
     const goal = goalEntry ? (goalEntry.value as StateGoal) : null;
     const ledgers = this.complexityLedgers();
-    const lastComplexity = this.history({}).transitions
+    const history = this.history({});
+    const lastComplexity = history.transitions
       .filter((transition) => transition.complexity !== undefined)
       .at(-1)?.complexity;
+    const headRecord = storedHead
+      ? history.transitions.find(
+          (transition) => transition.transitionId === storedHead.transitionId,
+        )
+      : undefined;
+    const head =
+      storedHead && headRecord?.certificate
+        ? {
+            ...storedHead,
+            certificationStatus: "certified" as const,
+            certificate: headRecord.certificate,
+          }
+        : storedHead;
     const complexity = {
       files: ledgers.length,
       decisionPoints: ledgers.reduce((total, ledger) => total + ledger.count, 0),
       lastNetDelta: lastComplexity?.netDelta ?? 0,
     };
-    return { head, goal, complexity };
+    return {
+      head,
+      goal,
+      complexity,
+      certification: {
+        current: history.certifications.find((certificate) => certificate.current) ?? null,
+        recent: history.certifications.slice(0, 20),
+      },
+    };
   }
 
   getHead(): StateHead | null {
@@ -364,13 +524,14 @@ export class StateStore {
     const preparedComplexity = input.complexity
       ? this.prepareComplexity(input.complexity.files, cwd, ts)
       : undefined;
+    const isComplexityReduction =
+      preparedComplexity !== undefined && preparedComplexity.record.netDelta < 0;
     if (
-      preparedComplexity &&
-      preparedComplexity.record.netDelta < 0 &&
+      isComplexityReduction &&
       !input.evidence?.some((command) => command.trim().length > 0)
     ) {
       throw new Error(
-        `State complexity reduction rejected: net decision-point delta is ${preparedComplexity.record.netDelta}. Reducing branches is also achievable by deleting error handling; attach at least one replayable behavior-preservation evidence command to separate abstraction from vandalism. state.verify() will replay it.`,
+        `State complexity reduction rejected: net decision-point delta is ${preparedComplexity.record.netDelta}. Reducing branches is also achievable by deleting error handling; attach at least one replayable behavior-preservation evidence command to separate abstraction from vandalism. The reduction remains pending until a later state.verify() succeeds.`,
       );
     }
     const kind: StateTransitionKind = input.kind ?? "state";
@@ -384,6 +545,7 @@ export class StateStore {
       ...(input.evidence ? { evidence: input.evidence } : {}),
       ...(input.tags ? { tags: input.tags } : {}),
       ...(preparedComplexity ? { complexity: preparedComplexity.record } : {}),
+      ...(isComplexityReduction ? { certificationStatus: "pending" } : {}),
     };
     const event = await this.store.publish({
       topic: STATE_TOPIC,
@@ -409,6 +571,7 @@ export class StateStore {
       ts,
       ...(input.evidence ? { evidence: input.evidence } : {}),
       ...(input.tags ? { tags: input.tags } : {}),
+      ...(isComplexityReduction ? { certificationStatus: "pending" } : {}),
     };
     const entry = await this.advanceHead({
       payload,
@@ -470,6 +633,7 @@ export class StateStore {
   } = {}): {
     transitions: StateTransitionRecord[];
     labels: string[];
+    certifications: StateCertificate[];
   } {
     const events = this.store.read({
       topic: STATE_TOPIC,
@@ -491,11 +655,29 @@ export class StateStore {
       input.includeArchived || lastRepresentation < 0
         ? records
         : records.slice(lastRepresentation);
+    const visibleIds = new Set(visibleRecords.map((record) => record.transitionId));
+    const currentEntry = this.store.get(CURRENT_KEY);
+    const currentHead = currentEntry ? this.toHead(currentEntry) : null;
+    const certifications = events
+      .map((event) => toCertificate(event, currentHead))
+      .filter((certificate): certificate is StateCertificate => certificate !== undefined)
+      .filter((certificate) =>
+        certificate.targets.every((target) => visibleIds.has(target.transitionId)),
+      )
+      .reverse();
+    const latestCertificate = new Map<string, StateCertificate>();
+    for (const certificate of certifications) {
+      for (const target of certificate.targets) {
+        if (!latestCertificate.has(target.transitionId)) {
+          latestCertificate.set(target.transitionId, certificate);
+        }
+      }
+    }
     const archiveBoundaryId =
       input.includeArchived !== true && lastRepresentation > 0
         ? records[lastRepresentation]?.transitionId
         : undefined;
-    const filtered = input.label
+    const filtered = (input.label
       ? visibleRecords.filter(
           (record) =>
             record.label === input.label ||
@@ -503,20 +685,34 @@ export class StateStore {
             (record.from === input.label &&
               record.transitionId !== archiveBoundaryId),
         )
-      : visibleRecords;
+      : visibleRecords
+    ).map((record) => {
+      const certificate = latestCertificate.get(record.transitionId);
+      return certificate
+        ? { ...record, certificationStatus: "certified" as const, certificate }
+        : record;
+    });
     const limited =
       input.limit !== undefined && input.limit > 0
         ? filtered.slice(0, input.limit)
         : filtered;
     const labelSet = new Set<string>();
+    const limitedIds = new Set<string>();
     for (const record of limited) {
+      limitedIds.add(record.transitionId);
       if (record.from && record.transitionId !== archiveBoundaryId) {
         labelSet.add(record.from);
       }
       labelSet.add(record.to);
       labelSet.add(record.label);
     }
-    return { transitions: limited, labels: [...labelSet] };
+    return {
+      transitions: limited,
+      labels: [...labelSet],
+      certifications: certifications.filter((certificate) =>
+        certificate.targets.some((target) => limitedIds.has(target.transitionId)),
+      ),
+    };
   }
 
   complexity(input: { files?: string[]; cwd: string }): StateComplexityResult {
@@ -693,11 +889,20 @@ export class StateStore {
     timeoutMs?: number;
     signal?: AbortSignal | undefined;
     identity: MeshIdentity;
-  }): Promise<{ results: VerifyResult[]; violated: boolean }> {
+  }): Promise<VerificationReport> {
+    const verificationHead = this.getHead();
+    const headIdentity: StateCertificationHead | null = verificationHead
+      ? {
+          transitionId: verificationHead.transitionId,
+          label: verificationHead.label,
+          to: verificationHead.to,
+          version: verificationHead.version,
+        }
+      : null;
     let targets: StateTransitionRecord[];
-    if (input.labels && input.labels.length > 0) {
+    if (input.labels !== undefined) {
       const matches = new Map<string, StateTransitionRecord>();
-      for (const label of input.labels) {
+      for (const label of input.labels.filter((item) => item.trim().length > 0)) {
         const { transitions } = this.history({
           label,
           includeArchived: input.includeArchived === true,
@@ -709,26 +914,66 @@ export class StateStore {
       targets = [...matches.values()].sort(
         (left, right) => left.sequence - right.sequence,
       );
-    } else {
-      const head = this.getHead();
-      if (!head) return { results: [], violated: false };
+    } else if (verificationHead) {
       const { transitions } = this.history({
         includeArchived: input.includeArchived === true,
       });
       const match = transitions.find(
-        (record) => record.transitionId === head.transitionId,
+        (record) => record.transitionId === verificationHead.transitionId,
       );
       targets = match ? [match] : [];
+    } else {
+      targets = [];
     }
+
+    const certificationTargets: StateCertificationTarget[] = targets.map((target) => ({
+      transitionId: target.transitionId,
+      label: target.label,
+      to: target.to,
+    }));
+    const evidenceDigest = digest(
+      targets.map((target) => ({
+        transitionId: target.transitionId,
+        label: target.label,
+        to: target.to,
+        evidence: target.evidence ?? [],
+      })),
+    );
     const results: VerifyResult[] = [];
+    const failures: VerificationFailure[] = [];
+    if (targets.length === 0) {
+      failures.push({
+        reason: "missing-target",
+        message:
+          input.labels === undefined
+            ? "No current state transition is available to verify"
+            : "No active state transitions matched the requested labels",
+      });
+    }
+
     for (const target of targets) {
       const evidence = target.evidence ?? [];
-      for (const command of evidence) {
-        const result = await runCommand(command, {
-          cwd: input.cwd,
-          timeoutMs: input.timeoutMs ?? 30_000,
-          ...(input.signal ? { signal: input.signal } : {}),
+      if (evidence.length === 0) {
+        failures.push({
+          reason: "missing-evidence",
+          message: `Transition "${target.label}" has no executable evidence`,
+          transitionId: target.transitionId,
+          label: target.label,
         });
+      }
+      for (const command of evidence) {
+        const result: CommandResult = input.signal?.aborted
+          ? {
+              status: "error",
+              exitCode: null,
+              output: "",
+              error: "aborted before execution",
+            }
+          : await runCommand(command, {
+              cwd: input.cwd,
+              timeoutMs: input.timeoutMs ?? 30_000,
+              ...(input.signal ? { signal: input.signal } : {}),
+            });
         results.push({
           claim: target.summary,
           command,
@@ -739,18 +984,80 @@ export class StateStore {
         });
       }
     }
-    const violated = results.some((result) => result.status === "violated");
-    if (violated) {
+
+    for (const result of results) {
+      if (result.status === "confirmed") continue;
+      failures.push({
+        reason: result.status === "violated" ? "nonzero-exit" : "execution-error",
+        message:
+          result.status === "violated"
+            ? `Evidence exited nonzero (${result.exitCode ?? "unknown"}): ${result.command}`
+            : `Evidence could not be confirmed: ${result.command}${result.error ? ` (${result.error})` : ""}`,
+        command: result.command,
+        status: result.status,
+        exitCode: result.exitCode,
+        ...(result.error !== undefined ? { error: result.error } : {}),
+      });
+    }
+
+    const certified =
+      results.length > 0 &&
+      failures.length === 0 &&
+      results.every((result) => result.status === "confirmed");
+    const violated = !certified;
+    const resultDigest = digest({ results, failures });
+    if (!certified) {
       await this.store.publish({
         topic: STATE_TOPIC,
         kind: "state.violated",
         from: input.identity,
-        text: "state violation",
+        text: "state certification blocked",
         data: {
-          results: results.filter((result) => result.status === "violated"),
+          certified,
+          evidenceDigest,
+          resultDigest,
+          targets: certificationTargets,
+          results: results.filter((result) => result.status !== "confirmed"),
+          reasons: failures,
         },
       });
+      return {
+        results,
+        certified,
+        violated,
+        certificationStatus: "failed",
+        evidenceDigest,
+        resultDigest,
+        failures,
+      };
     }
-    return { results, violated };
+
+    const ts = Date.now();
+    const event = await this.store.publish({
+      topic: STATE_TOPIC,
+      kind: "state.certified",
+      from: input.identity,
+      text: "state certified",
+      data: {
+        certificationStatus: "certified",
+        targets: certificationTargets,
+        head: headIdentity,
+        evidenceDigest,
+        resultDigest,
+        ts,
+      },
+    });
+    const certificate = toCertificate(event, this.getHead());
+    if (!certificate) throw new Error("State certificate event was malformed");
+    return {
+      results,
+      certified,
+      violated,
+      certificationStatus: "certified",
+      evidenceDigest,
+      resultDigest,
+      failures,
+      certificate,
+    };
   }
 }

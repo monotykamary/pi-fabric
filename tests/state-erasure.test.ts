@@ -79,7 +79,7 @@ describe("structural decision-point counting", () => {
   });
 });
 
-describe("certified complexity transitions", () => {
+describe("evidence-attached complexity transitions", () => {
   it("records a baseline and embeds subsequent deltas in transition events", async () => {
     const project = createRoot("pi-fabric-erasure-project-");
     const file = "src/counter.ts";
@@ -141,7 +141,7 @@ describe("certified complexity transitions", () => {
     });
   });
 
-  it("rejects uncertified reductions, accepts evidence, and replays it", async () => {
+  it("rejects reductions without evidence and keeps attached reductions pending until verify", async () => {
     const project = createRoot("pi-fabric-erasure-project-");
     const file = "src/reducer.ts";
     writeFixture(project, file, "if (ready) run();\ncatchError: while (open) wait();\n");
@@ -172,13 +172,13 @@ describe("certified complexity transitions", () => {
         identity,
         project,
       ),
-    ).rejects.toThrow(/deleting error handling.*abstraction from vandalism.*state\.verify/s);
+    ).rejects.toThrow(/deleting error handling.*abstraction from vandalism.*remains pending.*state\.verify/s);
     expect(mesh.read({ topic: STATE_TOPIC })).toHaveLength(1);
     expect(mesh.get(`${COMPLEXITY_KEY_PREFIX}${file}`)?.version).toBe(1);
 
     const accepted = await store.transition(
       {
-        label: "certified-erase",
+        label: "evidence-attached-erase",
         from: "before-erasure",
         to: "after-erasure",
         summary: "the same behavior now has fewer branches",
@@ -189,13 +189,34 @@ describe("certified complexity transitions", () => {
       project,
     );
     expect(accepted.event.data).toMatchObject({
+      certificationStatus: "pending",
       complexity: { netDelta: -2, files: [{ previous: 2, current: 0, delta: -2 }] },
+    });
+    expect(accepted.head).toMatchObject({ certificationStatus: "pending" });
+    expect(store.history().transitions.at(-1)).toMatchObject({
+      label: "evidence-attached-erase",
+      certificationStatus: "pending",
     });
 
     const verification = await store.verify({ cwd: project, identity });
     expect(verification).toMatchObject({
+      certified: true,
       violated: false,
+      certificationStatus: "certified",
       results: [{ command: `test -f ${file}`, status: "confirmed" }],
+      certificate: {
+        current: true,
+        targets: [{ transitionId: accepted.event.id }],
+      },
+    });
+    expect(store.get().head).toMatchObject({
+      transitionId: accepted.event.id,
+      certificationStatus: "certified",
+      certificate: { current: true },
+    });
+    expect(store.history().transitions.at(-1)).toMatchObject({
+      certificationStatus: "certified",
+      certificate: { targets: [{ transitionId: accepted.event.id }] },
     });
   });
 
@@ -291,7 +312,12 @@ describe("representation archives", () => {
       cwd: process.cwd(),
       identity,
     });
-    expect(hidden.results).toEqual([]);
+    expect(hidden).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [],
+      failures: [{ reason: "missing-target" }],
+    });
     const revealed = await store.verify({
       labels: ["old-hypothesis"],
       includeArchived: true,

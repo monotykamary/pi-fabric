@@ -30,7 +30,7 @@ const transitionSchema = {
       type: "array",
       items: { type: "string" },
       description:
-        "Shell commands that grounded this belief. state.verify re-runs them; exit 0 is confirmed, non-zero is violated.",
+        "Trusted shell commands attached as evidence. Attachment is not certification; state.verify must run at least one command and confirm every result.",
     },
     tags: { type: "array", items: { type: "string" } },
     kind: {
@@ -67,7 +67,7 @@ const verifySchema = {
       type: "array",
       items: { type: "string" },
       description:
-        "Verify transitions matching these labels (by transition.label, from, or to). Omit to verify the current head.",
+        "Verify transitions matching these labels (by transition.label, from, or to). Omit to verify the current head; an empty or unmatched selection fails closed.",
     },
     includeArchived: {
       type: "boolean",
@@ -135,7 +135,8 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "get",
-    description: "Return the current state head, goal, compact complexity summary, and recent labels",
+    description:
+      "Return the current state head, goal, compact complexity summary, recent labels, and current/recent certification state",
     inputSchema: emptySchema,
     risk: "read",
     namespace: "state",
@@ -157,7 +158,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "verify",
     description:
-      "Re-run evidence commands for the current head (or given labels); publishes a state.violated event on any violation",
+      "Re-run evidence for the current head (or given labels); fail closed unless at least one command runs and every result is confirmed",
     inputSchema: verifySchema,
     risk: "execute",
     namespace: "state",
@@ -267,9 +268,9 @@ export class StateProvider implements FabricProvider {
         return { event, head };
       }
       case "get": {
-        const { head, goal, complexity } = this.#store.get();
+        const { head, goal, complexity, certification } = this.#store.get();
         const { labels } = this.#store.history({ limit: 20 });
-        return { head, goal, complexity, recentLabels: labels };
+        return { head, goal, complexity, certification, recentLabels: labels };
       }
       case "history": {
         const label = typeof args.label === "string" ? args.label : undefined;
@@ -311,9 +312,9 @@ export class StateProvider implements FabricProvider {
           identity: this.#identity,
         });
         context.update(
-          result.violated
-            ? "State verification found violations"
-            : `State verification: ${result.results.length} evidence command(s) confirmed`,
+          result.certified
+            ? `State certified: ${result.results.length} evidence command(s) confirmed`
+            : "State certification blocked; violation details were published",
         );
         return result;
       }

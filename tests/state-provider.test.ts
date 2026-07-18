@@ -163,20 +163,200 @@ describe("StateStore", () => {
       identity,
     );
 
-    const { results, violated } = await store.verify({
+    const { results, certified, violated, failures } = await store.verify({
       cwd: os.tmpdir(),
       identity,
     });
     expect(results).toHaveLength(2);
     expect(results[0]?.status).toBe("confirmed");
     expect(results[1]?.status).toBe("violated");
+    expect(certified).toBe(false);
     expect(violated).toBe(true);
+    expect(failures).toMatchObject([{ reason: "nonzero-exit", command: "exit 1" }]);
 
     const events = mesh.read({ topic: STATE_TOPIC });
     const violation = events.find((event) => event.kind === "state.violated");
     expect(violation).toBeDefined();
     expect(violation?.data).toMatchObject({
+      certified: false,
       results: [{ status: "violated", command: "exit 1" }],
+      reasons: [{ reason: "nonzero-exit", command: "exit 1" }],
+    });
+  });
+
+  it("fails closed when there is no target, no matching target, or no evidence", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+
+    const noHead = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(noHead).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [],
+      failures: [{ reason: "missing-target" }],
+    });
+
+    await store.transition(
+      { label: "empty", to: "unsubstantiated", summary: "claim without evidence" },
+      identity,
+    );
+    const noEvidence = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(noEvidence).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [],
+      failures: [{ reason: "missing-evidence", label: "empty" }],
+    });
+
+    const noMatch = await store.verify({
+      labels: ["missing"],
+      cwd: os.tmpdir(),
+      identity,
+    });
+    expect(noMatch).toMatchObject({
+      certified: false,
+      violated: true,
+      failures: [{ reason: "missing-target" }],
+    });
+    const emptySelection = await store.verify({ labels: [], cwd: os.tmpdir(), identity });
+    expect(emptySelection).toMatchObject({
+      certified: false,
+      violated: true,
+      failures: [{ reason: "missing-target" }],
+    });
+    expect(
+      mesh.read({ topic: STATE_TOPIC }).filter((event) => event.kind === "state.violated"),
+    ).toHaveLength(4);
+  });
+
+  it("fails closed on spawn errors, timeouts, and cancellation", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    await store.transition(
+      {
+        label: "execution-failures",
+        to: "unchecked",
+        summary: "commands must execute cleanly",
+        evidence: ["true"],
+      },
+      identity,
+    );
+
+    const missingCwd = path.join(os.tmpdir(), `missing-state-cwd-${Date.now()}`);
+    const spawnError = await store.verify({ cwd: missingCwd, identity });
+    expect(spawnError).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [{ status: "error", exitCode: null }],
+      failures: [{ reason: "execution-error" }],
+    });
+
+    await store.transition(
+      {
+        label: "timeout",
+        from: "unchecked",
+        to: "still-unchecked",
+        summary: "long evidence times out",
+        evidence: ["while :; do :; done"],
+      },
+      identity,
+    );
+    const timedOut = await store.verify({ cwd: os.tmpdir(), timeoutMs: 20, identity });
+    expect(timedOut).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [{ status: "error", error: "timeout after 20ms" }],
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    const cancelled = await store.verify({
+      cwd: os.tmpdir(),
+      signal: controller.signal,
+      identity,
+    });
+    expect(cancelled).toMatchObject({
+      certified: false,
+      violated: true,
+      results: [{ status: "error", error: "aborted before execution" }],
+      failures: [{ reason: "execution-error" }],
+    });
+
+    const violationEvents = mesh
+      .read({ topic: STATE_TOPIC })
+      .filter((event) => event.kind === "state.violated");
+    expect(violationEvents).toHaveLength(3);
+    for (const event of violationEvents) {
+      expect(event.data).toMatchObject({ reasons: [{ reason: "execution-error" }] });
+    }
+  });
+
+  it("publishes deterministic certificates and does not report them current after head changes", async () => {
+    const mesh = createStore();
+    const store = new StateStore(mesh);
+    const transition = await store.transition(
+      {
+        label: "checked",
+        to: "checked-v1",
+        summary: "the evidence passes",
+        evidence: ["printf stable"],
+      },
+      identity,
+    );
+
+    const first = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(first).toMatchObject({
+      certified: true,
+      violated: false,
+      certificationStatus: "certified",
+      results: [{ status: "confirmed", output: "stable" }],
+      certificate: {
+        current: true,
+        targets: [{ transitionId: transition.event.id, label: "checked" }],
+        head: { transitionId: transition.event.id, version: 1 },
+      },
+    });
+    expect(first.evidenceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(first.resultDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+
+    const repeated = await store.verify({ cwd: os.tmpdir(), identity });
+    expect(repeated.evidenceDigest).toBe(first.evidenceDigest);
+    expect(repeated.resultDigest).toBe(first.resultDigest);
+    const certificateEvents = mesh
+      .read({ topic: STATE_TOPIC })
+      .filter((event) => event.kind === "state.certified");
+    expect(certificateEvents).toHaveLength(2);
+    expect(certificateEvents[0]?.data).toMatchObject({
+      certificationStatus: "certified",
+      targets: [{ transitionId: transition.event.id, label: "checked", to: "checked-v1" }],
+      head: { transitionId: transition.event.id, version: 1 },
+      evidenceDigest: first.evidenceDigest,
+      resultDigest: first.resultDigest,
+    });
+    expect(store.get().certification.current?.targets[0]?.transitionId).toBe(
+      transition.event.id,
+    );
+
+    await store.transition(
+      {
+        label: "changed",
+        from: "checked-v1",
+        to: "checked-v2",
+        summary: "the head changed",
+        evidence: ["true"],
+      },
+      identity,
+    );
+    const snapshot = store.get();
+    expect(snapshot.certification.current).toBeNull();
+    expect(snapshot.certification.recent[0]).toMatchObject({
+      current: false,
+      targets: [{ transitionId: transition.event.id }],
+    });
+    expect(store.history().transitions[0]).toMatchObject({
+      label: "checked",
+      certificationStatus: "certified",
+      certificate: { current: false },
     });
   });
 
