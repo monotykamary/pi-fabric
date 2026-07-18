@@ -152,9 +152,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       name: "fabric_exec",
       label: "Fabric",
       description:
-        "Execute type-checked TypeScript in a QuickJS sandbox for Pi core tools, discovery, and extensions. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
+        "Execute type-checked TypeScript in a QuickJS sandbox for Pi core tools, MCP, Fabric providers, discovery, and extensions. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
       promptSnippet:
-        "Pi core tools, tool discovery, and extensions",
+        "Pi core tools, MCP, Fabric providers, discovery, and extensions",
       promptGuidelines: [
         "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Return only the compact final value; intermediate results stay in the sandbox.",
       ],
@@ -169,7 +169,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       parameters: Type.Object({
         code: Type.String({
           description:
-            "TypeScript function body. Top-level await and return are supported. Globals: `tools`, `print`, `π` (named strings via the `strings` param); full-code mode adds `pi` (core tools) and `extensions`. See session guidance / `fabric-exec` skill for surfaces and exact signatures.",
+            "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. See session guidance / `fabric-exec` skill for exact signatures.",
         }),
         strings: Type.Optional(
           Type.Record(Type.String(), Type.String(), {
@@ -859,8 +859,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     toolOwnership.apply(effectiveFullCodeMode);
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const guidance = (effectiveFullCodeMode
-      ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nReturns: `pi.read`/`pi.grep`/`pi.find`/`pi.ls` → string; `pi.bash`/`pi.edit`/`pi.write` → `{ok, output, details}` (read `.output`).\nExamples: `pi.read('/x')` · `pi.bash({cmd:'ls'})` · `pi.grep('TODO','src')` · `pi.grep({regex:'TODO', ic:true, ctx:2})` · `pi.find('*.ts','src')` · `pi.edit({path:'/x', old:'a', new:'b'})` · `pi.write({path:'/y', text:'z'})` · `pi.ls('src')`.\nShorthands (all accepted): `cmd`/`shell`→command · `query`/`regex`/`search`→pattern · `file`/`dir`→path · `ic`→ignoreCase · `ctx`→context · `max`→limit · `start`→offset · `old`→oldText · `new`/`replacement`→newText · `text`/`contents`→content · `timeoutMs`→timeout.\n`tools` is discovery + generic calls only (`providers`/`list`/`search`/`describe`/`call`/`models`); call MCP/extension tools via `extensions.<tool>(options)` or `tools.call({ref, args})`. `pi` is the core tools; `π.<key>` is named strings from the `strings` param (not a tool)."
-      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Use `tools` (`tools.search`/`tools.describe`/`tools.call`/`tools.list`) to discover and invoke MCP and Fabric providers; other surfaces are opt-in via user-loaded skills.")
+      ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nReturns: `pi.read`/`pi.grep`/`pi.find`/`pi.ls` → string; `pi.bash`/`pi.edit`/`pi.write` → `{ok, output, details}` (read `.output`).\nExamples: `pi.read('/x')` · `pi.bash({cmd:'ls'})` · `pi.grep('TODO','src')` · `pi.grep({regex:'TODO', ic:true, ctx:2})` · `pi.find('*.ts','src')` · `pi.edit({path:'/x', old:'a', new:'b'})` · `pi.write({path:'/y', text:'z'})` · `pi.ls('src')`.\nShorthands (all accepted): `cmd`/`shell`→command · `query`/`regex`/`search`→pattern · `file`/`dir`→path · `ic`→ignoreCase · `ctx`→context · `max`→limit · `start`→offset · `old`→oldText · `new`/`replacement`→newText · `text`/`contents`→content · `timeoutMs`→timeout.\n`tools` is discovery + generic calls only (`providers`/`list`/`search`/`describe`/`call`/`models`). Call known MCP tools as `mcp.<sanitized_server>.<sanitized_tool>(args)` (for example `mcp.fal_ai.get_model_schema(...)`), captured tools as `extensions.<tool>(args)`, and stable providers as `memory.*`, `state.*`, `schema.*`, or `compact.*`. Use `tools.call({ref,args})` for computed refs. `pi` is the core tools; `π.<key>` is named strings (not a tool)."
+      : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable. Call known actions through `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `compact.*`, `agents.*`, or `mesh.*`; use `tools.search`/`describe`/`list` for discovery and `tools.call({ref,args})` for computed refs. Other surfaces are opt-in via user-loaded skills.")
       + (schemaMode === "enforce"
         ? "\n\nSchema enforce mode is fixed for this session. Reads remain available, but protected-workspace changes must use schema.hypothesize → schema.verify → schema.commit in the same fabric_exec invocation. Direct pi.edit/write/bash, agents, state/mesh writes, compaction requests, MCP, extensions, and external providers are blocked by the host gate."
         : schemaMode === "audit"

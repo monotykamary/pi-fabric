@@ -4,12 +4,15 @@ MCP tools are available inside `fabric_exec` through the `mcp` surface, backed b
 
 ## Call a tool
 
-`mcp.<server>.<tool>(args)` takes a single options object matching the tool input schema. The server and tool names are whatever mcporter loaded.
+`mcp.<sanitized_server>.<sanitized_tool>(args)` takes one options object matching the tool input schema. JavaScript-safe names work unchanged; other names replace non-identifier characters with `_` (and gain a leading `_` when needed). Fabric resolves those aliases back to the names mcporter loaded.
 
 ```ts
 const result = await mcp.context7.resolve_library_id({ libraryName: "react", query: "hooks" });
-return result;
+const imageSchema = await mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" });
+return { result, imageSchema };
 ```
+
+The second call resolves MCP server `fal-ai` and tool `get-model-schema`.
 
 ## Server management
 
@@ -24,7 +27,7 @@ return mcp.project_docs.search({ query: "authentication" });
 
 ## Generic call
 
-`mcp.call({ server, tool, args? })` is for when a server or tool name cannot be expressed as property access.
+`mcp.call({ server, tool, args? })` is for exact names that cannot be expressed unambiguously as property access, or for names computed at runtime.
 
 ```ts
 return mcp.call({ server: "my-server", tool: "weird-tool-name", args: { q: "x" } });

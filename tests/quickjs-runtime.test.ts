@@ -157,6 +157,47 @@ return {
     expect(result.value).toMatchObject({ text: "deployed", isError: false });
   });
 
+  it("routes stable Fabric providers through first-class proxies", async () => {
+    const calls: Array<{ ref: string; args: Record<string, unknown> }> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+return Promise.all([
+  memory.recall({ query: "needle" }),
+  state.history({ limit: 2 }),
+  schema.status(),
+  compact.request({ reason: "context pressure" }),
+]);
+`,
+      async (ref, args) => {
+        calls.push({ ref, args });
+        return { ref };
+      },
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(calls).toEqual([
+      { ref: "memory.recall", args: { query: "needle" } },
+      { ref: "state.history", args: { limit: 2 } },
+      { ref: "schema.status", args: {} },
+      { ref: "compact.request", args: { reason: "context pressure" } },
+    ]);
+  });
+
+  it("routes JavaScript-safe MCP aliases through the direct MCP proxy", async () => {
+    const result = await new QuickJsRuntime().execute(
+      'return mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" });',
+      async (ref, args) => ({ ref, args }),
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({
+      ref: "mcp.fal_ai.get_model_schema",
+      args: { endpoint_id: "openai/gpt-image-2" },
+    });
+  });
+
   it("exposes durable mesh operations through the host bridge", async () => {
     const result = await new QuickJsRuntime().execute(
       `

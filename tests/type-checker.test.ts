@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GUEST_TYPE_DECLARATIONS } from "../src/runtime/guest-types.js";
+import { GUEST_TYPE_DECLARATIONS, guestTypeDeclarations } from "../src/runtime/guest-types.js";
 import { typeCheckFabricCode } from "../src/runtime/type-checker.js";
 
 describe("Fabric guest type checker", () => {
@@ -20,6 +20,47 @@ console.log(review.status);
 return { mcpResult, review };
 `,
       GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
+  it("accepts typed first-class Fabric provider calls", () => {
+    const result = typeCheckFabricCode(
+      `
+const recalled = await memory.recall({ query: "proxy", branches: "active" });
+const current = await state.get();
+const status = await schema.status();
+const hypothesis = await schema.hypothesize({
+  label: "proxy-surface",
+  summary: "The direct provider surface is available",
+  evidence: [{ kind: "file_exists", path: "package.json" }],
+});
+const pending = await compact.status();
+return { recalled, current, mode: status.mode, hypothesis: hypothesis.hypothesisId, pending };
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
+  it("rejects misspelled first-class provider argument keys", () => {
+    const result = typeCheckFabricCode(
+      'await compact.request({ reasno: "context pressure" }); return "never";',
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]?.message).toMatch(/reasno|known properties/i);
+  });
+
+  it("keeps first-class Fabric providers typed in orchestration-only mode", () => {
+    const declarations = guestTypeDeclarations(false);
+    expect(declarations).not.toContain("declare const pi: PiToolsApi");
+    expect(declarations).not.toContain("declare const extensions: FabricExtensionsApi");
+    expect(declarations).toContain("declare const schema: FabricSchemaApi");
+
+    const result = typeCheckFabricCode(
+      'const mode = (await schema.status()).mode; const matches = await memory.recall({ query: "x" }); return { mode, matches };',
+      declarations,
     );
     expect(result.errors).toEqual([]);
   });

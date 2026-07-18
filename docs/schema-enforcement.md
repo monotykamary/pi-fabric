@@ -53,52 +53,41 @@ Use all steps in one `fabric_exec` invocation. Certificates are bound to its `pa
 3. `schema.commit` requires both Fabric write and execute approval. It compare-and-swap consumes the certificate exactly once, checks all bindings again, captures durable before images, applies bounded declared operations sequentially, and requires a nonempty typed postcondition set. Any failed operation, undeclared drift, or failed postcondition restores all declared paths. A failed rollback is recorded as `quarantined`; a successful rollback is `rolled_back`.
 4. `schema.abort` closes an uncommitted hypothesis and optionally its certificate. Fabric also abandons active artifacts when their `fabric_exec` invocation ends.
 
-The call shape uses the generic provider API:
+Known Schema actions use the typed first-class proxy; reserve `tools.call()` for refs computed at runtime:
 
 ```ts
-const hypothesis = await tools.call({
-  ref: "schema.hypothesize",
-  args: {
-    label: "update-parser",
-    summary: "The parser accepts the new local form without changing existing cases",
-    evidence: [
-      { kind: "file_sha256", path: "src/parser.ts", sha256: "sha256:<64 hex>" },
-      { kind: "trusted_command", name: "focused-tests" }
-    ]
-  }
-}) as { hypothesisId: string };
+const hypothesis = await schema.hypothesize({
+  label: "update-parser",
+  summary: "The parser accepts the new local form without changing existing cases",
+  evidence: [
+    { kind: "file_sha256", path: "src/parser.ts", sha256: "sha256:<64 hex>" },
+    { kind: "trusted_command", name: "focused-tests" }
+  ]
+});
 
-const verification = await tools.call({
-  ref: "schema.verify",
-  args: { hypothesisId: hypothesis.hypothesisId }
-}) as {
-  verified: boolean;
-  certificate?: string;
-  results: Array<{ evidence: { path?: string }; observedSha256?: string }>;
-};
+const verification = await schema.verify({
+  hypothesisId: hypothesis.hypothesisId
+});
 if (!verification.verified || !verification.certificate) return verification;
 const parserEvidence = verification.results.find(
   (result) => result.evidence.path === "src/parser.ts",
 );
 if (!parserEvidence?.observedSha256) return { verified: false, reason: "missing observed SHA-256" };
 
-return tools.call({
-  ref: "schema.commit",
-  args: {
-    hypothesisId: hypothesis.hypothesisId,
-    certificate: verification.certificate,
-    operations: [{
-      kind: "edit",
-      path: "src/parser.ts",
-      oldText: "old literal",
-      newText: "new literal",
-      expectedSha256: parserEvidence.observedSha256
-    }],
-    postconditions: [
-      { kind: "file_contains", path: "src/parser.ts", literal: "new literal" },
-      { kind: "trusted_command", name: "focused-tests" }
-    ]
-  }
+return schema.commit({
+  hypothesisId: hypothesis.hypothesisId,
+  certificate: verification.certificate,
+  operations: [{
+    kind: "edit",
+    path: "src/parser.ts",
+    oldText: "old literal",
+    newText: "new literal",
+    expectedSha256: parserEvidence.observedSha256
+  }],
+  postconditions: [
+    { kind: "file_contains", path: "src/parser.ts", literal: "new literal" },
+    { kind: "trusted_command", name: "focused-tests" }
+  ]
 });
 ```
 

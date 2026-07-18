@@ -27,6 +27,10 @@ describe("McpProvider", () => {
             command: process.execPath,
             args: [path.resolve("tests/fixtures/fake-mcp-server.mjs")],
           },
+          "fal-ai": {
+            command: process.execPath,
+            args: [path.resolve("tests/fixtures/fake-mcp-server.mjs")],
+          },
         },
         imports: [],
       }),
@@ -40,7 +44,9 @@ describe("McpProvider", () => {
     });
     try {
       const listed = await provider.list({ namespace: "test" }, context);
-      expect(listed).toMatchObject([{ name: "test.echo-value", risk: "network" }]);
+      expect(listed).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "test.echo-value", risk: "network" })]),
+      );
       const described = await provider.describe("test.echo_value", context);
       expect(described?.inputSchema).toMatchObject({ required: ["value"] });
       await expect(provider.invoke("test.echo_value", { value: "hello" }, context)).resolves.toMatchObject({
@@ -49,6 +55,15 @@ describe("McpProvider", () => {
       await expect(provider.invoke("test.echo_value", { value: "again" }, context)).resolves.toMatchObject({
         text: "echo:again",
       });
+      const modelSchema = await provider.describe("fal_ai.get_model_schema", context);
+      expect(modelSchema?.name).toBe("fal-ai.get-model-schema");
+      await expect(
+        provider.invoke(
+          "fal_ai.get_model_schema",
+          { endpoint_id: "openai/gpt-image-2" },
+          context,
+        ),
+      ).resolves.toMatchObject({ text: "schema:openai/gpt-image-2" });
       const controller = new AbortController();
       const cancelled = provider.invoke(
         "test.echo_value",

@@ -51,7 +51,7 @@ return {
 };
 ```
 
-Independent calls run in parallel; only the returned object enters the model context.
+Independent calls run in parallel; only the returned object enters the model context. Known providers use concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`; `tools.call({ ref, args })` remains the fallback for refs discovered or computed at runtime.
 
 ## Install
 

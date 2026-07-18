@@ -6,12 +6,10 @@ disable-model-invocation: true
 
 # Fabric Schema
 
-First read the active mode. Use the real generic provider API; `schema` and `state` are provider names, not guaranteed TypeScript globals.
+First read the active mode through the typed first-class provider proxy. Use `tools.call()` only when a provider ref is computed at runtime.
 
 ```ts
-const status = await tools.call({ ref: "schema.status", args: {} }) as {
-  mode: "off" | "audit" | "enforce";
-};
+const status = await schema.status();
 ```
 
 - `off` is the compatibility default. `state.*` can be used as workflow discipline, but it does not gate direct `pi.edit`, `pi.write`, or `pi.bash`.
@@ -27,31 +25,18 @@ Observe with allowed reads. Build literal or SHA evidence; use a trusted command
 ```ts
 await pi.read({ path: "src/parser.ts" });
 
-const hypothesis = await tools.call({
-  ref: "schema.hypothesize",
-  args: {
-    label: "parser-local-form",
-    summary: "Relative to the current head, the declared parser edit accepts the local form while focused tests remain green",
-    evidence: [
-      { kind: "file_contains", path: "src/parser.ts", literal: "old literal" },
-      { kind: "trusted_command", name: "parser-focused-tests" }
-    ]
-  }
-}) as { hypothesisId: string };
+const hypothesis = await schema.hypothesize({
+  label: "parser-local-form",
+  summary: "Relative to the current head, the declared parser edit accepts the local form while focused tests remain green",
+  evidence: [
+    { kind: "file_contains", path: "src/parser.ts", literal: "old literal" },
+    { kind: "trusted_command", name: "parser-focused-tests" }
+  ]
+});
 
-const verification = await tools.call({
-  ref: "schema.verify",
-  args: { hypothesisId: hypothesis.hypothesisId }
-}) as {
-  verified: boolean;
-  certificate?: string;
-  reason?: string;
-  results: Array<{
-    evidence: { kind: string; path?: string };
-    status: "confirmed" | "nonconfirmed" | "error";
-    observedSha256?: string;
-  }>;
-};
+const verification = await schema.verify({
+  hypothesisId: hypothesis.hypothesisId
+});
 
 if (!verification.verified || !verification.certificate) {
   // Missing, empty, stale, nonconfirmed, errored, timed-out, cancelled, or
@@ -63,23 +48,20 @@ const parserEvidence = verification.results.find(
 );
 if (!parserEvidence?.observedSha256) return { void: true, reason: "missing observed SHA-256" };
 
-const outcome = await tools.call({
-  ref: "schema.commit",
-  args: {
-    hypothesisId: hypothesis.hypothesisId,
-    certificate: verification.certificate,
-    operations: [{
-      kind: "edit",
-      path: "src/parser.ts",
-      oldText: "old literal",
-      newText: "new literal",
-      expectedSha256: parserEvidence.observedSha256
-    }],
-    postconditions: [
-      { kind: "file_contains", path: "src/parser.ts", literal: "new literal" },
-      { kind: "trusted_command", name: "parser-focused-tests" }
-    ]
-  }
+const outcome = await schema.commit({
+  hypothesisId: hypothesis.hypothesisId,
+  certificate: verification.certificate,
+  operations: [{
+    kind: "edit",
+    path: "src/parser.ts",
+    oldText: "old literal",
+    newText: "new literal",
+    expectedSha256: parserEvidence.observedSha256
+  }],
+  postconditions: [
+    { kind: "file_contains", path: "src/parser.ts", literal: "new literal" },
+    { kind: "trusted_command", name: "parser-focused-tests" }
+  ]
 });
 return outcome;
 ```
@@ -89,9 +71,9 @@ Use `write` with `expected: { absent: true }` for a new file or `expected: { sha
 The certificate is random, short-lived, single-use, and bound to the hypothesis, state head/version, workspace fingerprint/generation, and current `fabric_exec` invocation. Do not return it for later use. Fabric abandons an uncommitted hypothesis/certificate when this invocation ends. Call `schema.abort` explicitly when stopping early:
 
 ```ts
-await tools.call({
-  ref: "schema.abort",
-  args: { hypothesisId: hypothesis.hypothesisId, certificate: verification.certificate }
+await schema.abort({
+  hypothesisId: hypothesis.hypothesisId,
+  certificate: verification.certificate
 });
 ```
 
@@ -114,18 +96,13 @@ For a claimed complexity reduction, set `complexityReduction: true` on the hypot
 When mode is `off`, the older labeled state layer remains useful:
 
 ```ts
-const transition = await tools.call({
-  ref: "state.transition",
-  args: {
-    label: "claim",
-    to: "claim-stated",
-    summary: "A falsifiable delta",
-    evidence: ["pnpm exec vitest run tests/focused.test.ts"]
-  }
+const transition = await state.transition({
+  label: "claim",
+  to: "claim-stated",
+  summary: "A falsifiable delta",
+  evidence: ["pnpm exec vitest run tests/focused.test.ts"]
 });
-const verification = await tools.call({ ref: "state.verify", args: {} }) as {
-  certified: boolean;
-};
+const verification = await state.verify();
 if (!verification.certified) return { void: true, transition, verification };
 ```
 

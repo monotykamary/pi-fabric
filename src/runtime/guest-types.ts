@@ -309,6 +309,245 @@ interface FabricMeshApi {
   put<T = unknown>(args: { key: string; value: T; ifVersion?: number }): Promise<FabricMeshStateEntry<T>>;
   delete(args: { key: string; ifVersion?: number }): Promise<{ deleted: boolean; version?: number }>;
 }
+type FabricMemoryBranches = "active" | "all";
+interface FabricMemoryEntryRange {
+  first: number;
+  last: number;
+}
+interface FabricMemoryRecallArgs {
+  query?: string;
+  queryMode?: "literal" | "regex";
+  expectedSourceHash?: string;
+  expectedLineageFingerprint?: string;
+  branches?: FabricMemoryBranches;
+  scope?: string;
+  page?: number;
+  pageSize?: number;
+  role?: string;
+  tool?: string;
+  since?: number;
+  until?: number;
+  entryRange?: FabricMemoryEntryRange;
+}
+interface FabricMemoryRecallResult {
+  scope?: string;
+  branches?: FabricMemoryBranches;
+  query?: string | null;
+  queryMode?: "literal" | "regex";
+  matchedCount?: number;
+  totalMatches?: number;
+  totalItems?: number;
+  segmentCount?: number;
+  segments?: unknown[];
+  digestHits?: unknown[];
+  items?: unknown[];
+  page?: number;
+  pageSize?: number;
+  hasNext?: boolean;
+  coverage?: unknown;
+  text?: string;
+  error?: { code: string; message: string; [key: string]: unknown };
+}
+interface FabricMemoryExpandArgs {
+  session: string;
+  expectedSourceHash?: string;
+  expectedLineageFingerprint?: string;
+  branches?: FabricMemoryBranches;
+  indices?: number[];
+  entryIds?: string[];
+  operationAddresses?: string[];
+  entryRange?: FabricMemoryEntryRange;
+}
+interface FabricMemoryExpandResult {
+  session?: string;
+  sourceHash?: string;
+  branches?: FabricMemoryBranches;
+  lineageFingerprint?: string;
+  expanded?: unknown[];
+  error?: { code: string; message: string; [key: string]: unknown };
+}
+interface FabricMemorySessionInfo {
+  id: string;
+  file: string;
+  cwd: string;
+  mtime: number;
+  entryCount: number;
+  tier: "hot" | "cold";
+  branches: FabricMemoryBranches;
+  lineageFingerprint: string | null;
+}
+interface FabricMemoryApi {
+  recall(args?: FabricMemoryRecallArgs): Promise<FabricMemoryRecallResult>;
+  expand(args: FabricMemoryExpandArgs): Promise<FabricMemoryExpandResult>;
+  sessions(args?: { scope?: string; branches?: FabricMemoryBranches }): Promise<{
+    scope?: string;
+    branches?: FabricMemoryBranches;
+    sessions?: FabricMemorySessionInfo[];
+    error?: { code: string; message: string; [key: string]: unknown };
+  }>;
+}
+interface FabricStateTransitionArgs {
+  label: string;
+  from?: string;
+  to: string;
+  summary: string;
+  evidence?: string[];
+  tags?: string[];
+  kind?: "state" | "representation";
+  complexity?: { files: string[] };
+  force?: boolean;
+}
+interface FabricStateComplexityFile {
+  file: string;
+  supported: boolean;
+  language?: string;
+  current?: number;
+  recorded?: number;
+  delta?: number;
+  recordedDelta?: number;
+}
+interface FabricStateVerificationResult {
+  certified: boolean;
+  violated: boolean;
+  certificationStatus: "certified" | "failed";
+  results: unknown[];
+  failures: unknown[];
+  certificate?: unknown;
+  reportingError?: string;
+  evidenceDigest: string;
+  resultDigest: string;
+}
+interface FabricStateApi {
+  transition(args: FabricStateTransitionArgs): Promise<{ event: FabricMeshEvent; head: unknown }>;
+  get(): Promise<{
+    head: unknown | null;
+    goal: { check: string; description?: string } | null;
+    complexity: { files: number; decisionPoints: number; lastNetDelta: number };
+    certification: { current: unknown | null; recent: unknown[] };
+    recentLabels: string[];
+  }>;
+  history(args?: { label?: string; limit?: number; includeArchived?: boolean }): Promise<{
+    transitions: unknown[];
+    labels: string[];
+    certifications: unknown[];
+  }>;
+  complexity(args?: { files?: string[] }): Promise<{ files: FabricStateComplexityFile[]; netDelta: number }>;
+  verify(args?: { labels?: string[]; includeArchived?: boolean; timeoutMs?: number }): Promise<FabricStateVerificationResult>;
+  goal(args: { check: string; description?: string }): Promise<FabricMeshStateEntry<{ check: string; description?: string }>>;
+  checkGoal(args?: { timeoutMs?: number }): Promise<{
+    passed: boolean;
+    output: string;
+    exitCode: number | null;
+    error?: string;
+  }>;
+}
+type FabricSchemaEvidence =
+  | { kind: "file_exists"; path: string }
+  | { kind: "file_absent"; path: string }
+  | { kind: "file_contains"; path: string; literal: string }
+  | { kind: "file_sha256"; path: string; sha256: string }
+  | { kind: "trusted_command"; name: string };
+type FabricSchemaFileOperation =
+  | { kind: "write"; path: string; content: string; expected: { absent: true } | { sha256: string } }
+  | { kind: "edit"; path: string; oldText: string; newText: string; expectedSha256: string }
+  | { kind: "delete"; path: string; expectedSha256: string };
+interface FabricSchemaEvidenceResult {
+  evidence: FabricSchemaEvidence;
+  status: "confirmed" | "nonconfirmed" | "error";
+  detail: string;
+  exitCode?: number | null;
+  output?: string;
+  observedSha256?: string;
+}
+interface FabricSchemaStatus {
+  mode: "off" | "audit" | "enforce";
+  certificateTtlMs: number;
+  maxFiles: number;
+  maxBytes: number;
+  trustedCommands: string[];
+  generation: number;
+  lastOutcome: "committed" | "rolled_back" | "quarantined" | null;
+  hypotheses: Array<{
+    id: string;
+    label: string;
+    status: string;
+    generation: number;
+    updatedAt: number;
+  }>;
+}
+interface FabricSchemaVerificationResult {
+  verified: boolean;
+  hypothesisId: string;
+  certificate?: string;
+  issuedAt?: number;
+  expiresAt?: number;
+  reason?: string;
+  results: FabricSchemaEvidenceResult[];
+}
+interface FabricSchemaCommitResult {
+  outcome: "committed" | "rolled_back" | "quarantined";
+  transactionId: string;
+  generation?: number;
+  paths?: string[];
+  postconditions?: FabricSchemaEvidenceResult[];
+  complexityReductionCertified?: boolean;
+  stateTransition?: unknown;
+  error?: string;
+  rollbackError?: string;
+}
+interface FabricSchemaApi {
+  status(): Promise<FabricSchemaStatus>;
+  hypothesize(args: {
+    label: string;
+    summary: string;
+    evidence: FabricSchemaEvidence[];
+    complexityReduction?: boolean;
+  }): Promise<{
+    hypothesisId: string;
+    status: string;
+    state: unknown;
+    fingerprint: string;
+    generation: number;
+  }>;
+  verify(args: { hypothesisId: string }): Promise<FabricSchemaVerificationResult>;
+  commit(args: {
+    hypothesisId: string;
+    certificate: string;
+    operations: FabricSchemaFileOperation[];
+    postconditions: FabricSchemaEvidence[];
+  }): Promise<FabricSchemaCommitResult>;
+  abort(args: { hypothesisId: string; certificate?: string }): Promise<{
+    aborted: true;
+    hypothesisId: string;
+  }>;
+}
+interface FabricCompactPendingIntent {
+  reason?: string;
+  instructions?: string;
+  preserve?: string[];
+  requestedBy: string;
+  requestedAt: number;
+}
+interface FabricCompactLastCommit {
+  at: number;
+  requestedBy: string;
+  status: "committed" | "failed";
+  summary?: string;
+  tokensBefore?: number;
+  estimatedTokensAfter?: number;
+  error?: string;
+}
+interface FabricCompactApi {
+  request(args?: {
+    reason?: string;
+    instructions?: string;
+    preserve?: string[];
+    requestedBy?: string;
+  }): Promise<{ requested: true; intent: FabricCompactPendingIntent }>;
+  status(): Promise<{ pending?: FabricCompactPendingIntent; last?: FabricCompactLastCommit }>;
+  cancel(): Promise<{ cancelled: true }>;
+}
+
 interface FabricWorkflowAgentOptions extends Omit<FabricAgentRequest, "task"> {
   label?: string;
 }
@@ -353,6 +592,10 @@ declare const extensions: FabricExtensionsApi;
 declare const agents: FabricAgentsApi;
 declare const mesh: FabricMeshApi;
 declare const mcp: FabricMcpApi;
+declare const memory: FabricMemoryApi;
+declare const state: FabricStateApi;
+declare const schema: FabricSchemaApi;
+declare const compact: FabricCompactApi;
 declare const council: FabricCouncilApi;
 declare const workflow: FabricWorkflowApi;
 declare function agent<T = string>(prompt: string, options?: FabricWorkflowAgentOptions): Promise<T>;

@@ -111,7 +111,7 @@ The entry is the latest recorded observation. The event log retains baselines an
 
 ## Actions
 
-Actions are discovered through `tools.call({ ref: "state.<action>", args })`.
+Known actions use the typed first-class `state.<action>(args)` proxy. Use `tools.describe({ ref: "state.<action>" })` to inspect a schema and `tools.call()` only for refs computed at runtime.
 
 ### `state.transition` — risk: `write`
 

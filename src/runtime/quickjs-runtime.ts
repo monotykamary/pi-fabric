@@ -188,12 +188,19 @@ globalThis["π"] = new Proxy(__piStrings, {
   getOwnPropertyDescriptor(target, prop) { return Reflect.getOwnPropertyDescriptor(target, prop); },
   has(target, prop) { return Object.prototype.hasOwnProperty.call(target, prop); }
 });
-globalThis.extensions = new Proxy({}, {
+// Stable providers share a lazy dispatch proxy; the guest declarations keep
+// their known actions typed while the registry remains the runtime authority.
+const __providerProxy = (provider) => new Proxy({}, {
   get(_target, property) {
-    if (property === "then") return undefined;
-    return (args = {}) => __call("extensions." + String(property), args);
+    if (property === "then" || typeof property === "symbol") return undefined;
+    return (args = {}) => __call(provider + "." + String(property), args);
   },
 });
+globalThis.extensions = __providerProxy("extensions");
+globalThis.memory = __providerProxy("memory");
+globalThis.state = __providerProxy("state");
+globalThis.schema = __providerProxy("schema");
+globalThis.compact = __providerProxy("compact");
 globalThis.agents = Object.freeze({
   run: (args) => __call("agents.run", args),
   spawn: (args) => __call("agents.spawn", args),

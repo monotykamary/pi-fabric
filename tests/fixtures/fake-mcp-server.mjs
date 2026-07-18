@@ -30,6 +30,16 @@ input.on("line", (line) => {
             additionalProperties: false,
           },
         },
+        {
+          name: "get-model-schema",
+          description: "Return a model schema",
+          inputSchema: {
+            type: "object",
+            properties: { endpoint_id: { type: "string" } },
+            required: ["endpoint_id"],
+            additionalProperties: false,
+          },
+        },
       ],
     });
     return;
@@ -37,7 +47,12 @@ input.on("line", (line) => {
   if (request.method === "tools/call") {
     const sendResult = () =>
       respond(request.id, {
-        content: [{ type: "text", text: `echo:${request.params.arguments.value}` }],
+        content: [{
+          type: "text",
+          text: request.params.name === "get-model-schema"
+            ? `schema:${request.params.arguments.endpoint_id}`
+            : `echo:${request.params.arguments.value}`,
+        }],
       });
     if (request.params.arguments.value === "__delay__") setTimeout(sendResult, 5_000);
     else sendResult();

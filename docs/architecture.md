@@ -37,7 +37,9 @@ const result = await tools.call({
 return result;
 ```
 
-Refs are namespaced: `pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`; bare names are rejected. `tools.providers()` → `[{name,description}]`; `tools.search({query,limit?})` → `FabricAction[]`; `tools.describe({ref})` → the full `FabricAction` (read its `inputSchema` first); `tools.call({ref,args?})`; `tools.list({provider?,namespace?,query?,limit?})`; `tools.models()` → Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})` → Claude Code runtime models. The model-facing `fabric-exec` skill holds the exact signatures and the read → describe → retry error loop.
+Known actions have first-class proxies and still cross the same registry path: `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, and `compact.*`. For example, `mcp.fal_ai.get_model_schema(args)` resolves the mcporter names `fal-ai` and `get-model-schema`. Captured extension tools use `extensions.<tool>(args)` in full code mode. Keep `tools.call()` for refs discovered or computed at runtime.
+
+Refs are namespaced: `pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`; bare names are rejected. `tools.providers()` → `[{name,description}]`; `tools.search({query,limit?})` → `FabricAction[]`; `tools.describe({ref})` → the full `FabricAction` (read its `inputSchema` first); `tools.call({ref,args?})`; `tools.list({provider?,namespace?,query?,limit?})`; `tools.models()` → Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})` → Claude Code runtime models. The model-facing `fabric-exec` skill holds the exact signatures and the read → describe → retry error loop.
 
 ## Tool-call robustness
 

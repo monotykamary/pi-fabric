@@ -506,18 +506,12 @@ describe("Schema transactions", () => {
     const service = new FabricExecutionService(registry, config, undefined, setup.controller);
     const result = await service.execute({
       code: `
-const hypothesis = await tools.call({
-  ref: "schema.hypothesize",
-  args: {
-    label: "runtime-cleanup",
-    summary: "runtime cleanup",
-    evidence: [{ kind: "file_exists", path: "a.txt" }],
-  },
-}) as { hypothesisId: string };
-return tools.call({
-  ref: "schema.verify",
-  args: { hypothesisId: hypothesis.hypothesisId },
+const hypothesis = await schema.hypothesize({
+  label: "runtime-cleanup",
+  summary: "runtime cleanup",
+  evidence: [{ kind: "file_exists", path: "a.txt" }],
 });
+return schema.verify({ hypothesisId: hypothesis.hypothesisId });
 `,
       signal: undefined,
       parentToolCallId: "runtime-cleanup",
