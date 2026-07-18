@@ -123,7 +123,8 @@ describe("compaction reconstruction QA", () => {
     expect(probes.some((probe) => probe.class === "content" && probe.id === "goal")).toBe(true);
     expect(probes.some((probe) => probe.class === "content" && probe.answer === "compaction.md")).toBe(true);
     expect(probes.some((probe) => probe.class === "content" && probe.answer === "read src/missing.ts: ENOENT: no such file or directory")).toBe(true);
-    expect(probes.some((probe) => probe.class === "content" && probe.answer === "abc1234")).toBe(true);
+    expect(probes.some((probe) => probe.id.startsWith("commit:"))).toBe(false);
+    expect(fixture.summary).not.toContain("[Commits]");
     expect(probes.some((probe) => probe.class === "address" && probe.id.startsWith("earlier-turn-address:"))).toBe(true);
     expect(probes.some((probe) => probe.class === "address" && probe.id === "footer-recall")).toBe(true);
     expect(checked.failed).toEqual([]);

@@ -1,14 +1,17 @@
 import type {
   CompactionResult,
   ExtensionAPI,
+  ExtensionContext,
   SessionBeforeCompactEvent,
   SessionBeforeTreeEvent,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
+import { clipUtf8 } from "./bounds.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
 import { compileFabricBranchSummary } from "./branch-summary.js";
 import {
   decodeCompactionInstructions,
+  type CompactionInstructionDecodeError,
   type CompactionInstructionPolicy,
 } from "./instructions.js";
 import { normalizeEntries } from "./normalize.js";
@@ -270,7 +273,6 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
     && hasFiniteNumbers(value.omittedCounts, [
       "goal",
       "files",
-      "commits",
       "outstanding",
       "earlierTurns",
       "transcript",
@@ -278,6 +280,8 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
     ])
     && (value.omittedCounts.activity === undefined
       || (typeof value.omittedCounts.activity === "number" && Number.isFinite(value.omittedCounts.activity)))
+    && (value.omittedCounts.commits === undefined
+      || (typeof value.omittedCounts.commits === "number" && Number.isFinite(value.omittedCounts.commits)))
     && typeof value.instructionPolicy.mode === "string"
     && instructionModes.has(value.instructionPolicy.mode)
     && typeof value.instructionPolicy.canonicalized === "boolean"
@@ -339,7 +343,19 @@ export const compileFabricSummary = (
   tokensBefore: number,
   enrichers: readonly CompactionEnricher[] = NO_BUILTIN_ENRICHERS,
   customInstructions?: string,
-): { compaction: CompactionResult<FabricCompactionDetailsV2> } | { cancel: true; reason: string } => {
+): { compaction: CompactionResult<FabricCompactionDetailsV2> } | {
+  cancel: true;
+  reason: string;
+  instructionError?: CompactionInstructionDecodeError;
+} => {
+  const instructions = decodeCompactionInstructions(customInstructions);
+  if (!instructions.ok) {
+    return {
+      cancel: true,
+      reason: `fabric: ${instructions.error.code}: ${instructions.error.message}`,
+      instructionError: instructions.error,
+    };
+  }
   const cut = computeCut(branchEntries);
   if (!cut.ok) return { cancel: true, reason: "fabric: nothing to compact" };
 
@@ -348,7 +364,6 @@ export const compileFabricSummary = (
   const projected = projectWithMetadata(source.events);
   const sections: Sections = projected.sections;
   runEnrichers(enrichers, source.events, sections);
-  const instructions = decodeCompactionInstructions(customInstructions);
 
   const summary = renderSummary(sections, {
     firstEntryId: source.range.first,
@@ -407,7 +422,6 @@ export const compileFabricSummary = (
 const SECTION_HEADERS: { key: keyof Sections; header: string }[] = [
   { key: "goal", header: "[Session Goal]" },
   { key: "files", header: "[Files And Changes]" },
-  { key: "commits", header: "[Commits]" },
   { key: "activity", header: "[Fabric Activity]" },
   { key: "outstanding", header: "[Outstanding Context]" },
   { key: "earlierTurns", header: "[Earlier Turns]" },
@@ -419,8 +433,16 @@ export interface CompactionHookOptions {
   enrichers?: readonly CompactionEnricher[];
 }
 
+const notifyInstructionError = (
+  context: ExtensionContext | undefined,
+  error: CompactionInstructionDecodeError,
+): void => {
+  if (!context?.hasUI) return;
+  context.ui.notify(clipUtf8(`Fabric compaction rejected: ${error.code}: ${error.message}`, 512), "error");
+};
+
 export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHookOptions): void => {
-  pi.on("session_before_compact", (event: SessionBeforeCompactEvent) => {
+  pi.on("session_before_compact", (event: SessionBeforeCompactEvent, context: ExtensionContext) => {
     if (event.customInstructions === "__pi_vcc__") return;
     if (options.getEngine() !== "fabric") return;
     const { preparation, branchEntries } = event;
@@ -431,6 +453,10 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
       event.customInstructions,
     );
     if ("cancel" in result) {
+      if (result.instructionError) {
+        notifyInstructionError(context, result.instructionError);
+        return { cancel: true };
+      }
       if ((event as SessionBeforeCompactEvent & { _piVccOverriding?: unknown })._piVccOverriding) {
         return;
       }
@@ -440,10 +466,15 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     return { compaction: result.compaction };
   });
 
-  pi.on("session_before_tree", (event: SessionBeforeTreeEvent) => {
+  pi.on("session_before_tree", (event: SessionBeforeTreeEvent, context: ExtensionContext) => {
     if (options.getEngine() !== "fabric") return;
     const { preparation } = event;
     if (!preparation.userWantsSummary) return;
+    const instructions = decodeCompactionInstructions(preparation.customInstructions);
+    if (!instructions.ok) {
+      notifyInstructionError(context, instructions.error);
+      return { cancel: true };
+    }
     const compiled = compileFabricBranchSummary(
       preparation.entriesToSummarize,
       preparation.customInstructions,

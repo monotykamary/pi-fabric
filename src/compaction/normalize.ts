@@ -53,7 +53,7 @@ interface BashEvent extends EventBase {
   command: string;
   isError: boolean;
   exitCode: number | null;
-  output: string;
+  error?: string;
 }
 
 interface FabricPhaseEvent extends EventBase {
@@ -227,7 +227,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
           command,
           isError,
           exitCode: null,
-          output: text,
+          ...(isError && text ? { error: text } : {}),
         });
       } else {
         push({ kind: "toolResult", entryId, sourceEntryId: entryId, toolCallId, toolName, isError, text });
@@ -277,15 +277,16 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
         output?: string;
       };
       const exitCode = typeof bash.exitCode === "number" ? bash.exitCode : null;
+      const isError = exitCode !== null && exitCode !== 0;
       push({
         kind: "bash",
         entryId,
         sourceEntryId: entryId,
         toolCallId: "",
         command: typeof bash.command === "string" ? bash.command : "",
-        isError: exitCode !== null && exitCode !== 0,
+        isError,
         exitCode,
-        output: typeof bash.output === "string" ? bash.output : "",
+        ...(isError && typeof bash.output === "string" && bash.output ? { error: bash.output } : {}),
       });
       continue;
     }

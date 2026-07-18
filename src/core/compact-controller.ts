@@ -1,5 +1,8 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { encodeCompactionRequest } from "../compaction/instructions.js";
+import {
+  compactionRequestBoundsError,
+  encodeCompactionRequest,
+} from "../compaction/instructions.js";
 
 // A pending-intent controller for the host Pi session's context compaction.
 //
@@ -61,10 +64,12 @@ const DEFAULT_REQUESTED_BY = "model";
 const isString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
 
-const stringsOf = (value: unknown): string[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  const strings = value.filter(isString);
-  return strings.length > 0 ? strings : undefined;
+const checkedPreserve = (value: unknown): string[] | undefined => {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new Error("compact preserve must be an array of strings");
+  }
+  return [...value];
 };
 
 export class CompactController {
@@ -80,13 +85,20 @@ export class CompactController {
   // Record a pending compaction intent. A single slot: a new request replaces
   // any pending one, keeping the latest instructions.
   request(intent: CompactRequestIntent): CompactPendingIntent {
-    const preserve = stringsOf(intent.preserve);
+    const preserve = checkedPreserve(intent.preserve);
+    const request = {
+      ...(intent.instructions !== undefined ? { instructions: intent.instructions } : {}),
+      ...(preserve !== undefined ? { preserve } : {}),
+    };
+    const boundsError = compactionRequestBoundsError(request);
+    if (boundsError) throw new Error(boundsError.message);
+    if (preserve !== undefined) encodeCompactionRequest(request);
     const pending: CompactPendingIntent = {
       requestedBy: isString(intent.requestedBy) ? intent.requestedBy! : DEFAULT_REQUESTED_BY,
       requestedAt: Date.now(),
       ...(isString(intent.reason) ? { reason: intent.reason } : {}),
       ...(isString(intent.instructions) ? { instructions: intent.instructions } : {}),
-      ...(preserve ? { preserve } : {}),
+      ...(preserve !== undefined ? { preserve } : {}),
     };
     this.#pending = pending;
     this.#hooks.onRequest?.(pending);

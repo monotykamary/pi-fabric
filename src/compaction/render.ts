@@ -4,7 +4,6 @@ import type { Sections } from "./projections.js";
 const SECTION_ORDER: { key: keyof Sections; header: string; maxBytes: number }[] = [
   { key: "goal", header: "[Session Goal]", maxBytes: 4096 },
   { key: "files", header: "[Files And Changes]", maxBytes: 4608 },
-  { key: "commits", header: "[Commits]", maxBytes: 2048 },
   { key: "activity", header: "[Fabric Activity]", maxBytes: 2048 },
   { key: "outstanding", header: "[Outstanding Context]", maxBytes: 4608 },
   { key: "earlierTurns", header: "[Earlier Turns]", maxBytes: 3072 },

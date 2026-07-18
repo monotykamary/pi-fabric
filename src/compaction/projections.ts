@@ -11,7 +11,6 @@ import { firstLine, type CompactionEvent, type ToolCallEvent } from "./normalize
 export interface Sections {
   goal: string[];
   files: string[];
-  commits: string[];
   activity: string[];
   outstanding: string[];
   earlierTurns: string[];
@@ -32,7 +31,6 @@ const MAX_TRANSCRIPT_THINKING = 80;
 const MAX_TRANSCRIPT_CMD = 80;
 const MAX_LATER_GOALS = 24;
 export const MAX_FILES_PER_KIND = 24;
-export const MAX_COMMITS = 20;
 const MAX_OUTSTANDING = 32;
 const MAX_ACTIVITY = 48;
 export const MAX_UNRESOLVED = 24;
@@ -43,7 +41,6 @@ const TRANSCRIPT_WINDOW = 40;
 export interface ProjectionOmittedCounts {
   goal: number;
   files: number;
-  commits: number;
   activity: number;
   outstanding: number;
   earlierTurns: number;
@@ -87,7 +84,6 @@ interface StructuralOperation {
   outcome: "succeeded" | "failed" | "aborted" | "timed_out";
   error?: string;
   result?: unknown;
-  output?: string;
   nested: boolean;
 }
 
@@ -127,7 +123,6 @@ const collectOperations = (events: CompactionEvent[]): StructuralOperation[] => 
         args: call.args,
         outcome: event.isError ? "failed" : "succeeded",
         ...(event.isError && event.text ? { error: event.text } : {}),
-        ...(!event.isError ? { output: event.text } : {}),
         nested: false,
       });
       continue;
@@ -141,8 +136,7 @@ const collectOperations = (events: CompactionEvent[]): StructuralOperation[] => 
         ref: "bash",
         args: { command: event.command },
         outcome: event.isError ? "failed" : "succeeded",
-        ...(event.isError && event.output ? { error: event.output } : {}),
-        ...(!event.isError ? { output: event.output } : {}),
+        ...(event.error ? { error: event.error } : {}),
         nested: false,
       });
     }
@@ -309,35 +303,6 @@ const projectFiles = (events: CompactionEvent[]): ProjectedSection => {
   return { lines, omitted };
 };
 
-// [Commits] — bash tool calls whose command begins with `git commit`, paired
-// with the first line of their output (the commit summary the shell prints).
-const projectCommits = (events: CompactionEvent[]): ProjectedSection => {
-  const commits: { entryId: string; line: string }[] = [];
-  for (const operation of collectOperations(events)) {
-    if (!isBashOperation(operation)) continue;
-    const command = typeof operation.args.command === "string" ? operation.args.command : "";
-    if (!command.trimStart().startsWith("git commit")) continue;
-    const summary = operation.nested ? "" : firstLine(operation.output ?? "").trim();
-    const line = summary || truncate(firstLine(command), MAX_LINE);
-    if (line) commits.push({ entryId: operation.address, line });
-  }
-  const sampled = sampleAddressed(commits, MAX_COMMITS);
-  const lines: string[] = [];
-  for (let index = 0; index < sampled.values.length; index++) {
-    if (sampled.omitted > 0 && index === sampled.splitIndex) {
-      lines.push(omissionLine(
-        sampled.omitted,
-        sampled.omittedFirstEntryId,
-        sampled.omittedLastEntryId,
-        "commits",
-      ));
-    }
-    const commit = sampled.values[index]!;
-    lines.push(`- ${commit.line} [entry ${commit.entryId}]`);
-  }
-  return { lines, omitted: sampled.omitted };
-};
-
 interface ActivityItem {
   entryId: string;
   line: string;
@@ -380,22 +345,12 @@ const projectActivity = (events: CompactionEvent[]): ProjectedSection => {
   return { lines, omitted: sampled.omitted };
 };
 
-type SourceTag = "ERROR" | "WARN" | "INFO";
-
 interface ErrorItem {
   index: number;
   entryId: string;
-  tag: SourceTag;
   description: string;
   resolved: boolean;
 }
-
-const tagFor = (toolName: string, isUserBash: boolean): SourceTag => {
-  if (isUserBash) return "INFO";
-  if (toolName === "bash") return "ERROR";
-  if (toolName === "edit" || toolName === "write") return "ERROR";
-  return "WARN";
-};
 
 // [Outstanding Context] is keyed only by typed operation identity. A later
 // success resolves a failure only when action+path, action+command, or the
@@ -433,7 +388,6 @@ const projectOutstandingWithMetadata = (events: CompactionEvent[]): ProjectedSec
     items.push({
       index: operation.index,
       entryId: operation.address,
-      tag: tagFor(operation.tool, false),
       description: `${subject}${error}`,
       resolved,
     });
@@ -456,7 +410,7 @@ const projectOutstandingWithMetadata = (events: CompactionEvent[]): ProjectedSec
         ));
       }
       const item = sampled.values[index]!;
-      lines.push(`- [${item.tag}] ${item.description}${item.resolved ? " [RESOLVED]" : ""} [entry ${item.entryId}]`);
+      lines.push(`- ${item.description}${item.resolved ? " [RESOLVED]" : ""} [entry ${item.entryId}]`);
     }
   };
   append(sampledUnresolved, "open error records");
@@ -615,7 +569,6 @@ const projectTranscript = (events: CompactionEvent[]): ProjectedSection => {
 export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult => {
   const goal = projectGoal(events);
   const files = projectFiles(events);
-  const commits = projectCommits(events);
   const activity = projectActivity(events);
   const outstanding = projectOutstandingWithMetadata(events);
   const earlierTurns = projectEarlierTurns(events);
@@ -624,7 +577,6 @@ export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult
     sections: {
       goal: goal.lines,
       files: files.lines,
-      commits: commits.lines,
       activity: activity.lines,
       outstanding: outstanding.lines,
       earlierTurns: earlierTurns.lines,
@@ -634,7 +586,6 @@ export const projectWithMetadata = (events: CompactionEvent[]): ProjectionResult
     omittedCounts: {
       goal: goal.omitted,
       files: files.omitted,
-      commits: commits.omitted,
       activity: activity.omitted,
       outstanding: outstanding.omitted,
       earlierTurns: earlierTurns.omitted,

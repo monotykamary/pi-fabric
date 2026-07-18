@@ -1,6 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { FabricTraceJsonValue } from "../audit/trace.js";
-import { canonicalizeText, clipUtf8, sampleAddressed } from "./bounds.js";
+import { clipUtf8, sampleAddressed } from "./bounds.js";
 import {
   FABRIC_BRANCH_SUMMARY_KIND,
   FABRIC_BRANCH_SUMMARY_MAX_BYTES,
@@ -11,6 +11,7 @@ import {
   type FabricBranchSummaryDetailsV1,
 } from "./branch-details.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
+import { decodeCompactionInstructions } from "./instructions.js";
 import { normalizeEntries, type CompactionEvent, type ToolCallEvent } from "./normalize.js";
 import { projectWithMetadata, type Sections } from "./projections.js";
 import { renderSummary } from "./render.js";
@@ -18,7 +19,6 @@ import { renderSummary } from "./render.js";
 const SECTION_HEADERS: { key: keyof Sections; header: string }[] = [
   { key: "goal", header: "[Session Goal]" },
   { key: "files", header: "[Files And Changes]" },
-  { key: "commits", header: "[Commits]" },
   { key: "activity", header: "[Fabric Activity]" },
   { key: "outstanding", header: "[Outstanding Context]" },
   { key: "earlierTurns", header: "[Earlier Turns]" },
@@ -105,7 +105,7 @@ const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV1[] => {
     } else if (event.kind === "bash") {
       const call = event.toolCallId ? calls.get(event.toolCallId) : undefined;
       if (call) {
-        const fact = directOperationFact(call, event.isError ? "failed" : "succeeded", event.isError ? event.output : undefined);
+        const fact = directOperationFact(call, event.isError ? "failed" : "succeeded", event.error);
         if (fact) facts.push(fact);
       } else {
         const subordinal = "bash";
@@ -119,7 +119,7 @@ const factsFromEvents = (events: CompactionEvent[]): FabricBranchFactV1[] => {
           tool: "bash",
           args: { command: event.command },
           outcome: event.isError ? "failed" : "succeeded",
-          ...(event.isError && event.output ? { error: clipUtf8(event.output, 8 * 1024) } : {}),
+          ...(event.error ? { error: clipUtf8(event.error, 8 * 1024) } : {}),
         });
       }
     }
@@ -133,7 +133,7 @@ const boundedDetails = (
   sourceEntries: SessionEntry[],
   facts: FabricBranchFactV1[],
   sections: string[],
-  request: ReturnType<typeof canonicalizeText>,
+  request: { text: string; sourceBytes: number; truncated: boolean },
 ): FabricBranchSummaryDetailsV1 => {
   const sampled = sampleAddressed(facts, FABRIC_BRANCH_SUMMARY_MAX_FACTS);
   const details: FabricBranchSummaryDetailsV1 = {
@@ -175,11 +175,17 @@ export const compileFabricBranchSummary = (
   customInstructions?: string,
   enrichers: readonly CompactionEnricher[] = NO_BUILTIN_ENRICHERS,
 ): FabricBranchSummaryCompilation | undefined => {
+  const instructions = decodeCompactionInstructions(customInstructions);
+  if (!instructions.ok) return undefined;
   const events = normalizeEntries(entriesToSummarize);
   if (events.length === 0) return undefined;
   const projected = projectWithMetadata(events);
   runEnrichers(enrichers, events, projected.sections);
-  const request = canonicalizeText(customInstructions ?? "");
+  const request = {
+    text: instructions.requestLines.join("\n"),
+    sourceBytes: instructions.policy.sourceBytes,
+    truncated: instructions.policy.truncated,
+  };
   const sections = SECTION_HEADERS
     .filter(({ key }) => projected.sections[key].length > 0)
     .map(({ header }) => header);
@@ -188,7 +194,7 @@ export const compileFabricBranchSummary = (
     firstEntryId: entriesToSummarize[0]?.id ?? "",
     lastEntryId: entriesToSummarize.at(-1)?.id ?? "",
     lastTimestamp: entriesToSummarize.at(-1)?.timestamp ?? "",
-    ...(request.text ? { requestLines: [request.text] } : {}),
+    ...(instructions.requestLines.length > 0 ? { requestLines: instructions.requestLines } : {}),
     summaryKind: "branch",
   });
   return {

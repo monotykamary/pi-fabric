@@ -1,7 +1,6 @@
 import { sampleAddressed } from "./bounds.js";
 import { firstLine, type CompactionEvent, type ToolCallEvent } from "./normalize.js";
 import {
-  MAX_COMMITS,
   MAX_EARLIER_TURNS,
   MAX_FILES_PER_KIND,
   MAX_UNRESOLVED,
@@ -65,15 +64,6 @@ const goalAnswer = (text: string): string => {
   ).map((line) => truncate(line, MAX_USER_GOAL_LINE));
   if (lines.length <= MAX_USER_GOAL_LINES) return lines.join("\n");
   return [...lines.slice(0, MAX_USER_GOAL_LINES), "…"].join("\n");
-};
-
-const commitHashOf = (output: string): string | undefined => {
-  const line = firstLine(output).trim();
-  if (!line.startsWith("[")) return undefined;
-  const close = line.indexOf("]");
-  if (close < 0) return undefined;
-  const fields = line.slice(1, close).trim().split(/\s+/);
-  return fields.at(-1) || undefined;
 };
 
 const eventWindow = (events: CompactionEvent[], cutIndex: number): CompactionEvent[] => {
@@ -215,30 +205,6 @@ export const generateProbes = (events: CompactionEvent[], cutIndex: number): Pro
       class: "address",
       question: `Which source range addresses ${sampledErrors.omitted} omitted open errors?`,
       answer: `source entries ${sampledErrors.omittedFirstEntryId} → ${sampledErrors.omittedLastEntryId}`,
-    });
-  }
-
-  const commits = source.filter(
-    (event): event is Extract<CompactionEvent, { kind: "bash" }> =>
-      event.kind === "bash" && !event.isError && event.command.trimStart().startsWith("git commit"),
-  );
-  const sampledCommits = sampleAddressed(commits, MAX_COMMITS);
-  for (const event of sampledCommits.values) {
-    const hash = commitHashOf(event.output);
-    if (!hash) continue;
-    probes.push({
-      id: `commit:${event.index}`,
-      class: "content",
-      question: `Which commit hash was produced by commit event #${event.index}?`,
-      answer: hash,
-    });
-  }
-  if (sampledCommits.omitted > 0) {
-    probes.push({
-      id: `commit-omission:${sampledCommits.omittedFirstEntryId}`,
-      class: "address",
-      question: `Which source range addresses ${sampledCommits.omitted} omitted commits?`,
-      answer: `source entries ${sampledCommits.omittedFirstEntryId} → ${sampledCommits.omittedLastEntryId}`,
     });
   }
 
