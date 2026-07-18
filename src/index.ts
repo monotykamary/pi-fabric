@@ -24,6 +24,7 @@ import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
+  captureFabricCallHeadlinePreviews,
   captureFabricWritePreviews,
   expandHint,
   fabricMulticallCallLimit,
@@ -37,9 +38,11 @@ import {
   renderBoundedLines,
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
+  restoreFabricCallHeadlinePreviews,
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
+  type FabricCallHeadlinePreview,
   type FabricRenderAudit,
   type FabricWriteBinding,
   type FabricWritePreview,
@@ -63,6 +66,7 @@ type FabricRendererState = {
   fabricWriteBindingsCode?: string;
   fabricWriteBindings?: FabricWriteBinding[];
   fabricWritePreviews?: FabricWritePreview[];
+  fabricCallHeadlinePreviews?: FabricCallHeadlinePreview[];
   fabricResultRowBalance?: ResultRowBalance;
 };
 
@@ -276,10 +280,22 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         const trackRows = (component: Component): Component =>
           observeResultRows(component, rowBalance, { expanded, isPartial });
         if (isPartial) {
+          const headlinePreviews = captureFabricCallHeadlinePreviews(audits);
+          if (headlinePreviews.length > 0) {
+            rendererState.fabricCallHeadlinePreviews = headlinePreviews;
+          }
           const writePreviews = captureFabricWritePreviews(audits);
           if (writePreviews.length > 0) rendererState.fabricWritePreviews = writePreviews;
-        } else if (rendererState.fabricWritePreviews) {
-          audits = restoreFabricWritePreviews(audits, rendererState.fabricWritePreviews);
+        } else {
+          if (rendererState.fabricCallHeadlinePreviews) {
+            audits = restoreFabricCallHeadlinePreviews(
+              audits,
+              rendererState.fabricCallHeadlinePreviews,
+            );
+          }
+          if (rendererState.fabricWritePreviews) {
+            audits = restoreFabricWritePreviews(audits, rendererState.fabricWritePreviews);
+          }
         }
         const phases = details.phases;
         const nl = "\n";

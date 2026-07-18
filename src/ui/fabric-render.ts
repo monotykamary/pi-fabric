@@ -14,6 +14,7 @@ export interface FabricRenderAudit {
   args?: Record<string, unknown>;
   result?: unknown;
   resultTruncated?: boolean;
+  previewHeadline?: string;
 }
 
 const EXPAND_KEYBINDING = "app.tools.expand" as AppKeybinding;
@@ -444,7 +445,7 @@ export function nestedCallTitle(
   if (path) detail = path;
   else if (pattern) detail = `/${pattern}/${path ? ` ${path}` : ""}`;
   else if (task) detail = truncateOneLine(task, 64);
-  else detail = headlineArg(args) ?? "";
+  else detail = headlineArg(args) ?? audit.previewHeadline ?? "";
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
 }
 
@@ -543,9 +544,38 @@ export const captureFabricWritePreviews = (audits: FabricRenderAudit[]): FabricW
     return [{ ref: audit.ref, path: argString(audit.args ?? {}, "path"), content }];
   });
 
-// Write content is deliberately absent from persisted traces. Keep bounded live
-// previews in renderer state so a fast write can still render when its final
-// result replaces the last partial update.
+// Arbitrary provider arguments are deliberately absent from persisted traces.
+// Keep only their selected one-line headlines in renderer state so completion
+// does not erase a preview that was already visible while the call was live.
+export interface FabricCallHeadlinePreview {
+  ref: string;
+  headline: string;
+}
+
+export const captureFabricCallHeadlinePreviews = (
+  audits: FabricRenderAudit[],
+): FabricCallHeadlinePreview[] =>
+  audits.flatMap((audit) => {
+    const headline = headlineArg(audit.args);
+    return headline ? [{ ref: audit.ref, headline }] : [];
+  });
+
+export const restoreFabricCallHeadlinePreviews = (
+  audits: FabricRenderAudit[],
+  previews: FabricCallHeadlinePreview[],
+): FabricRenderAudit[] => {
+  const remaining = previews.slice();
+  return audits.map((audit) => {
+    const index = remaining.findIndex((preview) => preview.ref === audit.ref);
+    if (index < 0) return audit;
+    const [preview] = remaining.splice(index, 1);
+    if (headlineArg(audit.args) || !preview) return audit;
+    return { ...audit, previewHeadline: preview.headline };
+  });
+};
+
+// Write content is also absent from persisted traces. Keep bounded live content
+// so a fast write can still render when its final result replaces the partial.
 export const restoreFabricWritePreviews = (
   audits: FabricRenderAudit[],
   previews: FabricWritePreview[],

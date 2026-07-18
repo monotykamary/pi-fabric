@@ -10,6 +10,7 @@ import {
   type ResultRowBalance,
 } from "../src/ui/row-balance.js";
 import {
+  captureFabricCallHeadlinePreviews,
   captureFabricWritePreviews,
   compactProgressPreview,
   fabricWriteBindings,
@@ -21,6 +22,7 @@ import {
   renderBoundedLines,
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
+  restoreFabricCallHeadlinePreviews,
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
 } from "../src/ui/fabric-render.js";
@@ -319,6 +321,58 @@ d
 e
 f` }], `a
 b`, theme)).toBe("");
+  });
+
+  it("keeps generic MCP headlines after final trace projection", () => {
+    const live = [
+      {
+        ref: "mcp.fal-ai.submit_job",
+        provider: "mcp",
+        tool: "fal-ai.submit_job",
+        args: { endpoint: "fal-ai/hunyuan3d-v3/image-to-3d", arguments: { image_url: "one" } },
+      },
+      {
+        ref: "mcp.fal-ai.submit_job",
+        provider: "mcp",
+        tool: "fal-ai.submit_job",
+        args: { endpoint: "fal-ai/hunyuan3d-v3/image-to-3d/two", arguments: { image_url: "two" } },
+      },
+    ];
+    const previews = captureFabricCallHeadlinePreviews(live);
+    const restored = restoreFabricCallHeadlinePreviews(
+      [
+        { ref: "fabric.workflow.parallel", provider: "fabric", tool: "workflow.parallel", args: { itemCount: 2 } },
+        ...live.map(({ args: _args, ...audit }) => ({ ...audit, args: {}, success: true })),
+      ],
+      previews,
+    );
+
+    expect(previews).toEqual([
+      { ref: "mcp.fal-ai.submit_job", headline: "fal-ai/hunyuan3d-v3/image-to-3d" },
+      { ref: "mcp.fal-ai.submit_job", headline: "fal-ai/hunyuan3d-v3/image-to-3d/two" },
+    ]);
+    expect(nestedCallTitle(restored[1]!, plainTheme)).toBe(
+      "fal-ai.submit_job fal-ai/hunyuan3d-v3/image-to-3d",
+    );
+    expect(nestedCallTitle(restored[2]!, plainTheme)).toBe(
+      "fal-ai.submit_job fal-ai/hunyuan3d-v3/image-to-3d/two",
+    );
+  });
+
+  it("keeps restored headline occurrences aligned when final args already have a preview", () => {
+    const restored = restoreFabricCallHeadlinePreviews(
+      [
+        { ref: "mcp.server.lookup", provider: "mcp", tool: "server.lookup", args: { query: "durable first" } },
+        { ref: "mcp.server.lookup", provider: "mcp", tool: "server.lookup", args: {} },
+      ],
+      [
+        { ref: "mcp.server.lookup", headline: "live first" },
+        { ref: "mcp.server.lookup", headline: "live second" },
+      ],
+    );
+
+    expect(nestedCallTitle(restored[0]!, plainTheme)).toBe("server.lookup durable first");
+    expect(nestedCallTitle(restored[1]!, plainTheme)).toBe("server.lookup live second");
   });
 
   it("renders a generic extension tool's query argument", () => {
