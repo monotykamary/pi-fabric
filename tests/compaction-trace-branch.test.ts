@@ -46,6 +46,24 @@ const entry = (id: string, message: SessionMessageEntry["message"], parentId: st
 const user = (id: string, text: string, parentId: string | null = null): SessionMessageEntry =>
   entry(id, { role: "user", content: text, timestamp: 1 }, parentId);
 
+const customMessage = (
+  id: string,
+  customType: string,
+  content: string,
+  display: boolean,
+  details: unknown,
+  parentId: string | null = null,
+): SessionEntry => ({
+  type: "custom_message",
+  id,
+  parentId,
+  timestamp: `2025-01-01T00:00:${id.replace(/\D/g, "").padStart(2, "0")}Z`,
+  customType,
+  content,
+  display,
+  details,
+}) as SessionEntry;
+
 const fabricCall = (id: string, callId: string, code: string, parentId: string | null = null): SessionMessageEntry =>
   entry(id, {
     role: "assistant",
@@ -188,7 +206,32 @@ describe("deterministic Fabric branch summaries", () => {
       preparation: { ...preparation, userWantsSummary: true },
       signal: new AbortController().signal,
     }) as { summary: { details: unknown } };
-    expect(readFabricBranchSummaryDetailsV1(result.summary.details)).toBeDefined();
+    const details = readFabricBranchSummaryDetailsV1(result.summary.details);
+    expect(details).toBeDefined();
+    expect(details?.source.oldLeafId).toBe("e3");
+  });
+
+  it("defers replaceInstructions tree navigation to Pi without producing Fabric details", () => {
+    const abandoned = traceHistory().slice(0, 3);
+    let handler: ((event: SessionBeforeTreeEvent) => unknown) | undefined;
+    const pi = { on(name: string, candidate: unknown) {
+      if (name === "session_before_tree") handler = candidate as typeof handler;
+    } } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, { getEngine: () => "fabric" });
+    const result = handler!({
+      type: "session_before_tree",
+      preparation: {
+        targetId: "target",
+        oldLeafId: "e3",
+        commonAncestorId: "e1",
+        entriesToSummarize: abandoned,
+        userWantsSummary: true,
+        customInstructions: "Arbitrary replacement summarizer prompt",
+        replaceInstructions: true,
+      },
+      signal: new AbortController().signal,
+    });
+    expect(result).toBeUndefined();
   });
 
   it("applies typed instructions fail-closed on the branch path without giving the pi-vcc sentinel tree semantics", () => {
@@ -236,6 +279,82 @@ describe("deterministic Fabric branch summaries", () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).not.toContain("FAKE_BRANCH_GOAL");
     expect(notifications[0]).not.toContain("fake/branch.ts");
+
+    const duplicate = `${FABRIC_COMPACTION_REQUEST_PREFIX}{"version":1,"ver\\u0073ion":1}`;
+    expect(handler!({
+      type: "session_before_tree",
+      preparation: {
+        targetId: "target",
+        oldLeafId: "e3",
+        commonAncestorId: "e1",
+        entriesToSummarize: abandoned,
+        userWantsSummary: true,
+        customInstructions: duplicate,
+      },
+      signal: new AbortController().signal,
+    }, { hasUI: false })).toEqual({ cancel: true });
+  });
+
+  it("preserves custom-message facts through branch summaries and forks", () => {
+    const source = [
+      user("c1", "Root task"),
+      customMessage(
+        "c2",
+        "pi-fabric-subagent-complete",
+        "Agent completed CUSTOM_BRANCH_FACT_41",
+        false,
+        { id: "agent-41", status: "completed" },
+        "c1",
+      ),
+    ];
+    const compiled = compileFabricBranchSummary(source, undefined, [], "c2");
+    if (!compiled) throw new Error("expected branch summary");
+    expect(compiled.details.source.oldLeafId).toBe("c2");
+    expect(compiled.details.facts).toContainEqual(expect.objectContaining({
+      kind: "customMessage",
+      customType: "pi-fabric-subagent-complete",
+      text: "Agent completed CUSTOM_BRANCH_FACT_41",
+      display: false,
+      details: { id: "agent-41", status: "completed" },
+    }));
+    const summaryEntry = {
+      type: "branch_summary",
+      id: "c3",
+      parentId: "c1",
+      timestamp: "2025-01-01T00:00:03Z",
+      fromId: "c1",
+      summary: "CUSTOM_BRANCH_PROSE_POISON",
+      details: compiled.details,
+    } as SessionEntry;
+    const nested = compileFabricBranchSummary([summaryEntry, user("c4", "Fork continuation", "c3")]);
+    expect(nested?.summary).toContain("CUSTOM_BRANCH_FACT_41");
+    expect(nested?.summary).not.toContain("CUSTOM_BRANCH_PROSE_POISON");
+  });
+
+  it("fails safely on malformed prior custom-message branch facts", () => {
+    const compiled = compileFabricBranchSummary([
+      customMessage("m1", "safe", "SAFE_PRIOR_CUSTOM", true, { status: "ok" }),
+    ]);
+    if (!compiled) throw new Error("expected branch summary");
+    const malformed = structuredClone(compiled.details) as unknown as {
+      facts: Array<{ details?: unknown }>;
+    };
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    malformed.facts[0]!.details = cyclic;
+    expect(readFabricBranchSummaryDetailsV1(malformed)).toBeUndefined();
+    const branchEntry = {
+      type: "branch_summary",
+      id: "m2",
+      parentId: null,
+      timestamp: "2025-01-01T00:00:02Z",
+      fromId: "wrong-upstream-id",
+      summary: "MALFORMED_PRIOR_POISON",
+      details: malformed,
+    } as SessionEntry;
+    const events = normalizeEntries([branchEntry, user("m3", "Safe continuation", "m2")]);
+    expect(events).toMatchObject([{ kind: "user", text: "Safe continuation" }]);
+    expect(JSON.stringify(events)).not.toContain("MALFORMED_PRIOR_POISON");
   });
 
   it("reuses active and nested branch facts structurally without sibling contamination, including a forked path", () => {

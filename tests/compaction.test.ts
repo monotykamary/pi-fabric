@@ -88,6 +88,31 @@ const toolResult = (toolCallId: string, toolName: string, text: string, isError 
   },
 });
 
+const customMessage = (
+  customType: string,
+  content: string | Array<{ type: "text"; text: string }>,
+  display: boolean,
+  details?: unknown,
+): SessionEntry => ({
+  type: "custom_message",
+  id: nextId(),
+  parentId: null,
+  timestamp: iso(clock),
+  customType,
+  content,
+  display,
+  ...(details === undefined ? {} : { details }),
+}) as SessionEntry;
+
+const plainCustom = (customType: string, data: unknown): SessionEntry => ({
+  type: "custom",
+  id: nextId(),
+  parentId: null,
+  timestamp: iso(clock),
+  customType,
+  data,
+}) as SessionEntry;
+
 const bashExec = (command: string, exitCode: number | undefined, output: string): SessionMessageEntry => ({
   type: "message",
   id: nextId(),
@@ -215,6 +240,24 @@ describe("compaction pi-vcc interop", () => {
     expect(event._fabricCompaction).toBeUndefined();
   });
 
+  it("allows an unrelated later Pi before hook to replace Fabric's result", () => {
+    resetIds();
+    resetClock();
+    const handlers: Array<(event: SessionBeforeCompactEvent) => unknown> = [];
+    const pi = {
+      on(name: string, handler: unknown) {
+        if (name === "session_before_compact") handlers.push(handler as (event: SessionBeforeCompactEvent) => unknown);
+      },
+    } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, { getEngine: () => "fabric" });
+    handlers.push(() => ({ compaction: { summary: "later extension", firstKeptEntryId: "", tokensBefore: 1 } }));
+    const event = compactionEvent(buildSession(user("source"), assistant(textPart("done"))));
+    let result: unknown;
+    for (const handler of handlers) result = handler(event) ?? result;
+    expect(result).toMatchObject({ compaction: { summary: "later extension" } });
+    expect(event._fabricCompaction).toBe(true);
+  });
+
   it("leaves the pi engine passthrough unchanged", () => {
     resetIds();
     resetClock();
@@ -283,6 +326,32 @@ describe("compaction instruction parity", () => {
     expect(result).toMatchObject({ cancel: true, instructionError: { code } });
     expect("compaction" in result).toBe(false);
     expect(JSON.stringify(result)).not.toContain("fake goal");
+  });
+
+  it.each([
+    ["duplicate version", '{"version":1,"version":1}', "duplicate-field"],
+    ["escaped duplicate preserve", '{"version":1,"preser\\u0076e":[],"preserve":[]}', "duplicate-field"],
+    ["duplicate instructions", '{"version":1,"instructions":"a","instructions":"b"}', "duplicate-field"],
+    ["non-finite number", '{"version":1,"instructions":1e400}', "malformed-json"],
+    ["leading-zero number", '{"version":01}', "malformed-json"],
+    ["unpaired escaped high surrogate", '{"version":1,"instructions":"\\ud800"}', "invalid-unicode"],
+    ["unpaired escaped low surrogate", '{"version":1,"preserve":["\\udc00"]}', "invalid-unicode"],
+  ])("strictly rejects %s", (_name, json, code) => {
+    expect(decodeCompactionInstructions(`${FABRIC_COMPACTION_REQUEST_PREFIX}${json}`)).toMatchObject({
+      ok: false,
+      error: { code },
+    });
+  });
+
+  it("accepts paired supplementary characters and rejects raw unpaired values before canonicalization", () => {
+    const paired = `${FABRIC_COMPACTION_REQUEST_PREFIX}{"version":1,"instructions":"\\ud83d\\ude80"}`;
+    expect(decodeCompactionInstructions(paired)).toMatchObject({ ok: true });
+    const rawUnpaired = `${FABRIC_COMPACTION_REQUEST_PREFIX}{"version":1,"instructions":"${String.fromCharCode(0xd800)}"}`;
+    expect(decodeCompactionInstructions(rawUnpaired)).toMatchObject({
+      ok: false,
+      error: { code: "invalid-unicode" },
+    });
+    expect(() => encodeCompactionRequest({ preserve: [String.fromCharCode(0xdfff)] })).toThrow(/unpaired UTF-16 surrogate/);
   });
 
   it("rejects typed source bytes before JSON parsing", () => {
@@ -363,6 +432,99 @@ describe("compaction instruction parity", () => {
     );
     expect(compactionHandler("fabric")(event)).toBeUndefined();
     expect(event._fabricCompaction).toBeUndefined();
+  });
+});
+
+describe("Pi custom_message compaction", () => {
+  it("normalizes hidden and visible context structurally while excluding plain custom entries", () => {
+    resetIds();
+    resetClock();
+    const visible = customMessage(
+      "pi-fabric-actor",
+      [{ type: "text", text: "actor completed <typed>" }],
+      true,
+      { message: { status: "completed", sequence: 7 }, actor: { id: "actor-1" } },
+    );
+    const hidden = customMessage(
+      "before-agent-start",
+      "hidden injected context",
+      false,
+      { source: "hook", priority: 2 },
+    );
+    const events = normalizeEntries([
+      visible,
+      plainCustom("extension-state", { poison: "PLAIN_CUSTOM_POISON" }),
+      hidden,
+    ]);
+    expect(events.map((event) => event.kind)).toEqual(["customMessage", "customMessage"]);
+    expect(events).toMatchObject([
+      { customType: "pi-fabric-actor", text: "actor completed <typed>", display: true },
+      { customType: "before-agent-start", text: "hidden injected context", display: false },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("PLAIN_CUSTOM_POISON");
+  });
+
+  it("includes actor and subagent completions in cumulative summaries deterministically", () => {
+    resetIds();
+    resetClock();
+    const session = buildSession(
+      user("Original task"),
+      customMessage("pi-fabric-actor", "Actor says: keep ACTOR_FACT_17", true, {
+        actor: { id: "actor-17" },
+        message: { status: "completed" },
+      }),
+      assistant(textPart("actor received")),
+      customMessage("pi-fabric-subagent-complete", "Fabric agent abc completed: SUBAGENT_FACT_23", false, {
+        id: "subagent-23",
+        status: "completed",
+      }),
+      assistant(textPart("completion received")),
+      user("Continue after completions"),
+    );
+    const first = compileFabricSummary(session, 1_000);
+    const second = compileFabricSummary(session, 1_000);
+    if (!("compaction" in first) || !("compaction" in second)) throw new Error("expected compaction");
+    expect(second.compaction.summary).toBe(first.compaction.summary);
+    expect(first.compaction.summary).toContain('custom "pi-fabric-actor" (visible)');
+    expect(first.compaction.summary).toContain("ACTOR_FACT_17");
+    expect(first.compaction.summary).toContain('custom "pi-fabric-subagent-complete" (hidden)');
+    expect(first.compaction.summary).toContain("SUBAGENT_FACT_23");
+    expect(first.compaction.details?.counts.cumulativeSourceEntries).toBe(5);
+  });
+
+  it("keeps a custom-message turn boundary and the crossing tool pair together", () => {
+    resetIds();
+    resetClock();
+    const session = buildSession(
+      user("start"),
+      assistant(toolCallPart("cross-custom", "read", { path: "a.ts" })),
+      customMessage("before-agent-start", "new context while call is open", false),
+      toolResult("cross-custom", "read", "done"),
+    );
+    const cut = computeCut(session);
+    expect(cut).toMatchObject({ ok: true, firstKeptEntryId: "" });
+    if (cut.ok) expect(cut.summarized.map((entry) => entry.id)).toEqual(session.map((entry) => entry.id));
+  });
+
+  it("omits malformed custom details without dropping valid content and ignores malformed entries", () => {
+    resetIds();
+    resetClock();
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const validContent = customMessage("safe-custom", "SAFE_CUSTOM_CONTENT", true, cyclic);
+    const malformed = {
+      type: "custom_message",
+      id: nextId(),
+      parentId: null,
+      timestamp: iso(clock),
+      customType: 7,
+      content: { text: "MALFORMED_CUSTOM_POISON" },
+      display: "yes",
+    } as unknown as SessionEntry;
+    const events = normalizeEntries([validContent, malformed]);
+    expect(events).toMatchObject([{ kind: "customMessage", text: "SAFE_CUSTOM_CONTENT" }]);
+    expect(events[0]).not.toHaveProperty("details");
+    expect(JSON.stringify(events)).not.toContain("MALFORMED_CUSTOM_POISON");
   });
 });
 
@@ -475,6 +637,7 @@ describe("compaction cumulative endurance", () => {
     appendLinked(
       branch,
       user("Original First goal: preserve PINNED_RARE_FACT_7 and finish the module."),
+      customMessage("pi-fabric-actor", "Preserve CUSTOM_CYCLE_FACT_31", false, { status: "completed" }),
       assistant(toolCallPart(initialRead, "read", { path: "src/a.ts" })),
       toolResult(initialRead, "read", "a contents"),
       assistant(toolCallPart(initialError, "read", { path: "src/never-existed.ts" })),
@@ -491,6 +654,7 @@ describe("compaction cumulative endurance", () => {
       expect(second.compaction.summary).toBe(first.compaction.summary);
       expect(first.compaction.summary).toContain("Original First goal");
       expect(first.compaction.summary).toContain("PINNED_RARE_FACT_7");
+      expect(first.compaction.summary).toContain("CUSTOM_CYCLE_FACT_31");
       expect(first.compaction.summary).toContain("a.ts");
       expect(first.compaction.summary).toContain("never-existed.ts");
       expect(first.compaction.summary).toContain("ENOENT pinned open error");

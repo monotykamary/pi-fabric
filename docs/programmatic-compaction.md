@@ -88,12 +88,18 @@ and `cancel` are `read`.
 `preserve` is present, the controller encodes `{version: 1, instructions?,
 preserve}` behind an exact versioned prefix plus JSON. The compaction and branch
 hooks strictly decode that shape and render valid bounded values under
-`[Compaction Request]`.
+`[Compaction Request]`. On tree navigation, Pi's explicit
+`replaceInstructions: true` mode is delegated to Pi/default summarization:
+Fabric cannot execute an arbitrary replacement summarizer prompt and therefore
+produces no typed Fabric branch details in that mode.
 
-The prefix is reserved: malformed JSON, unknown fields or versions, invalid
-types, or exceeded limits return a structured decode error and cancel instead
-of falling back to prose. The rejected payload is never rendered. A context
-with UI/RPC notification support receives a bounded error. The exact
+The prefix is reserved: malformed JSON/scalars, duplicate decoded protocol
+keys (including escaped aliases), unknown fields or versions, invalid types,
+unpaired UTF-16 surrogates, excessive structure, or exceeded limits return a
+structured decode error and cancel instead of falling back to prose. A bounded
+structural parser performs these checks before canonicalization; it does not
+recover protocol data with regex. The rejected payload is never rendered. A
+context with UI/RPC notification support receives a bounded error. The exact
 `__pi_vcc__` value retains compaction-routing precedence and has no special
 effect on the tree hook.
 
@@ -101,8 +107,10 @@ effect on the tree hook.
 Instructions are limited to 8192 characters and 8192 UTF-8 bytes; `preserve` to
 16 items; each item to 2048 characters and 2048 UTF-8 bytes; and the complete
 encoded prefix-plus-JSON request to 16 KiB. The decoder checks aggregate source
-bytes before parsing JSON and preserve count before iterating or canonicalizing
-items.
+bytes before structural parsing, validates duplicate keys/scalars/surrogate
+pairing while parsing, and checks preserve count before iterating or
+canonicalizing items. Ordinary manual/Pi instructions remain bounded explicit
+text rather than typed protocol input.
 
 #### Commit semantics
 

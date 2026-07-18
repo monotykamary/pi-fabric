@@ -2,6 +2,7 @@ import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-codin
 import type { FabricExecutionOutcomeV1, FabricTraceJsonValue } from "../audit/trace.js";
 import { readFabricProjectionTrace, type FabricProjectionSource } from "./trace-events.js";
 import { readFabricBranchSummaryDetailsV1 } from "./branch-details.js";
+import { clipUtf8, utf8Bytes } from "./bounds.js";
 
 // A purely structural, typed view of one session window. Every event carries
 // the 1-based `index` it occupied in the normalized stream (stable, used by the
@@ -30,6 +31,14 @@ interface AssistantTextEvent extends EventBase {
 interface ThinkingEvent extends EventBase {
   kind: "thinking";
   text: string;
+}
+
+interface CustomMessageEvent extends EventBase {
+  kind: "customMessage";
+  customType: string;
+  text: string;
+  display: boolean;
+  details?: FabricTraceJsonValue;
 }
 
 export interface ToolCallEvent extends EventBase {
@@ -82,6 +91,7 @@ export type CompactionEvent =
   | UserEvent
   | AssistantTextEvent
   | ThinkingEvent
+  | CustomMessageEvent
   | ToolCallEvent
   | ToolResultEvent
   | BashEvent
@@ -90,6 +100,92 @@ export type CompactionEvent =
 
 const isMessageEntry = (entry: SessionEntry): entry is Extract<SessionEntry, { type: "message" }> =>
   entry.type === "message";
+
+const MAX_CUSTOM_DETAILS_DEPTH = 12;
+const MAX_CUSTOM_DETAILS_NODES = 256;
+const MAX_CUSTOM_DETAILS_COLLECTION = 64;
+const MAX_CUSTOM_DETAILS_STRING_BYTES = 1024;
+const MAX_CUSTOM_DETAILS_BYTES = 8 * 1024;
+
+interface JsonSanitizerState {
+  nodes: number;
+  ancestors: Set<object>;
+}
+
+const boundedJsonValue = (
+  value: unknown,
+  state: JsonSanitizerState,
+  depth = 0,
+): FabricTraceJsonValue | undefined => {
+  state.nodes += 1;
+  if (state.nodes > MAX_CUSTOM_DETAILS_NODES) return undefined;
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") return clipUtf8(value, MAX_CUSTOM_DETAILS_STRING_BYTES);
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "object" || depth > MAX_CUSTOM_DETAILS_DEPTH || state.ancestors.has(value)) return undefined;
+  state.ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const output: FabricTraceJsonValue[] = [];
+      for (const item of value.slice(0, MAX_CUSTOM_DETAILS_COLLECTION)) {
+        const sanitized = boundedJsonValue(item, state, depth + 1);
+        if (sanitized === undefined) return undefined;
+        output.push(sanitized);
+      }
+      return output;
+    }
+    const output = Object.create(null) as Record<string, FabricTraceJsonValue>;
+    const keys = Object.keys(value).sort().slice(0, MAX_CUSTOM_DETAILS_COLLECTION);
+    for (const key of keys) {
+      const sanitized = boundedJsonValue((value as Record<string, unknown>)[key], state, depth + 1);
+      if (sanitized === undefined) return undefined;
+      output[key] = sanitized;
+    }
+    return output;
+  } finally {
+    state.ancestors.delete(value);
+  }
+};
+
+const customDetails = (value: unknown): FabricTraceJsonValue | undefined => {
+  if (value === undefined) return undefined;
+  try {
+    const sanitized = boundedJsonValue(value, { nodes: 0, ancestors: new Set<object>() });
+    if (sanitized === undefined || utf8Bytes(JSON.stringify(sanitized)) > MAX_CUSTOM_DETAILS_BYTES) return undefined;
+    return sanitized;
+  } catch {
+    return undefined;
+  }
+};
+
+const isTypedCustomContent = (content: unknown): boolean => {
+  if (typeof content === "string") return true;
+  if (!Array.isArray(content)) return false;
+  return content.every((part) => {
+    if (part === null || typeof part !== "object") return false;
+    const candidate = part as { type?: unknown; text?: unknown };
+    if (candidate.type === "text") return typeof candidate.text === "string";
+    return candidate.type === "image";
+  });
+};
+
+export const isPiCustomMessageEntry = (
+  entry: SessionEntry,
+): entry is Extract<SessionEntry, { type: "custom_message" }> => {
+  try {
+    if (entry.type !== "custom_message") return false;
+    const candidate = entry as SessionEntry & {
+      customType?: unknown;
+      content?: unknown;
+      display?: unknown;
+    };
+    return typeof candidate.customType === "string"
+      && typeof candidate.display === "boolean"
+      && isTypedCustomContent(candidate.content);
+  } catch {
+    return false;
+  }
+};
 
 const textOfContent = (content: unknown): string => {
   if (typeof content === "string") return content;
@@ -137,6 +233,16 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
     for (const fact of details.facts) {
       if (fact.kind === "user") {
         push({ kind: "user", entryId: fact.entryId, sourceEntryId: entry.id, text: fact.text });
+      } else if (fact.kind === "customMessage") {
+        push({
+          kind: "customMessage",
+          entryId: fact.entryId,
+          sourceEntryId: entry.id,
+          customType: fact.customType,
+          text: fact.text,
+          display: fact.display,
+          ...(fact.details !== undefined ? { details: fact.details } : {}),
+        });
       } else if (fact.kind === "phase") {
         push({
           kind: "fabricPhase",
@@ -170,6 +276,24 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
   for (const entry of entries) {
     if (entry.type === "branch_summary") {
       pushBranchFacts(entry as SessionEntry & { details?: unknown });
+      continue;
+    }
+    if (entry.type === "custom_message") {
+      try {
+        if (!isPiCustomMessageEntry(entry)) continue;
+        const details = customDetails(entry.details);
+        push({
+          kind: "customMessage",
+          entryId: entry.id,
+          sourceEntryId: entry.id,
+          customType: entry.customType,
+          text: textOfContent(entry.content),
+          display: entry.display,
+          ...(details !== undefined ? { details } : {}),
+        });
+      } catch {
+        // Malformed extension-owned entries are ignored without affecting later source.
+      }
       continue;
     }
     if (!isMessageEntry(entry)) continue;
@@ -291,8 +415,8 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       continue;
     }
 
-    // custom / branchSummary / compactionSummary and any other roles carry no
-    // raw work signal for the deterministic core and are skipped here.
+    // Message-role custom / branchSummary / compactionSummary and any other
+    // roles are not top-level Pi custom_message entries and are skipped here.
   }
 
   return events;

@@ -10,8 +10,8 @@ Pi Fabric provides an LLM-free compactor through `session_before_compact`. It is
 
 1. **The session log is ground truth.** The summary is a bounded continuation view with stable entry-id and file addresses.
 2. **Live cut and cumulative truth are separate.** The cut is selected from the window made live by the last compaction. The summary is rebuilt from every raw, typed, content-bearing entry on the supplied active branch prefix before the new kept boundary.
-3. **Rendered summaries are never semantic input.** `compaction`, branch-summary prose, custom summary prose, and unknown roles produce no normalized events. A valid Fabric branch-summary details envelope may contribute its typed facts; its `summary` string never does.
-4. **Structure drives projection.** The core uses roles, content-part types, tool names, JSON arguments, call ids, `isError`, exit codes, entry ids, ordering, valid Fabric execution traces, and valid Fabric branch-summary facts. It has no semantic regex over prose, code, shell commands, or tool output. Whitespace normalization, bounded truncation, exact identity comparisons, and path segmentation are mechanical operations.
+3. **Rendered summaries are never semantic input.** `compaction`, branch-summary prose, custom summary prose, and unknown roles produce no normalized events. A valid Fabric branch-summary details envelope may contribute its typed facts; its `summary` string never does. Top-level Pi `custom_message` entries are different: Pi puts them in model context, so Fabric preserves their typed `customType`, text content, visibility, and bounded JSON details. Non-context-bearing `custom` state entries remain excluded.
+4. **Structure drives projection.** The core uses entry/message types, roles, content-part types, custom-message fields, tool names, JSON arguments, call ids, `isError`, exit codes, entry ids, ordering, valid Fabric execution traces, and valid Fabric branch-summary facts. It has no semantic regex over prose, code, shell commands, or tool output. Whitespace normalization, bounded truncation, exact identity comparisons, and path segmentation are mechanical operations.
 5. **Serialization is deterministic and bounded.** Identical branch entries and instructions produce byte-identical output. The rendered result is at most 32 KiB in UTF-8.
 
 This prevents both summary-chain drift and deterministic forgetting. Pi replaces the previous rendered summary, but Fabric re-derives the original goal, cumulative successful file addresses, error state, and user scope changes from raw branch history each time.
@@ -23,7 +23,7 @@ active branch entries ─┬─► live window ─► closure-safe cut ─► fi
                        └─► raw cumulative prefix ─► normalize ─► project ─► bound/render
 ```
 
-- `normalize.ts` converts raw message entries to typed events. Tool calls and results are paired only by `toolCallId`. A `fabric_exec` result contributes nested events only through a valid `details.trace` V1 guard, or through the separate strict legacy `details.audits` adapter when no `trace` field exists.
+- `normalize.ts` converts raw message and top-level `custom_message` entries to typed events. Custom content is selected only from typed string/text parts; JSON details are depth/node/collection/string/byte bounded and malformed details are omitted without dropping otherwise valid content. Tool calls and results are paired only by `toolCallId`. A `fabric_exec` result contributes nested events only through a valid `details.trace` V1 guard, or through the separate strict legacy `details.audits` adapter when no `trace` field exists.
 - `projections.ts` computes goal, file, operation-state, turn, status, and transcript views.
 - `enrichers.ts` permits deterministic optional annotations. Fabric ships no built-in enrichers.
 - `render.ts` independently bounds every rendered block and enforces the global UTF-8 limit.
@@ -37,7 +37,7 @@ The last compaction marker identifies the live window:
 - a compact-all marker or missing/orphan kept id starts it after the marker;
 - without a marker, the whole supplied active path is live.
 
-Fabric begins with the last live user boundary. It then computes structural spans for every call id across the supplied branch. If any span crosses the candidate boundary, the cut moves backward to the user turn containing the earliest crossing and closure is checked again. Therefore both directions are enforced:
+Fabric begins with the last live context-turn boundary: a user message or top-level Pi `custom_message`. Hidden (`display: false`) and visible custom messages have identical context semantics. It then computes structural spans for every call id across the supplied branch. If any span crosses the candidate boundary, the cut moves backward to the context turn containing the earliest crossing and closure is checked again. Therefore both directions are enforced:
 
 - no summarized tool call has a kept result;
 - no kept tool call has a summarized result.
@@ -73,9 +73,9 @@ The limits sum below 32 KiB, leaving room for separators. A final UTF-8 guard en
 - **Files And Changes**: successful typed file-tool addresses grouped as Created, Written, Modified, or Read. `edit` is Modified. `write` is Written unless a typed result explicitly proves creation.
 - **Fabric Activity**: bounded phases and significant non-file nested operations, including bash, agents, workflow, mesh, state, MCP, and extension refs. Every line has a stable `entryId/subordinal` address.
 - **Outstanding Context**: typed tool/bash failures and later exact structural resolutions. File failures require the same action and path, bash failures the same command, and generic failures the same ref and arguments. Explicit error text is quoted and bounded, never parsed or classified. Trace failures use only `operation.outcome` and `operation.error`.
-- **Earlier Turns**: sampled user one-liners and tool-name counts.
-- **Current Status**: the latest summarized request, modification address, and assistant line.
-- **Transcript**: the latest 40 typed events, plus an omission range when applicable.
+- **Earlier Turns**: sampled user/custom context one-liners and tool-name counts.
+- **Current Status**: the latest summarized user/custom context, modification address, and assistant line.
+- **Transcript**: the latest 40 typed events, including quoted/bounded custom-message content and bounded structural details, plus an omission range when applicable.
 - **Footer**: deterministic source timestamp, cumulative source range, and session-log recall guidance.
 
 There is intentionally no commit projection. The core does not recognize `git commit` command prefixes and does not parse shell stdout for hashes or summaries. A caller that needs a commit ID across compaction must provide it explicitly through a valid typed `preserve` item or another typed state transition.
@@ -84,15 +84,15 @@ There is intentionally no commit projection. The core does not recognize `git co
 
 The clean core retains only these mechanical text operations:
 
-- select text from typed user, assistant, tool-result, command-argument, error, phase, ref, and path fields;
+- select text from typed user, assistant, top-level custom-message, tool-result, command-argument, error, phase, ref, and path fields;
 - split user text on literal newlines for bounded goal lines, or select the first line for one-line views;
 - trim/collapse whitespace and truncate by fixed character or UTF-8 byte limits;
-- quote bounded user/assistant/tool/error text without interpreting its content;
+- quote bounded user/custom/assistant/tool/error text without interpreting its content;
 - compare typed action/path, action/command, or ref/JSON-arguments identities exactly for resolution;
 - segment typed paths on `/` or `\\` to compute display roots;
 - split a typed Fabric ref once on `.` to expose provider/action identity;
 - inspect the explicit typed `created: true` result field for write classification;
-- match only the exact `__pi_vcc__` sentinel or exact typed-request prefix, then use strict JSON decoding.
+- match only the exact `__pi_vcc__` sentinel or exact typed-request prefix, then use a bounded structural JSON parser.
 
 No command prefix, stdout/stderr line format, error wording, path-looking prose, commit-looking prose, source code, or tool-result rendering is recovered into semantic facts.
 
@@ -102,9 +102,9 @@ No command prefix, stdout/stderr line format, error wording, path-looking prose,
 
 Every other plain instruction is explicit user data, not a mini-language. Fabric canonicalizes whitespace, bounds the input, and includes it in `[Compaction Request]` without semantically parsing it.
 
-`compact.request` may add typed `preserve: string[]` values. When present, the controller forwards an exact versioned prefix followed by JSON. The hook accepts only the exact prefix and a strict v1 object. Once that reserved prefix is present, malformed JSON, unknown fields or versions, invalid types, or exceeded bounds produce a structured decode error and cancel the operation; the encoded payload is never reinterpreted or rendered as plain instructions. A UI/RPC context receives a bounded error notification when available.
+`compact.request` may add typed `preserve: string[]` values. When present, the controller forwards an exact versioned prefix followed by JSON. The hook accepts only the exact prefix and a strict v1 object. Once that reserved prefix is present, malformed JSON/scalars, duplicate protocol keys (including escaped-key aliases), unknown fields or versions, invalid types, unpaired UTF-16 surrogates, excessive structure, or exceeded bounds produce a structured decode error and cancel the operation; the encoded payload is never reinterpreted or rendered as plain instructions. A UI/RPC context receives a bounded error notification when available.
 
-Typed v1 limits are enforced before value mapping or canonicalization: instructions are at most 8192 characters and 8192 UTF-8 bytes; `preserve` has at most 16 items; each item is at most 2048 characters and 2048 UTF-8 bytes; and the complete prefix-plus-JSON source is at most 16 KiB. The decoder checks that aggregate source limit before `JSON.parse` and checks preserve count before iterating values. Plain Pi/manual instructions remain supported and are independently canonicalized and bounded.
+Typed v1 limits are enforced before value mapping or canonicalization: instructions are at most 8192 characters and 8192 UTF-8 bytes; `preserve` has at most 16 items; each item is at most 2048 characters and 2048 UTF-8 bytes; and the complete prefix-plus-JSON source is at most 16 KiB. The decoder checks the aggregate source limit before invoking its bounded recursive-descent parser, rejects duplicate decoded keys while parsing, validates scalar grammar and surrogate pairing, and checks preserve count before iterating or canonicalizing values. Plain Pi/manual instructions remain explicit bounded text and are not subjected to the typed protocol parser.
 
 ## Compaction details v2
 
@@ -129,7 +129,11 @@ A present but malformed or unknown trace version is ignored and is not reinterpr
 
 When the Fabric engine is active, the same registration also handles `session_before_tree`. It returns nothing when `userWantsSummary` is false and compiles only `preparation.entriesToSummarize` when true. Tree custom instructions use the same plain/typed decoder and fail-closed limits as compaction. The exact `__pi_vcc__` value has routing meaning only for compaction; on the tree path it remains ordinary explicit request text.
 
-Branch details use `kind: "pi-fabric.branch-summary"`, `version: 1`, stable source addresses, and at most 256 bounded typed facts in a 128 KiB envelope. Facts cover source users, phases, and operations. Nested branch summaries re-emit only valid typed facts; branch summary prose is never normalized. Later compaction can therefore resolve abandoned-branch failures against later exact successes and retain files/activity through navigation or forks without parsing prose. Since Pi supplies only the active path or the abandoned `entriesToSummarize` path to each compiler, sibling branches do not contaminate one another.
+`replaceInstructions: true` has Pi replacement-prompt semantics, not append-instructions semantics. A deterministic projection cannot execute an arbitrary replacement summarizer prompt, so Fabric returns `undefined` and defers to Pi or another handler. No Fabric summary or typed Fabric branch details are produced by Fabric in that explicit mode.
+
+Branch details use `kind: "pi-fabric.branch-summary"`, `version: 1`, stable source addresses, and at most 256 bounded typed facts in a 128 KiB envelope. Facts cover source users, top-level custom messages, phases, and operations. Newly generated details record `source.oldLeafId` from `preparation.oldLeafId`; this is the canonical abandoned/from-leaf provenance. Older v1 envelopes without that field remain readable. Pi 0.80.6 writes generic `BranchSummaryEntry.fromId` from the navigation target position rather than the abandoned leaf, and a hook cannot correct that core-generated field, so consumers must use Fabric's typed `source.oldLeafId` when present.
+
+Nested branch summaries re-emit only valid typed facts; branch summary prose is never normalized. Later compaction can therefore resolve abandoned-branch failures against later exact successes and retain custom context, files, and activity through navigation or forks without parsing prose. Since Pi supplies only the active path or the abandoned `entriesToSummarize` path to each compiler, sibling branches do not contaminate one another.
 
 ## pi-vcc precedence
 
@@ -140,6 +144,8 @@ Precedence remains:
 3. pi-vcc/default Pi behavior.
 
 Fabric marks claimed events with `_fabricCompaction`. If an earlier pi-vcc handler marked `_piVccOverriding` and Fabric has nothing to compact, Fabric does not return a cancellation that would erase the pi-vcc result. With engine `"pi"`, Fabric neither claims nor cancels the event.
+
+Pi's public extension contract runs `session_before_*` handlers in extension load order and keeps the latest non-cancelling result. Therefore an unrelated handler loaded after Fabric can replace Fabric's compaction or tree result; a later cancellation also terminates dispatch. There is no supported public registration phase that can move one extension behind every subsequently loaded extension. Fabric preserves the explicit pi-vcc sentinel/marker cooperation above, but does not monkeypatch Pi's private runner. Deployments that require Fabric to win over arbitrary hooks must load Fabric after those extensions (while accounting for any intentionally later pi-vcc override).
 
 ## Reconstruction QA
 
