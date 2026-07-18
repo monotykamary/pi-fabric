@@ -6,9 +6,9 @@ disable-model-invocation: true
 
 # Fabric Schema Loop
 
-Schema's harness beat prompt-level discipline by making process machine-enforced: world state is an editable, labeled artifact; an append-only Timeline is ground truth; certification replays the recorded transitions before planning; a single gated channel runs from thought to action; a surprise voids the plan; a persistent counterexample can indict the representation itself, not just a rule.
+Schema's harness motivates an editable, labeled world state, an append-only Timeline, replayable evidence, and treating surprise as a reason to void a plan. In Pi Fabric today, this skill is **discipline over the typed state provider**, not an enforcement boundary: it does not gate direct `pi.edit`, `pi.write`, `pi.bash`, or other tool calls. A forthcoming or optional strict schema mode may provide stronger enforcement; do not assume it is active.
 
-For coding agents, exact trajectory replay does not transfer — but claims carrying **executable evidence** do. Certification becomes re-running the checks that grounded each belief (tests, type checks, greps are mostly idempotent). This skill encodes that discipline as one `fabric_exec` program over the `state` provider.
+For coding agents, exact trajectory replay does not transfer — but claims carrying **executable evidence** do. Evidence attachment records a proposed check; it is not certification. Certification occurs only when `state.verify` runs at least one attached command and every result is confirmed. Tests, type checks, and greps are evidence supplied by the workflow, not proof. This skill encodes the discipline as one `fabric_exec` program over the `state` provider.
 
 ## The loop
 
@@ -18,15 +18,15 @@ Run one `fabric_exec` program. Each iteration is: **observe → hypothesize → 
 
 2. **Hypothesize.** Commit a hypothesis as a `state.transition` **before** acting. The transition's `summary` is a falsifiable claim, and its `evidence` is the cheapest shell command that discriminates this hypothesis from its rivals. A summary is a **delta from `from`**, not a restatement of the world: express what becomes true relative to the previous label. When explanations compete, record each as its own labeled transition (separate `label`/`to`) so the log holds competing world-model versions rather than one merged guess.
 
-3. **Verify.** Call `state.verify()` to re-run the evidence commands. It returns `confirmed` (exit 0), `violated` (non-zero), or `error` (spawn/timeout). Run the cheapest command that discriminates between hypotheses first; stop discriminating once one survives. **On any `violated`, the plan is void.** `state.verify` publishes a `state.violated` event on topic `fabric.state`; actors and supervisors subscribed to that topic react to the surprise without the main agent re-asserting it.
+3. **Verify.** Call `state.verify()` to re-run the evidence commands. Check `certified`, not only `violated`: missing targets, empty evidence, non-zero exits, spawn errors, timeouts, and cancellation all fail closed. Individual results are `confirmed` (exit 0), `violated` (non-zero), or `error` (spawn/timeout/cancellation). Run the cheapest command that discriminates between hypotheses first; stop discriminating once one survives. **If `certified` is false, the plan is void.** `state.verify` publishes a `state.violated` event on topic `fabric.state` with every blocking reason.
 
-4. **Act.** Only after verification passes, make the change. A gated channel: a belief that did not survive `verify` must not reach an action.
+4. **Act.** By discipline, act only after verification returns `certified: true`. The current state layer records and reports this decision; it does not prevent direct Pi tool calls.
 
 5. **Record.** Commit the outcome as the next transition. Again, summarize only the delta from `from`. If the outcome contradicts the hypothesis, that is a surprise — void the plan, revise the hypothesis, and transition again. A **persistent** counterexample that survives repeated `verify` indicts the *representation* (the labels/kind you are using), not just the current rule: emit a `state.transition` with `kind: "representation"` to revise the world model itself. That event archives every earlier label; the active history is rebuilt from the last representation transition, while `state.history({ includeArchived: true })` remains available for inspection.
 
-## Certified erasure
+## Evidence-attached erasure
 
-Models naturally add information. During a refactor, make removal explicit by adding `complexity: { files: [...] }` to the outcome transition. The harness counts statement-level TS/JS/TSX/JSX decision keywords and records the per-file deltas. A net reduction is rejected unless the transition carries at least one replayable behavior-preservation command in `evidence`: deleting error handling also reduces branches, so only executable evidence separates abstraction from vandalism. Run `state.verify()` after the transition to replay that certificate.
+Models naturally add information. During a refactor, make removal explicit by adding `complexity: { files: [...] }` to the outcome transition. The state provider counts statement-level TS/JS/TSX/JSX decision keywords and records the per-file deltas. A net reduction is rejected unless the transition carries at least one replayable behavior-preservation command in `evidence`: deleting error handling also reduces branches. An accepted reduction is still `certificationStatus: "pending"`; attachment does not establish behavior preservation. Run `state.verify()` afterward. Only a successful replay returns a certificate and emits `state.certified`.
 
 Use `kind: "representation"` when the state schema itself changes, not merely when implementation branches are reduced. Representation changes deliberately erase old label detail from the active model; they do not delete the append-only log.
 
@@ -64,9 +64,9 @@ while (true) {
 
   await phase("Verify", { total: 1 });
   const verification = await state.verify();
-  if (verification.violated) {
-    // Surprise voids the plan. Revise the hypothesis; do not act on a belief
-    // that failed verification.
+  if (!verification.certified) {
+    // Missing or failed evidence voids the plan. Revise the hypothesis; do
+    // not act on a belief that failed closed.
     head = (await state.get()).head;
     continue;
   }
@@ -94,8 +94,8 @@ while (true) {
 return { ok: true, head: (await state.get()).head };
 ```
 
-Adapt the labels, evidence commands, complexity scope, and goal predicate to the request. Evidence should be the *cheapest* idempotent check that falsifies the claim — a `grep`, a `typecheck`, or a single test — not a full rebuild. Prefer many small falsifiable deltas over one large confident restatement.
+Adapt the labels, evidence commands, complexity scope, and goal predicate to the request. Evidence commands are trusted shell input and execute with the workflow's authority. Use the *cheapest* idempotent check that falsifies the claim — a `grep`, a typecheck, or a single test — not a full rebuild. Passing evidence supports a scoped claim; even tests are evidence, not mathematical proof. Prefer many small falsifiable deltas over one large confident restatement.
 
 ## Storage is transparent
 
-Every transition, violation, and goal-met event lands on mesh topic `fabric.state` as `kind: "transition" | "state.violated" | "state.goal.met"`. The head is a compare-and-swap value at mesh key `state/current`; the goal is at `state/goal`. Raw mesh calls (`mesh.read({ topic: "fabric.state" })`, `mesh.get({ key: "state/current" })`) inspect everything — there is no hidden state. See `docs/state-layer.md`.
+Every transition, certification, violation, and goal-met event lands on mesh topic `fabric.state` as `kind: "transition" | "state.certified" | "state.violated" | "state.goal.met"`. The head is a compare-and-swap value at mesh key `state/current`; the goal is at `state/goal`. Raw mesh calls (`mesh.read({ topic: "fabric.state" })`, `mesh.get({ key: "state/current" })`) inspect everything — there is no hidden state. See `docs/state-layer.md`.

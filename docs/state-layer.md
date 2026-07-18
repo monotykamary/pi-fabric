@@ -1,37 +1,52 @@
 # State layer (fabric-schema)
 
-The `state` provider is the Schema world-model heart of Pi Fabric: a typed, validated transition layer over mesh storage. It turns "claims carrying executable evidence" into a certified, durable artifact instead of relying on the model to remember what is true.
+The `state` provider is a typed, labeled world-model layer over mesh storage. It records claims, attached executable evidence, verification outcomes, and compare-and-swap state transitions. It provides durable process state and fail-closed reporting; it is not a gate on direct Pi tools such as `pi.edit` or `pi.bash`. A forthcoming or optional strict schema mode may provide stronger enforcement, but this document does not assume one.
 
-This document maps the Schema harness concepts to the implementation, documents the storage format so raw mesh calls can inspect it, and specifies transition/verify/goal semantics.
+## Claim, evidence attachment, and certification
 
-## Schema mapping
+These are separate states:
 
-The ARC-AGI-3 Schema harness proved harness-enforced process beats prompt-level discipline. Its core ideas map to coding agents as follows:
+1. A **claim** is the transition `summary` and its labeled move from one world-model state to another.
+2. **Evidence attachment** stores shell commands on the transition. Attachment means only that the commands can be replayed; it does not mean they ran or passed.
+3. **Certification** occurs only when `state.verify` selects at least one transition, runs at least one evidence command, and every result is `confirmed` (exit 0). A successful verification emits a durable `state.certified` event.
 
-| Schema concept                       | Pi Fabric implementation                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| World state as an editable, labeled artifact | The `state` head: mesh key `state/current`, a compare-and-swap value naming the current world-model version.     |
-| Append-only Timeline as ground truth | Mesh topic `fabric.state`; one `transition` event per move. The head is a fold (recompute) over the log, never free-floating. |
-| Certification by replaying recorded transitions | `state.verify()` re-runs each transition's evidence shell commands; tests, type checks, and greps are mostly idempotent. |
-| Single gated channel from thought to action | A belief must pass `verify` before it reaches an act; a `violated` result voids the plan.                                |
-| Surprise voids the plan             | On any `violated` evidence, `state.verify` publishes a `state.violated` event on `fabric.state` for subscribers to react. |
-| Counterexample indicts the representation | A `state.transition` with `kind: "representation"` revises the world model itself and archives earlier labels. The boundary is folded from the log. |
-| Certified erasure | A transition's declared complexity scope is counted by the harness. Net branch reduction requires replayable behavior-preservation evidence. |
-| `is_goal`                            | `state.goal({ check })` sets an executable predicate; `state.checkGoal()` runs it and publishes `state.goal.met` on pass.   |
+Verification fails closed. A missing current or requested target, empty evidence, non-zero exit, spawn error, timeout, or cancellation returns `certified: false` and `violated: true`, and emits `state.violated` with every blocking reason. `violated` is preserved for compatibility; callers should make the positive check `if (!verification.certified)`.
 
-## Storage format (mesh-native, inspectable)
+Evidence commands are arbitrary shell commands and are trusted workflow input. They execute with the invoking process's authority. Tests, type checks, and greps can be strong, useful evidence for a scoped claim, but passing tests are evidence rather than proof.
 
-Storage is mesh-native. Raw mesh calls inspect everything; the typed `state` WRITE path is the only enforced surface.
+## Schema-inspired mapping
+
+| Concept | Pi Fabric implementation |
+| --- | --- |
+| Editable labeled world state | Mesh key `state/current`, advanced with compare-and-swap. |
+| Append-only timeline | Mesh topic `fabric.state`; transition and verification events remain inspectable. |
+| Replayable evidence | `state.verify` executes commands attached to selected transitions. |
+| Certification | A fail-closed verification report plus durable `state.certified` event and digests. |
+| Surprise | `state.violated` records non-confirmed results and blocking reasons. |
+| Representation revision | A `kind: "representation"` transition establishes the active history boundary. |
+| Complexity reduction | Decision-point reduction requires attached evidence and remains pending until later verification succeeds. |
+| Executable goal | `state.goal({ check })` stores a predicate; `state.checkGoal()` executes it. |
+
+The `fabric-schema` skill uses these facilities as workflow discipline. The current provider does not prevent a caller from bypassing that discipline with direct tools.
+
+## Storage format
+
+Storage is mesh-native. Raw mesh reads can inspect all state-layer records.
 
 ### Topic `fabric.state`
 
-Append-only JSONL event log at `<mesh-root>/events.jsonl`. Events:
+The append-only JSONL event log contains:
 
-- **`kind: "transition"`** — `data: { label, from?, to, summary, evidence?, tags?, kind?, complexity?, ts }`. `complexity` is `{ files: [{ file, supported, language?, previous?, current?, delta?, baseline? }], netDelta }`. `text` is the summary. `from` (mesh) is the publisher identity; `from` (data) is the source state label.
-- **`kind: "state.violated"`** — published by `state.verify` when any evidence command exits non-zero. `data: { results: [...] }` with the violating commands.
-- **`kind: "state.goal.met"`** — published by `state.checkGoal` when the goal predicate passes. `data: { check, output, exitCode }`.
+- **`transition`** — `data: { label, from?, to, summary, evidence?, tags?, kind?, complexity?, certificationStatus?, ts }`.
+- **`state.certified`** — emitted only after successful verification. Its data contains `targets`, the verification-time `head`, `evidenceDigest`, `resultDigest`, `certificationStatus: "certified"`, and `ts`.
+- **`state.violated`** — emitted for every failed-closed verification. Its data contains non-confirmed `results`, all blocking `reasons`, selected `targets`, and both digests.
+- **`state.goal.met`** — emitted when the executable goal predicate passes.
 
-Inspect with:
+A certificate target includes the transition's stable `transitionId`, `label`, and `to`. When verification has a head, the certificate also records its `transitionId`, label, destination, and CAS `version`. Certificate currentness is derived by comparing that identity with the current head. Advancing the head leaves the old certificate durable but makes `current: false`; an old certificate is never presented as certification of a changed head.
+
+Both digests use SHA-256 and a `sha256:<hex>` representation. `evidenceDigest` deterministically covers the ordered target identities and attached commands. `resultDigest` deterministically covers the exact ordered results and failures. The result digest therefore changes when command output or failure details change.
+
+Inspect the raw values with:
 
 ```ts
 const events = await mesh.read({ topic: "fabric.state" });
@@ -41,7 +56,7 @@ const goal = await mesh.get({ key: "state/goal" });
 
 ### Key `state/current`
 
-The compare-and-swap head. Value (mesh `state.json` entry):
+The compare-and-swap head contains the transition identity and claim:
 
 ```json
 {
@@ -56,11 +71,11 @@ The compare-and-swap head. Value (mesh `state.json` entry):
 }
 ```
 
-The mesh entry's `version` is the compare-and-swap version. The provider exposes it as `head.version`.
+The mesh entry's `version` is exposed as `head.version`. A complexity-reduction head initially stores `certificationStatus: "pending"`. `state.get` overlays a later matching certificate for read purposes without rewriting or silently advancing the head.
 
 ### Keys `state/complexity/<file>`
 
-Each supported file declared in a transition has a compare-and-swap ledger entry. The suffix is the normalized project-relative path.
+Each supported file declared in a transition has a CAS ledger entry:
 
 ```json
 {
@@ -72,7 +87,7 @@ Each supported file declared in a transition has a compare-and-swap ledger entry
 }
 ```
 
-The entry is the last recorded observation, not an independently mutable complexity claim. The event log retains every baseline and delta.
+The entry is the latest recorded observation. The event log retains baselines and deltas.
 
 ### Key `state/goal`
 
@@ -82,75 +97,78 @@ The entry is the last recorded observation, not an independently mutable complex
 
 ## Actions
 
-All actions live on the `state` provider, discovered through `tools.call({ ref: "state.<action>", args })`.
+Actions are discovered through `tools.call({ ref: "state.<action>", args })`.
 
 ### `state.transition` — risk: `write`
 
 `{ label, from?, to, summary, evidence?, tags?, kind?, complexity?: { files: string[] }, force? }`
 
-Validates `from` equals the current head's `to` when a head exists and `from` is provided; rejects with the actual current label on mismatch (`State from-mismatch: head is at "X", but transition declares from "Y"`). `force: true` overrides the mismatch and contention guards. Then appends a `transition` event to `fabric.state` and compare-and-swap advances `state/current` (bounded retries; a concurrent writer that breaks the chain raises a clear contention error).
+The provider validates `from` against the current head's `to` when supplied, appends a transition, then CAS-advances `state/current`. `force: true` preserves the existing mismatch/contention override behavior.
 
-When `complexity.files` is present, paths are normalized relative to the invocation's project cwd and TS/JS/TSX/JSX files are counted immediately. The first supported observation is a baseline (`delta: 0`); later observations compare against and CAS-update `state/complexity/<file>`. Unsupported extensions are returned as `supported: false` and do not enter the ledger. Per-file deltas and their net are embedded in the transition event.
+When `complexity.files` is present, project-relative TS/JS/TSX/JSX files are counted immediately. The first supported observation is a baseline; later observations compare with and update the ledger. Unsupported files are reported but do not enter the ledger.
 
-A negative net delta is harness-rejected unless `evidence` contains at least one non-empty shell command. This is the Goodhart guard: deleting error handling also reduces decision points, so branch reduction alone cannot certify an abstraction. The attached behavior-preservation check is replayable by `state.verify()` and is what separates abstraction from vandalism.
+A negative net delta is rejected unless at least one non-empty behavior-preservation command is attached. Acceptance means **evidence-attached and pending**, not certified. The transition event and returned head contain `certificationStatus: "pending"`. The write action does not execute evidence secretly. Only a later successful `state.verify` emits a certificate; `state.history` and `state.get` can then expose which reduction transition it covers.
 
-`kind: "representation"` marks a Schema-style revision of the world model. It also establishes the active archive boundary described under history.
+`kind: "representation"` establishes the history archive boundary described below.
 
 Returns `{ event, head }`.
 
 ### `state.get` — risk: `read`
 
-Returns `{ head, goal, complexity, recentLabels }` — the current head, the goal, a compact ledger summary (`files`, `decisionPoints`, `lastNetDelta`), and the recent active label set.
+Returns `{ head, goal, complexity, certification, recentLabels }`. `certification.current` is a certificate only when its recorded head identity still equals the current head. `certification.recent` retains recent visible certificates with their derived `current` flag.
 
 ### `state.history` — risk: `read`
 
-`{ label?, limit?, includeArchived? }` folds the topic into the ordered label graph. The fold finds the **last** `kind: "representation"` transition and excludes records before it by default. This is computed from `fabric.state` on every read; there is no archive flag or second source of truth. `includeArchived: true` reveals the full append-only history. Returns `{ transitions, labels }`. A `label` filter matches a transition's `label`, `from`, or `to` inside the selected archive view.
+`{ label?, limit?, includeArchived? }` folds transitions into the ordered label graph and returns `{ transitions, labels, certifications }`. Matching transitions expose a later certificate and `certificationStatus: "certified"`; a reduction without one remains `pending`.
+
+The fold finds the last representation transition and excludes earlier transitions and their certificates by default. `includeArchived: true` reveals the full append-only transition history and permits archived certificates to be shown. A `label` filter matches `label`, `from`, or `to` within the selected archive view.
 
 ### `state.complexity` — risk: `read`
 
-`{ files? }` counts the requested project-relative files now and compares them with the ledger. Omit `files` to inspect all recorded files. Returns supported-language current and recorded counts, current deltas, each ledger's last recorded delta, unsupported entries, and `netDelta`.
+`{ files? }` counts requested project-relative files and compares them with the ledger. Omit `files` to inspect all recorded files. The result includes supported-language counts, current and recorded deltas, unsupported entries, and `netDelta`.
 
 ### `state.verify` — risk: `execute`
 
-`{ labels?, includeArchived?, timeoutMs? }` re-runs each evidence shell command from the current head (or the transitions matching `labels`) sequentially with a per-command timeout (default 30s). Archived transitions are excluded by default; `includeArchived: true` permits an explicit replay of old evidence. Returns `{ results, violated }` where each result is `{ claim, command, status, exitCode, output }` and `status` is `confirmed` (exit 0), `violated` (non-zero), or `error` (spawn/timeout). On any `violated`, publishes a `state.violated` event to `fabric.state` with the violating commands — the surprise signal actors and supervisors subscribe to.
+`{ labels?, includeArchived?, timeoutMs? }` selects the current head when `labels` is omitted, or active transitions matching the supplied labels. Archived transitions are excluded unless `includeArchived: true`.
+
+Commands run sequentially with a per-command timeout (default 30 seconds). Each result is `{ claim, command, status, exitCode, output, error? }`, where `status` is:
+
+- `confirmed` for exit 0;
+- `violated` for a non-zero exit;
+- `error` for spawn failure, timeout, or cancellation.
+
+The report adds `{ certified, violated, certificationStatus, evidenceDigest, resultDigest, failures, certificate? }`. `certified` is true if and only if one or more evidence commands ran and every result was confirmed. All other outcomes are blocking and publish `state.violated`. A successful run publishes `state.certified` and returns its certificate.
+
+An explicitly empty `labels` array is an empty selection and fails closed. Requesting an archived label without `includeArchived` also fails closed as a missing active target.
 
 ### `state.goal` — risk: `write`
 
-`{ check, description? }` sets the executable goal predicate at `state/goal`.
+`{ check, description? }` stores the executable goal predicate at `state/goal`.
 
 ### `state.checkGoal` — risk: `execute`
 
-`{ timeoutMs? }` runs the goal predicate; reports `{ passed, output, exitCode }`. Publishes `state.goal.met` on `fabric.state` when it passes.
+`{ timeoutMs? }` runs the goal predicate and reports `{ passed, output, exitCode, error? }`. It publishes `state.goal.met` when the command exits 0. Goal checks are separate from state certification.
 
-## Exact complexity rule
+## Complexity rule
 
-The built-in `LanguageComplexity` implementation supports `.ts`, `.js`, `.tsx`, and `.jsx`. It lexes tokens without an AST dependency and counts these statement decision keywords:
+The built-in complexity implementation supports `.ts`, `.js`, `.tsx`, and `.jsx`. It lexes tokens without an AST dependency and counts statement decision keywords:
 
-- `if`, including one count for the `if` in each `else if`;
+- `if`, including the `if` in `else if`;
 - `case` and `default` in a switch body;
 - `catch`, including optional catch binding;
 - `for` and `while`.
 
-Strings, template/JSX prose, regular-expression literals, and comments are skipped; `${...}` and JSX expression code is tokenized. `if`/`for`/`while` require a following `(`, `default` requires `:`, and `case`/`default` require switch context. Ternaries, `&&`, `||`, optional chaining (`?.`), and nullish coalescing (`??`) do not count. Other languages return `undefined`/`supported: false`; additional implementations can plug in behind `LanguageComplexity`.
+Strings, template/JSX prose, regular-expression literals, and comments are skipped; `${...}` and JSX expression code are tokenized. Ternaries, `&&`, `||`, optional chaining, and nullish coalescing do not count. Unsupported languages return `supported: false`.
 
 ## Determinism and contention
 
-The head is CAS-advanced on every transition with an `ifVersion` retry loop bounded at 8 attempts. Appends are durable before the head moves; the head is recomputable from the log. On CAS failure the layer re-reads the head and re-validates `from`:
+The head is CAS-advanced with a bounded eight-attempt retry loop. Transition events are durable before the head moves, so the head remains recomputable from the log. On CAS failure the layer re-reads and re-validates `from`:
 
-- If `from` still chains from the new head, it retries the CAS with the new version.
-- If `from` no longer matches (or no head existed and one appeared), it raises `State contention: head is at "X", cannot transition from "Y"` — the plan's assumed state was voided by a concurrent writer.
+- if the transition still chains from the new head, it retries with the new version;
+- if the chain is broken, it raises a contention error naming the actual head.
 
-`force: true` skips both the pre-append from-mismatch check and the contention re-validation.
+`force: true` skips both the pre-append mismatch check and contention re-validation. Certification adds events but does not alter this transition, history, or archive behavior.
 
 ## Activity
 
-The provider emits `context.activity` updates: a `mesh` entity (`fabric-state`) on transitions, verify runs, and goal sets, plus progress messages. These surface in the Fabric dashboard and widget.
-
-## Skill usage
-
-The `fabric-schema` skill (`/skill:fabric-schema <task>`) encodes the loop discipline as a model-invocable skill: observe → hypothesize (`state.transition`; competing explanations as separate labels) → verify (`state.verify`; cheapest discriminating evidence first) → act → record. Transition summaries obey the grokking rule: state the **delta from `from`**, never restate the whole world. Refactor records declare `complexity.files`; certified reductions carry behavior-preservation evidence. A revision to the state schema itself uses `kind: "representation"`, intentionally archiving obsolete label detail while retaining the raw log.
-
-It references two sibling workstreams:
-
-- `compact.request` — advisory compaction at phase boundaries (the compact provider's `request` action), so the parent context shrinks while the labeled head survives the compaction intact.
-- `memory.recall` — recall prior work before redoing it (the memory provider), so each iteration rebuilds from evidence, not prose memory.
+The provider emits mesh entity activity for transitions, verification runs, and goal sets, plus progress updates. These surface in the Fabric dashboard and widget.
