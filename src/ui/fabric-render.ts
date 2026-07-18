@@ -321,8 +321,11 @@ export const renderFabricMulticallPartial = (
   return renderBoundedLines(rows);
 };
 
-/** Extract the human-readable body text from a nested call result, if any. */
+/** Extract the human-readable body text from a nested call result or write arguments, if any. */
 export function nestedCallBody(audit: FabricRenderAudit): string | undefined {
+  if (audit.tool === "write" && typeof audit.args?.content === "string") {
+    return audit.args.content;
+  }
   const result = audit.result;
   if (typeof result === "string") return result;
   if (result !== null && typeof result === "object" && !Array.isArray(result)) {

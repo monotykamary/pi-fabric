@@ -296,8 +296,18 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate)}`;
             if (audit.success === false && audit.error) {
               text += nl + `  ${theme.fg("error", safeTerminalText(audit.error))}`;
+            } else {
+              const rendered = renderBody(audit, expanded ? 200 : 10);
+              if (rendered) {
+                text += nl + rendered.body;
+                if (rendered.hidden > 0) {
+                  text += nl + theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`);
+                  if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
+                }
+              } else if (progress) {
+                text += nl + theme.fg("dim", safeTerminalText(progress));
+              }
             }
-            if (progress) text += nl + theme.fg("dim", safeTerminalText(progress));
             return new Text(text, 0, 0);
           }
           return renderFabricMulticallPartial(

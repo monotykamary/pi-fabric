@@ -6,6 +6,8 @@ import { initHighlighting } from "../src/ui/highlight.js";
 import {
   compactProgressPreview,
   modelReadHint,
+  nestedCallBody,
+  nestedCallCode,
   nestedCallTitle,
   nestedEditDiff,
   renderBoundedLines,
@@ -71,6 +73,33 @@ describe("fabric nested rendering", () => {
     const title = nestedCallTitle(restored!, plainTheme);
     expect(title).toBe("bash");
     expect(title).not.toContain("sha256:");
+  });
+
+  it("exposes in-flight write content for single-call previews", () => {
+    const audit = {
+      ref: "pi.write",
+      provider: "pi",
+      tool: "write",
+      args: { path: "README.md", content: "# Fabric\n\nLive preview" },
+    };
+
+    expect(nestedCallBody(audit)).toBe("# Fabric\n\nLive preview");
+    expect(nestedCallCode(audit)).toEqual({
+      code: "# Fabric\n\nLive preview",
+      lang: "markdown",
+    });
+  });
+
+  it("falls back to plain in-flight write content for unknown file types", () => {
+    const audit = {
+      ref: "pi.write",
+      provider: "pi",
+      tool: "write",
+      args: { path: "fixture.unknown", content: "first\nsecond" },
+    };
+
+    expect(nestedCallCode(audit)).toBeNull();
+    expect(nestedCallBody(audit)).toBe("first\nsecond");
   });
 
   it("renders in-flight agent names from invocation arguments", () => {
