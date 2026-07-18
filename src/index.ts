@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { loadCodePreviewSettings, withCodePreviewShell } from "pi-code-previews";
 import { Type } from "typebox";
 import {
@@ -24,8 +24,10 @@ import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
+  captureFabricWritePreviews,
   expandHint,
   fabricMulticallCallLimit,
+  fabricWriteBindings,
   isNumberedTool,
   modelReadHint,
   nestedCallBody,
@@ -34,9 +36,13 @@ import {
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
+  renderFabricWriteArgumentPreview,
+  restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
   type FabricRenderAudit,
+  type FabricWriteBinding,
+  type FabricWritePreview,
 } from "./ui/fabric-render.js";
 import { highlightCode, initHighlighting } from "./ui/highlight.js";
 import path from "node:path";
@@ -185,7 +191,28 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         ),
       }),
       renderCall(params, theme, context) {
-        const lines = safeTerminalText(Array.isArray(params.code) ? params.code.join("\n") : params.code).split("\n");
+        const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+        const rendererState = context.state as {
+          fabricWriteBindingsCode?: string;
+          fabricWriteBindings?: FabricWriteBinding[];
+        };
+        if (rendererState.fabricWriteBindingsCode !== code) {
+          rendererState.fabricWriteBindingsCode = code;
+          rendererState.fabricWriteBindings = fabricWriteBindings(code);
+        }
+        const writePreview = context.executionStarted
+          ? null
+          : renderFabricWriteArgumentPreview(
+              {
+                bindings: rendererState.fabricWriteBindings ?? [],
+                strings: params.strings,
+                expanded: context.expanded,
+              },
+              theme,
+              context.invalidate,
+            );
+
+        const lines = safeTerminalText(code).split("\n");
         const limit = context.expanded ? lines.length : 8;
         const shown = lines.slice(0, limit);
         const width = String(Math.max(1, shown.length)).length;
@@ -204,18 +231,33 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           hidden > 0
             ? `\n${theme.fg("dim", `… ${countLabel(hidden, "line")} hidden · `)}${expandHint(theme)}`
             : "";
-        return new Text(
+        const codePreview = new Text(
           `${title}${preview ? `\n${preview}` : ""}${hiddenHint}`,
           0,
           0,
         );
+        if (!writePreview) return codePreview;
+        const composite = new Container();
+        composite.addChild(codePreview);
+        composite.addChild(new Text("\n", 0, 0));
+        composite.addChild(writePreview);
+        return composite;
       },
       renderResult(result, { expanded, isPartial }, theme, context) {
         const details = readFabricExecutionRenderDetails(result.details);
-        const audits = restoreLegacyBashCommands(
+        let audits = restoreLegacyBashCommands(
           details.audits as FabricRenderAudit[],
           context.args,
         );
+        const rendererState = context.state as {
+          fabricWritePreviews?: FabricWritePreview[];
+        };
+        if (isPartial) {
+          const writePreviews = captureFabricWritePreviews(audits);
+          if (writePreviews.length > 0) rendererState.fabricWritePreviews = writePreviews;
+        } else if (rendererState.fabricWritePreviews) {
+          audits = restoreFabricWritePreviews(audits, rendererState.fabricWritePreviews);
+        }
         const phases = details.phases;
         const nl = "\n";
 
@@ -310,8 +352,18 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             }
             return new Text(text, 0, 0);
           }
+          let preview: { auditIndex: number; body: string; hidden: number } | undefined;
+          for (let index = audits.length - 1; index >= 0; index--) {
+            const audit = audits[index]!;
+            if (audit.tool !== "write" || audit.success === false) continue;
+            const rendered = renderBody(audit, expanded ? 20 : 10);
+            if (rendered) {
+              preview = { auditIndex: index, ...rendered };
+              break;
+            }
+          }
           return renderFabricMulticallPartial(
-            { audits, phases, progress, expanded },
+            { audits, phases, progress, expanded, preview },
             theme,
             context?.invalidate,
           );

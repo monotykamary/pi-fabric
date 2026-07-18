@@ -131,6 +131,52 @@ describe("ActionRegistry", () => {
     expect(observed?.success).toBeUndefined();
   });
 
+  it("keeps a larger bounded content preview for transient write audits", async () => {
+    const registry = new ActionRegistry();
+    const audits: FabricCallAudit[] = [];
+    const content = "x".repeat(20_000);
+    registry.register({
+      name: "pi",
+      description: "Pi tools",
+      async list() {
+        return [{
+          name: "write",
+          description: "Write a file",
+          inputSchema: {
+            type: "object",
+            properties: { path: { type: "string" }, content: { type: "string" } },
+            required: ["path", "content"],
+            additionalProperties: false,
+          },
+          risk: "write",
+        }];
+      },
+      async describe(name) {
+        return name === "write" ? (await this.list({}, context))[0] : undefined;
+      },
+      async invoke() {
+        return { ok: true };
+      },
+    });
+
+    await registry.invoke(
+      "pi.write",
+      { path: "preview.md", content },
+      {
+        ...context,
+        approve: async () => {},
+        audits,
+        maxResultChars: 10_000,
+      },
+    );
+
+    const preview = audits[0]?.args?.content;
+    expect(typeof preview).toBe("string");
+    expect((preview as string).length).toBeGreaterThan(2_000);
+    expect((preview as string).length).toBeLessThan(content.length);
+    expect(preview).toMatch(/…$/);
+  });
+
   it("marks failed agent results as failed nested calls without hiding the result", async () => {
     const registry = new ActionRegistry();
     const audits: FabricCallAudit[] = [];

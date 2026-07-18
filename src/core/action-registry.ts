@@ -80,6 +80,7 @@ export const NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
 
 const PREVIEW_ARG_CHARS = 2_000;
+const WRITE_PREVIEW_CONTENT_CHARS = 16_000;
 const PREVIEW_ARG_KEYS = 32;
 const PREVIEW_RESULT_CHARS = 16_000;
 const MAX_VALIDATION_MESSAGE_CHARS = 2_000;
@@ -87,12 +88,16 @@ const MAX_VALIDATION_MESSAGE_CHARS = 2_000;
 const truncateString = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max)}…`;
 
-const previewArgs = (args: Record<string, unknown>): Record<string, unknown> => {
+const previewArgs = (ref: string, args: Record<string, unknown>): Record<string, unknown> => {
   const out: Record<string, unknown> = {};
   let count = 0;
   for (const [key, value] of Object.entries(args)) {
     if (count++ >= PREVIEW_ARG_KEYS) break;
-    out[key] = typeof value === "string" ? truncateString(value, PREVIEW_ARG_CHARS) : value;
+    const maxChars =
+      ref === "pi.write" && key === "content"
+        ? WRITE_PREVIEW_CONTENT_CHARS
+        : PREVIEW_ARG_CHARS;
+    out[key] = typeof value === "string" ? truncateString(value, maxChars) : value;
   }
   return out;
 };
@@ -307,7 +312,7 @@ export class ActionRegistry {
         startedAt: Date.now(),
         tool: action.name,
         provider: action.provider,
-        args: previewArgs(preparedArgs),
+        args: previewArgs(ref, preparedArgs),
       };
       audit = activeAudit;
       context.audits.push(activeAudit);

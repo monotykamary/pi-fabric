@@ -148,6 +148,198 @@ export const restoreLegacyBashCommands = (
   });
 };
 
+export interface FabricWriteBinding {
+  path: string;
+  stringKey: string;
+}
+
+const propertyNameText = (name: ts.PropertyName): string | undefined =>
+  ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
+
+const namedStringKey = (expression: ts.Expression): string | undefined => {
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === "π"
+  ) {
+    return expression.name.text;
+  }
+  if (
+    ts.isElementAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === "π" &&
+    expression.argumentExpression &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+  ) {
+    return expression.argumentExpression.text;
+  }
+  return undefined;
+};
+
+const literalText = (expression: ts.Expression): string | undefined =>
+  ts.isStringLiteralLike(expression) ? expression.text : undefined;
+
+export const fabricWriteBindings = (code: string): FabricWriteBinding[] => {
+  const source = ts.createSourceFile(
+    "fabric-exec-write-preview.ts",
+    code,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const bindings: FabricWriteBinding[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "pi" &&
+      node.expression.name.text === "write"
+    ) {
+      const args = node.arguments[0];
+      if (args && ts.isObjectLiteralExpression(args)) {
+        let path: string | undefined;
+        let stringKey: string | undefined;
+        for (const property of args.properties) {
+          if (!ts.isPropertyAssignment(property)) continue;
+          const name = propertyNameText(property.name);
+          if (name === "path" || name === "file" || name === "file_path") {
+            path = literalText(property.initializer);
+          } else if (name === "content" || name === "text" || name === "contents") {
+            stringKey = namedStringKey(property.initializer);
+          }
+        }
+        if (path !== undefined && stringKey !== undefined) bindings.push({ path, stringKey });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return bindings;
+};
+
+export interface FabricWriteArgumentPreviewInput {
+  bindings: FabricWriteBinding[];
+  strings?: Record<string, string> | undefined;
+  expanded: boolean;
+}
+
+const renderWriteArgumentBody = (
+  path: string,
+  content: string,
+  expanded: boolean,
+  theme: Theme,
+  invalidate?: () => void,
+): { lines: string[]; hidden: number } => {
+  const allLines = safeTerminalText(content).split("\n");
+  while (allLines.length > 0 && allLines[allLines.length - 1] === "") allLines.pop();
+  const limit = expanded ? Math.min(allLines.length, 200) : 10;
+  const shown = allLines.slice(0, limit);
+  const lang = languageFromPath(path);
+  const highlighted = lang && shown.length > 0
+    ? highlightCode(shown.join("\n"), lang, invalidate)
+    : null;
+  return {
+    lines: shown.map((line, index) =>
+      highlighted?.[index] ?? theme.fg("toolOutput", line || " "),
+    ),
+    hidden: allLines.length - shown.length,
+  };
+};
+
+export const renderFabricWriteArgumentPreview = (
+  input: FabricWriteArgumentPreviewInput,
+  theme: Theme,
+  invalidate?: () => void,
+): Component | null => {
+  const available = input.bindings.map(
+    (binding) => input.strings?.[binding.stringKey],
+  );
+  let activeIndex = -1;
+  for (let index = 0; index < available.length; index++) {
+    if (typeof available[index] === "string") activeIndex = index;
+  }
+  if (activeIndex < 0) return null;
+
+  if (input.bindings.length === 1) {
+    const binding = input.bindings[0]!;
+    const rows = [
+      nestedCallTitle(
+        { ref: "pi.write", tool: "write", args: { path: binding.path } },
+        theme,
+        invalidate,
+      ),
+    ];
+    const body = renderWriteArgumentBody(
+      binding.path,
+      available[0] ?? "",
+      input.expanded,
+      theme,
+      invalidate,
+    );
+    rows.push(...body.lines);
+    if (body.hidden > 0) {
+      rows.push(
+        theme.fg("dim", `… ${body.hidden} more ${body.hidden === 1 ? "line" : "lines"}`) +
+          (input.expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
+      );
+    }
+    return renderBoundedLines(rows);
+  }
+
+  const completed = Math.max(
+    0,
+    available.filter((value) => typeof value === "string").length - 1,
+  );
+  const rows = [
+    theme.fg(
+      "warning",
+      `◆ Fabric composing · ${completed}/${input.bindings.length} writes`,
+    ),
+  ];
+  const callLimit = fabricMulticallCallLimit(input.expanded);
+  const shownBindings = input.bindings.slice(0, callLimit);
+  for (let index = 0; index < shownBindings.length; index++) {
+    const binding = shownBindings[index]!;
+    const glyph =
+      index !== activeIndex && typeof available[index] === "string"
+        ? theme.fg("dim", "›")
+        : index === activeIndex
+          ? theme.fg("warning", "◐")
+          : theme.fg("dim", "○");
+    rows.push(
+      `${glyph} ${nestedCallTitle(
+        { ref: "pi.write", tool: "write", args: { path: binding.path } },
+        theme,
+        invalidate,
+      )}`,
+    );
+    if (index === activeIndex) {
+      const body = renderWriteArgumentBody(
+        binding.path,
+        available[index] ?? "",
+        input.expanded,
+        theme,
+        invalidate,
+      );
+      for (const line of body.lines) rows.push(`  ${line}`);
+      if (body.hidden > 0) {
+        rows.push(
+          theme.fg("dim", `  … ${body.hidden} more ${body.hidden === 1 ? "line" : "lines"}`),
+        );
+      }
+    }
+  }
+  const hidden = input.bindings.length - shownBindings.length;
+  if (hidden > 0) {
+    rows.push(
+      theme.fg("dim", `… ${hidden} more ${hidden === 1 ? "write" : "writes"}`) +
+        (input.expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
+    );
+  }
+  return renderBoundedLines(rows);
+};
+
 const shortIdOf = (value: unknown): string | undefined =>
   typeof value === "string" ? value.slice(0, 8) : undefined;
 
@@ -256,11 +448,18 @@ export function nestedCallTitle(
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
 }
 
+interface FabricMulticallPreview {
+  auditIndex: number;
+  body: string;
+  hidden: number;
+}
+
 export interface FabricMulticallPartialInput {
   audits: FabricRenderAudit[];
   phases: string[];
   progress?: string | undefined;
   expanded: boolean;
+  preview?: FabricMulticallPreview | undefined;
 }
 
 export const compactProgressPreview = (progress: string): string => {
@@ -307,6 +506,16 @@ export const renderFabricMulticallPartial = (
       for (const line of safeTerminalText(audit.error).split("\n")) {
         rows.push(`  ${theme.fg("error", line)}`);
       }
+    } else if (input.preview?.auditIndex === index) {
+      for (const line of input.preview.body.split("\n")) rows.push(`  ${line}`);
+      if (input.preview.hidden > 0) {
+        rows.push(
+          theme.fg(
+            "dim",
+            `  … ${input.preview.hidden} more ${input.preview.hidden === 1 ? "line" : "lines"}`,
+          ),
+        );
+      }
     }
   }
 
@@ -319,6 +528,41 @@ export const renderFabricMulticallPartial = (
     );
   }
   return renderBoundedLines(rows);
+};
+
+export interface FabricWritePreview {
+  ref: string;
+  path?: string | undefined;
+  content: string;
+}
+
+export const captureFabricWritePreviews = (audits: FabricRenderAudit[]): FabricWritePreview[] =>
+  audits.flatMap((audit) => {
+    const content = audit.tool === "write" ? argString(audit.args ?? {}, "content") : undefined;
+    if (content === undefined) return [];
+    return [{ ref: audit.ref, path: argString(audit.args ?? {}, "path"), content }];
+  });
+
+// Write content is deliberately absent from persisted traces. Keep bounded live
+// previews in renderer state so a fast write can still render when its final
+// result replaces the last partial update.
+export const restoreFabricWritePreviews = (
+  audits: FabricRenderAudit[],
+  previews: FabricWritePreview[],
+): FabricRenderAudit[] => {
+  const remaining = previews.slice();
+  return audits.map((audit) => {
+    if (audit.tool !== "write" || typeof audit.args?.content === "string") return audit;
+    const path = argString(audit.args ?? {}, "path");
+    const index = remaining.findIndex(
+      (preview) => preview.ref === audit.ref && preview.path === path,
+    );
+    if (index < 0) return audit;
+    const [preview] = remaining.splice(index, 1);
+    return preview
+      ? { ...audit, args: { ...(audit.args ?? {}), content: preview.content } }
+      : audit;
+  });
 };
 
 /** Extract the human-readable body text from a nested call result or write arguments, if any. */

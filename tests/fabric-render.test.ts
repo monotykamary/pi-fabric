@@ -4,7 +4,9 @@ import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { initHighlighting } from "../src/ui/highlight.js";
 import {
+  captureFabricWritePreviews,
   compactProgressPreview,
+  fabricWriteBindings,
   modelReadHint,
   nestedCallBody,
   nestedCallCode,
@@ -12,6 +14,8 @@ import {
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
+  renderFabricWriteArgumentPreview,
+  restoreFabricWritePreviews,
   restoreLegacyBashCommands,
 } from "../src/ui/fabric-render.js";
 
@@ -75,6 +79,55 @@ describe("fabric nested rendering", () => {
     expect(title).not.toContain("sha256:");
   });
 
+  it("extracts π write bindings in source order", () => {
+    const bindings = fabricWriteBindings(`
+return Promise.all([
+  pi.write({ path: "README.md", text: π.readme }),
+  pi.write({ file: "docs/configuration.md", contents: π.configuration }),
+  pi.write({ file_path: "docs/interface.md", content: π["interface"] }),
+]);
+`);
+
+    expect(bindings).toEqual([
+      { path: "README.md", stringKey: "readme" },
+      { path: "docs/configuration.md", stringKey: "configuration" },
+      { path: "docs/interface.md", stringKey: "interface" },
+    ]);
+  });
+
+  it("renders a growing single π value during argument composition", () => {
+    const streaming = renderFabricWriteArgumentPreview(
+      {
+        bindings: [{ path: "preview.unknown", stringKey: "preview" }],
+        strings: { preview: "first line\nsecond line" },
+        expanded: false,
+      },
+      plainTheme,
+    )!.render(100);
+
+    expect(streaming).toContain("first line");
+    expect(streaming).toContain("second line");
+  });
+
+  it("streams only the latest π value in a multicall", () => {
+    const composing = renderFabricWriteArgumentPreview(
+      {
+        bindings: [
+          { path: "one.unknown", stringKey: "one" },
+          { path: "two.unknown", stringKey: "two" },
+          { path: "three.unknown", stringKey: "three" },
+        ],
+        strings: { one: "one complete", two: "two growing" },
+        expanded: false,
+      },
+      plainTheme,
+    )!.render(100);
+
+    expect(composing[0]).toContain("Fabric composing · 1/3 writes");
+    expect(composing).toContain("  two growing");
+    expect(composing).not.toContain("one complete");
+  });
+
   it("exposes in-flight write content for single-call previews", () => {
     const audit = {
       ref: "pi.write",
@@ -100,6 +153,66 @@ describe("fabric nested rendering", () => {
 
     expect(nestedCallCode(audit)).toBeNull();
     expect(nestedCallBody(audit)).toBe("first\nsecond");
+  });
+
+  it("restores ephemeral write content after final trace projection", () => {
+    const live = [
+      {
+        ref: "pi.write",
+        provider: "pi",
+        tool: "write",
+        args: { path: "README.md", content: "# Cached preview" },
+        success: true,
+      },
+    ];
+    const previews = captureFabricWritePreviews(live);
+    const restored = restoreFabricWritePreviews(
+      [
+        {
+          ref: "pi.write",
+          provider: "pi",
+          tool: "write",
+          args: { path: "README.md" },
+          success: true,
+        },
+      ],
+      previews,
+    );
+
+    expect(nestedCallBody(restored[0]!)).toBe("# Cached preview");
+  });
+
+  it("renders a write body while a multicall remains partial", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "pi.write",
+            provider: "pi",
+            tool: "write",
+            args: { path: "one.md" },
+            success: true,
+          },
+          {
+            ref: "pi.write",
+            provider: "pi",
+            tool: "write",
+            args: { path: "two.md" },
+            success: true,
+          },
+          { ref: "pi.bash", provider: "pi", tool: "bash", args: { command: "sleep 1" } },
+        ],
+        phases: [],
+        progress: "bash: waiting",
+        expanded: false,
+        preview: { auditIndex: 1, body: "# Two\nPreview body", hidden: 4 },
+      },
+      plainTheme,
+    ).render(100);
+
+    expect(lines).toContain("  # Two");
+    expect(lines).toContain("  Preview body");
+    expect(lines).toContain("  … 4 more lines");
   });
 
   it("renders in-flight agent names from invocation arguments", () => {
