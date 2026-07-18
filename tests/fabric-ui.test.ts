@@ -538,6 +538,29 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
+  it("keeps the overview height stable when the entity action hint appears", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+    );
+    try {
+      const withoutHint = dashboard.render(120);
+      expect(withoutHint.join("\n")).not.toContain("enter details");
+
+      dashboard.handleInput("l");
+      const withHint = dashboard.render(120);
+      expect(withHint.join("\n")).toContain("enter details");
+      expect(withHint).toHaveLength(withoutHint.length);
+
+      dashboard.handleInput("h");
+      expect(dashboard.render(120)).toHaveLength(withoutHint.length);
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("renders a responsive sidebar with a heading-free grouped activity pane", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
     const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn());

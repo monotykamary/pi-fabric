@@ -1351,11 +1351,11 @@ export class FabricDashboard implements Component, Focusable {
       ),
     );
     const selectedEntity = entities[this.entityIndex];
-    if (this.pane === "entities" && selectedEntity) {
-      lines.push(
-        this.row(width, this.theme.fg("muted", `  ${this.overviewActionHint(selectedEntity)}`)),
-      );
-    }
+    const actionHint =
+      this.pane === "entities" && selectedEntity
+        ? this.theme.fg("muted", `  ${this.overviewActionHint(selectedEntity)}`)
+        : "";
+    lines.push(this.row(width, actionHint));
     lines.push(this.bottomBorder(width));
     return lines.map((line) => truncateToWidth(line, width, ""));
   }
