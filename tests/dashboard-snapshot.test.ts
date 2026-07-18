@@ -96,6 +96,19 @@ describe("dashboard snapshot agent ownership", () => {
     expect(snapshot.agents.map((agent) => agent.id)).toEqual(["first", "second", "third"]);
   });
 
+  it("preserves structured agent result values", () => {
+    const structured = {
+      ...record("structured"),
+      status: "completed" as const,
+      value: { findings: [{ severity: "high" }], approved: false },
+    };
+
+    const snapshot = createDashboardSnapshot(fakeState([], [structured]), []);
+
+    expect(snapshot.agents[0]?.value).toEqual(structured.value);
+    expect(snapshot.agents[0]?.value).not.toBe(structured.value);
+  });
+
   it("keeps launch ownership when a later status call returns the same agent id", () => {
     const child = record("agent-child");
     const parent = record("agent-parent", [child]);

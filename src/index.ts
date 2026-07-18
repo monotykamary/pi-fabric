@@ -34,6 +34,7 @@ import {
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
+  restoreLegacyBashCommands,
   safeTerminalText,
   type FabricRenderAudit,
 } from "./ui/fabric-render.js";
@@ -211,7 +212,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       },
       renderResult(result, { expanded, isPartial }, theme, context) {
         const details = readFabricExecutionRenderDetails(result.details);
-        const audits = details.audits as FabricRenderAudit[];
+        const audits = restoreLegacyBashCommands(
+          details.audits as FabricRenderAudit[],
+          context.args,
+        );
         const phases = details.phases;
         const nl = "\n";
 

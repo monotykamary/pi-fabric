@@ -323,6 +323,7 @@ export class FabricActivityStore {
       label: labelForCall(input.ref, input.args),
       kind: kindForRef(input.ref),
       status: "running",
+      args: structuredClone(input.args),
       ...(run.currentPhaseId ? { phaseId: run.currentPhaseId } : {}),
       startedAt: now,
       updatedAt: now,
@@ -374,6 +375,7 @@ export class FabricActivityStore {
     call.finishedAt = now;
     const error = cleanText(input.error, MAX_DETAIL_CHARS);
     if (error) call.error = error;
+    if (input.result !== undefined) call.result = structuredClone(input.result);
     const metrics = metricsFrom(input.result);
     if (metrics) call.metrics = { ...(call.metrics ?? {}), ...metrics };
     if (call.status === "completed") {

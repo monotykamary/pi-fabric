@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { FabricTraceJsonValue } from "./trace.js";
 
 export interface FabricAuditProjection {
@@ -60,11 +59,6 @@ const localPath = (value: unknown): string | undefined => {
   );
   return value.slice(0, end) || undefined;
 };
-
-const commandDigest = (value: unknown): string | undefined =>
-  typeof value === "string"
-    ? `sha256:${createHash("sha256").update(value).digest("hex")}`
-    : undefined;
 
 const copyString = (
   output: Record<string, FabricTraceJsonValue>,
@@ -227,10 +221,7 @@ export const projectFabricAuditArgs = (
     case "pi.write":
       return projected(args, (output) => copyPath(output, args));
     case "pi.bash":
-      return projected(args, (output) => {
-        const digest = commandDigest(args.command);
-        if (digest !== undefined) output.commandDigest = digest;
-      });
+      return projected(args, (output) => copyString(output, args, "command"));
     case "mesh.publish":
       return projected(args, (output) => {
         copyString(output, args, "topic");

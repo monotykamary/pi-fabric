@@ -2,7 +2,13 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
-import type { FabricActivityRun, FabricActivityStatus } from "../activity/types.js";
+import type {
+  FabricActivityCall,
+  FabricActivityItem,
+  FabricActivityKind,
+  FabricActivityRun,
+  FabricActivityStatus,
+} from "../activity/types.js";
 import { formatDuration, formatTokens, safeText } from "./format.js";
 import {
   isActiveStatus,
@@ -13,6 +19,21 @@ import {
 } from "./types.js";
 
 const spinnerFrames = ["◐", "◓", "◑", "◒"];
+
+type WidgetActivityKind = FabricActivityKind | "state" | "ambientActor";
+
+const widgetActivityPriority: readonly WidgetActivityKind[] = [
+  "agent",
+  "actor",
+  "task",
+  "custom",
+  "tool",
+  "extension",
+  "mcp",
+  "mesh",
+  "state",
+  "ambientActor",
+];
 
 const statusGlyph = (status: string): string => {
   if (status === "completed" || status === "done") return "✓";
@@ -109,6 +130,39 @@ const actorLine = (theme: Theme, actor: FabricUiActor): string => {
   )}`;
 };
 
+const callLine = (theme: Theme, call: FabricActivityCall, now: number): string => {
+  const status = colorStatus(theme, call.status, statusGlyph(call.status));
+  const activity = call.progress ?? (call.label !== call.ref ? call.ref : undefined);
+  const metrics = [
+    call.metrics?.tokens !== undefined ? `${formatTokens(call.metrics.tokens)} tok` : undefined,
+    call.metrics?.toolCalls !== undefined ? `${call.metrics.toolCalls} tools` : undefined,
+    formatDuration((call.finishedAt ?? now) - call.startedAt),
+  ].filter((value): value is string => Boolean(value));
+  return `  ${status} ${safeText(call.label)}${
+    activity ? `  ${theme.fg("muted", safeText(activity))}` : ""
+  }${metrics.length > 0 ? theme.fg("dim", ` · ${metrics.join(" · ")}`) : ""}`;
+};
+
+const itemLine = (theme: Theme, item: FabricActivityItem): string => {
+  const current = item.current ?? item.detail;
+  const progress =
+    item.total !== undefined
+      ? ` · ${item.completed ?? 0}/${item.total}`
+      : current
+        ? ` · ${safeText(current)}`
+        : "";
+  return `  ${colorStatus(theme, item.status, statusGlyph(item.status))} ${safeText(
+    item.label,
+  )}${theme.fg("dim", progress)}`;
+};
+
+const actorActivityKind = (actor: FabricUiActor): WidgetActivityKind =>
+  actor.lastError ||
+  actor.status !== "idle" ||
+  (actor.worker && isActiveStatus(actor.worker.status))
+    ? "actor"
+    : "ambientActor";
+
 export const shouldShowFabricWidget = (
   snapshot: FabricDashboardSnapshot,
   mode: FabricUiWidgetMode,
@@ -175,6 +229,7 @@ export class FabricWidget implements Component {
     const activeState = snapshot.state.filter((entry) => isActiveStatus(entry.status));
     const nestedCalls =
       run?.calls.filter((call) => call.kind !== "agent" && call.kind !== "actor") ?? [];
+    const activeCalls = nestedCalls.filter((call) => isActiveStatus(call.status));
     const runningItems = run?.items.filter((item) => isActiveStatus(item.status)) ?? [];
     const title = run?.name ?? "Fabric session";
     const headerStatus = run?.status ?? (activeAgents.length > 0 ? "running" : "idle");
@@ -212,29 +267,39 @@ export class FabricWidget implements Component {
     )}${parts.length > 0 ? this.theme.fg("dim", ` · ${parts.join(" · ")}`) : ""}`;
     const lines = [header];
 
-    for (const agent of activeAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
-    for (const agent of terminalAgents) lines.push(agentLine(this.theme, agent, snapshot.now));
-    for (const actor of visibleActors) lines.push(actorLine(this.theme, actor));
+    const activityRows: Array<{ kind: WidgetActivityKind; line: string }> = [];
+    for (const agent of activeAgents) {
+      activityRows.push({ kind: "agent", line: agentLine(this.theme, agent, snapshot.now) });
+    }
+    for (const agent of terminalAgents) {
+      activityRows.push({ kind: "agent", line: agentLine(this.theme, agent, snapshot.now) });
+    }
+    for (const call of activeCalls) {
+      activityRows.push({
+        kind: call.entityKind ?? call.kind,
+        line: callLine(this.theme, call, snapshot.now),
+      });
+    }
     for (const item of runningItems) {
-      const current = item.current ?? item.detail;
-      const progress =
-        item.total !== undefined
-          ? ` · ${item.completed ?? 0}/${item.total}`
-          : current
-            ? ` · ${safeText(current)}`
-            : "";
-      lines.push(
-        `  ${colorStatus(this.theme, item.status, statusGlyph(item.status))} ${safeText(
-          item.label,
-        )}${this.theme.fg("dim", progress)}`,
-      );
+      activityRows.push({ kind: item.kind, line: itemLine(this.theme, item) });
     }
     for (const entry of activeState) {
-      lines.push(
-        `  ${colorStatus(this.theme, entry.status, statusGlyph(entry.status))} ${safeText(
+      activityRows.push({
+        kind: "state",
+        line: `  ${colorStatus(this.theme, entry.status, statusGlyph(entry.status))} ${safeText(
           entry.label,
         )}${this.theme.fg("dim", ` · ${entry.owner ?? entry.status}`)}`,
-      );
+      });
+    }
+    for (const actor of visibleActors) {
+      activityRows.push({ kind: actorActivityKind(actor), line: actorLine(this.theme, actor) });
+    }
+
+    const visibleKind = widgetActivityPriority.find((kind) =>
+      activityRows.some((row) => row.kind === kind),
+    );
+    if (visibleKind) {
+      lines.push(...activityRows.filter((row) => row.kind === visibleKind).map((row) => row.line));
     }
     return lines;
   }

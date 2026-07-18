@@ -24,6 +24,7 @@ const HEADLINE_SKIP_KEYS = new Set([
   "label", "title", "type", "kind", "mode", "format", "resultFormat",
   "limit", "max", "offset", "start", "concurrency", "overwrite", "id",
   "provider", "namespace", "server", "tool", "ref", "recursive", "synthesize",
+  "commandDigest",
 ]);
 
 const cleanOneLine = (value: string, max: number): string => {

@@ -16,7 +16,6 @@ const MAX_ARRAY_ITEMS = 128;
 const MAX_NODES = 8_192;
 const MAX_RECORDED_OPERATIONS = 2_048;
 const MAX_PHASES = 512;
-
 export type FabricTraceJsonPrimitive = string | number | boolean | null;
 export type FabricTraceJsonValue =
   | FabricTraceJsonPrimitive

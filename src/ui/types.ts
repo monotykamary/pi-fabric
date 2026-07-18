@@ -21,6 +21,7 @@ export interface FabricUiAgent {
   toolCalls?: number;
   usage?: SubagentUsage;
   text?: string;
+  value?: unknown;
   error?: string;
   logFile?: string;
   attachCommand?: string;

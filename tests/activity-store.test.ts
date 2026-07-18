@@ -119,7 +119,10 @@ describe("FabricActivityStore", () => {
     store.finishCall("run-d", "fail-1", { success: false, error: "boom" });
 
     const run = store.get("run-d");
-    expect(run?.calls.find((c) => c.id === "bash-1")?.detail).toBe("line1 line2");
+    const bash = run?.calls.find((c) => c.id === "bash-1");
+    expect(bash?.args).toEqual({ command: "seq 1 3" });
+    expect(bash?.result).toEqual({ ok: true, output: "line1\nline2" });
+    expect(bash?.detail).toBe("line1 line2");
     expect(run?.calls.find((c) => c.id === "read-1")?.detail).toBe("export const x = 1;");
     const failed = run?.calls.find((c) => c.id === "fail-1");
     expect(failed?.status).toBe("failed");

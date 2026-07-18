@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { headlineArg } from "../core/call-preview.js";
+import ts from "typescript";
 
 export interface FabricRenderAudit {
   ref: string;
@@ -71,6 +73,80 @@ const truncateOneLine = (value: string, max: number): string => {
 
 const argString = (args: Record<string, unknown>, key: string): string | undefined =>
   typeof args[key] === "string" ? (args[key] as string) : undefined;
+
+const LEGACY_COMMAND_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const legacyCommandCache = new WeakMap<object, ReadonlyMap<string, string>>();
+
+const digestCommand = (command: string): string =>
+  `sha256:${createHash("sha256").update(command).digest("hex")}`;
+
+const recordOf = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const legacyCommandsFrom = (fabricArgs: unknown): ReadonlyMap<string, string> => {
+  const args = recordOf(fabricArgs);
+  if (!args) return new Map();
+  const cached = legacyCommandCache.get(args);
+  if (cached) return cached;
+
+  const commands = new Map<string, string>();
+  const remember = (candidate: unknown): void => {
+    if (typeof candidate === "string") commands.set(digestCommand(candidate), candidate);
+  };
+  const namedStrings = recordOf(args.strings);
+  if (namedStrings) {
+    for (const value of Object.values(namedStrings)) remember(value);
+  }
+  const rawCode = args.code;
+  const code =
+    typeof rawCode === "string"
+      ? rawCode
+      : Array.isArray(rawCode) && rawCode.every((value) => typeof value === "string")
+        ? rawCode.join("\n")
+        : undefined;
+  if (code) {
+    const source = ts.createSourceFile(
+      "fabric-exec-preview.ts",
+      code,
+      ts.ScriptTarget.Latest,
+      false,
+      ts.ScriptKind.TS,
+    );
+    const visit = (node: ts.Node): void => {
+      if (ts.isStringLiteralLike(node)) remember(node.text);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  legacyCommandCache.set(args, commands);
+  return commands;
+};
+
+export const restoreLegacyBashCommands = (
+  audits: FabricRenderAudit[],
+  fabricArgs: unknown,
+): FabricRenderAudit[] => {
+  const hasLegacyCommand = audits.some((audit) => {
+    const digest = audit.ref === "pi.bash" ? argString(audit.args ?? {}, "commandDigest") : undefined;
+    return Boolean(digest && LEGACY_COMMAND_DIGEST.test(digest));
+  });
+  if (!hasLegacyCommand) return audits;
+
+  const commands = legacyCommandsFrom(fabricArgs);
+  return audits.map((audit) => {
+    if (audit.ref !== "pi.bash" || !audit.args) return audit;
+    const digest = argString(audit.args, "commandDigest");
+    if (!digest || !LEGACY_COMMAND_DIGEST.test(digest)) return audit;
+    const { commandDigest: _commandDigest, ...argsWithoutDigest } = audit.args;
+    const command = commands.get(digest);
+    return {
+      ...audit,
+      args: command ? { ...argsWithoutDigest, command } : argsWithoutDigest,
+    };
+  });
+};
 
 const shortIdOf = (value: unknown): string | undefined =>
   typeof value === "string" ? value.slice(0, 8) : undefined;

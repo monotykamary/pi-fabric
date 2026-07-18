@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,7 @@ import {
   nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
+  restoreLegacyBashCommands,
 } from "../src/ui/fabric-render.js";
 
 const theme = {
@@ -33,6 +35,43 @@ describe("fabric nested rendering", () => {
     // shiki truecolor escapes wrap the command tokens
     expect(title).toContain("\x1b[38;2;");
   }, 15_000);
+
+  it("restores legacy digest-only bash previews from visible Fabric arguments", () => {
+    const literalCommand = "pnpm vitest run tests/fabric-render.test.ts";
+    const namedCommand = "git status --short";
+    const digest = (command: string): string =>
+      `sha256:${createHash("sha256").update(command).digest("hex")}`;
+    const restored = restoreLegacyBashCommands(
+      [literalCommand, namedCommand].map((command) => ({
+        ref: "pi.bash",
+        provider: "pi",
+        tool: "bash",
+        args: { commandDigest: digest(command) },
+      })),
+      {
+        code: `await pi.bash({ cmd: "${literalCommand}" });\nawait pi.bash({ cmd: π.script });`,
+        strings: { script: namedCommand },
+      },
+    );
+
+    expect(restored.map((audit) => audit.args)).toEqual([
+      { command: literalCommand },
+      { command: namedCommand },
+    ]);
+  });
+
+  it("never renders an unrecoverable legacy command digest", () => {
+    const digest = `sha256:${"a".repeat(64)}`;
+    const [restored] = restoreLegacyBashCommands(
+      [{ ref: "pi.bash", provider: "pi", tool: "bash", args: { commandDigest: digest } }],
+      { code: "return true;" },
+    );
+
+    expect(restored?.args).toEqual({});
+    const title = nestedCallTitle(restored!, plainTheme);
+    expect(title).toBe("bash");
+    expect(title).not.toContain("sha256:");
+  });
 
   it("renders in-flight agent names from invocation arguments", () => {
     const title = nestedCallTitle(

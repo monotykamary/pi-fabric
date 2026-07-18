@@ -27,6 +27,11 @@ describe("fabric highlight", () => {
     expect(lines!.length).toBe(1);
     // shiki emits 24-bit RGB foreground escapes for themed tokens.
     expect(lines![0]).toContain("\x1b[38;2;");
+
+    const yaml = highlightCode("findings:\n  - severity: high", "yaml");
+    expect(yaml).not.toBeNull();
+    expect(yaml).toHaveLength(2);
+    expect(yaml![1]).toContain("\x1b[38;2;");
   }, 15_000);
 
   it("falls back to null for unsupported languages", async () => {

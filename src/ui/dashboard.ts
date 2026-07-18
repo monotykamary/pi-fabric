@@ -7,6 +7,7 @@ import {
   Key,
   matchesKey,
   truncateToWidth,
+  wrapTextWithAnsi,
   type EditorTheme,
   type MarkdownTheme,
   visibleWidth,
@@ -14,6 +15,7 @@ import {
 import type {
   FabricActivityCall,
   FabricActivityItem,
+  FabricActivityKind,
   FabricActivityPhase,
   FabricActivityRun,
 } from "../activity/types.js";
@@ -33,6 +35,22 @@ import type {
 import { isActiveStatus, orderAgentsByCreation } from "./types.js";
 import type { FabricAgentTranscript } from "./transcript.js";
 import { highlightCode } from "./highlight.js";
+import { formatJsonAsYaml } from "./structured.js";
+import { nestedEditDiff } from "./fabric-render.js";
+
+type Entity =
+  | { id: string; kind: "agent"; label: string; status: string; value: FabricUiAgent }
+  | { id: string; kind: "actor"; label: string; status: string; value: FabricUiActor }
+  | {
+      id: string;
+      kind: "globalActor";
+      label: string;
+      status: string;
+      value: GlobalActorDefinition;
+    }
+  | { id: string; kind: "call"; label: string; status: string; value: FabricActivityCall }
+  | { id: string; kind: "item"; label: string; status: string; value: FabricActivityItem }
+  | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry };
 
 type PanelKind = "phase" | "unphased" | "session";
 
@@ -49,21 +67,74 @@ interface PhasePanel {
   elapsedMs?: number;
 }
 
-type Entity =
-  | { id: string; kind: "agent"; label: string; status: string; value: FabricUiAgent }
-  | { id: string; kind: "actor"; label: string; status: string; value: FabricUiActor }
-  | {
-      id: string;
-      kind: "globalActor";
-      label: string;
-      status: string;
-      value: GlobalActorDefinition;
-    }
-  | { id: string; kind: "call"; label: string; status: string; value: FabricActivityCall }
-  | { id: string; kind: "item"; label: string; status: string; value: FabricActivityItem }
-  | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry };
-
 type Pane = "phases" | "entities";
+
+type EntityGroupKind = FabricActivityKind | "globalActor" | "state";
+
+interface EntityGroup {
+  kind: EntityGroupKind;
+  label: string;
+  entries: Array<{ entity: Entity; index: number }>;
+}
+
+const entityGroupOrder: readonly EntityGroupKind[] = [
+  "agent",
+  "actor",
+  "globalActor",
+  "tool",
+  "extension",
+  "mcp",
+  "mesh",
+  "task",
+  "custom",
+  "state",
+];
+
+const entityGroupLabels: Record<EntityGroupKind, string> = {
+  agent: "Agents",
+  actor: "Actors",
+  globalActor: "Global templates",
+  tool: "Tools",
+  extension: "Extensions",
+  mcp: "MCP",
+  mesh: "Mesh",
+  task: "Tasks",
+  custom: "Custom items",
+  state: "Shared state",
+};
+
+const entityGroupKind = (entity: Entity): EntityGroupKind => {
+  if (entity.kind === "agent") return "agent";
+  if (entity.kind === "actor") return "actor";
+  if (entity.kind === "globalActor") return "globalActor";
+  if (entity.kind === "state") return "state";
+  if (entity.kind === "call") return entity.value.entityKind ?? entity.value.kind;
+  return entity.value.kind;
+};
+
+const entityGroupRanks = new Map(
+  entityGroupOrder.map((kind, index) => [kind, index] as const),
+);
+
+const orderEntitiesByGroup = (entities: Entity[]): Entity[] =>
+  entities
+    .map((entity, index) => ({ entity, index }))
+    .sort(
+      (left, right) =>
+        (entityGroupRanks.get(entityGroupKind(left.entity)) ?? Number.MAX_SAFE_INTEGER) -
+          (entityGroupRanks.get(entityGroupKind(right.entity)) ?? Number.MAX_SAFE_INTEGER) ||
+        left.index - right.index,
+    )
+    .map(({ entity }) => entity);
+
+const groupEntities = (entities: Entity[]): EntityGroup[] => {
+  const indexed = entities.map((entity, index) => ({ entity, index }));
+  return entityGroupOrder.flatMap((kind) => {
+    const entries = indexed.filter(({ entity }) => entityGroupKind(entity) === kind);
+    return entries.length > 0 ? [{ kind, label: entityGroupLabels[kind], entries }] : [];
+  });
+};
+
 type StatusFilter = "all" | "active" | "completed" | "failed";
 
 const filters: StatusFilter[] = ["all", "active", "completed", "failed"];
@@ -122,14 +193,22 @@ const transcriptMarkdownTheme = (theme: Theme, invalidate: () => void): Markdown
     code.split("\n").map((line) => theme.fg("mdCodeBlock", line)),
 });
 
-const UNPHASED_PANEL_ID = "__fabric_unphased";
-const SESSION_PANEL_ID = "__fabric_session";
+const safeMarkdownText = (value: string): string =>
+  value
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b-\u000c\u000e-\u001f\u007f-\u009f]/g, " ");
+
+const linkedEntityId = (entityId: string | undefined, id: string): boolean =>
+  Boolean(entityId && (id.startsWith(entityId) || entityId.startsWith(id)));
 
 const linkedAgent = (call: FabricActivityCall, agent: FabricUiAgent): boolean =>
-  Boolean(
-    call.entityId &&
-      (agent.id.startsWith(call.entityId) || call.entityId.startsWith(agent.id)),
-  );
+  linkedEntityId(call.entityId, agent.id);
+
+const agentLaunchRefs = new Set(["agents.run", "agents.spawn"]);
+
+const UNPHASED_PANEL_ID = "__fabric_unphased";
+const SESSION_PANEL_ID = "__fabric_session";
 
 const callsForPanel = (
   run: FabricActivityRun | undefined,
@@ -157,21 +236,7 @@ const entitiesFor = (
   panel: PhasePanel | undefined,
 ): Entity[] => {
   if (!panel || panel.kind === "session") {
-    const actors: Entity[] = snapshot.actors.map((actor) => ({
-      id: `actor:${actor.id}`,
-      kind: "actor",
-      label: actor.name,
-      status: actor.lastError ? "failed" : actor.status,
-      value: actor,
-    }));
-    const state: Entity[] = snapshot.state.map((entry) => ({
-      id: `state:${entry.key}`,
-      kind: "state",
-      label: entry.label,
-      status: entry.status,
-      value: entry,
-    }));
-    const unlinkedAgents: Entity[] = snapshot.agents
+    const unlinkedAgents: Entity[] = orderAgentsByCreation(snapshot.agents)
       .filter((agent) => agent.runId !== run?.id && isActiveStatus(agent.status))
       .map((agent) => ({
         id: `agent:${agent.id}`,
@@ -180,14 +245,28 @@ const entitiesFor = (
         status: agent.status,
         value: agent,
       }));
-    const globalActors: Entity[] = snapshot.globalActors.map((def) => ({
-      id: `globalActor:${def.id}`,
-      kind: "globalActor",
-      label: def.name,
-      status: "global",
-      value: def,
+    const actors: Entity[] = snapshot.actors.map((actor) => ({
+      id: `actor:${actor.id}`,
+      kind: "actor",
+      label: actor.name,
+      status: actor.lastError ? "failed" : actor.status,
+      value: actor,
     }));
-    return [...unlinkedAgents, ...actors, ...globalActors, ...state];
+    const globalActors: Entity[] = snapshot.globalActors.map((definition) => ({
+      id: `globalActor:${definition.id}`,
+      kind: "globalActor",
+      label: definition.name,
+      status: "global",
+      value: definition,
+    }));
+    const state: Entity[] = snapshot.state.map((entry) => ({
+      id: `state:${entry.key}`,
+      kind: "state",
+      label: entry.label,
+      status: entry.status,
+      value: entry,
+    }));
+    return orderEntitiesByGroup([...unlinkedAgents, ...actors, ...globalActors, ...state]);
   }
 
   const calls = callsForPanel(run, panel);
@@ -205,11 +284,17 @@ const entitiesFor = (
     value: agent,
   }));
   const visibleCalls: Entity[] = calls
-    .filter(
-      (call) =>
-        (call.kind !== "agent" && call.kind !== "actor") ||
-        !panelAgents.some((agent) => linkedAgent(call, agent)),
-    )
+    .filter((call) => {
+      const representedAgentLaunch =
+        call.kind === "agent" &&
+        agentLaunchRefs.has(call.ref) &&
+        panelAgents.some((agent) => linkedAgent(call, agent));
+      const representedActorCreation =
+        call.kind === "actor" &&
+        call.ref === "agents.create" &&
+        snapshot.actors.some((actor) => linkedEntityId(call.entityId, actor.id));
+      return !representedAgentLaunch && !representedActorCreation;
+    })
     .map((call) => ({
       id: `call:${call.id}`,
       kind: "call",
@@ -224,7 +309,7 @@ const entitiesFor = (
     status: item.status,
     value: item,
   }));
-  return [...linkedAgents, ...visibleCalls, ...items];
+  return orderEntitiesByGroup([...linkedAgents, ...visibleCalls, ...items]);
 };
 
 const panelStatus = (entities: Entity[], fallback: string): string => {
@@ -269,18 +354,22 @@ const withPanelProgress = (
         : 0),
     0,
   );
-  const starts = entities.flatMap((entity) => {
-    if (entity.kind === "agent" || entity.kind === "call") return [entity.value.startedAt ?? 0];
-    if (entity.kind === "item") return [entity.value.createdAt];
-    return [];
-  }).filter((value) => value > 0);
+  const starts = entities
+    .flatMap((entity) => {
+      if (entity.kind === "agent" || entity.kind === "call") return [entity.value.startedAt ?? 0];
+      if (entity.kind === "item") return [entity.value.createdAt];
+      return [];
+    })
+    .filter((value) => value > 0);
   const startedAt = starts.length > 0 ? Math.min(...starts) : undefined;
   const hasActive = entities.some((entity) => isActiveStatus(entity.status));
-  const finishes = entities.flatMap((entity) => {
-    if (entity.kind === "agent" || entity.kind === "call") return [entity.value.finishedAt ?? 0];
-    if (entity.kind === "item") return [entity.value.finishedAt ?? 0];
-    return [];
-  }).filter((value) => value > 0);
+  const finishes = entities
+    .flatMap((entity) => {
+      if (entity.kind === "agent" || entity.kind === "call") return [entity.value.finishedAt ?? 0];
+      if (entity.kind === "item") return [entity.value.finishedAt ?? 0];
+      return [];
+    })
+    .filter((value) => value > 0);
   const finishedAt = hasActive
     ? snapshot.now
     : finishes.length > 0
@@ -289,8 +378,9 @@ const withPanelProgress = (
   return {
     ...panel,
     status,
-    completed: entities.filter((entity) => entity.status === "completed" || entity.status === "done")
-      .length,
+    completed: entities.filter(
+      (entity) => entity.status === "completed" || entity.status === "done",
+    ).length,
     total: Math.max(panel.total, entities.length),
     ...(agents.length > 0 ? { agents: agents.length } : {}),
     ...(tokens > 0 ? { tokens } : {}),
@@ -456,6 +546,7 @@ export class FabricDashboard implements Component, Focusable {
   private detailView: "summary" | "transcript" = "summary";
   private transcriptFollowing = true;
   private readonly transcriptMarkdown = new Map<string, { text: string; component: Markdown }>();
+  private readonly highlightInvalidate = (): void => this.tui.requestRender();
   private readonly refreshTimer: NodeJS.Timeout;
   private mode:
     | "overview"
@@ -712,16 +803,24 @@ export class FabricDashboard implements Component, Focusable {
       if (this.pane === "phases") {
         this.phaseIndex = Math.max(0, this.phaseIndex - 1);
         this.phaseSelectionTouched = true;
-      } else this.entityIndex = Math.max(0, this.entityIndex - 1);
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+      } else {
+        this.entityIndex = Math.max(0, this.entityIndex - 1);
+      }
     } else if (matchesKey(data, Key.down) || data === "j") {
       if (this.pane === "phases") {
         this.phaseIndex = Math.min(Math.max(0, panels.length - 1), this.phaseIndex + 1);
         this.phaseSelectionTouched = true;
         this.entityIndex = 0;
+        this.selectedEntityId = undefined;
       } else {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
-    } else if (["m", "e", "v", "i", "s", "u", "x"].includes(data) && this.pane === "entities") {
+    } else if (
+      ["m", "e", "v", "i", "s", "u", "x"].includes(data) &&
+      this.pane === "entities"
+    ) {
       const selected = entities[this.entityIndex];
       if (selected) {
         if ((data === "s" || data === "u") && selected.kind === "agent") {
@@ -754,36 +853,52 @@ export class FabricDashboard implements Component, Focusable {
     } else if (matchesKey(data, Key.enter)) {
       if (this.pane === "phases") {
         this.pane = "entities";
-      } else if (entities[this.entityIndex]) {
-        this.detailId = entities[this.entityIndex]?.id;
-        this.detailView = "summary";
-        this.detailScroll = 0;
-        this.transcriptFollowing = true;
+      } else {
+        const selected = entities[this.entityIndex];
+        if (selected) {
+          this.detailId = selected.id;
+          this.detailView = "summary";
+          this.detailScroll = 0;
+          this.transcriptFollowing = true;
+        }
       }
     } else if (data === "f") {
       const next = (filters.indexOf(this.filter) + 1) % filters.length;
       this.filter = filters[next] ?? "all";
       this.entityIndex = 0;
+      this.selectedEntityId = undefined;
     } else if (data === "[") {
       this.runIndex = Math.min(Math.max(0, snapshot.runs.length - 1), this.runIndex + 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
       this.resetSelection();
+      this.tui.requestRender();
+      return;
     } else if (data === "]") {
       this.runIndex = Math.max(0, this.runIndex - 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
       this.resetSelection();
+      this.tui.requestRender();
+      return;
     } else if (data === "G") {
       if (this.pane === "phases") {
         this.phaseIndex = Math.max(0, panels.length - 1);
         this.phaseSelectionTouched = true;
-      } else this.entityIndex = Math.max(0, entities.length - 1);
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+      } else {
+        this.entityIndex = Math.max(0, entities.length - 1);
+      }
     } else if (data === "g") {
       if (this.pane === "phases") {
         this.phaseIndex = 0;
         this.phaseSelectionTouched = true;
-      } else this.entityIndex = 0;
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+      } else {
+        this.entityIndex = 0;
+      }
     }
     if (this.phaseSelectionTouched) this.selectedPhaseId = panels[this.phaseIndex]?.id;
     if (this.detailId) this.pinDetailSelection(run, panel);
@@ -821,7 +936,7 @@ export class FabricDashboard implements Component, Focusable {
       if (detail) return this.renderDetail(width, snapshot, detail);
       this.closeDetail();
     }
-    return this.renderOverview(width, snapshot, run, panels, panel, entities);
+    return this.renderOverview(width, snapshot, run, panels, entities);
   }
 
   invalidate(): void {
@@ -1112,7 +1227,6 @@ export class FabricDashboard implements Component, Focusable {
     snapshot: FabricDashboardSnapshot,
     run: FabricActivityRun | undefined,
     panels: PhasePanel[],
-    selectedPanel: PhasePanel | undefined,
     entities: Entity[],
   ): string[] {
     if (width < 24) {
@@ -1167,13 +1281,7 @@ export class FabricDashboard implements Component, Focusable {
       const leftWidth = Math.min(38, Math.max(28, Math.floor((innerWidth - 1) * 0.34)));
       const rightWidth = innerWidth - leftWidth - 1;
       const leftLines = this.renderPhasePanel(panels, leftWidth, maxBody);
-      const rightLines = this.renderEntityPanel(
-        entities,
-        rightWidth,
-        maxBody,
-        snapshot.now,
-        selectedPanel,
-      );
+      const rightLines = this.renderEntityPanel(entities, rightWidth, maxBody, snapshot.now);
       for (let index = 0; index < maxBody; index++) {
         const left = leftLines[index] ?? "";
         const right = rightLines[index] ?? "";
@@ -1195,13 +1303,7 @@ export class FabricDashboard implements Component, Focusable {
         lines.push(this.row(width, line));
       }
       lines.push(this.row(width, this.theme.fg("borderMuted", "─".repeat(innerWidth))));
-      for (const line of this.renderEntityPanel(
-        entities,
-        innerWidth,
-        entityHeight,
-        snapshot.now,
-        selectedPanel,
-      )) {
+      for (const line of this.renderEntityPanel(entities, innerWidth, entityHeight, snapshot.now)) {
         lines.push(this.row(width, line));
       }
     }
@@ -1327,7 +1429,9 @@ export class FabricDashboard implements Component, Focusable {
       const countWidth = visibleWidth(count);
       const contentWidth = Math.max(0, width - countWidth - (count ? 1 : 0));
       let line = `${padToWidth(raw, contentWidth)}${count ? ` ${this.theme.fg("dim", count)}` : ""}`;
-      if (selected && this.pane === "phases") line = this.theme.bg("selectedBg", padToWidth(line, width));
+      if (selected && this.pane === "phases") {
+        line = this.theme.bg("selectedBg", padToWidth(line, width));
+      }
       lines.push(truncateToWidth(line, width, ""));
     }
     while (lines.length < height) lines.push("");
@@ -1339,50 +1443,72 @@ export class FabricDashboard implements Component, Focusable {
     width: number,
     height: number,
     now: number,
-    panel: PhasePanel | undefined,
   ): string[] {
-    const heading = panel?.name ?? "Activity";
-    const headingParts = [
-      panel?.phase?.description ? safeText(panel.phase.description) : undefined,
-      panel?.agents ? `${panel.agents} agent${panel.agents === 1 ? "" : "s"}` : undefined,
-      panel?.tokens ? `${formatTokens(panel.tokens)} tok` : undefined,
-      panel?.elapsedMs !== undefined ? formatDuration(panel.elapsedMs) : undefined,
-    ].filter((value): value is string => Boolean(value));
-    const headingDetail =
-      headingParts.length > 0 ? this.theme.fg("dim", ` · ${headingParts.join(" · ")}`) : "";
-    const lines = [
-      truncateToWidth(
-        `${this.pane === "entities" ? this.theme.fg("accent", "▸ ") : "  "}${this.theme.fg(
-          "accent",
-          safeText(heading),
-        )}${headingDetail}${this.filter !== "all" ? this.theme.fg("dim", ` · ${this.filter}`) : ""}`,
-        width,
+    const lines: string[] = [];
+    const available = Math.max(0, height);
+    const groupedRows: Array<
+      | { type: "group"; group: EntityGroup }
+      | { type: "spacer" }
+      | { type: "entity"; entity: Entity; entityIndex: number }
+    > = [];
+    const groups = groupEntities(entities);
+    for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      const group = groups[groupIndex]!;
+      if (groupIndex > 0) groupedRows.push({ type: "spacer" });
+      groupedRows.push({ type: "group", group });
+      for (const entry of group.entries) {
+        groupedRows.push({ type: "entity", entity: entry.entity, entityIndex: entry.index });
+      }
+    }
+    const selectedRow = Math.max(
+      0,
+      groupedRows.findIndex(
+        (row) => row.type === "entity" && row.entityIndex === this.entityIndex,
       ),
-    ];
-    const available = Math.max(0, height - 1);
+    );
     const start = Math.max(
       0,
       Math.min(
-        this.entityIndex - Math.floor(available / 2),
-        Math.max(0, entities.length - available),
+        selectedRow - Math.floor(available / 2),
+        Math.max(0, groupedRows.length - available),
       ),
     );
-    for (let index = start; index < Math.min(entities.length, start + available); index++) {
-      const entity = entities[index];
-      if (!entity) continue;
-      const selected = index === this.entityIndex;
+    for (let index = start; index < Math.min(groupedRows.length, start + available); index++) {
+      const row = groupedRows[index];
+      if (!row) continue;
+      if (row.type === "spacer") {
+        lines.push("");
+        continue;
+      }
+      if (row.type === "group") {
+        lines.push(
+          truncateToWidth(
+            this.theme.fg(
+              "muted",
+              `  ${this.theme.bold(row.group.label)} (${row.group.entries.length})`,
+            ),
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+      const entity = row.entity;
+      const selected = row.entityIndex === this.entityIndex;
       const prefix = selected ? "› " : "  ";
       const lead = `${prefix}${colorStatus(this.theme, entity.status, statusGlyph(entity.status))} ${safeText(
         entity.label,
       )}`;
       const tail = safeText(entityTail(entity, now));
       let line = tail ? `${lead}  ${this.theme.fg("dim", tail)}` : lead;
-      if (selected && this.pane === "entities") line = this.theme.bg("selectedBg", padToWidth(line, width));
+      if (selected && this.pane === "entities") {
+        line = this.theme.bg("selectedBg", padToWidth(line, width));
+      }
       lines.push(truncateToWidth(line, width, ""));
     }
     if (entities.length === 0 && available > 0) {
       const label = this.filter === "all" ? "activity" : `${this.filter} activity`;
-      lines.push(this.theme.fg("dim", `  (no ${label} in this group; press f to change filter)`));
+      lines.push(this.theme.fg("dim", `  (no ${label}; press f to change filter)`));
     }
     while (lines.length < height) lines.push("");
     return lines.slice(0, height);
@@ -1489,13 +1615,18 @@ export class FabricDashboard implements Component, Focusable {
     text: string,
     width: number,
   ): string[] {
-    const key = `${agentId}:${entryId}`;
+    return this.markdownLines(`transcript:${agentId}:${entryId}`, text, width);
+  }
+
+  private markdownLines(key: string, text: string, width: number, indent = 2): string[] {
+    const markdown = safeMarkdownText(text);
+    if (!markdown.trim()) return [];
     let cached = this.transcriptMarkdown.get(key);
-    if (!cached || cached.text !== text) {
+    if (!cached || cached.text !== markdown) {
       cached = {
-        text,
+        text: markdown,
         component: new Markdown(
-          text,
+          markdown,
           0,
           0,
           transcriptMarkdownTheme(this.theme, () => {
@@ -1512,9 +1643,10 @@ export class FabricDashboard implements Component, Focusable {
         this.transcriptMarkdown.delete(oldest);
       }
     }
+    const padding = " ".repeat(Math.max(0, indent));
     return cached.component
-      .render(Math.max(1, width - 2))
-      .map((line) => truncateToWidth(`  ${line}`, width, ""));
+      .render(Math.max(1, width - visibleWidth(padding)))
+      .map((line) => truncateToWidth(`${padding}${line}`, width, ""));
   }
 
   private detailActionHint(entity: Entity): string {
@@ -1566,6 +1698,90 @@ export class FabricDashboard implements Component, Focusable {
         lines.push(truncateToWidth(" ".repeat(visibleWidth(prefix)) + continuation, width));
       }
     };
+    const markdownField = (label: string, value: string | undefined, key: string): void => {
+      if (!value?.trim()) return;
+      lines.push(this.theme.fg("dim", `${label}:`));
+      lines.push(...this.markdownLines(`detail:${entity.id}:${key}`, value, width));
+    };
+    const structuredField = (label: string, value: unknown): void => {
+      if (value === undefined) return;
+      const yaml = formatJsonAsYaml(value);
+      if (yaml === undefined) {
+        field(label, value);
+        return;
+      }
+      lines.push(this.theme.fg("dim", `${label}:`));
+      const highlighted =
+        highlightCode(yaml, "yaml", this.highlightInvalidate) ??
+        yaml.split("\n").map((line) => this.theme.fg("mdCodeBlock", line || " "));
+      for (const highlightedLine of highlighted) {
+        for (const wrapped of wrapTextWithAnsi(highlightedLine, Math.max(1, width - 2))) {
+          lines.push(truncateToWidth(`  ${wrapped}`, width, ""));
+        }
+      }
+    };
+    const stringOutputField = (label: string, value: unknown): void => {
+      if (typeof value !== "string") return;
+      markdownField(label, value, label.toLowerCase());
+    };
+    const objectOutputField = (label: string, value: Record<string, unknown>): void => {
+      if (typeof value.output === "string" || typeof value.text === "string" || typeof value.content === "string") {
+        stringOutputField(label, value.output ?? value.text ?? value.content);
+        return;
+      }
+      structuredField(label, value);
+    };
+    const outputField = (label: string, value: unknown): void => {
+      if (value === undefined) return;
+      if (typeof value === "string") {
+        stringOutputField(label, value);
+        return;
+      }
+      if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+        objectOutputField(label, value as Record<string, unknown>);
+        return;
+      }
+      structuredField(label, value);
+    };
+    const argumentField = (call: FabricActivityCall): void => {
+      const args = call.args;
+      if (!args || Object.keys(args).length === 0) return;
+      const stringValue = (key: string): string | undefined =>
+        typeof args[key] === "string" ? args[key] : undefined;
+      if (call.ref === "pi.bash") {
+        const command = stringValue("command");
+        if (command) markdownField("Command", "```bash\n" + command + "\n```", "command");
+      }
+      const edits = Array.isArray(args.edits) ? args.edits : [];
+      if (call.ref === "pi.edit" && edits.length > 0) {
+        lines.push(this.theme.fg("dim", "Edits:"));
+        const diff = nestedEditDiff(
+          {
+            ref: call.ref,
+            tool: call.ref.split(".")[1] ?? call.ref,
+            args,
+          },
+          this.theme,
+          this.highlightInvalidate,
+        );
+        if (diff) {
+          for (const line of diff) lines.push(truncateToWidth(`  ${line}`, width, ""));
+        } else {
+          structuredField("Edits", edits);
+        }
+      }
+      const content = stringValue("content");
+      if (call.ref === "pi.write" && content !== undefined) {
+        const path = stringValue("path") ?? "";
+        const extension = path.includes(".") ? path.split(".").at(-1) : "";
+        markdownField("Content", "```" + (extension || "text") + "\n" + content + "\n```", "content");
+      }
+      const renderedKeys = new Set(["command", "edits", "content"]);
+      const remaining = Object.fromEntries(
+        Object.entries(args).filter(([key]) => !renderedKeys.has(key)),
+      );
+      if (Object.keys(remaining).length > 0) structuredField("Input", remaining);
+    };
     field("Status", entity.status);
 
     if (entity.kind === "agent") {
@@ -1578,12 +1794,13 @@ export class FabricDashboard implements Component, Focusable {
       field("Activity", agent.currentTool);
       field("Elapsed", agent.startedAt ? formatDuration((agent.finishedAt ?? now) - agent.startedAt) : undefined);
       field("Usage", agent.usage ? `${formatTokens(agent.usage.input + agent.usage.output)} tokens · ${agent.toolCalls ?? 0} tools · ${agent.turns ?? 0} turns · $${agent.usage.cost.toFixed(4)}` : undefined);
-      field("Task", agent.task);
+      markdownField("Task", agent.task, "task");
       field("Branch", agent.branch);
       field("Worktree", agent.worktree);
       field("Attach", agent.attachCommand);
       field("Error", agent.error);
-      field("Result", agent.text);
+      markdownField("Result", agent.text, "result");
+      structuredField("Value", agent.value);
     } else if (entity.kind === "actor") {
       const actor = entity.value;
       field("ID", actor.id);
@@ -1621,14 +1838,16 @@ export class FabricDashboard implements Component, Focusable {
       const call = entity.value;
       field("Reference", call.ref);
       field("ID", call.id);
-      field("Kind", call.kind);
+      field("Kind", call.entityKind ?? call.kind);
       field("Progress", call.progress);
       field("Elapsed", formatDuration((call.finishedAt ?? now) - call.startedAt));
       field("Tokens", call.metrics?.tokens);
       field("Tool calls", call.metrics?.toolCalls);
       field("Cost", call.metrics?.cost);
       field("Entity", call.entityId);
+      argumentField(call);
       field("Error", call.error);
+      outputField("Output", call.result);
     } else if (entity.kind === "item") {
       const item = entity.value;
       field("ID", item.id);
@@ -1636,7 +1855,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Progress", item.total !== undefined ? `${item.completed ?? 0}/${item.total}` : undefined);
       field("Current", item.current);
       field("Detail", item.detail);
-      field("Data", item.data === undefined ? undefined : JSON.stringify(item.data));
+      structuredField("Data", item.data);
     } else if (entity.kind === "globalActor") {
       const def = entity.value;
       field("Scope", "global template");
@@ -1659,7 +1878,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Version", entry.version);
       field("Updated", new Date(entry.updatedAt).toLocaleString());
       field("Detail", entry.detail);
-      field("Value", JSON.stringify(entry.value));
+      structuredField("Value", entry.value);
     }
     return lines.length > 0 ? lines : [this.theme.fg("dim", "No details")];
   }
@@ -1721,6 +1940,8 @@ export class FabricDashboard implements Component, Focusable {
         this.phaseIndex = activeRunActivity;
       } else if (current >= 0) {
         this.phaseIndex = current;
+      } else {
+        this.phaseIndex = 0;
       }
     } else {
       const retainedIndex = this.selectedPhaseId

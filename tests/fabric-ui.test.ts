@@ -184,6 +184,34 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("shows only the highest-priority activity type in the widget", () => {
+    const current = snapshot();
+    const customCall = current.runs[0]!.calls.find((call) => call.kind === "extension")!;
+    current.runs[0]!.calls = [
+      {
+        ...customCall,
+        id: "custom-index",
+        label: "Custom index",
+        status: "running",
+        entityKind: "custom",
+        progress: "Indexing packages",
+      },
+    ];
+    current.runs[0]!.items = [];
+
+    const withAgent = new FabricWidget(theme, () => current, 8).render(120).join("\n");
+    expect(withAgent).toContain("security-reviewer");
+    expect(withAgent).not.toContain("Custom index");
+    expect(withAgent).not.toContain("advisor");
+    expect(withAgent).not.toContain("Package A");
+
+    current.agents = [];
+    const withCustomEntity = new FabricWidget(theme, () => current, 8).render(120).join("\n");
+    expect(withCustomEntity).toContain("Custom index");
+    expect(withCustomEntity).not.toContain("advisor");
+    expect(withCustomEntity).not.toContain("Package A");
+  });
+
   it("keeps dashboard and widget agents in creation order", () => {
     const current = snapshot();
     current.actors = [];
@@ -363,7 +391,98 @@ describe("Fabric dynamic UI", () => {
     expect(widget.hasChanged()).toBe(false); // re-rendered, now identical
   });
 
-  it("renders a responsive two-pane dashboard and agent details", () => {
+  it("groups dashboard entities by type within the selected sidebar phase", () => {
+    const current = snapshot();
+    const task = current.runs[0]!.items[0]!;
+    current.runs[0]!.items.push({
+      ...task,
+      id: "custom-review",
+      label: "Custom review",
+      kind: "custom",
+    });
+    const extensionCall = current.runs[0]!.calls.find((call) => call.kind === "extension")!;
+    current.runs[0]!.calls.push({
+      ...extensionCall,
+      id: "custom-call",
+      label: "Custom provider activity",
+      entityKind: "custom",
+    });
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      const renderedLines = dashboard.render(120);
+      const rendered = renderedLines.join("\n");
+      expect(rendered).toContain("Activity");
+      expect(rendered).toContain("Discover");
+      expect(rendered).toContain("Audit");
+      expect(rendered).toContain("Agents (1)");
+      expect(rendered).toContain("Extensions (1)");
+      expect(rendered).toContain("Tasks (1)");
+      expect(rendered).toContain("Custom items (2)");
+      expect(rendered).not.toContain("Actors (1)");
+      expect(rendered).not.toContain("Shared state (1)");
+      expect(rendered.indexOf("Agents (1)")).toBeLessThan(rendered.indexOf("Extensions (1)"));
+      expect(rendered.indexOf("Extensions (1)")).toBeLessThan(rendered.indexOf("Tasks (1)"));
+      expect(rendered.indexOf("Tasks (1)")).toBeLessThan(rendered.indexOf("Custom items (2)"));
+      for (const heading of ["Extensions (1)", "Tasks (1)", "Custom items (2)"]) {
+        const headingIndex = renderedLines.findIndex((line) => line.includes(heading));
+        expect(headingIndex).toBeGreaterThan(0);
+        expect(renderedLines[headingIndex - 1]?.split("│")[2]?.trim()).toBe("");
+      }
+      expect(renderedLines.some((line) => /^│[^│]*│[^│]*Audit/.test(line))).toBe(false);
+
+      dashboard.handleInput("G");
+      const session = dashboard.render(120).join("\n");
+      expect(session).toContain("Actors (1)");
+      expect(session).toContain("Shared state (1)");
+      expect(session.indexOf("Actors (1)")).toBeLessThan(session.indexOf("Shared state (1)"));
+    } finally {
+      dashboard.dispose();
+    }
+  });
+  it("moves the cursor through type groups in each sidebar phase", () => {
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+    );
+    const inspectSelection = (): string => {
+      dashboard.handleInput("\r");
+      const detail = dashboard.render(120).join("\n");
+      dashboard.handleInput("\x1b");
+      return detail;
+    };
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      expect(inspectSelection()).toContain("agent · security-reviewer");
+
+      dashboard.handleInput("j");
+      expect(inspectSelection()).toContain("call · project status");
+
+      dashboard.handleInput("j");
+      expect(inspectSelection()).toContain("item · Migrate packages");
+
+      dashboard.handleInput("k");
+      expect(inspectSelection()).toContain("call · project status");
+
+      dashboard.handleInput("h");
+      dashboard.handleInput("G");
+      dashboard.handleInput("l");
+      expect(inspectSelection()).toContain("actor · advisor");
+
+      dashboard.handleInput("j");
+      expect(inspectSelection()).toContain("state · Package A");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+  it("renders a responsive sidebar with a heading-free grouped activity pane", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
     const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn());
     try {
@@ -371,8 +490,11 @@ describe("Fabric dynamic UI", () => {
       const overviewText = overview.join("\n");
       expect(overviewText).toContain("Activity");
       expect(overviewText).toContain("Audit");
+      expect(overviewText).toContain("Agents (1)");
+      expect(overviewText).not.toContain("Actors (1)");
       expect(overviewText).toContain("security-reviewer");
       expect(overviewText).toContain("claude-opus-4-8");
+      expect(overview.some((line) => /^│[^│]*│[^│]*Audit/.test(line))).toBe(false);
       expect(overview.every((line) => visibleWidth(line) <= 120)).toBe(true);
       expect(dashboard.render(60).every((line) => visibleWidth(line) <= 60)).toBe(true);
       const tooNarrow = dashboard.render(20);
@@ -396,11 +518,164 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
+  it("renders call inputs and outputs with preview highlighting", () => {
+    const current = snapshot();
+    current.agents = [];
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.runs[0]!.items = [];
+    const now = current.now;
+    current.runs[0]!.calls = [
+      {
+        id: "bash-detail",
+        ref: "pi.bash",
+        label: "pi.bash",
+        kind: "tool",
+        status: "completed",
+        args: { command: "pnpm vitest run tests/fabric-ui.test.ts" },
+        result: { ok: true, output: "Tests **passed**" },
+        startedAt: now - 1_000,
+        updatedAt: now,
+        finishedAt: now,
+      },
+      {
+        id: "edit-detail",
+        ref: "pi.edit",
+        label: "pi.edit",
+        kind: "tool",
+        status: "completed",
+        args: {
+          path: "src/example.ts",
+          edits: [{ oldText: "const oldValue = 1;", newText: "const newValue = 2;" }],
+        },
+        result: { ok: true, output: "edited" },
+        startedAt: now - 900,
+        updatedAt: now,
+        finishedAt: now,
+      },
+      {
+        id: "write-detail",
+        ref: "pi.write",
+        label: "pi.write",
+        kind: "tool",
+        status: "completed",
+        args: { path: "src/example.ts", content: "export const value = 2;" },
+        result: { ok: true, created: true },
+        startedAt: now - 800,
+        updatedAt: now,
+        finishedAt: now,
+      },
+      {
+        id: "structured-detail",
+        ref: "extensions.analyze",
+        label: "analyze",
+        kind: "extension",
+        status: "completed",
+        args: { query: "ui regressions", limit: 2 },
+        result: { findings: [{ name: "cursor jump", fixed: true }] },
+        startedAt: now - 700,
+        updatedAt: now,
+        finishedAt: now,
+      },
+    ];
+    for (const call of current.runs[0]!.calls) call.phaseId = "audit";
+
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 60 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    const openDetail = (index: number): string => {
+      for (let step = 0; step < index; step++) dashboard.handleInput("j");
+      dashboard.handleInput("\r");
+      const pages: string[] = [];
+      for (let scroll = 0; scroll < 20; scroll++) {
+        pages.push(dashboard.render(100).join("\n"));
+        dashboard.handleInput("j");
+      }
+      dashboard.handleInput("\x1b");
+      return pages.join("\n");
+    };
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      const bash = openDetail(0);
+      expect(bash).toContain("Command:");
+      expect(bash).toContain("pnpm vitest run tests/fabric-ui.test.ts");
+      expect(bash).toContain("Output:");
+      expect(bash).toContain("Tests passed");
+      expect(bash).not.toContain("**passed**");
+
+      const edit = openDetail(1);
+      expect(edit).toContain("Edits:");
+      expect(edit).toContain("const oldValue = 1;");
+      expect(edit).toContain("const newValue = 2;");
+
+      const write = openDetail(1);
+      expect(write).toContain("Content:");
+      expect(write).toContain("export const value = 2;");
+      expect(write).toContain("Output:");
+      expect(write).toContain("created: true");
+
+      const structured = openDetail(1);
+      expect(structured).toContain("Input:");
+      expect(structured).toContain("query: ui regressions");
+      expect(structured).toContain("limit: 2");
+      expect(structured).toContain("Output:");
+      expect(structured).toContain("findings:");
+      expect(structured).toContain("fixed: true");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
+  it("renders agent task and result as Markdown and structured values as YAML", () => {
+    const current = snapshot();
+    current.agents[0]!.task = "## Planned checks\n\n- Inspect **authentication**";
+    current.agents[0]!.text = "### Findings\n\n1. Found a **rotation gap**";
+    current.agents[0]!.value = {
+      findings: [{ severity: "high", path: "src/auth.ts" }],
+      approved: false,
+    };
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 60 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput("\r");
+      const firstPage = dashboard.render(100).join("\n");
+      for (let index = 0; index < 30; index++) dashboard.handleInput("j");
+      const lastPage = dashboard.render(100).join("\n");
+      const detail = `${firstPage}\n${lastPage}`;
+
+      expect(detail).toContain("Task:");
+      expect(detail).toContain("Planned checks");
+      expect(detail).toContain("Inspect authentication");
+      expect(detail).not.toContain("## Planned checks");
+      expect(detail).not.toContain("**authentication**");
+      expect(detail).toContain("Result:");
+      expect(detail).toContain("Findings");
+      expect(detail).toContain("Found a rotation gap");
+      expect(detail).toContain("Value:");
+      expect(detail).toContain("findings:");
+      expect(detail).toContain("- severity: high");
+      expect(detail).toContain("path: src/auth.ts");
+      expect(detail).toContain("approved: false");
+      expect(detail).not.toContain('{"findings"');
+      expect(detail.split("\n").every((line) => visibleWidth(line) <= 100)).toBe(true);
+    } finally {
+      dashboard.dispose();
+    }
+  });
 
   const openActorDetail = (dashboard: FabricDashboard): void => {
-    // Activity pane: move from the auto-selected "audit" phase to session state.
-    dashboard.handleInput("j");
-    // The run-owned agent stays in its phase, so the actor is the first session entity.
+    dashboard.handleInput("G");
     dashboard.handleInput("l");
     dashboard.handleInput("\r");
   };
@@ -723,7 +998,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
-  it("shows active and completed run-owned work in an Run activity panel", () => {
+  it("shows active and completed run-owned work in the Agents group", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
@@ -783,12 +1058,11 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      expect(dashboard.render(120).join("\n")).toContain("Run activity");
-      dashboard.handleInput("l");
       const all = dashboard.render(120).join("\n");
+      expect(all).toContain("Agents (2)");
       expect(all).toContain("background-active");
       expect(all).toContain("background-done");
-      expect(all).toMatch(/Run activity\s+1\/2/);
+      expect(all).toContain("Run activity");
 
       dashboard.handleInput("f");
       const active = dashboard.render(120).join("\n");
@@ -804,7 +1078,7 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("shows lifecycle calls in a later phase than their linked agent", () => {
+  it("keeps lifecycle calls and linked agents in their sidebar phases", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
@@ -869,9 +1143,19 @@ describe("Fabric dynamic UI", () => {
       vi.fn(),
     );
     try {
-      const rendered = dashboard.render(120).join("\n");
-      expect(rendered).toContain("Implement");
-      expect(rendered).toContain("wait for worker");
+      const implementLines = dashboard.render(120);
+      const implement = implementLines.join("\n");
+      expect(implement).toContain("Agents (1)");
+      expect(implement).toContain("wait for worker");
+      expect(implement).toContain("Spawn agents");
+      expect(implement).toContain("Implement");
+      expect(implementLines.some((line) => /^│[^│]*│[^│]*Implement/.test(line))).toBe(false);
+
+      dashboard.handleInput("k");
+      const spawn = dashboard.render(120).join("\n");
+      expect(spawn).toContain("Agents (1)");
+      expect(spawn).toContain("worker");
+      expect(spawn).not.toContain("wait for worker");
     } finally {
       dashboard.dispose();
     }
@@ -1006,10 +1290,9 @@ describe("Fabric dynamic UI", () => {
     );
     try {
       dashboard.render(120);
-      dashboard.handleInput("l");
       const overview = dashboard.render(120).join("\n");
       expect(overview).toContain("result: Found two concrete authentication gaps.");
-      expect(overview).toContain("1 agent");
+      expect(overview).toContain("Agents (1)");
       expect(overview).toContain("5.2k tok");
     } finally {
       dashboard.dispose();
@@ -1130,7 +1413,6 @@ describe("Fabric dynamic UI", () => {
     );
     try {
       dashboard.render(120);
-      dashboard.handleInput("l");
       dashboard.handleInput("f");
       dashboard.handleInput("f");
       dashboard.handleInput("f");
@@ -1298,7 +1580,7 @@ describe("Fabric dashboard global actors and instructions editor", () => {
       expect(overview).toContain("global-reviewer");
       expect(overview).toContain("global template");
 
-      // entities pane → down to the global template → open its detail
+      // Move from the project actor to the global template and open its detail.
       dashboard.handleInput("l");
       dashboard.handleInput("j");
       dashboard.handleInput("\r");
@@ -1326,7 +1608,7 @@ describe("Fabric dashboard global actors and instructions editor", () => {
       onExportActor,
     });
     try {
-      // entities pane → open the project actor detail (entity index 0)
+      // Open the first entity, the project actor.
       dashboard.handleInput("l");
       dashboard.handleInput("\r");
       const detail = dashboard.render(120).join("\n");

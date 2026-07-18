@@ -745,10 +745,10 @@ return true;
     expect(readFabricExecutionRenderDetails(legacy)).toMatchObject(legacy);
   });
 
-  it("uses exact ref projections and omits arbitrary argument and result content", () => {
+  it("retains bash commands while omitting arbitrary argument and result content", () => {
     const recorder = new FabricExecutionTraceRecorder();
     const bash = recorder.issueCall("pi.bash", {
-      command: "printf command-embedded-secret",
+      command: "pnpm vitest run tests/audit-trace.test.ts",
       authorizationValue: "authorization-secret",
     });
     bash.succeed({ secretValue: "result-secret" });
@@ -791,7 +791,7 @@ return true;
     const serialized = JSON.stringify(details);
 
     expect(trace.operations.map((operation) => operation.args)).toEqual([
-      { commandDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
+      { command: "pnpm vitest run tests/audit-trace.test.ts" },
       { path: "/tmp/safe.txt" },
       {},
       {},
@@ -811,7 +811,6 @@ return true;
       undefined,
     ]);
     for (const secret of [
-      "command-embedded-secret",
       "authorization-secret",
       "result-secret",
       "write-content-secret",

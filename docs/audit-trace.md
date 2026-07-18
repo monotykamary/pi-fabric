@@ -2,7 +2,7 @@
 
 Final `fabric_exec` result details are a bounded durable envelope containing only `success` and `trace`. Rich `audits`, logs, values, type errors, elapsed time, media, and raw runtime/provider errors remain in memory only and are not copied into final session JSONL details. Live partial updates may still carry richer audits for the active UI.
 
-The complete serialized final details object is at most 512 KiB. Consumers should use the trace structurally and must not recover calls by parsing program source, rendered output, or audit prose.
+The complete serialized final details object is at most 512 KiB. Consumers use current traces structurally. The chat renderer has one compatibility exception: it may match a pre-change bash digest against string literals or named strings already visible in the outer `fabric_exec` arguments so old previews can show the original command.
 
 ## Envelope
 
@@ -57,7 +57,7 @@ V1 retains `type: "call"` for wire compatibility. Exact internal refs distinguis
 - `pi.grep`: local `path`, numeric `context`, numeric `limit`; pattern/query omitted
 - `pi.find`, `pi.ls`: local `path`, numeric `limit`; pattern/query omitted
 - `pi.edit`, `pi.write`: local `path` only; edit replacements and write content omitted; `pi.write` may retain `{ created: true }`
-- `pi.bash`: SHA-256 command digest only; command body omitted
+- `pi.bash`: bounded command text
 - selected `agents.*` lifecycle calls: `id` only; task, message, instructions, names, model options, and outputs omitted
 - `mesh.publish`/`read`: topic/address and numeric cursor/limit; payload text/data omitted
 - `mesh.get`/`put`/`delete`/`list`: key or prefix and limit; values omitted
@@ -95,13 +95,13 @@ Guest span IDs are deterministic execution-local bridge correlation values. They
 
 Only plain local paths are retained. URL paths are omitted, including credentials and query/fragment data. Plain path query/fragment suffixes are removed. Sensitive-key normalization, media/base64 rejection, JSON safety, depth/node limits, and UTF-8 truncation remain defense in depth after projection; they are not the primary secrecy mechanism.
 
-Identifiers (`ref`, `provider`, `action`), outcomes, failure stage, operation sequence, and occurrence-ordered phase labels remain durable. These fields and retained local paths/mesh addresses are metadata, not secret containers; callers must not intentionally place credentials in identifiers, local filenames, topics, keys, or phase names. Command digests reveal equality and are not keyed authentication codes.
+Identifiers (`ref`, `provider`, `action`), outcomes, failure stage, operation sequence, and occurrence-ordered phase labels remain durable. These fields, retained local paths/mesh addresses, and bash command text are not secret containers; callers must not intentionally place credentials in identifiers, local filenames, topics, keys, phase names, or commands.
 
 ## Reading and rendering traces
 
 The package exports `isFabricExecutionTraceV1`, `isFabricExecutionTraceOperationV1`, `readFabricExecutionTraceV1`, `createFabricPersistedExecutionDetails`, and `readFabricExecutionRenderDetails`. Guards reject malformed envelopes, extra fields, oversized data, and unknown versions.
 
-Current trace-only sessions reconstruct compact nested-call rows from operation metadata. Old sessions containing `details.audits` and `details.phases` continue to render through the legacy adapter, including their historical richer previews. New final details never write `audits`.
+Current trace-only sessions reconstruct compact nested-call rows from operation metadata, including bash command text. Old sessions containing `details.audits` and `details.phases` continue to render through the legacy adapter. For old digest-only bash traces, the renderer matches the digest against literal and named strings in the already-visible outer `fabric_exec` arguments; if no exact command can be recovered, it omits the digest instead of displaying a hash. New final details never write `audits`.
 
 Compaction and memory read only `toolResult.details.trace` through the trace guard. Compaction emits phases and operations in sequence order with stable `entryId/subordinal` addresses, and memory emits one normalized child per operation with address `<outer-entry-id>/<sequence>`. Neither consumer parses `fabric_exec` source, outer output, operation results, or rendered audit prose to recover calls, files, or failures.
 
@@ -109,4 +109,4 @@ A present but invalid or unknown trace blocks semantic legacy reinterpretation. 
 
 ## Limitations
 
-Safe projections intentionally reduce durable reconstruction. Final rendering cannot show read bodies, edit diffs, write bodies, agent tasks, discovery queries/results, workflow descriptions/labels/messages/data, external/MCP arguments, or provider results. Combinator traces show structure and typed outcome, not item values, stage functions, stage results, parent IDs, or timing. Compaction cannot recover nested commit command prose from a bash digest, and generic failure resolution has ref identity only when arguments are omitted. Rich action audits and workflow activity content remain available only while the live execution result or activity store is in memory.
+Safe projections intentionally reduce durable reconstruction. Final rendering cannot show read bodies, edit diffs, write bodies, agent tasks, discovery queries/results, workflow descriptions/labels/messages/data, external/MCP arguments, or provider results. Bash command text is retained. Combinator traces show structure and typed outcome, not item values, stage functions, stage results, parent IDs, or timing. Generic failure resolution has ref identity only when arguments are omitted. Rich action audits and workflow activity content remain available only while the live execution result or activity store is in memory.

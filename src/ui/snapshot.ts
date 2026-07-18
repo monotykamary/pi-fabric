@@ -106,6 +106,7 @@ export const createDashboardSnapshot = (
       toolCalls: record.toolCalls,
       usage: { ...record.usage },
       ...(record.text ? { text: record.text } : {}),
+      ...(record.value !== undefined ? { value: structuredClone(record.value) } : {}),
       ...(record.error ? { error: record.error } : {}),
     };
   };
