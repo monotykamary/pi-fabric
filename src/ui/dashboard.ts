@@ -1627,6 +1627,7 @@ export class FabricDashboard implements Component, Focusable {
           ...context,
           expanded: true,
           maxLines: 200,
+          toolCallBackground: false,
         })
       : null;
     if (rendered) {
@@ -1905,6 +1906,7 @@ export class FabricDashboard implements Component, Focusable {
         ...context,
         expanded: true,
         maxLines: 200,
+        toolCallBackground: false,
       });
       if (!rendered) return false;
       lines.push(this.theme.fg("dim", "Preview:"));

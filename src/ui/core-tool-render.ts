@@ -26,6 +26,7 @@ export interface CoreToolRenderOptions {
   settings: CodePreviewSettings;
   expanded: boolean;
   maxLines: number;
+  toolCallBackground?: boolean;
   invalidate?: () => void;
 }
 
@@ -942,7 +943,9 @@ const renderGrep = (
   if (skipHighlight) {
     lines.push(theme.fg("muted", "╰─ Syntax highlighting skipped for large grep output"));
   }
-  const background = getBgAnsi(theme, "toolSuccessBg");
+  const background = options.toolCallBackground === false
+    ? ""
+    : getBgAnsi(theme, "toolSuccessBg");
   return {
     lines: background ? lines.map((line) => withToolBackground(line, background)) : lines,
     hidden: selected.hidden,
@@ -1100,7 +1103,9 @@ const renderBash = (
   }
   const raw = output.split("\n");
   const selected = previewEntries(raw, toolLimit(audit, options));
-  const background = getBgAnsi(theme, audit.success === false ? "toolErrorBg" : "toolSuccessBg");
+  const background = options.toolCallBackground === false
+    ? ""
+    : getBgAnsi(theme, audit.success === false ? "toolErrorBg" : "toolSuccessBg");
   const warning = warningLine(output, options, theme);
   if (warning) lines.push(warning);
   for (const entry of selected.entries) {
