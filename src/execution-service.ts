@@ -411,8 +411,9 @@ export class FabricExecutionService {
                 runtimeSignal,
                 (setStage) => {
                   setStage("validate");
-                  const name = String(args.name ?? "").trim();
-                  if (!name) throw new Error("Workflow phase name must not be empty");
+                  const name =
+                    typeof args.name === "string" ? args.name.trim() : "";
+                  if (!name) throw new Error("Workflow phase name must be a non-empty string");
                   phases.push(name);
                   const phaseIndex = phases.length - 1;
                   const phaseInput: FabricPhaseInput = {

@@ -562,6 +562,9 @@ interface FabricWorkflowPhaseOptions {
   description?: string;
   total?: number;
 }
+interface FabricWorkflowPhaseInput extends FabricWorkflowPhaseOptions {
+  name: string;
+}
 interface FabricWorkflowItem {
   id: string;
   label: string;
@@ -581,6 +584,7 @@ interface FabricWorkflowApi {
   pipeline<T>(items: T[], ...stages: Array<(value: unknown, original: T, index: number) => Promise<unknown> | unknown>): Promise<unknown[]>;
   configure(display: FabricWorkflowDisplay): Promise<FabricWorkflowDisplay>;
   phase(name: string, options?: FabricWorkflowPhaseOptions): Promise<{ name: string; index: number; id?: string }>;
+  phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
   item(item: FabricWorkflowItem): Promise<FabricWorkflowItem>;
   event(event: { message: string; level?: "info" | "success" | "warning" | "error"; data?: unknown }): Promise<void>;
   log(...values: unknown[]): void;
@@ -603,6 +607,7 @@ declare function parallel<T, R>(items: T[], mapper: (item: T, index: number) => 
 declare function parallel<T>(thunks: Array<() => Promise<T> | T>, concurrency?: number | { concurrency?: number }): Promise<T[]>;
 declare function pipeline<T>(items: T[], ...stages: Array<(value: unknown, original: T, index: number) => Promise<unknown> | unknown>): Promise<unknown[]>;
 declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Promise<{ name: string; index: number; id?: string }>;
+declare function phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
 type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };

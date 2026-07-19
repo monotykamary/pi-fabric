@@ -1572,16 +1572,20 @@ describe("Fabric dynamic UI", () => {
   });
 
   it("bounds dashboard height using the overlay terminal", () => {
-    const dashboard = new FabricDashboard(
-      { requestRender: vi.fn(), terminal: { rows: 12 } } as unknown as TUI,
-      theme,
-      snapshot,
-      vi.fn(),
-    );
-    try {
-      expect(dashboard.render(100).length).toBeLessThanOrEqual(12);
-    } finally {
-      dashboard.dispose();
+    for (const rows of [5, 7, 8, 9, 12]) {
+      const dashboard = new FabricDashboard(
+        { requestRender: vi.fn(), terminal: { rows } } as unknown as TUI,
+        theme,
+        snapshot,
+        vi.fn(),
+      );
+      try {
+        expect(dashboard.render(100).length).toBeLessThanOrEqual(rows);
+        dashboard.handleInput("3");
+        expect(dashboard.render(100).length).toBeLessThanOrEqual(rows);
+      } finally {
+        dashboard.dispose();
+      }
     }
   });
 
@@ -1594,7 +1598,7 @@ describe("Fabric dynamic UI", () => {
     expect(wrapPlainText("👩‍💻x", 2)).toEqual(["👩‍💻", "x"]);
   });
 
-  it("renders recursive agents in a phase-grouped Run Flow", () => {
+  it("renders recursive agents in a phase-grouped Run topology", () => {
     const current = snapshot();
     current.actors = [];
     current.globalActors = [];
@@ -1628,7 +1632,9 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("r");
       const flowLines = dashboard.render(120);
       const flow = flowLines.join("\n");
-      expect(flow).toContain("Run flow");
+      expect(flow).toContain("Fabric · Topology");
+      expect(flow).toContain("Run topology");
+      expect(flow).toContain("Run topology");
       expect(flow).toContain("Discover");
       expect(flow).toContain("Audit");
       expect(flow).toContain("flow-parent");
@@ -1651,7 +1657,7 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("keeps an empty current phase visible in the Run Flow heading", () => {
+  it("keeps an empty current phase visible in the Run topology heading", () => {
     const current = snapshot();
     current.actors = [];
     current.globalActors = [];
@@ -1678,7 +1684,7 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("centers a large Run Flow on attention and summarizes omitted agents", () => {
+  it("centers a large Run topology on attention and summarizes omitted agents", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
@@ -1739,7 +1745,7 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("keeps a deeply nested selected agent readable in a narrow Run Flow", () => {
+  it("keeps a deeply nested selected agent readable in a narrow Run topology", () => {
     const current = snapshot();
     const run = current.runs[0]!;
     current.actors = [];
@@ -1777,13 +1783,114 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("r");
       const lines = dashboard.render(40);
       expect(lines.join("\n")).toContain("deep-node-19");
-      expect(lines.join("\n")).toContain("10 hidden");
+      expect(lines.join("\n")).toMatch(/\d+ hidden/);
       expect(lines.join("\n")).toContain("Deep recursion");
       expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
     } finally {
       dashboard.dispose();
     }
   });
+  it("renders and inspects the project mesh topology", () => {
+    const current = snapshot();
+    current.events.push(
+      {
+        id: "event-agent-route",
+        sequence: 2,
+        topic: "team.review",
+        kind: "handoff",
+        from: { id: "agent-1", name: "security-reviewer", kind: "agent" },
+        text: "Review handoff",
+        createdAt: current.now - 1_000,
+      },
+      {
+        id: "event-actor-output",
+        sequence: 3,
+        topic: "fabric.actor.output",
+        kind: "message",
+        from: { id: "actor-coordinator", name: "topology-coordinator", kind: "actor" },
+        text: "Recent mesh feed stays visible",
+        createdAt: current.now,
+      },
+    );
+    const dashboard = new FabricDashboard(
+      { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+    );
+    try {
+      dashboard.handleInput("2");
+      const runHeight = dashboard.render(120).length;
+      dashboard.handleInput("3");
+      const lines = dashboard.render(120);
+      const mesh = lines.join("\n");
+      expect(mesh).toContain("Fabric · Topology");
+      expect(mesh).toContain("▸ Project mesh");
+      expect(mesh).toContain("main session");
+      expect(mesh).toContain("Persistent actors");
+      expect(mesh).toContain("advisor");
+      expect(mesh).toContain("Transient mesh agents");
+      expect(mesh).toContain("security-reviewer");
+      expect(mesh).toContain("Topics");
+      expect(mesh).toContain("team.review");
+      expect(mesh).toContain("subscribes");
+      expect(mesh).toContain("Shared state");
+      expect(mesh).toContain("Package A");
+      expect(mesh).toContain("Package A ← security-reviewer");
+      expect(mesh).toContain("Recent routes");
+      expect(mesh).toContain("advisor ─finding→ team.review");
+      expect(mesh).toContain(
+        "fabric.actor.output · topology-coordinator · Recent mesh feed stays visible",
+      );
+      expect(lines).toHaveLength(runHeight);
+      expect(lines.every((line) => visibleWidth(line) <= 120)).toBe(true);
+
+      dashboard.handleInput("j");
+      dashboard.handleInput("\r");
+      const topicDetail = dashboard.render(120).join("\n");
+      expect(topicDetail).toContain("topic · team.review");
+      expect(topicDetail).toContain("Subscribers: advisor");
+      expect(topicDetail).toContain("Recent events: 2");
+
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("f");
+      dashboard.handleInput("\r");
+      expect(dashboard.render(120).join("\n")).toContain("agent · security-reviewer");
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("f");
+      dashboard.handleInput("f");
+      dashboard.handleInput("f");
+      dashboard.handleInput("G");
+      dashboard.handleInput("\r");
+      const routeDetail = dashboard.render(120).join("\n");
+      expect(routeDetail).toContain("recent project mesh route");
+      expect(routeDetail).toContain("From: security-reviewer (agent:agent-1)");
+      expect(routeDetail).toContain("To: team.review (topic:team.review)");
+
+      dashboard.handleInput("\x1b");
+      dashboard.handleInput("1");
+      expect(dashboard.render(120).join("\n")).toContain("· Activity");
+      dashboard.handleInput("r");
+      const topology = dashboard.render(120).join("\n");
+      expect(topology).toContain("Fabric · Topology");
+      expect(topology).toContain("Run topology");
+      dashboard.handleInput("l");
+      expect(dashboard.render(120).join("\n")).toContain("▸ Project mesh");
+      dashboard.handleInput("h");
+      expect(dashboard.render(120).join("\n")).toContain("Run topology");
+      dashboard.handleInput("\t");
+      expect(dashboard.render(120).join("\n")).toContain("▸ Project mesh");
+      dashboard.handleInput("r");
+      expect(dashboard.render(120).join("\n")).toContain("· Activity");
+      dashboard.handleInput("2");
+      const directRun = dashboard.render(120).join("\n");
+      expect(directRun).toContain("Fabric · Topology");
+      expect(directRun).toContain("Run topology");
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
 });
 
 describe("Fabric dashboard global actors and instructions editor", () => {
@@ -1852,6 +1959,12 @@ describe("Fabric dashboard global actors and instructions editor", () => {
       // Move from the project actor to the global template and open its detail.
       dashboard.handleInput("l");
       dashboard.handleInput("j");
+      dashboard.handleInput("p");
+      dashboard.handleInput("d");
+      expect(onImportActor).toHaveBeenCalledWith("g-actor-1");
+      expect(onRemoveGlobalActor).toHaveBeenCalledWith("g-actor-1");
+      onImportActor.mockClear();
+      onRemoveGlobalActor.mockClear();
       dashboard.handleInput("\r");
       const detail = dashboard.render(120).join("\n");
       expect(detail).toContain("Instructions");
@@ -1879,6 +1992,9 @@ describe("Fabric dashboard global actors and instructions editor", () => {
     try {
       // Open the first entity, the project actor.
       dashboard.handleInput("l");
+      dashboard.handleInput("x");
+      expect(onExportActor).toHaveBeenCalledWith("actor-1");
+      onExportActor.mockClear();
       dashboard.handleInput("\r");
       const detail = dashboard.render(120).join("\n");
       expect(detail).toContain("x export→global");

@@ -37,7 +37,15 @@ import type { FabricAgentTranscript } from "./transcript.js";
 import { highlightCode } from "./highlight.js";
 import { formatJsonAsYaml } from "./structured.js";
 import { nestedEditDiff } from "./fabric-render.js";
-import { buildRunFlowRows, windowRunFlowRows } from "./run-flow.js";
+import {
+  buildProjectMeshTopology,
+  buildRunTopologyRows,
+  windowProjectMeshTopology,
+  windowRunTopologyRows,
+  type FabricProjectMeshParticipant,
+  type FabricProjectMeshRoute,
+  type FabricProjectMeshTopic,
+} from "./topology.js";
 
 type Entity =
   | { id: string; kind: "agent"; label: string; status: string; value: FabricUiAgent }
@@ -51,7 +59,28 @@ type Entity =
     }
   | { id: string; kind: "call"; label: string; status: string; value: FabricActivityCall }
   | { id: string; kind: "item"; label: string; status: string; value: FabricActivityItem }
-  | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry };
+  | { id: string; kind: "state"; label: string; status: string; value: FabricUiStateEntry }
+  | {
+      id: string;
+      kind: "meshParticipant";
+      label: string;
+      status: string;
+      value: FabricProjectMeshParticipant;
+    }
+  | {
+      id: string;
+      kind: "meshTopic";
+      label: string;
+      status: string;
+      value: FabricProjectMeshTopic;
+    }
+  | {
+      id: string;
+      kind: "meshRoute";
+      label: string;
+      status: string;
+      value: FabricProjectMeshRoute;
+    };
 
 type PanelKind = "phase" | "unphased" | "session";
 
@@ -69,9 +98,16 @@ interface PhasePanel {
 }
 
 type Pane = "phases" | "entities";
-type OverviewView = "activity" | "flow";
+type OverviewView = "activity" | "topology";
+type TopologyView = "run" | "mesh";
 
-type EntityGroupKind = FabricActivityKind | "globalActor" | "state";
+type EntityGroupKind =
+  | FabricActivityKind
+  | "globalActor"
+  | "state"
+  | "meshParticipant"
+  | "meshTopic"
+  | "meshRoute";
 
 interface EntityGroup {
   kind: EntityGroupKind;
@@ -90,6 +126,9 @@ const entityGroupOrder: readonly EntityGroupKind[] = [
   "task",
   "custom",
   "state",
+  "meshParticipant",
+  "meshTopic",
+  "meshRoute",
 ];
 
 const entityGroupLabels: Record<EntityGroupKind, string> = {
@@ -103,6 +142,9 @@ const entityGroupLabels: Record<EntityGroupKind, string> = {
   task: "Tasks",
   custom: "Custom items",
   state: "Shared state",
+  meshParticipant: "Transient mesh agents",
+  meshTopic: "Topics",
+  meshRoute: "Recent routes",
 };
 
 const entityGroupKind = (entity: Entity): EntityGroupKind => {
@@ -110,6 +152,9 @@ const entityGroupKind = (entity: Entity): EntityGroupKind => {
   if (entity.kind === "actor") return "actor";
   if (entity.kind === "globalActor") return "globalActor";
   if (entity.kind === "state") return "state";
+  if (entity.kind === "meshParticipant") return "meshParticipant";
+  if (entity.kind === "meshTopic") return "meshTopic";
+  if (entity.kind === "meshRoute") return "meshRoute";
   if (entity.kind === "call") return entity.value.entityKind ?? entity.value.kind;
   return entity.value.kind;
 };
@@ -314,13 +359,13 @@ const entitiesFor = (
   return orderEntitiesByGroup([...linkedAgents, ...visibleCalls, ...items]);
 };
 
-const flowEntitiesFor = (
+const runTopologyEntitiesFor = (
   snapshot: FabricDashboardSnapshot,
   run: FabricActivityRun | undefined,
 ): Entity[] => {
   if (!run) return [];
   const agents = orderAgentsByCreation(snapshot.agents).filter((agent) => agent.runId === run.id);
-  return buildRunFlowRows(run, agents)
+  return buildRunTopologyRows(run, agents)
     .filter((row) => row.kind === "agent")
     .map((row) => ({
       id: row.entityId,
@@ -329,6 +374,101 @@ const flowEntitiesFor = (
       status: row.agent.status,
       value: row.agent,
     }));
+};
+
+const projectMeshEntitiesFor = (snapshot: FabricDashboardSnapshot): Entity[] => {
+  const model = buildProjectMeshTopology({
+    actors: snapshot.actors,
+    agents: snapshot.agents,
+    state: snapshot.state,
+    events: snapshot.events,
+    now: snapshot.now,
+  });
+  return model.rows.flatMap((row): Entity[] => {
+    if (row.kind === "meshActor") {
+      return [
+        {
+          id: row.entityId,
+          kind: "actor",
+          label: row.actor.name,
+          status: row.actor.lastError ? "failed" : row.actor.status,
+          value: row.actor,
+        },
+      ];
+    }
+    if (row.kind === "meshAgent") {
+      if (row.participant.agent) {
+        return [
+          {
+            id: row.entityId,
+            kind: "agent",
+            label: row.participant.agent.name,
+            status: row.participant.agent.status,
+            value: row.participant.agent,
+          },
+        ];
+      }
+      return [
+        {
+          id: row.entityId,
+          kind: "meshParticipant",
+          label: row.participant.name,
+          status: row.participant.status,
+          value: row.participant,
+        },
+      ];
+    }
+    if (row.kind === "meshTopic") {
+      return [
+        {
+          id: row.entityId,
+          kind: "meshTopic",
+          label: row.topic.name,
+          status: row.topic.status,
+          value: row.topic,
+        },
+      ];
+    }
+    if (row.kind === "meshState") {
+      return [
+        {
+          id: row.entityId,
+          kind: "state",
+          label: row.state.label,
+          status: row.state.status,
+          value: row.state,
+        },
+      ];
+    }
+    if (row.kind === "meshRoute") {
+      return [
+        {
+          id: row.entityId,
+          kind: "meshRoute",
+          label: `${row.route.fromName} → ${row.route.targetName}`,
+          status: row.route.status,
+          value: row.route,
+        },
+      ];
+    }
+    return [];
+  });
+};
+
+const entitiesForOverview = (
+  snapshot: FabricDashboardSnapshot,
+  run: FabricActivityRun | undefined,
+  panel: PhasePanel | undefined,
+  view: OverviewView,
+  topologyView: TopologyView,
+): Entity[] => {
+  if (view === "topology" && topologyView === "run") {
+    return runTopologyEntitiesFor(snapshot, run);
+  }
+  if (view === "topology" && topologyView === "mesh") {
+    return projectMeshEntitiesFor(snapshot);
+  }
+  return entitiesFor(snapshot, run, panel);
 };
 
 const panelStatus = (entities: Entity[], fallback: string): string => {
@@ -539,6 +679,35 @@ const entityTail = (entity: Entity, now: number): string => {
       .filter((value): value is string => Boolean(value))
       .join(" · ");
   }
+  if (entity.kind === "meshParticipant") {
+    const participant = entity.value;
+    return [
+      "mesh agent",
+      `${participant.routes} route${participant.routes === 1 ? "" : "s"}`,
+      `${formatDuration(Math.max(0, now - participant.lastSeenAt))} ago`,
+    ].join(" · ");
+  }
+  if (entity.kind === "meshTopic") {
+    const topic = entity.value;
+    return [
+      `${topic.subscribers.length} subscriber${topic.subscribers.length === 1 ? "" : "s"}`,
+      topic.recentEvents > 0 ? `${topic.recentEvents} recent event${topic.recentEvents === 1 ? "" : "s"}` : undefined,
+      topic.lastEventAt ? `${formatDuration(Math.max(0, now - topic.lastEventAt))} ago` : undefined,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" · ");
+  }
+  if (entity.kind === "meshRoute") {
+    const route = entity.value;
+    return [
+      route.kind,
+      route.topic,
+      route.count > 1 ? `×${route.count}` : undefined,
+      `${formatDuration(Math.max(0, now - route.lastAt))} ago`,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" · ");
+  }
   return [entity.value.owner, entity.value.detail, `v${entity.value.version}`]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
@@ -548,6 +717,7 @@ export class FabricDashboard implements Component, Focusable {
   focused = false;
   private pane: Pane = "phases";
   private overviewView: OverviewView = "activity";
+  private topologyView: TopologyView = "run";
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -702,12 +872,9 @@ export class FabricDashboard implements Component, Focusable {
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const allEntities =
-      this.overviewView === "flow"
-        ? flowEntitiesFor(snapshot, run)
-        : entitiesFor(snapshot, run, panel);
+    const allEntities = entitiesForOverview(snapshot, run, panel, this.overviewView, this.topologyView);
     const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
-    this.syncEntitySelection(entities, this.overviewView === "flow");
+    this.syncEntitySelection(entities, this.overviewView !== "activity");
 
     if (data === "?") {
       this.mode = "help";
@@ -809,12 +976,29 @@ export class FabricDashboard implements Component, Focusable {
       return;
     }
 
-    if (data === "r") {
-      this.overviewView = this.overviewView === "activity" ? "flow" : "activity";
-      this.pane = this.overviewView === "flow" ? "entities" : "phases";
-      this.entityIndex = 0;
-      this.selectedEntityId = undefined;
-      this.pendingStop = undefined;
+    const directTopologyView: TopologyView | undefined =
+      data === "2" ? "run" : data === "3" ? "mesh" : undefined;
+    if (data === "1" || directTopologyView || data === "r") {
+      const nextOverview: OverviewView =
+        data === "1"
+          ? "activity"
+          : data === "r"
+            ? this.overviewView === "activity"
+              ? "topology"
+              : "activity"
+            : "topology";
+      const nextTopology =
+        data === "r" && this.overviewView === "activity"
+          ? "run"
+          : directTopologyView ?? this.topologyView;
+      if (nextOverview !== this.overviewView || nextTopology !== this.topologyView) {
+        this.overviewView = nextOverview;
+        this.topologyView = nextTopology;
+        this.pane = nextOverview === "activity" ? "phases" : "entities";
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+        this.pendingStop = undefined;
+      }
       this.tui.requestRender();
       return;
     }
@@ -826,6 +1010,37 @@ export class FabricDashboard implements Component, Focusable {
         this.done();
         return;
       }
+    } else if (matchesKey(data, Key.tab) && this.overviewView === "topology") {
+      this.topologyView = this.topologyView === "run" ? "mesh" : "run";
+      this.entityIndex = 0;
+      this.selectedEntityId = undefined;
+      this.pendingStop = undefined;
+      this.tui.requestRender();
+      return;
+    } else if (
+      this.overviewView === "topology" &&
+      (matchesKey(data, Key.left) || data === "h")
+    ) {
+      if (this.topologyView !== "run") {
+        this.topologyView = "run";
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+        this.pendingStop = undefined;
+      }
+      this.tui.requestRender();
+      return;
+    } else if (
+      this.overviewView === "topology" &&
+      (matchesKey(data, Key.right) || data === "l")
+    ) {
+      if (this.topologyView !== "mesh") {
+        this.topologyView = "mesh";
+        this.entityIndex = 0;
+        this.selectedEntityId = undefined;
+        this.pendingStop = undefined;
+      }
+      this.tui.requestRender();
+      return;
     } else if (matchesKey(data, Key.tab) && this.overviewView === "activity") {
       this.pane = this.pane === "phases" ? "entities" : "phases";
     } else if (
@@ -857,7 +1072,7 @@ export class FabricDashboard implements Component, Focusable {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
     } else if (
-      ["m", "e", "v", "i", "s", "u", "x"].includes(data) &&
+      ["m", "e", "v", "i", "c", "s", "u", "x", "p", "d"].includes(data) &&
       this.pane === "entities"
     ) {
       const selected = entities[this.entityIndex];
@@ -867,6 +1082,13 @@ export class FabricDashboard implements Component, Focusable {
           this.openAgentMessageEditor(selected, data === "s" ? "steer" : "followUp");
         } else if (data === "x" && selected.kind === "agent" && isActiveStatus(selected.status)) {
           this.requestAgentStop(selected);
+        } else if (
+          data === "x" &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          this.onExportActor
+        ) {
+          this.onExportActor(selected.value.id);
         } else if (data === "m" && selected.kind === "actor" && selected.status !== "stopped") {
           this.detailId = selected.id;
           this.openModelPicker(selected);
@@ -876,9 +1098,20 @@ export class FabricDashboard implements Component, Focusable {
         } else if (data === "v" && selected.kind === "actor" && selected.status !== "stopped") {
           this.detailId = selected.id;
           this.openEventsPicker(selected);
+        } else if (
+          data === "c" &&
+          selected.kind === "actor" &&
+          selected.status !== "stopped" &&
+          this.onClearMessages
+        ) {
+          this.onClearMessages(selected.value.id);
         } else if (data === "i" && (selected.kind === "actor" || selected.kind === "globalActor")) {
           this.detailId = selected.id;
           this.openInstructionsEditor(selected);
+        } else if (data === "p" && selected.kind === "globalActor" && this.onImportActor) {
+          this.onImportActor(selected.value.id);
+        } else if (data === "d" && selected.kind === "globalActor" && this.onRemoveGlobalActor) {
+          this.onRemoveGlobalActor(selected.value.id);
         }
       }
     } else if (data === " " && this.pane === "entities") {
@@ -906,14 +1139,22 @@ export class FabricDashboard implements Component, Focusable {
       this.filter = filters[next] ?? "all";
       this.entityIndex = 0;
       this.selectedEntityId = undefined;
-    } else if (data === "[") {
+      this.tui.requestRender();
+      return;
+    } else if (
+      data === "[" &&
+      !(this.overviewView === "topology" && this.topologyView === "mesh")
+    ) {
       this.runIndex = Math.min(Math.max(0, snapshot.runs.length - 1), this.runIndex + 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
       this.resetSelection();
       this.tui.requestRender();
       return;
-    } else if (data === "]") {
+    } else if (
+      data === "]" &&
+      !(this.overviewView === "topology" && this.topologyView === "mesh")
+    ) {
       this.runIndex = Math.max(0, this.runIndex - 1);
       this.selectedRunId = snapshot.runs[this.runIndex]?.id;
       this.runSelectionTouched = true;
@@ -969,12 +1210,9 @@ export class FabricDashboard implements Component, Focusable {
     const panels = phasePanels(snapshot, run);
     this.syncPhase(run, panels);
     const panel = panels[this.phaseIndex];
-    const allEntities =
-      this.overviewView === "flow"
-        ? flowEntitiesFor(snapshot, run)
-        : entitiesFor(snapshot, run, panel);
+    const allEntities = entitiesForOverview(snapshot, run, panel, this.overviewView, this.topologyView);
     const entities = allEntities.filter((entity) => matchesFilter(entity.status, this.filter));
-    this.syncEntitySelection(entities, this.overviewView === "flow");
+    this.syncEntitySelection(entities, this.overviewView !== "activity");
     if (this.detailId) {
       const detail = allEntities.find((entity) => entity.id === this.detailId);
       if (detail) return this.renderDetail(width, snapshot, detail);
@@ -1077,7 +1315,8 @@ export class FabricDashboard implements Component, Focusable {
     ].filter((value): value is string => Boolean(value));
     const help = [
       ["Navigate", "↑↓/jk select · ←→/tab switch Activity pane · enter inspect · esc back"],
-      ["Views", "r toggles Activity/Run flow · flow follows selection and summarizes hidden agents"],
+      ["Views", "1 Activity · 2 Topology (Run) · 3 Topology (Project mesh) · r toggles Activity/Topology Run"],
+      ["Topology", "Run follows recursive selection · Project mesh maps actors, topics, shared state, and routes"],
       ["Runs", "[ older · ] newer · f cycle status filter"],
       ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
       ...(actorActions.length > 0 ? [["Actors", actorActions.join(" · ")]] : []),
@@ -1279,9 +1518,16 @@ export class FabricDashboard implements Component, Focusable {
       return [truncateToWidth("too narrow · need 24 cols", width)];
     }
     const innerWidth = width - 2;
+    const terminalRows = Math.max(
+      1,
+      this.tui.terminal?.rows ?? process.stdout.rows ?? 28,
+    );
     const lines: string[] = [];
-    const viewName = this.overviewView === "flow" ? "Run flow" : "Activity";
-    lines.push(this.topBorder(width, `Fabric · ${run?.name ?? "session"} · ${viewName}`));
+    const title =
+      this.overviewView === "activity"
+        ? `Fabric · ${run?.name ?? "session"} · Activity`
+        : "Fabric · Topology";
+    lines.push(this.topBorder(width, title));
 
     const runAgents = run
       ? snapshot.agents.filter((agent) => agent.runId === run.id)
@@ -1293,20 +1539,47 @@ export class FabricDashboard implements Component, Focusable {
     const elapsed = run
       ? formatDuration(((hasDetachedWork ? snapshot.now : run.finishedAt) ?? snapshot.now) - run.startedAt)
       : undefined;
-    const summary = [
-      run?.status,
-      largeRun ? "⚠ large run" : undefined,
-      `${activeAgents}/${runAgents.length} run agents active`,
-      `${snapshot.actors.length} actors`,
-      runTokens > 0 ? `${formatTokens(runTokens)} tok` : undefined,
-      elapsed,
-      snapshot.runs.length > 1 ? `run ${this.runIndex + 1}/${snapshot.runs.length}` : undefined,
-    ]
+    const meshModel =
+      this.overviewView === "topology" && this.topologyView === "mesh"
+        ? buildProjectMeshTopology({
+            actors: snapshot.actors,
+            agents: snapshot.agents,
+            state: snapshot.state,
+            events: snapshot.events,
+            now: snapshot.now,
+          })
+        : undefined;
+    const activeActors = snapshot.actors.filter((actor) => isActiveStatus(actor.status)).length;
+    const summary = (
+      meshModel
+        ? [
+            `${activeActors}/${snapshot.actors.length} actors active`,
+            `${meshModel.participants.length} mesh agents`,
+            `${meshModel.topics.length} topics`,
+            `${snapshot.state.length} shared state`,
+            `${meshModel.routes.length} recent routes`,
+          ]
+        : [
+            this.overviewView === "topology" ? run?.name : undefined,
+            run?.status,
+            largeRun ? "⚠ large run" : undefined,
+            `${activeAgents}/${runAgents.length} run agents active`,
+            `${snapshot.actors.length} actors`,
+            runTokens > 0 ? `${formatTokens(runTokens)} tok` : undefined,
+            elapsed,
+            snapshot.runs.length > 1
+              ? `run ${this.runIndex + 1}/${snapshot.runs.length}`
+              : undefined,
+          ]
+    )
       .filter((value): value is string => Boolean(value))
       .join(" · ");
     const summaryText = safeText(summary);
     let headerLine = summaryText;
-    if (run?.description) {
+    if (
+      run?.description &&
+      !(this.overviewView === "topology" && this.topologyView === "mesh")
+    ) {
       const gap = "  ";
       const availableDescription = innerWidth - visibleWidth(summaryText) - gap.length;
       headerLine =
@@ -1319,19 +1592,54 @@ export class FabricDashboard implements Component, Focusable {
     } else if (summaryText) {
       headerLine = this.theme.fg("dim", summaryText);
     }
+    const minimumRows = 8;
+    if (terminalRows < minimumRows) {
+      return [
+        title,
+        summaryText || "No Fabric activity yet",
+        "1 activity · 2 topology/run · 3 topology/mesh · esc close",
+      ]
+        .slice(0, terminalRows)
+        .map((line) => truncateToWidth(line, width, ""));
+    }
     lines.push(this.row(width, headerLine || this.theme.fg("muted", "No Fabric activity yet")));
     lines.push(this.middleBorder(width));
 
-    const terminalRows = this.tui.terminal?.rows ?? process.stdout.rows ?? 28;
-    const maxBody = Math.max(2, Math.min(22, terminalRows - 12));
-    if (this.overviewView === "flow") {
-      for (const line of this.renderRunFlowPanel(
+    const projectMeshView =
+      this.overviewView === "topology" && this.topologyView === "mesh";
+    const desiredRunEvents = projectMeshView ? [] : (run?.events.slice(-2) ?? []);
+    const desiredMeshEventCount = projectMeshView
+      ? 2
+      : Math.max(0, 2 - desiredRunEvents.length);
+    const desiredMeshEvents =
+      desiredMeshEventCount > 0 ? snapshot.events.slice(-desiredMeshEventCount) : [];
+    const optionalEventRoom = Math.max(0, terminalRows - minimumRows);
+    const eventRows = optionalEventRoom >= 2 ? Math.min(2, optionalEventRoom - 1) : 0;
+    const runEventRows = Math.min(desiredRunEvents.length, eventRows);
+    const meshEventRows = Math.max(0, eventRows - runEventRows);
+    const runEvents = runEventRows > 0 ? desiredRunEvents.slice(-runEventRows) : [];
+    const meshEvents =
+      meshEventRows > 0 ? desiredMeshEvents.slice(-meshEventRows) : [];
+    const eventChromeRows = eventRows > 0 ? eventRows + 1 : 0;
+    const maxBody = Math.max(1, Math.min(22, terminalRows - 7 - eventChromeRows));
+    if (this.overviewView === "topology" && this.topologyView === "run") {
+      for (const line of this.renderRunTopologyPanel(
         run,
         allEntities,
         entities,
         innerWidth,
         maxBody,
         snapshot.now,
+      )) {
+        lines.push(this.row(width, line));
+      }
+    } else if (this.overviewView === "topology") {
+      for (const line of this.renderProjectMeshPanel(
+        snapshot,
+        allEntities,
+        entities,
+        innerWidth,
+        maxBody,
       )) {
         lines.push(this.row(width, line));
       }
@@ -1366,11 +1674,9 @@ export class FabricDashboard implements Component, Focusable {
       }
     }
 
-    const runEvents = run?.events.slice(-2) ?? [];
-    const meshEventCount = Math.max(0, 2 - runEvents.length);
-    const meshEvents = meshEventCount > 0 ? snapshot.events.slice(-meshEventCount) : [];
-    if (runEvents.length > 0 || meshEvents.length > 0) {
+    if (eventRows > 0) {
       lines.push(this.middleBorder(width));
+      let renderedEventRows = 0;
       for (const event of runEvents) {
         lines.push(
           this.row(
@@ -1382,6 +1688,7 @@ export class FabricDashboard implements Component, Focusable {
             ),
           ),
         );
+        renderedEventRows++;
       }
       for (const event of meshEvents) {
         const target = event.to ? ` → ${event.to}` : "";
@@ -1395,14 +1702,21 @@ export class FabricDashboard implements Component, Focusable {
             ),
           ),
         );
+        renderedEventRows++;
+      }
+      while (renderedEventRows < eventRows) {
+        lines.push(this.row(width, ""));
+        renderedEventRows++;
       }
     }
 
     lines.push(this.middleBorder(width));
     const navigationHint =
-      this.overviewView === "flow"
-        ? `↑↓/jk agent · enter inspect · f filter:${this.filter} · r activity · [ older · ] newer · ? help · esc close`
-        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · r run flow · [ older · ] newer · ? help · esc close`;
+      this.overviewView === "topology"
+        ? this.topologyView === "run"
+          ? `↑↓/jk agent · enter inspect · f filter:${this.filter} · 1 activity · [ older · ] newer · ? help`
+          : `↑↓/jk node · enter inspect · f filter:${this.filter} · 1 activity · ? help`
+        : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · 3 mesh · r topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];
     const actionHint =
@@ -1456,7 +1770,221 @@ export class FabricDashboard implements Component, Focusable {
     return "enter details";
   }
 
-  private renderRunFlowPanel(
+  private renderProjectMeshPanel(
+    snapshot: FabricDashboardSnapshot,
+    allEntities: Entity[],
+    entities: Entity[],
+    width: number,
+    height: number,
+  ): string[] {
+    const model = buildProjectMeshTopology({
+      actors: snapshot.actors,
+      agents: snapshot.agents,
+      state: snapshot.state,
+      events: snapshot.events,
+      now: snapshot.now,
+    });
+    const selectableEntityIds = new Set(entities.map((entity) => entity.id));
+    const entityById = new Map(allEntities.map((entity) => [entity.id, entity] as const));
+    const active = entities.filter(
+      (entity) => isActiveStatus(entity.status) && entity.status !== "blocked",
+    ).length;
+    const blocked = entities.filter((entity) => entity.status === "blocked").length;
+    const failed = entities.filter((entity) =>
+      ["failed", "timed_out", "error"].includes(entity.status),
+    ).length;
+    const stats = [
+      `${snapshot.actors.length} actor${snapshot.actors.length === 1 ? "" : "s"}`,
+      `${model.participants.length} mesh agent${model.participants.length === 1 ? "" : "s"}`,
+      `${model.topics.length} topic${model.topics.length === 1 ? "" : "s"}`,
+      `${snapshot.state.length} state`,
+      `${model.routes.length} route${model.routes.length === 1 ? "" : "s"}`,
+      this.filter !== "all" ? `${entities.length}/${allEntities.length} ${this.filter}` : undefined,
+      active > 0 ? `${active} active` : undefined,
+      blocked > 0 ? `${blocked} blocked` : undefined,
+      failed > 0 ? `${failed} failed` : undefined,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join(" · ");
+    const lines = [
+      truncateToWidth(
+        `${this.theme.fg("accent", "▸ Project mesh")}${stats ? ` · ${this.theme.fg("dim", stats)}` : ""}`,
+        width,
+        "",
+      ),
+    ];
+    const available = Math.max(0, height - 1);
+    if (available === 0) return lines.slice(0, height);
+
+    const rows: typeof model.rows = [];
+    let pendingSection: (typeof model.rows)[number] | undefined;
+    for (const row of model.rows) {
+      if (row.kind === "meshRoot") {
+        rows.push(row);
+        continue;
+      }
+      if (row.kind === "meshSection") {
+        pendingSection = row;
+        continue;
+      }
+      const visible =
+        row.kind === "meshLink"
+          ? selectableEntityIds.has(row.targetId)
+          : "entityId" in row && selectableEntityIds.has(row.entityId);
+      if (!visible) continue;
+      if (pendingSection?.kind === "meshSection") rows.push(pendingSection);
+      pendingSection = undefined;
+      rows.push(row);
+    }
+
+    const visibleRows = windowProjectMeshTopology(rows, this.selectedEntityId, available);
+    for (const row of visibleRows) {
+      if (row.kind === "meshOmission") {
+        const direction =
+          row.direction === "before" ? "↑" : row.direction === "after" ? "↓" : "↕";
+        const compact = width < 62;
+        const kinds = [
+          row.actors > 0 ? (compact ? `a:${row.actors}` : `${row.actors} actors`) : undefined,
+          row.agents > 0 ? (compact ? `g:${row.agents}` : `${row.agents} agents`) : undefined,
+          row.topics > 0 ? (compact ? `t:${row.topics}` : `${row.topics} topics`) : undefined,
+          row.state > 0 ? (compact ? `s:${row.state}` : `${row.state} state`) : undefined,
+          row.routes > 0 ? (compact ? `r:${row.routes}` : `${row.routes} routes`) : undefined,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+        const attention = [
+          row.active > 0 ? (compact ? `on:${row.active}` : `${row.active} active`) : undefined,
+          row.blocked > 0 ? (compact ? `b:${row.blocked}` : `${row.blocked} blocked`) : undefined,
+          row.failed > 0 ? (compact ? `f:${row.failed}` : `${row.failed} failed`) : undefined,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+        const summary = [
+          row.nodes > 0 ? `${row.nodes} node${row.nodes === 1 ? "" : "s"} hidden` : `${row.rows} rows hidden`,
+          kinds || undefined,
+          attention || undefined,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+        lines.push(
+          truncateToWidth(this.theme.fg("muted", `  ${direction} … ${summary}`), width, ""),
+        );
+        continue;
+      }
+      if (row.kind === "meshRoot") {
+        const summary = [
+          `${row.actors} actors`,
+          `${row.agents} agents`,
+          `${row.topics} topics`,
+          `${row.state} state`,
+          `${row.routes} recent routes`,
+        ].join(" · ");
+        lines.push(
+          truncateToWidth(
+            `  ${this.theme.fg("accent", "◆")} ${this.theme.bold("main session")}  ${this.theme.fg("dim", summary)}`,
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+      if (row.kind === "meshSection") {
+        lines.push(
+          truncateToWidth(
+            `  ${this.theme.fg("borderMuted", "│")} ${this.theme.bold(row.label)} ${this.theme.fg("dim", `(${row.count})`)}`,
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+      if (row.kind === "meshLink") {
+        const connector = row.isLast ? "└─" : "├─";
+        lines.push(
+          truncateToWidth(
+            `  ${this.theme.fg("borderMuted", `│  ${connector}`)} ${colorStatus(
+              this.theme,
+              row.status,
+              statusGlyph(row.status),
+            )} ${safeText(row.sourceName)}  ${this.theme.fg("dim", "subscribes")}`,
+            width,
+            "",
+          ),
+        );
+        continue;
+      }
+
+      const entityId = row.entityId;
+      const entity = entityById.get(entityId);
+      const selected = entityId === this.selectedEntityId;
+      const prefix = selected ? "› " : "  ";
+      let status: string;
+      let label: string;
+      let tail: string;
+      if (row.kind === "meshActor") {
+        status = row.actor.lastError ? "failed" : row.actor.status;
+        label = row.actor.name;
+        tail = [
+          row.actor.runner,
+          `delivery:${row.actor.delivery}`,
+          row.actor.events.length > 0 ? `host:${row.actor.events.join(",")}` : undefined,
+          row.actor.topics.length > 0
+            ? `${row.actor.topics.length} subscription${row.actor.topics.length === 1 ? "" : "s"}`
+            : undefined,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+      } else if (row.kind === "meshAgent") {
+        status = row.participant.status;
+        label = row.participant.name;
+        tail = entity
+          ? entityTail(entity, snapshot.now)
+          : `${row.participant.routes} routes · ${formatDuration(
+              Math.max(0, snapshot.now - row.participant.lastSeenAt),
+            )} ago`;
+      } else if (row.kind === "meshTopic") {
+        status = row.topic.status;
+        label = row.topic.name;
+        tail = entity ? entityTail(entity, snapshot.now) : "";
+      } else if (row.kind === "meshState") {
+        status = row.state.status;
+        label = row.state.owner
+          ? `${row.state.label} ← ${row.state.owner}`
+          : row.state.label;
+        tail = [row.state.detail, `v${row.state.version}`]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+      } else {
+        status = row.route.status;
+        label = `${row.route.fromName} ─${row.route.kind}→ ${row.route.targetName}`;
+        tail = [
+          row.route.topic,
+          row.route.count > 1 ? `×${row.route.count}` : undefined,
+          `${formatDuration(Math.max(0, snapshot.now - row.route.lastAt))} ago`,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join(" · ");
+      }
+      const lead = `${prefix}${this.theme.fg("borderMuted", "├─")} ${colorStatus(
+        this.theme,
+        status,
+        statusGlyph(status),
+      )} ${safeText(label)}`;
+      let line = tail ? `${lead}  ${this.theme.fg("dim", safeText(tail))}` : lead;
+      if (selected) line = this.theme.bg("selectedBg", padToWidth(line, width));
+      lines.push(truncateToWidth(line, width, ""));
+    }
+
+    if (allEntities.length === 0 && lines.length < height) {
+      lines.push(this.theme.fg("dim", "  (no project mesh nodes yet)"));
+    } else if (entities.length === 0 && lines.length < height) {
+      lines.push(this.theme.fg("dim", `  (no ${this.filter} mesh nodes; press f to change filter)`));
+    }
+    while (lines.length < height) lines.push("");
+    return lines.slice(0, height);
+  }
+
+  private renderRunTopologyPanel(
     run: FabricActivityRun | undefined,
     allEntities: Entity[],
     entities: Entity[],
@@ -1515,7 +2043,7 @@ export class FabricDashboard implements Component, Focusable {
       .join(" · ");
     const lines = [
       truncateToWidth(
-        `${this.theme.fg("accent", "▸ Run flow")}${stats ? ` · ${this.theme.fg("dim", stats)}` : ""}`,
+        `${this.theme.fg("accent", "▸ Run topology")}${stats ? ` · ${this.theme.fg("dim", stats)}` : ""}`,
         width,
         "",
       ),
@@ -1528,7 +2056,7 @@ export class FabricDashboard implements Component, Focusable {
       return lines.slice(0, height);
     }
 
-    const rows = buildRunFlowRows(run, agents, {
+    const rows = buildRunTopologyRows(run, agents, {
       includeEmptyPhases: this.filter === "all",
     });
     if (rows.length === 0) {
@@ -1539,7 +2067,7 @@ export class FabricDashboard implements Component, Focusable {
     }
 
     const entityById = new Map(allEntities.map((entity) => [entity.id, entity] as const));
-    const visibleRows = windowRunFlowRows(rows, this.selectedEntityId, available);
+    const visibleRows = windowRunTopologyRows(rows, this.selectedEntityId, available);
     for (const row of visibleRows) {
       if (row.kind === "omission") {
         const direction =
@@ -1754,7 +2282,15 @@ export class FabricDashboard implements Component, Focusable {
     const viewLabel = transcriptView
       ? ` · transcript · ${isActiveStatus(entity.status) ? "live" : entity.status}`
       : "";
-    const lines = [this.topBorder(width, `${entity.kind} · ${entity.label}${viewLabel}`)];
+    const kindLabel =
+      entity.kind === "meshParticipant"
+        ? "mesh agent"
+        : entity.kind === "meshTopic"
+          ? "topic"
+          : entity.kind === "meshRoute"
+            ? "route"
+            : entity.kind;
+    const lines = [this.topBorder(width, `${kindLabel} · ${entity.label}${viewLabel}`)];
     const content = transcriptView
       ? this.transcriptLines(entity.value, innerWidth)
       : this.detailLines(entity, innerWidth, snapshot.now);
@@ -2099,6 +2635,34 @@ export class FabricDashboard implements Component, Focusable {
       field("Created", new Date(def.createdAt).toLocaleString());
       field("Updated", new Date(def.updatedAt).toLocaleString());
       field("Instructions", def.instructions);
+    } else if (entity.kind === "meshParticipant") {
+      const participant = entity.value;
+      field("Scope", "transient project mesh agent");
+      field("Identity", participant.id);
+      field("Observed routes", participant.routes);
+      field("Last activity", new Date(participant.lastSeenAt).toLocaleString());
+      field("Live worker", "not retained in this dashboard snapshot");
+    } else if (entity.kind === "meshTopic") {
+      const topic = entity.value;
+      field("Scope", "project mesh topic");
+      field("ID", topic.id);
+      field("System topic", topic.system ? "yes" : "no");
+      field("Subscribers", topic.subscribers.map((subscriber) => subscriber.name).join(", "));
+      field("Recent events", topic.recentEvents);
+      field(
+        "Last activity",
+        topic.lastEventAt ? new Date(topic.lastEventAt).toLocaleString() : undefined,
+      );
+    } else if (entity.kind === "meshRoute") {
+      const route = entity.value;
+      field("Scope", "recent project mesh route");
+      field("From", `${route.fromName} (${route.fromKind}:${route.fromId})`);
+      field("To", `${route.targetName} (${route.targetKind}:${route.targetId})`);
+      field("Topic", route.topic);
+      field("Event kind", route.kind);
+      field("Deliveries", route.count);
+      field("Last activity", new Date(route.lastAt).toLocaleString());
+      markdownField("Payload text", route.text, "route-text");
     } else {
       const entry = entity.value;
       field("Key", entry.key);
@@ -2211,7 +2775,7 @@ export class FabricDashboard implements Component, Focusable {
     this.detailSelectionRestore = undefined;
     this.detailView = "summary";
     this.transcriptFollowing = true;
-    this.pane = this.overviewView === "flow" ? "entities" : "phases";
+    this.pane = this.overviewView === "activity" ? "phases" : "entities";
   }
 
   private pinDetailSelection(

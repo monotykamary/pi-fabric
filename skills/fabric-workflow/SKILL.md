@@ -14,7 +14,7 @@ Use these globals:
 - `workflow.parallel(thunks, { concurrency })` or `parallel(...)` for fan-out. Pass functions, not promises.
 - `workflow.pipeline(items, ...stages)` or `pipeline(...)` for per-item sequential stages with cross-item concurrency.
 - `workflow.configure({ name, description })` to name the general-purpose Fabric dashboard.
-- `workflow.phase(name, { id?, description?, total? })` or `phase(...)` for progress groups.
+- `workflow.phase(name, { id?, description?, total? })` or `phase(...)` for progress groups. Descriptor form `workflow.phase({ name, id?, description?, total? })` is also normalized.
 - `workflow.item(...)` for non-agent work items whose status changes over time.
 - `workflow.event(...)` for notable milestones in the dashboard feed.
 - `workflow.log(...)` for compact progress notes.

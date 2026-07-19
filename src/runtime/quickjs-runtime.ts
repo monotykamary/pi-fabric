@@ -371,7 +371,13 @@ globalThis.workflow = Object.freeze({
   parallel: __workflowParallel,
   pipeline: __workflowPipeline,
   configure: (args) => __call("fabric.$configure", args),
-  phase: (name, options = {}) => __call("fabric.$phase", { ...options, name }),
+  phase: (nameOrInput, options = {}) => {
+    const input =
+      nameOrInput && typeof nameOrInput === "object" && !Array.isArray(nameOrInput)
+        ? { ...nameOrInput }
+        : { ...options, name: nameOrInput };
+    return __call("fabric.$phase", input);
+  },
   item: (args) => __call("fabric.$item", args),
   event: (args) => __call("fabric.$event", args),
   log: (...values) => print(...values),

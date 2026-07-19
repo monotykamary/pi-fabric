@@ -399,6 +399,30 @@ return true;
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(FABRIC_EXECUTION_DETAILS_MAX_BYTES);
   });
 
+  it("normalizes object-form workflow phase descriptors", async () => {
+    const { service, context } = serviceFor();
+    const result = await execute(
+      service,
+      context,
+      `
+await workflow.phase({
+  name: "Object phase",
+  id: "object-phase",
+  description: "normalized descriptor",
+  total: 2,
+});
+return true;
+`,
+    );
+
+    expect(result.trace.phases).toEqual(["Object phase"]);
+    expect(result.trace.operations[0]).toMatchObject({
+      ref: "fabric.workflow.phase",
+      outcome: "succeeded",
+      args: { id: "object-phase", name: "Object phase", total: 2 },
+    });
+  });
+
   it("records workflow validation failures before activity mutation", async () => {
     const { service, context } = serviceFor();
     const result = await execute(service, context, 'return workflow.phase("   ");');
