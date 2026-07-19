@@ -20,7 +20,6 @@ import {
 
 const WIDGET_ID = "pi-fabric";
 const ACTIVITY_REFRESH_MS = 100;
-const IDLE_DASHBOARD_REFRESH_MS = 2_000;
 
 const emptySnapshot = (): FabricDashboardSnapshot => {
   const now = Date.now();
@@ -300,14 +299,11 @@ export class FabricUiController {
           Boolean(actor.worker && isActiveStatus(actor.worker.status)),
       );
     if (!this.#dashboardOpen && !active) return;
-    const delay = active
-      ? this.state.config.ui.refreshMs
-      : Math.max(this.state.config.ui.refreshMs, IDLE_DASHBOARD_REFRESH_MS);
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#refresh();
       this.#schedulePoll();
-    }, delay);
+    }, this.state.config.ui.refreshMs);
     this.#timer.unref();
   }
 
