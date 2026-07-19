@@ -4,6 +4,9 @@ import type { FabricLogLine } from "../subagents/types.js";
 
 const PAGE_LINES = 240;
 const MAX_CACHE_ENTRIES = 32;
+const MAX_LIVE_LINES = 2_000;
+const MAX_LIVE_ENTRIES = 1_000;
+const MAX_TRACKED_ACTIVE_TOOLS = 64;
 const MAX_TOOL_SUMMARY_CHARS = 500;
 const TRANSCRIPT_ENTRY_LIMIT = 80;
 const MAX_ENCODED_STRING_CHARS = 160;
@@ -58,6 +61,10 @@ interface CachedTranscript {
   lines: FabricLogLine[];
   before: number | undefined;
   hasMore: boolean;
+  accumulator: TranscriptAccumulator;
+  entriesTrimmed: boolean;
+  linesTrimmed: boolean;
+  retainAll: boolean;
   transcript: FabricAgentTranscript;
 }
 
@@ -76,18 +83,18 @@ const terminalSafe = (value: string, trim = true): string => {
   return trim ? safe.trim() : safe;
 };
 
-const graphemes = (value: string): string[] => {
-  const Segmenter = Intl.Segmenter;
-  if (Segmenter) {
-    return [...new Segmenter(undefined, { granularity: "grapheme" }).segment(value)].map(
-      (entry) => entry.segment,
-    );
-  }
-  return Array.from(value);
-};
+const graphemeSegmenter = Intl.Segmenter
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : undefined;
+
+const graphemes = (value: string): string[] =>
+  graphemeSegmenter
+    ? [...graphemeSegmenter.segment(value)].map((entry) => entry.segment)
+    : Array.from(value);
 
 const clip = (value: string, max: number): string => {
   const normalized = terminalSafe(value);
+  if (normalized.length <= max) return normalized;
   const parts = graphemes(normalized);
   if (parts.length <= max) return normalized;
   const tail = Math.min(1_000, Math.floor(max * 0.25));
@@ -198,6 +205,37 @@ class TranscriptAccumulator {
 
   append(events: Array<Record<string, unknown>>): void {
     for (const event of events) this.#append(event);
+  }
+
+  trim(maxEntries: number): boolean {
+    if (this.entries.length <= maxEntries) return false;
+    const protectedEntries = new Set<FabricTranscriptEntry>([
+      ...this.#activeTools.slice(-MAX_TRACKED_ACTIVE_TOOLS),
+      ...(this.#assistant ? [this.#assistant] : []),
+      ...(this.#retry ? [this.#retry] : []),
+      ...(this.#compaction ? [this.#compaction] : []),
+    ]);
+    let removable = this.entries.length - maxEntries;
+    const removed = new Set<FabricTranscriptEntry>();
+    const retained = this.entries.filter((entry) => {
+      if (removable <= 0 || protectedEntries.has(entry)) return true;
+      removable--;
+      removed.add(entry);
+      return false;
+    });
+    if (removed.size === 0) return false;
+    this.entries.splice(0, this.entries.length, ...retained);
+    for (const [id, entry] of this.#tools) {
+      if (removed.has(entry)) this.#tools.delete(id);
+    }
+    for (const [label, entries] of this.#anonymousTools) {
+      const active = entries.filter((entry) => !removed.has(entry));
+      if (active.length > 0) this.#anonymousTools.set(label, active);
+      else this.#anonymousTools.delete(label);
+    }
+    const active = this.#activeTools.filter((entry) => !removed.has(entry));
+    this.#activeTools.splice(0, this.#activeTools.length, ...active);
+    return true;
   }
 
   snapshot(
@@ -766,11 +804,13 @@ export class AgentTranscriptReader {
         const startOffset = state.remainder.length > 0 ? state.remainderOffset : state.offset;
         const split = splitAppendedLines(Buffer.concat([state.remainder, appended]), startOffset);
         state.lines.push(...split.lines);
+        state.accumulator.append(parsedEvents(split.lines));
         state.remainder = split.remainder;
         state.remainderOffset = split.remainderOffset;
         state.offset = stat.size;
         state.modifiedAt = stat.mtimeMs;
-        state.transcript = this.#project(state);
+        this.#trimLiveState(state);
+        state.transcript = this.#snapshot(state);
       }
       this.#remember(filePath, state);
       return state.transcript;
@@ -787,10 +827,20 @@ export class AgentTranscriptReader {
     this.read(source);
     const state = this.#cache.get(filePath);
     if (!state?.hasMore) return false;
+    if (state.entriesTrimmed && !state.linesTrimmed) {
+      state.accumulator = this.#accumulator(state.lines);
+      state.entriesTrimmed = false;
+      state.retainAll = true;
+      state.hasMore = Boolean(state.before && state.before > 0);
+      state.transcript = this.#snapshot(state);
+      this.#remember(filePath, state);
+      return true;
+    }
     const cursor = state.before ?? state.lines[0]?.offset;
     if (cursor === undefined || cursor <= 0) {
       state.hasMore = false;
-      state.transcript = this.#project(state);
+      state.entriesTrimmed = false;
+      state.transcript = this.#snapshot(state);
       return false;
     }
     let descriptor: number | undefined;
@@ -799,20 +849,26 @@ export class AgentTranscriptReader {
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
       const stat = fs.fstatSync(descriptor);
       if (!stat.isFile() || stat.dev !== state.device || stat.ino !== state.inode) return false;
-      const page = readJsonlPageFromDescriptor(descriptor, PAGE_LINES, cursor, stat.size);
-      if (page.lines.length === 0) {
+      const page = readJsonlPageFromDescriptor(descriptor, PAGE_LINES, cursor, state.offset);
+      const start = page.lines[0]?.offset;
+      if (start === undefined) {
         state.hasMore = false;
-        state.transcript = this.#project(state);
+        state.transcript = this.#snapshot(state);
         return false;
       }
-      const known = new Set(state.lines.map((line) => line.offset));
-      const older = page.lines.filter((line) => !known.has(line.offset));
-      state.lines.unshift(...older);
-      state.hasMore = page.hasMore;
+      const split = splitAppendedLines(readRange(descriptor, start, state.offset), start);
+      state.lines = split.lines;
+      state.remainder = split.remainder;
+      state.remainderOffset = split.remainderOffset;
       state.before = page.before;
-      state.transcript = this.#project(state);
+      state.hasMore = page.hasMore;
+      state.accumulator = this.#accumulator(state.lines);
+      state.entriesTrimmed = false;
+      state.linesTrimmed = false;
+      state.retainAll = true;
+      state.transcript = this.#snapshot(state);
       this.#remember(filePath, state);
-      return older.length > 0;
+      return true;
     } catch {
       return false;
     } finally {
@@ -828,27 +884,26 @@ export class AgentTranscriptReader {
     this.read(source);
     const state = this.#cache.get(filePath);
     if (!state?.hasMore) return false;
-    const cursor = state.before ?? state.lines[0]?.offset;
-    if (cursor === undefined || cursor <= 0) {
-      state.hasMore = false;
-      state.transcript = this.#project(state);
-      return false;
-    }
     let descriptor: number | undefined;
     try {
       const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
       const stat = fs.fstatSync(descriptor);
       if (!stat.isFile() || stat.dev !== state.device || stat.ino !== state.inode) return false;
-      const split = splitAppendedLines(readRange(descriptor, 0, cursor), 0);
-      const known = new Set(state.lines.map((line) => line.offset));
-      const older = split.lines.filter((line) => !known.has(line.offset));
-      state.lines.unshift(...older);
-      state.hasMore = false;
+      const split = splitAppendedLines(readRange(descriptor, 0, state.offset), 0);
+      const previousEntries = state.accumulator.entries.length;
+      state.lines = split.lines;
+      state.remainder = split.remainder;
+      state.remainderOffset = split.remainderOffset;
       state.before = undefined;
-      state.transcript = this.#project(state);
+      state.hasMore = false;
+      state.accumulator = this.#accumulator(state.lines);
+      state.entriesTrimmed = false;
+      state.linesTrimmed = false;
+      state.retainAll = true;
+      state.transcript = this.#snapshot(state);
       this.#remember(filePath, state);
-      return older.length > 0;
+      return state.accumulator.entries.length > previousEntries;
     } catch {
       return false;
     } finally {
@@ -879,6 +934,7 @@ export class AgentTranscriptReader {
         }
       }
     }
+    const accumulator = this.#accumulator(lines);
     const state: CachedTranscript = {
       device: stat.dev,
       inode: stat.ino,
@@ -889,16 +945,41 @@ export class AgentTranscriptReader {
       lines,
       before: page.before,
       hasMore: page.hasMore,
+      accumulator,
+      entriesTrimmed: false,
+      linesTrimmed: false,
+      retainAll: false,
       transcript: { entries: [], truncated: page.hasMore, hasMore: page.hasMore },
     };
-    state.transcript = this.#project(state);
+    state.transcript = this.#snapshot(state);
     return state;
   }
 
-  #project(state: CachedTranscript): FabricAgentTranscript {
+  #accumulator(lines: FabricLogLine[]): TranscriptAccumulator {
     const accumulator = new TranscriptAccumulator();
-    accumulator.append(parsedEvents(state.lines));
-    return accumulator.snapshot(state.hasMore, state.modifiedAt, Number.MAX_SAFE_INTEGER);
+    accumulator.append(parsedEvents(lines));
+    return accumulator;
+  }
+
+  #trimLiveState(state: CachedTranscript): void {
+    if (state.retainAll) return;
+    if (state.accumulator.trim(MAX_LIVE_ENTRIES)) {
+      state.entriesTrimmed = true;
+      state.hasMore = true;
+    }
+    if (state.lines.length <= MAX_LIVE_LINES) return;
+    state.lines.splice(0, state.lines.length - MAX_LIVE_LINES);
+    state.linesTrimmed = true;
+    state.hasMore = true;
+    state.before ??= state.lines[0]?.offset;
+  }
+
+  #snapshot(state: CachedTranscript): FabricAgentTranscript {
+    return state.accumulator.snapshot(
+      state.hasMore || state.entriesTrimmed,
+      state.modifiedAt,
+      Number.MAX_SAFE_INTEGER,
+    );
   }
 
   #remember(filePath: string, state: CachedTranscript): void {

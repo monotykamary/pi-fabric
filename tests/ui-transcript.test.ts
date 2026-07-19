@@ -338,6 +338,40 @@ describe("agent transcript projection", () => {
     expect(reader.read(agent).entries[0]).toMatchObject({ text: "界面 🚀", status: "completed" });
   });
 
+  it("bounds live transcript memory and restores full history on demand", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-transcript-"));
+    temporaryDirectories.push(directory);
+    const logFile = path.join(directory, "events.jsonl");
+    const event = (text: string) =>
+      JSON.stringify({ type: "message_end", message: { role: "assistant", content: text } });
+    fs.writeFileSync(logFile, `${event("initial")}\n`);
+    const agent: FabricUiAgent = {
+      id: "agent-bounded",
+      name: "bounded",
+      status: "running",
+      transport: "process",
+      cwd: directory,
+      logFile,
+    };
+    const reader = new AgentTranscriptReader();
+    reader.read(agent);
+    fs.appendFileSync(
+      logFile,
+      `${Array.from({ length: 1_500 }, (_, index) => event(`live-${index}`)).join("\n")}\n`,
+    );
+
+    const live = reader.read(agent);
+    expect(live.entries).toHaveLength(1_000);
+    expect(live.entries.at(-1)?.text).toBe("live-1499");
+    expect(live.hasMore).toBe(true);
+    expect(reader.loadAll(agent)).toBe(true);
+    const full = reader.read(agent);
+    expect(full.entries).toHaveLength(1_501);
+    expect(full.entries[0]?.text).toBe("initial");
+    expect(full.entries.at(-1)?.text).toBe("live-1499");
+    expect(full.hasMore).toBe(false);
+  });
+
   it("invalidates same-size rewrites and retains cached data across transient failures", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-transcript-"));
     temporaryDirectories.push(directory);
