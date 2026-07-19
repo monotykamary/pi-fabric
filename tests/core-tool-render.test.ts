@@ -152,6 +152,20 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines.join("\n")).toContain("src/");
   });
 
+  it("lets Pi's no-output sentinel inherit the enclosing tool background", () => {
+    const rendered = renderCoreToolBody(
+      audit("bash", {
+        args: { command: "git status --short" },
+        result: { ok: true, output: "(no output)", details: {} },
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    expect(rendered!.lines).toEqual(["(no output)"]);
+  });
+
   it("renders bash warnings, timeout metadata, output limits, and full output details", () => {
     const call = audit("bash", {
       args: { command: "sudo rm -rf build", timeout: 30 },

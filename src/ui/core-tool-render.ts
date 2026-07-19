@@ -1092,8 +1092,11 @@ const renderBash = (
     `${theme.fg("dim", "  ")}${highlightedCommand?.[index + 1] ?? theme.fg("accent", escapeControlChars(line))}`,
   );
   const output = resultOutput(audit)?.replace(/\r?\n$/, "") ?? "";
-  if (!output) {
-    return { lines: [...lines, theme.fg("muted", "No output")], hidden: 0 };
+  if (!output || output === "(no output)") {
+    return {
+      lines: [...lines, theme.fg("muted", output || "No output")],
+      hidden: 0,
+    };
   }
   const raw = output.split("\n");
   const selected = previewEntries(raw, toolLimit(audit, options));
