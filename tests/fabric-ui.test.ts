@@ -230,47 +230,6 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
-  it("nests agent and actor tools with owner metadata and compact code changes", () => {
-    const current = snapshot();
-    current.agents[0]!.toolActivity = [
-      {
-        id: "edit-1",
-        kind: "tool",
-        label: "edit",
-        toolName: "edit",
-        status: "running",
-        args: {
-          path: "src/service.ts",
-          edits: [{ oldText: "const oldValue = 1;", newText: "const newValue = 2;" }],
-        },
-      },
-    ];
-    current.actors[0]!.status = "running";
-    current.actors[0]!.worker = {
-      ...current.agents[0]!,
-      id: "actor-worker-1",
-      name: "actor-worker",
-      toolActivity: [
-        {
-          id: "write-1",
-          kind: "tool",
-          label: "write",
-          toolName: "write",
-          status: "running",
-          args: { path: "src/report.ts", content: "export const report = true;" },
-        },
-      ],
-    };
-
-    const text = new FabricWidget(theme, () => current, 12).render(120).join("\n");
-    expect(text).toContain("edit src/service.ts [agent · pi · agent-1]");
-    expect(text).toContain("- const oldValue = 1;");
-    expect(text).toContain("+ const newValue = 2;");
-    expect(text).toContain("advisor");
-    expect(text).toContain("write src/report.ts [actor · pi · actor-wo]");
-    expect(text).toContain("+ export const report = true;");
-  });
-
   it("leases actor rows through settle and resets them for the next activation", () => {
     const current = snapshot();
     current.runs = [];
@@ -285,19 +244,6 @@ describe("Fabric dynamic UI", () => {
       runner: "pi",
       transport: "process",
       cwd: "/tmp/project",
-      toolActivity: [
-        {
-          id: "actor-edit",
-          kind: "tool",
-          label: "edit",
-          toolName: "edit",
-          status: "running",
-          args: {
-            path: "src/actor.ts",
-            edits: [{ oldText: "before", newText: "after" }],
-          },
-        },
-      ],
     };
     const widget = new FabricWidget(theme, () => current, 8);
     const active = widget.render(100);
@@ -306,7 +252,6 @@ describe("Fabric dynamic UI", () => {
 
     actor.status = "idle";
     actor.worker.status = "completed";
-    actor.worker.toolActivity![0]!.status = "completed";
     const settled = widget.render(100);
     expect(settled).toHaveLength(active.length);
 

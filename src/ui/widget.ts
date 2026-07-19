@@ -1,7 +1,6 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { FabricTranscriptEntry } from "./transcript.js";
 import type { FabricUiWidgetMode } from "../config.js";
 import type {
   FabricActivityRun,
@@ -59,57 +58,10 @@ const totalTokens = (
       0,
     );
 
-const toolHeadline = (entry: FabricTranscriptEntry): string => {
-  const args = entry.args ?? {};
-  const name = entry.toolName ?? entry.label;
-  const path =
-    typeof args.path === "string"
-      ? args.path
-      : typeof args.file_path === "string"
-        ? args.file_path
-        : undefined;
-  const command = typeof args.command === "string" ? args.command.split("\n")[0] : undefined;
-  const pattern = typeof args.pattern === "string" ? args.pattern : undefined;
-  const detail = path ?? command ?? (pattern ? `/${pattern}/` : undefined);
-  return detail ? `${name} ${safeText(detail)}` : name;
-};
-
-const firstChangedLine = (value: unknown): string | undefined => {
-  if (typeof value !== "string") return undefined;
-  return value.split("\n").map((line) => line.trim()).find(Boolean);
-};
-
-const toolChangeLines = (theme: Theme, entry: FabricTranscriptEntry, indent: string): string[] => {
-  const args = entry.args ?? {};
-  const name = (entry.toolName ?? entry.label).toLowerCase();
-  if (name === "edit") {
-    const edits = Array.isArray(args.edits)
-      ? args.edits
-      : typeof args.old_string === "string" && typeof args.new_string === "string"
-        ? [{ oldText: args.old_string, newText: args.new_string }]
-        : [];
-    const first = edits[0];
-    if (!first || typeof first !== "object" || first === null) return [];
-    const record = first as Record<string, unknown>;
-    const removed = firstChangedLine(record.oldText);
-    const added = firstChangedLine(record.newText);
-    return [
-      ...(removed ? [`${indent}${theme.fg("toolDiffRemoved", `- ${safeText(removed)}`)}`] : []),
-      ...(added ? [`${indent}${theme.fg("toolDiffAdded", `+ ${safeText(added)}`)}`] : []),
-    ];
-  }
-  if (name === "write") {
-    const added = firstChangedLine(args.content);
-    return added ? [`${indent}${theme.fg("toolDiffAdded", `+ ${safeText(added)}`)}`] : [];
-  }
-  return [];
-};
-
 const agentLines = (
   theme: Theme,
   agent: FabricUiAgent,
   now: number,
-  owner: "agent" | "actor" = "agent",
 ): string[] => {
   const status = colorStatus(theme, agent.status, statusGlyph(agent.status));
   const activity =
@@ -129,19 +81,11 @@ const agentLines = (
       : undefined,
   ].filter((value): value is string => Boolean(value));
   const indent = agent.parentId ? "    " : "  ";
-  const ownerTag = theme.fg("dim", `[${owner} · ${agent.runner ?? "pi"} · ${agent.id.slice(0, 8)}]`);
-  const lines = [
+  return [
     `${indent}${status} ${safeText(agent.name)}  ${theme.fg("muted", safeText(activity))}${
       metrics.length > 0 ? theme.fg("dim", ` · ${metrics.join(" · ")}`) : ""
     }`,
   ];
-  for (const tool of agent.toolActivity ?? []) {
-    const toolIndent = `${indent}  `;
-    const glyph = colorStatus(theme, tool.status ?? "completed", statusGlyph(tool.status ?? "completed"));
-    lines.push(`${toolIndent}${glyph} ${theme.fg("toolTitle", toolHeadline(tool))} ${ownerTag}`);
-    lines.push(...toolChangeLines(theme, tool, `${toolIndent}  `));
-  }
-  return lines;
 };
 
 export const shouldShowFabricWidget = (
@@ -277,10 +221,10 @@ export class FabricWidget implements Component {
     lines.push(
       ...activeAgents.flatMap((agent) => agentLines(this.theme, agent, snapshot.now)),
       ...activeActorWorkers.flatMap((agent) =>
-        agentLines(this.theme, agent, snapshot.now, "actor"),
+        agentLines(this.theme, agent, snapshot.now),
       ),
       ...terminalActorWorkers.flatMap((agent) =>
-        agentLines(this.theme, agent, snapshot.now, "actor"),
+        agentLines(this.theme, agent, snapshot.now),
       ),
       ...terminalAgents.flatMap((agent) => agentLines(this.theme, agent, snapshot.now)),
     );

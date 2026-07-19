@@ -280,8 +280,8 @@ return Promise.all([
     ).render(120).join("\n");
 
     const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-    expect(visible).toContain("src/child.ts");
-    expect(visible).toContain("[agent · implementor · pi · agent-ch]");
+    expect(visible).toContain("run implement › edit src/child.ts");
+    expect(visible).not.toContain("[agent");
     expect(visible).toContain("const before = 1;");
     expect(visible).toContain("const after = 2;");
   });
@@ -324,9 +324,69 @@ return Promise.all([
     ).render(120).join("\n");
 
     const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-    expect(visible).toContain("Inspecting the routing configuration now.");
-    expect(visible).toContain("[agent · implementor · pi · agent-ch]");
+    expect(visible).toContain("run implement › Inspecting the routing configuration now.");
+    expect(visible).not.toContain("[agent");
     expect(visible).not.toContain("src/private.ts");
+  });
+
+  it("renders parallel agent updates on their parent rows", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "reader" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-reader",
+              name: "reader",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              text: "Reviewing the routing configuration.",
+              tools: [],
+            },
+          },
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "searcher" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-searcher",
+              name: "searcher",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              text: "I will inspect the tests.",
+              tools: [
+                {
+                  id: "child-grep",
+                  kind: "tool",
+                  label: "grep",
+                  toolName: "grep",
+                  status: "running",
+                  args: { pattern: "rolling", path: "tests" },
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showNestedToolCalls: true,
+      },
+      plainTheme,
+    ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
+
+    expect(lines).toContain("◐ run reader › Reviewing the routing configuration.");
+    const searcherLine = lines.find((line) => line.includes("run searcher"));
+    expect(searcherLine).toContain("› grep");
+    expect(lines).not.toContain(expect.stringContaining("I will inspect the tests."));
+    expect(lines.join("\n")).not.toContain("[agent");
   });
 
   it("renders a write body while a multicall remains partial", () => {

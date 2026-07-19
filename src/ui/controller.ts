@@ -12,11 +12,7 @@ import type { ModelSource } from "./model-picker.js";
 import { createDashboardSnapshot } from "./snapshot.js";
 import { isActiveStatus, type FabricDashboardSnapshot, type FabricUiActor, type FabricUiAgent } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
-import {
-  AgentTranscriptReader,
-  recentTranscriptTools,
-  type FabricTranscriptSource,
-} from "./transcript.js";
+import { AgentTranscriptReader, type FabricTranscriptSource } from "./transcript.js";
 
 const WIDGET_ID = "pi-fabric";
 const ACTIVITY_REFRESH_MS = 100;
@@ -352,31 +348,6 @@ export class FabricUiController {
       : this.#agentTranscriptSource(target);
   }
 
-  #enrichToolActivity(snapshot: FabricDashboardSnapshot): void {
-    if (!this.state.config.ui.showNestedToolCalls) return;
-    const currentRunId = snapshot.runs[0]?.id;
-    const maxOwners = Math.max(1, (this.state.config.ui.maxRows ?? 6) * 2);
-    let owners = 0;
-    const agents = snapshot.agents
-      .filter((agent) => isActiveStatus(agent.status) || agent.runId === currentRunId)
-      .sort(
-        (left, right) =>
-          Number(isActiveStatus(right.status)) - Number(isActiveStatus(left.status)),
-      );
-    for (const agent of agents) {
-      if (owners++ >= maxOwners) break;
-      const transcript = this.#transcripts.read(this.#agentTranscriptSource(agent));
-      const tools = recentTranscriptTools(transcript, 3);
-      if (tools.length > 0) agent.toolActivity = tools;
-    }
-    for (const actor of snapshot.actors) {
-      if (!actor.worker || owners++ >= maxOwners) continue;
-      const transcript = this.#transcripts.read(this.#agentTranscriptSource(actor.worker));
-      const tools = recentTranscriptTools(transcript, 3);
-      if (tools.length > 0) actor.worker.toolActivity = tools;
-    }
-  }
-
   #refresh(): void {
     this.#lastRefreshAt = performance.now();
     const context = this.#context;
@@ -397,9 +368,6 @@ export class FabricUiController {
         context,
         this.#activityRuns,
       );
-      if (shouldShowFabricWidget(this.#snapshot, this.state.config.ui.widget)) {
-        this.#enrichToolActivity(this.#snapshot);
-      }
       this.#renderWidget(context);
       if (this.#dashboardTui) this.#dashboardTui.requestRender();
       else if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();

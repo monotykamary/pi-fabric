@@ -397,7 +397,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               core: corePreviewContext,
               ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
             });
-            if (nested.length > 0) text += nl + nested.join(nl);
+            if (audit.success !== false && nested[0]) {
+              const firstBreak = text.indexOf(nl);
+              if (firstBreak < 0) text += ` ${nested[0]}`;
+              else text = `${text.slice(0, firstBreak)} ${nested[0]}${text.slice(firstBreak)}`;
+              if (nested.length > 1) text += nl + nested.slice(1).join(nl);
+            }
             return trackRows(
               renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
             );

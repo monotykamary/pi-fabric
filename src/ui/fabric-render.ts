@@ -592,57 +592,41 @@ export const renderNestedAgentToolLines = (
   },
 ): string[] => {
   if (!isFabricNestedToolPreview(audit.preview)) return [];
-  const previewText = safeTerminalText(audit.preview.text ?? "").trim();
-  if (audit.preview.tools.length === 0 && !previewText) return [];
-  const limit = options.expanded ? 8 : 3;
-  const tools = options.showTools === false ? [] : audit.preview.tools.slice(-limit);
-  const metadata = theme.fg(
-    "dim",
-    `[${audit.preview.owner} · ${safeTerminalText(audit.preview.name)} · ${audit.preview.runner ?? "pi"} · ${audit.preview.id.slice(0, 8)}]`,
-  );
-  const lines: string[] = [];
-  if (previewText) {
-    const textLines = previewText.split("\n").map((line) => line.trimEnd()).filter(Boolean);
-    const textLimit = options.expanded ? 12 : 3;
-    const shown = textLines.slice(-textLimit);
-    if (shown.length < textLines.length) {
-      lines.push(theme.fg("dim", `  … ${textLines.length - shown.length} earlier lines`));
-    }
-    for (const line of shown) lines.push(`  ${theme.fg("toolOutput", line)}`);
-    lines.push(`  ${metadata}`);
+  const previewText = truncateOneLine(safeTerminalText(audit.preview.text ?? ""), 240);
+  const tools = options.showTools === false ? [] : audit.preview.tools;
+  const runningTool = tools.slice().reverse().find((entry) => entry.status === "running");
+  const latestTool = tools.at(-1);
+  const selectedTool = runningTool ?? (!previewText ? latestTool : undefined);
+  if (!selectedTool && !previewText) return [];
+
+  const chevron = theme.fg("dim", "›");
+  if (!selectedTool) {
+    return [`${chevron} ${theme.fg("toolOutput", previewText)}`];
   }
-  for (const entry of tools) {
-    const nestedAudit = transcriptToolAudit(entry);
-    const depth = Math.max(0, entry.depth ?? 0);
-    const padding = `  ${"  ".repeat(depth)}`;
-    const glyph = entry.status === "running"
-      ? theme.fg("warning", "◐")
-      : entry.status === "failed"
-        ? theme.fg("error", "✗")
-        : theme.fg("dim", "›");
-    lines.push(
-      `${padding}${glyph} ${nestedCallTitle(
-        nestedAudit,
-        theme,
-        options.invalidate,
-        options.core,
-      )} ${metadata}`,
-    );
-    const codeChange = nestedAudit.tool === "edit" || nestedAudit.tool === "write";
-    if (!options.core || (entry.status !== "running" && !options.expanded && !codeChange)) {
-      continue;
-    }
-    const body = renderCoreToolBody(nestedAudit, theme, {
-      cwd: options.core.cwd,
-      settings: options.core.settings,
-      expanded: options.expanded,
-      maxLines: options.expanded ? 24 : 6,
-      ...(options.invalidate ? { invalidate: options.invalidate } : {}),
-    });
-    if (!body) continue;
-    for (const row of body.lines) lines.push(`${padding}  ${row}`);
-    if (body.hidden > 0) lines.push(theme.fg("dim", `${padding}  … ${body.hidden} more lines`));
+
+  const nestedAudit = transcriptToolAudit(selectedTool);
+  const lines = [
+    `${chevron} ${nestedCallTitle(
+      nestedAudit,
+      theme,
+      options.invalidate,
+      options.core,
+    )}`,
+  ];
+  const codeChange = nestedAudit.tool === "edit" || nestedAudit.tool === "write";
+  if (!options.core || (selectedTool.status !== "running" && !options.expanded && !codeChange)) {
+    return lines;
   }
+  const body = renderCoreToolBody(nestedAudit, theme, {
+    cwd: options.core.cwd,
+    settings: options.core.settings,
+    expanded: options.expanded,
+    maxLines: options.expanded ? 24 : 6,
+    ...(options.invalidate ? { invalidate: options.invalidate } : {}),
+  });
+  if (!body) return lines;
+  for (const row of body.lines) lines.push(`  ${row}`);
+  if (body.hidden > 0) lines.push(theme.fg("dim", `  … ${body.hidden} more lines`));
   return lines;
 };
 
@@ -701,12 +685,20 @@ export const renderFabricMulticallPartial = (
         : audit.success === false
           ? theme.fg("error", "✗")
           : theme.fg("dim", "›");
-    rows.push(`${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`);
+    const nested = renderNestedAgentToolLines(audit, theme, {
+      expanded: input.expanded,
+      showTools: input.showNestedToolCalls,
+      core: input.core,
+      ...(invalidate ? { invalidate } : {}),
+    });
+    let callRow = `${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`;
     if (audit.success === false && audit.error) {
-      for (const line of safeTerminalText(audit.error).split("\n")) {
-        rows.push(`  ${theme.fg("error", line)}`);
-      }
-    } else if (input.preview?.auditIndex === index) {
+      callRow += ` ${theme.fg("dim", "›")} ${theme.fg("error", truncateOneLine(safeTerminalText(audit.error), 240))}`;
+    } else if (nested[0]) {
+      callRow += ` ${nested[0]}`;
+    }
+    rows.push(callRow);
+    if (audit.success !== false && input.preview?.auditIndex === index) {
       for (const line of input.preview.body.split("\n")) rows.push(`  ${line}`);
       if (input.preview.hidden > 0) {
         rows.push(
@@ -717,14 +709,7 @@ export const renderFabricMulticallPartial = (
         );
       }
     }
-    rows.push(
-      ...renderNestedAgentToolLines(audit, theme, {
-        expanded: input.expanded,
-        showTools: input.showNestedToolCalls,
-        core: input.core,
-        ...(invalidate ? { invalidate } : {}),
-      }),
-    );
+    if (audit.success !== false && nested.length > 1) rows.push(...nested.slice(1));
   }
 
   const callsHidden = input.audits.length - callsShown.length;

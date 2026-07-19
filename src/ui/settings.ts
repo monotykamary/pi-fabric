@@ -813,7 +813,7 @@ export const buildFabricSettingsItems = (
             "Nested tool calls",
             config.ui.showNestedToolCalls ? "true" : "false",
             {
-              description: "Show child-agent and actor tool activity in the Fabric card and widget.",
+              description: "Show child-agent and actor tool activity in Fabric tool-call previews.",
               values: BOOLEANS,
             },
           ),
