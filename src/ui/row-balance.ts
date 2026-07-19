@@ -15,6 +15,10 @@ export interface ResultRowBalance {
 export type LimitRenderer = (limit: number, width: number) => string[];
 
 export class HiddenRowBorrowingComponent implements Component {
+  #cachedWidth: number | undefined;
+  #cachedDeficit: number | undefined;
+  #cachedRows: string[] | undefined;
+
   constructor(
     private readonly baseLimit: number,
     private readonly maxLimit: number,
@@ -23,25 +27,40 @@ export class HiddenRowBorrowingComponent implements Component {
   ) {}
 
   render(width: number): string[] {
-    const base = this.renderLimit(this.baseLimit, width);
     const deficit = resultRowDeficit(this.balance, width);
-    if (deficit <= 0 || this.maxLimit <= this.baseLimit) return base;
+    if (
+      this.#cachedWidth === width &&
+      this.#cachedDeficit === deficit &&
+      this.#cachedRows
+    ) {
+      return this.#cachedRows;
+    }
 
+    const base = this.renderLimit(this.baseLimit, width);
     let best = base;
-    let bestGrowth = 0;
-    for (let limit = this.baseLimit + 1; limit <= this.maxLimit; limit++) {
-      const candidate = this.renderLimit(limit, width);
-      const growth = candidate.length - base.length;
-      if (growth > deficit) break;
-      if (growth >= bestGrowth) {
-        best = candidate;
-        bestGrowth = growth;
+    if (deficit > 0 && this.maxLimit > this.baseLimit) {
+      let bestGrowth = 0;
+      for (let limit = this.baseLimit + 1; limit <= this.maxLimit; limit++) {
+        const candidate = this.renderLimit(limit, width);
+        const growth = candidate.length - base.length;
+        if (growth > deficit) break;
+        if (growth >= bestGrowth) {
+          best = candidate;
+          bestGrowth = growth;
+        }
       }
     }
+    this.#cachedWidth = width;
+    this.#cachedDeficit = deficit;
+    this.#cachedRows = best;
     return best;
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.#cachedWidth = undefined;
+    this.#cachedDeficit = undefined;
+    this.#cachedRows = undefined;
+  }
 }
 
 export const observeResultRows = (

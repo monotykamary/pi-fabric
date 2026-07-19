@@ -509,6 +509,41 @@ b`, theme)).toBe("");
     expect(visibleWidth(line)).toBe(20);
   });
 
+  it("reuses bounded row layout until its width or content is invalidated", () => {
+    const component = renderBoundedLines(["x".repeat(40)]);
+    const first = component.render(20);
+
+    expect(component.render(20)).toBe(first);
+    expect(component.render(24)).not.toBe(first);
+
+    const resized = component.render(20);
+    expect(resized).not.toBe(first);
+    component.invalidate?.();
+    expect(component.render(20)).not.toBe(resized);
+  });
+
+  it("reuses stable source-row balancing between animation frames", () => {
+    const balance: ResultRowBalance = {};
+    let renders = 0;
+    const code = new HiddenRowBorrowingComponent(
+      2,
+      4,
+      (limit) => {
+        renders++;
+        return Array.from({ length: limit }, (_, index) => "code-" + (index + 1));
+      },
+      balance,
+    );
+
+    const first = code.render(80);
+    expect(code.render(80)).toBe(first);
+    expect(renders).toBe(1);
+
+    code.invalidate();
+    expect(code.render(80)).not.toBe(first);
+    expect(renders).toBe(2);
+  });
+
   it("replaces lost result rows with hidden source lines", () => {
     const balance: ResultRowBalance = {};
     const partial = observeResultRows(

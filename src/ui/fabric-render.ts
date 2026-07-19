@@ -61,6 +61,9 @@ const truncateBoundedLine = (line: string, width: number): string => {
 };
 
 class BoundedLineList implements Component {
+  #cachedWidth: number | undefined;
+  #cachedRows: string[] | undefined;
+
   constructor(
     readonly lines: string[],
     private readonly theme?: Theme,
@@ -68,7 +71,8 @@ class BoundedLineList implements Component {
   ) {}
 
   render(width: number): string[] {
-    if (width <= 0) return [];
+    if (this.#cachedWidth === width && this.#cachedRows) return this.#cachedRows;
+    if (width <= 0) return this.#cache(width, []);
     const diffBackground = createDiffBackgroundResolver(this.theme, this.diffIntensity);
     const rows: string[] = [];
     for (const rawLine of this.lines) {
@@ -92,10 +96,19 @@ class BoundedLineList implements Component {
         rows.push(applyDiffBackground(row + padding, diffBackground(kind)));
       }
     }
-    return rows;
+    return this.#cache(width, rows);
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.#cachedWidth = undefined;
+    this.#cachedRows = undefined;
+  }
+
+  #cache(width: number, rows: string[]): string[] {
+    this.#cachedWidth = width;
+    this.#cachedRows = rows;
+    return rows;
+  }
 }
 
 export const renderBoundedLines = (
