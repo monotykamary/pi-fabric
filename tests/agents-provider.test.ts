@@ -127,6 +127,7 @@ describe("AgentsProvider runner support", () => {
       status: "completed",
       runner: "pi",
       owner: "agent",
+      text: "fake worker complete",
       tools: expect.any(Array),
     });
   });

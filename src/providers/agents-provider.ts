@@ -520,11 +520,15 @@ const attachAgentToolPreview = (
   context: FabricInvocationContext,
   enabled: () => boolean,
 ): void => {
-  if (!enabled() || !context.attachPreview) return;
+  if (!context.attachPreview) return;
   try {
     const status = manager.status(id);
-    const log = manager.readLog(id, { lines: 240 });
-    const transcript = projectAgentLogLines(log.events, log.hasMore);
+    const tools = enabled()
+      ? (() => {
+          const log = manager.readLog(id, { lines: 240 });
+          return recentTranscriptTools(projectAgentLogLines(log.events, log.hasMore), 3);
+        })()
+      : [];
     context.attachPreview({
       kind: "fabric-agent-tools",
       id: status.id,
@@ -532,7 +536,10 @@ const attachAgentToolPreview = (
       status: status.status,
       runner: status.runner,
       owner: status.actorId ? "actor" : "agent",
-      tools: recentTranscriptTools(transcript, 3),
+      ...("text" in status && status.text
+        ? { text: Array.from(status.text).slice(-2_000).join("") }
+        : {}),
+      tools,
     });
   } catch {
     // The worker may settle and clean up between status and log reads.

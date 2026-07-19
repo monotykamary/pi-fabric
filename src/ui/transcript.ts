@@ -48,6 +48,7 @@ export interface FabricNestedToolPreview {
   status: string;
   runner?: "pi" | "claude";
   owner: "agent" | "actor";
+  text?: string;
   tools: FabricTranscriptEntry[];
 }
 
@@ -757,6 +758,7 @@ export const isFabricNestedToolPreview = (value: unknown): value is FabricNested
     record?.kind === "fabric-agent-tools" &&
     typeof record.id === "string" &&
     typeof record.name === "string" &&
+    (record.text === undefined || typeof record.text === "string") &&
     Array.isArray(record.tools)
   );
 };

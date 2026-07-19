@@ -586,18 +586,31 @@ export const renderNestedAgentToolLines = (
   theme: Theme,
   options: {
     expanded: boolean;
+    showTools?: boolean | undefined;
     core?: { cwd: string; settings: CodePreviewSettings } | undefined;
     invalidate?: (() => void) | undefined;
   },
 ): string[] => {
-  if (!isFabricNestedToolPreview(audit.preview) || audit.preview.tools.length === 0) return [];
+  if (!isFabricNestedToolPreview(audit.preview)) return [];
+  const previewText = safeTerminalText(audit.preview.text ?? "").trim();
+  if (audit.preview.tools.length === 0 && !previewText) return [];
   const limit = options.expanded ? 8 : 3;
-  const tools = audit.preview.tools.slice(-limit);
+  const tools = options.showTools === false ? [] : audit.preview.tools.slice(-limit);
   const metadata = theme.fg(
     "dim",
     `[${audit.preview.owner} · ${safeTerminalText(audit.preview.name)} · ${audit.preview.runner ?? "pi"} · ${audit.preview.id.slice(0, 8)}]`,
   );
   const lines: string[] = [];
+  if (previewText) {
+    const textLines = previewText.split("\n").map((line) => line.trimEnd()).filter(Boolean);
+    const textLimit = options.expanded ? 12 : 3;
+    const shown = textLines.slice(-textLimit);
+    if (shown.length < textLines.length) {
+      lines.push(theme.fg("dim", `  … ${textLines.length - shown.length} earlier lines`));
+    }
+    for (const line of shown) lines.push(`  ${theme.fg("toolOutput", line)}`);
+    lines.push(`  ${metadata}`);
+  }
   for (const entry of tools) {
     const nestedAudit = transcriptToolAudit(entry);
     const depth = Math.max(0, entry.depth ?? 0);
@@ -704,15 +717,14 @@ export const renderFabricMulticallPartial = (
         );
       }
     }
-    if (input.showNestedToolCalls) {
-      rows.push(
-        ...renderNestedAgentToolLines(audit, theme, {
-          expanded: input.expanded,
-          core: input.core,
-          ...(invalidate ? { invalidate } : {}),
-        }),
-      );
-    }
+    rows.push(
+      ...renderNestedAgentToolLines(audit, theme, {
+        expanded: input.expanded,
+        showTools: input.showNestedToolCalls,
+        core: input.core,
+        ...(invalidate ? { invalidate } : {}),
+      }),
+    );
   }
 
   const callsHidden = input.audits.length - callsShown.length;

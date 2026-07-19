@@ -286,6 +286,49 @@ return Promise.all([
     expect(visible).toContain("const after = 2;");
   });
 
+  it("renders agent narrative while nested tool rows are hidden", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { task: "implement" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-child-123",
+              name: "implementor",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              text: "Inspecting the routing configuration now.",
+              tools: [
+                {
+                  id: "child-read",
+                  kind: "tool",
+                  label: "read",
+                  toolName: "read",
+                  status: "running",
+                  args: { path: "src/private.ts" },
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showNestedToolCalls: false,
+      },
+      plainTheme,
+    ).render(120).join("\n");
+
+    const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+    expect(visible).toContain("Inspecting the routing configuration now.");
+    expect(visible).toContain("[agent · implementor · pi · agent-ch]");
+    expect(visible).not.toContain("src/private.ts");
+  });
+
   it("renders a write body while a multicall remains partial", () => {
     const lines = renderFabricMulticallPartial(
       {
