@@ -169,6 +169,27 @@ export function languageFromPath(filePath: string | undefined): string | undefin
   return byExt && byExt in bundledLanguages ? byExt : undefined;
 }
 
+/** Configure highlighting without loading Shiki until the first code preview needs it. */
+export function configureHighlighting(theme: string, syntaxEnabled = true): void {
+  currentTheme = theme;
+  enabled = syntaxEnabled;
+  if (!enabled) {
+    initVersion++;
+    initializingTheme = undefined;
+    highlighter?.dispose();
+    highlighter = undefined;
+    highlighterGeneration++;
+    loadedLanguages.clear();
+    pendingLanguages.clear();
+    languageLoadCallbacks.clear();
+    highlighterReadyCallbacks.clear();
+    renderCache.clear();
+    renderCacheChars = 0;
+    return;
+  }
+  if (highlighter || initializingTheme) void initHighlighting(theme, syntaxEnabled);
+}
+
 /** Initialize (or reinitialize) the shared shiki highlighter. Fire-and-forget safe. */
 export async function initHighlighting(theme: string, syntaxEnabled = true): Promise<void> {
   currentTheme = theme;

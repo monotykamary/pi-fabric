@@ -24,17 +24,35 @@ import {
   type FabricRegistryActivityEvent,
 } from "./core/action-registry.js";
 import { ApprovalController } from "./core/approval-controller.js";
-import { guestTypeDeclarations } from "./runtime/guest-types.js";
 import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
 } from "./runtime/orchestration.js";
-import {
+import type {
   QuickJsRuntime,
-  type FabricSandboxResult,
-  type FabricSandboxTerminationReason,
+  FabricSandboxResult,
+  FabricSandboxTerminationReason,
 } from "./runtime/quickjs-runtime.js";
-import { typeCheckFabricCode, type FabricTypeError } from "./runtime/type-checker.js";
+import type { FabricTypeError } from "./runtime/type-checker.js";
+
+let runtimeDependencies:
+  | Promise<{
+      QuickJsRuntime: typeof import("./runtime/quickjs-runtime.js").QuickJsRuntime;
+      typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
+      guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
+    }>
+  | undefined;
+
+const loadRuntimeDependencies = () =>
+  runtimeDependencies ??= Promise.all([
+    import("./runtime/quickjs-runtime.js"),
+    import("./runtime/type-checker.js"),
+    import("./runtime/guest-types.js"),
+  ]).then(([runtime, checker, guest]) => ({
+    QuickJsRuntime: runtime.QuickJsRuntime,
+    typeCheckFabricCode: checker.typeCheckFabricCode,
+    guestTypeDeclarations: guest.guestTypeDeclarations,
+  }));
 
 const executionOutcomeFromTermination = (
   reason: FabricSandboxTerminationReason,
@@ -86,7 +104,7 @@ export interface FabricExecutionOptions {
 }
 
 export class FabricExecutionService {
-  readonly #runtime = new QuickJsRuntime();
+  #runtime: QuickJsRuntime | undefined;
 
   constructor(
     readonly registry: ActionRegistry,
@@ -99,11 +117,12 @@ export class FabricExecutionService {
     const startedAt = performance.now();
     const traceRecorder = new FabricExecutionTraceRecorder();
     this.activity?.start(options.parentToolCallId, options.display);
+    const dependencies = await loadRuntimeDependencies();
     const effectiveFullCodeMode =
       this.config.fullCodeMode || this.config.schema.mode === "enforce";
-    const checked = typeCheckFabricCode(
+    const checked = dependencies.typeCheckFabricCode(
       options.code,
-      guestTypeDeclarations(effectiveFullCodeMode),
+      dependencies.guestTypeDeclarations(effectiveFullCodeMode),
     );
     if (checked.errors.length > 0) {
       this.activity?.finish(options.parentToolCallId, false, "Type checking failed");
@@ -190,11 +209,6 @@ export class FabricExecutionService {
     const update = (message: string): void => {
       currentProgress = message;
       emit();
-    };
-    const updateImmediate = (message: string): void => {
-      currentProgress = message;
-      emitPending = true;
-      flushEmit();
     };
     const observeInvocation = (event: FabricRegistryActivityEvent): void => {
       if (this.activity) {
@@ -308,6 +322,7 @@ export class FabricExecutionService {
     };
     let sandboxResult: FabricSandboxResult;
     try {
+      this.#runtime ??= new dependencies.QuickJsRuntime();
       sandboxResult = await this.#runtime.execute(
         options.code,
         async (ref, args, runtimeSignal) => {
@@ -419,7 +434,7 @@ export class FabricExecutionService {
                 "fabric.workflow.progress",
                 args,
                 runtimeSignal,
-                () => updateImmediate(String(args.message ?? "Working")),
+                () => update(String(args.message ?? "Working")),
               );
             case "fabric.$configure":
               return traceAttempt(
@@ -454,7 +469,7 @@ export class FabricExecutionService {
                   };
                   setStage("invoke");
                   const activityPhase = this.activity?.phase(options.parentToolCallId, phaseInput);
-                  updateImmediate(`Phase: ${name}`);
+                  update(`Phase: ${name}`);
                   return {
                     name,
                     index: phaseIndex,

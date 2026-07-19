@@ -53,7 +53,7 @@ import {
   type FabricWriteBinding,
   type FabricWritePreview,
 } from "./ui/fabric-render.js";
-import { highlightCode, initHighlighting } from "./ui/highlight.js";
+import { configureHighlighting, highlightCode } from "./ui/highlight.js";
 import {
   coreToolPreviewEnabled,
   coreToolRendererEnabled,
@@ -127,7 +127,7 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const codePreviewSettings = await loadCodePreviewSettings();
-  void initHighlighting(
+  configureHighlighting(
     codePreviewSettings.shikiTheme,
     codePreviewSettings.syntaxHighlighting,
   );
@@ -842,7 +842,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         codePreviewSettings,
         await loadCodePreviewSettings(context.cwd, projectTrusted),
       );
-      void initHighlighting(
+      configureHighlighting(
         codePreviewSettings.shikiTheme,
         codePreviewSettings.syntaxHighlighting,
       );

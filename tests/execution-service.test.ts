@@ -110,6 +110,31 @@ describe("FabricExecutionService", () => {
     expect(immediatePartials.length).toBeGreaterThan(1);
   });
 
+  it("coalesces rapid workflow phase updates through the same debounce", async () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.ui.nestedToolDebounceMs = 10_000;
+    const partials: Array<{ phases: string[] }> = [];
+    const result = await new FabricExecutionService(new ActionRegistry(), config).execute({
+      code: `
+for (let index = 0; index < 50; index++) {
+  await phase("Phase " + index);
+}
+return "done";
+`,
+      signal: undefined,
+      parentToolCallId: "phase-debounce",
+      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
+      onPartial(snapshot) {
+        partials.push(snapshot);
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.phases).toHaveLength(50);
+    expect(partials).toHaveLength(1);
+    expect(partials[0]?.phases).toHaveLength(50);
+  });
+
   it("attaches image blocks to the audit for a single nested image read", async () => {
     const cwd = process.cwd();
     const registry = new ActionRegistry();
