@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { SubagentManager } from "../src/subagents/manager.js";
 import type { SubagentRunRecord, SubagentRunResult } from "../src/subagents/types.js";
@@ -15,6 +15,26 @@ afterEach(async () => {
 });
 
 describe("SubagentManager", () => {
+  it("notifies and releases UI subscribers", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+    const listener = vi.fn();
+    const unsubscribe = manager.subscribeUi(listener);
+
+    const result = await manager.run({ task: "Observe state", transport: "process" });
+    expect(listener).toHaveBeenCalled();
+
+    unsubscribe();
+    const beforeCleanup = listener.mock.calls.length;
+    await manager.cleanup(result.id);
+    expect(listener).toHaveBeenCalledTimes(beforeCleanup);
+  });
+
   it("runs a worker through the direct process transport", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);

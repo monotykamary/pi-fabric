@@ -125,7 +125,6 @@ export class FabricDashboard implements Component, Focusable {
   private transcriptFollowing = true;
   private readonly transcriptMarkdown = new Map<string, { text: string; component: Markdown }>();
   private readonly highlightInvalidate = (): void => this.tui.requestRender();
-  private readonly refreshTimer: NodeJS.Timeout;
   private mode:
     | "overview"
     | "detail"
@@ -237,8 +236,6 @@ export class FabricDashboard implements Component, Focusable {
     this.onImportActor = options.onImportActor;
     this.onExportActor = options.onExportActor;
     this.onRemoveGlobalActor = options.onRemoveGlobalActor;
-    this.refreshTimer = setInterval(() => this.tui.requestRender(), 500);
-    this.refreshTimer.unref();
   }
 
   handleInput(data: string): void {
@@ -688,7 +685,6 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   dispose(): void {
-    clearInterval(this.refreshTimer);
     this.picker = undefined;
     this.editor = undefined;
     this.editorActorName = undefined;

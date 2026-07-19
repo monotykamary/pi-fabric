@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
+import fs, { type FSWatcher } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { FabricAgentRunner, FabricMeshConfig, FabricSubagentTransport } from "../config.js";
@@ -72,6 +72,7 @@ const HOST_EVENTS = new Set<FabricActorHostEvent>([
   "session_compact",
 ]);
 const MESSAGE_HISTORY_LIMIT = 100;
+const MESH_WATCH_RECONCILE_MS = 2_000;
 
 const atomicWrite = (filePath: string, value: unknown): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
@@ -136,8 +137,11 @@ export class ActorManager {
   readonly #registryPath: string;
   readonly #persistent: boolean;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
-  readonly #pollTimer: NodeJS.Timeout;
+  readonly #listeners = new Set<() => void>();
+  #pollTimer: NodeJS.Timeout | undefined;
+  #meshWatcher: FSWatcher | undefined;
   #meshOffset: number;
+  #meshPollScheduled = false;
   #polling = false;
   #closing = false;
   // Stop-the-world gate armed by haltAll() (ESC): while true, host-event and
@@ -166,11 +170,12 @@ export class ActorManager {
     this.#registryPath = path.join(this.#actorRoot, "actors.json");
     if (this.#persistent && meshConfig.enabled) this.#loadActors();
     this.#meshOffset = mesh.latestOffset();
-    this.#pollTimer = setInterval(
-      () => void this.#pollMesh().catch(() => undefined),
-      meshConfig.actorPollMs,
-    );
-    this.#pollTimer.unref();
+    this.#startMeshMonitor();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   async create(request: FabricActorRequest): Promise<FabricActorInfo> {
@@ -528,7 +533,10 @@ export class ActorManager {
     if (this.#closing || !this.meshConfig.enabled) return 0;
     // The user sending a new message ends a stop-the-world halt: lift the gate
     // before dispatching so input-subscribed actors receive this event.
-    if (event === "input") this.#halted = false;
+    if (event === "input" && this.#halted) {
+      this.#halted = false;
+      this.#scheduleMeshPoll();
+    }
     if (this.#halted) return 0;
     let delivered = 0;
     for (const actor of this.#actors.values()) {
@@ -624,6 +632,7 @@ export class ActorManager {
     await actor.drain?.catch(() => undefined);
     const retainedRunId = actor.lastRunId;
     this.#actors.delete(id);
+    this.#emitChange();
     fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true });
     this.#saveActors();
     await this.mesh.delete({ key: this.#presenceKey(actor.id) }).catch(() => ({ deleted: false }));
@@ -634,7 +643,11 @@ export class ActorManager {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
-    clearInterval(this.#pollTimer);
+    if (this.#pollTimer) clearInterval(this.#pollTimer);
+    this.#pollTimer = undefined;
+    this.#meshWatcher?.close();
+    this.#meshWatcher = undefined;
+    this.#listeners.clear();
     if (this.#persistent) {
       for (const actor of this.#actors.values()) {
         actor.abortController?.abort();
@@ -941,6 +954,46 @@ export class ActorManager {
     };
   }
 
+  #startMeshMonitor(): void {
+    if (!this.meshConfig.enabled || this.#closing) return;
+    try {
+      const watcher = fs.watch(this.mesh.root, { persistent: false }, (_event, filename) => {
+        if (filename !== null && path.basename(filename.toString()) !== "events.jsonl") return;
+        this.#scheduleMeshPoll();
+      });
+      this.#meshWatcher = watcher;
+      watcher.on("error", () => this.#fallBackToMeshPolling(watcher));
+      this.#startPollTimer(Math.max(MESH_WATCH_RECONCILE_MS, this.meshConfig.actorPollMs));
+    } catch {
+      this.#startPollTimer(this.meshConfig.actorPollMs);
+    }
+    this.#scheduleMeshPoll();
+  }
+
+  #fallBackToMeshPolling(watcher: FSWatcher): void {
+    if (this.#closing || this.#meshWatcher !== watcher) return;
+    watcher.close();
+    this.#meshWatcher = undefined;
+    this.#startPollTimer(this.meshConfig.actorPollMs);
+    this.#scheduleMeshPoll();
+  }
+
+  #startPollTimer(delay: number): void {
+    if (this.#pollTimer) clearInterval(this.#pollTimer);
+    this.#pollTimer = setInterval(() => this.#scheduleMeshPoll(), delay);
+    this.#pollTimer.unref();
+  }
+
+  #scheduleMeshPoll(): void {
+    if (this.#meshPollScheduled || this.#closing || !this.meshConfig.enabled) return;
+    this.#meshPollScheduled = true;
+    queueMicrotask(() => {
+      this.#meshPollScheduled = false;
+      if (this.#closing) return;
+      void this.#pollMesh().catch(() => undefined);
+    });
+  }
+
   async #pollMesh(): Promise<void> {
     if (this.#polling || this.#closing || !this.meshConfig.enabled) return;
     // Stop-the-world: do not consume mesh events while halted, so deferred
@@ -1096,6 +1149,7 @@ export class ActorManager {
   }
 
   async #publishPresence(actor: ManagedActor): Promise<void> {
+    this.#emitChange();
     this.#saveActors();
     await this.mesh
       .put({
@@ -1104,6 +1158,16 @@ export class ActorManager {
         identity: this.identity,
       })
       .catch(() => undefined);
+  }
+
+  #emitChange(): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener();
+      } catch {
+        // UI observers must not interrupt actor state transitions.
+      }
+    }
   }
 
   #presenceKey(actorId: string): string {

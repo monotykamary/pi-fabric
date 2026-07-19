@@ -359,6 +359,19 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(false);
   });
 
+  it("does not redraw an unchanged dashboard on its own", async () => {
+    vi.useFakeTimers();
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn());
+    try {
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(tui.requestRender).not.toHaveBeenCalled();
+    } finally {
+      dashboard.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps dashboard and widget agents in creation order", () => {
     const current = snapshot();
     current.actors = [];

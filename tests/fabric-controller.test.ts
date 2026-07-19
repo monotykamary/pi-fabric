@@ -1,6 +1,7 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import type { FabricActivityRun } from "../src/activity/types.js";
 import type { FabricState } from "../src/fabric-state.js";
 import { FabricUiController } from "../src/ui/controller.js";
 import type { FabricDashboard } from "../src/ui/dashboard.js";
@@ -54,7 +55,7 @@ const stubState = () =>
       messageId: "message-1",
       routed: "main",
     }),
-    subagents: { list: vi.fn(() => []) },
+    subagents: { list: vi.fn(() => []), subscribeUi: vi.fn(() => () => {}) },
     actors: {
       list: vi.fn(() => [stubActor]),
       messages: vi.fn(() => []),
@@ -64,6 +65,7 @@ const stubState = () =>
       setEvents: vi.fn().mockResolvedValue(undefined),
       setInstructions: vi.fn().mockResolvedValue(undefined),
       clearMessages: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => () => {}),
     },
     globalActors: {
       list: vi.fn(() => []),
@@ -153,6 +155,83 @@ describe("FabricUiController dashboard wiring", () => {
     } finally {
       dashboard?.dispose();
       controller.stop();
+    }
+  });
+
+  it("does not refresh settled sessions on an idle timer", async () => {
+    vi.useFakeTimers();
+    const state = stubState();
+    state.config.ui.refreshMs = 100;
+    vi.mocked(state.actors.list).mockReturnValue([]);
+    const settledRun: FabricActivityRun = {
+      id: "settled-run",
+      name: "Large settled run",
+      status: "completed",
+      phases: [],
+      calls: Array.from({ length: 1_000 }, (_, index) => ({
+        id: `call-${index}`,
+        ref: "pi.read",
+        label: "pi.read",
+        kind: "tool",
+        status: "completed",
+        startedAt: index,
+        updatedAt: index,
+        finishedAt: index,
+      })),
+      items: [],
+      events: [],
+      startedAt: 0,
+      updatedAt: 1_000,
+      finishedAt: 1_000,
+    };
+    vi.mocked(state.activity.runs).mockReturnValue([settledRun]);
+    const context = {
+      mode: "tui",
+      ui: { setWidget: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const controller = new FabricUiController(state);
+    try {
+      controller.start(context);
+      expect(state.activity.runs).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(state.activity.runs).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("wakes settled UI state when actors or detached agents change", async () => {
+    vi.useFakeTimers();
+    const state = stubState();
+    state.config.ui.refreshMs = 500;
+    let onActor = (): void => {};
+    let onSubagent = (): void => {};
+    vi.mocked(state.actors.subscribe).mockImplementation((listener) => {
+      onActor = listener;
+      return () => {};
+    });
+    vi.mocked(state.subagents.subscribeUi).mockImplementation((listener) => {
+      onSubagent = listener;
+      return () => {};
+    });
+    const context = {
+      mode: "tui",
+      ui: { setWidget: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const controller = new FabricUiController(state);
+    try {
+      controller.start(context);
+      expect(state.activity.runs).toHaveBeenCalledTimes(1);
+      onActor();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.activity.runs).toHaveBeenCalledTimes(2);
+      onSubagent();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.activity.runs).toHaveBeenCalledTimes(3);
+    } finally {
+      controller.stop();
+      vi.useRealTimers();
     }
   });
 

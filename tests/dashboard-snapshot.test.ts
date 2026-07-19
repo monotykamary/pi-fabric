@@ -156,6 +156,27 @@ describe("dashboard snapshot agent ownership", () => {
     });
   });
 
+  it("skips unrelated tool history when resolving agent ownership", () => {
+    const parent = record("agent-parent");
+    const launch = run("launch-run", "agents.spawn", parent.id, 100, "investigate");
+    const unrelated = [1, 2].map((index) => ({
+      id: `tool-${index}`,
+      get ref(): string {
+        throw new Error("unrelated tool call entered agent-link sorting");
+      },
+      label: "pi.read",
+      kind: "tool" as const,
+      status: "completed" as const,
+      startedAt: index,
+      updatedAt: index,
+    }));
+    launch.calls.push(...unrelated);
+
+    const snapshot = createDashboardSnapshot(fakeState([launch], [parent]), []);
+
+    expect(snapshot.agents[0]).toMatchObject({ runId: "launch-run", phaseId: "investigate" });
+  });
+
   it("includes recursively nested agents with inherited ownership", () => {
     const grandchild = { ...record("agent-grandchild"), logFile: "/tmp/agent-grandchild/events.jsonl" };
     const child = record("agent-child", [grandchild]);

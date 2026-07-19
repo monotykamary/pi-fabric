@@ -57,14 +57,18 @@ export const createDashboardSnapshot = (
     typeof state.subagents.listForUi === "function"
       ? state.subagents.listForUi()
       : state.subagents.list();
-  const agentLinks = runs
-    .flatMap((run) => run.calls.map((call) => ({ runId: run.id, call })))
-    .sort((left, right) => {
-      const leftLaunch = left.call.ref === "agents.spawn" || left.call.ref === "agents.run";
-      const rightLaunch = right.call.ref === "agents.spawn" || right.call.ref === "agents.run";
-      if (leftLaunch !== rightLaunch) return leftLaunch ? -1 : 1;
-      return left.call.startedAt - right.call.startedAt;
-    });
+  const agentLinks: Array<{ runId: string; call: FabricActivityRun["calls"][number] }> = [];
+  for (const run of runs) {
+    for (const call of run.calls) {
+      if (call.entityId) agentLinks.push({ runId: run.id, call });
+    }
+  }
+  agentLinks.sort((left, right) => {
+    const leftLaunch = left.call.ref === "agents.spawn" || left.call.ref === "agents.run";
+    const rightLaunch = right.call.ref === "agents.spawn" || right.call.ref === "agents.run";
+    if (leftLaunch !== rightLaunch) return leftLaunch ? -1 : 1;
+    return left.call.startedAt - right.call.startedAt;
+  });
   const agentFromRecord = (
     record: SubagentRunRecord | SubagentHandleInfo,
     parentId?: string,

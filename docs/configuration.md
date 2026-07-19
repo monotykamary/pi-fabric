@@ -235,7 +235,7 @@ Mesh data defaults to `<project>/.pi/fabric/mesh`. Set `mesh.root` to a relative
 - `"project"` (default) keeps a single shared actor registry at `.pi/fabric/mesh/actors/`, so actors survive `/new` and carry over between Pi sessions in the same project without redefinition. One Pi process should own the actor registry at a time — concurrent sessions sharing a registry may race on writes.
 - `"session"` isolates actors per Pi session (under `.pi/fabric/mesh/actors/<sessionId>/`). Use this when you run concurrent Pi sessions in one project and want each to own its own actors.
 
-With project scope, one Pi process should own the actor registry at a time — concurrent sessions sharing a registry may race on writes. Mesh topics and shared state are always project-scoped.
+With project scope, one Pi process should own the actor registry at a time — concurrent sessions sharing a registry may race on writes. Mesh topics and shared state are always project-scoped. Actor relay normally follows filesystem change notifications; `mesh.actorPollMs` controls the fallback interval when those notifications are unavailable. A low-frequency reconciliation check protects against coalesced or missed filesystem events.
 
 ## Compaction
 

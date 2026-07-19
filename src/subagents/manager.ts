@@ -256,6 +256,7 @@ export class SubagentManager {
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
+  readonly #uiListeners = new Set<() => void>();
   #budgetSummaryCache: { at: number; value: FabricBudgetSummary } | undefined;
   #claudeModelsCache: { at: number; value: ClaudeModelInfo[] } | undefined;
   #uiListRevision = 0;
@@ -309,6 +310,11 @@ export class SubagentManager {
       new HerdrTransport(),
     ];
     this.#transports = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
+  }
+
+  subscribeUi(listener: () => void): () => void {
+    this.#uiListeners.add(listener);
+    return () => this.#uiListeners.delete(listener);
   }
 
   async spawn(request: SubagentRunRequest, signal?: AbortSignal): Promise<SubagentHandleInfo> {
@@ -691,6 +697,7 @@ export class SubagentManager {
 
   async close(): Promise<void> {
     this.#closing = true;
+    this.#uiListeners.clear();
     const running = [...this.#runs.values()].filter((managed) => !managed.settled);
     await Promise.allSettled(running.map((managed) => this.stop(managed.id)));
     await Promise.allSettled(running.map((managed) => this.#waitForTransportExit(managed)));
@@ -889,6 +896,13 @@ export class SubagentManager {
   #invalidateUiList(): void {
     this.#uiListRevision++;
     this.#uiListCache = undefined;
+    for (const listener of this.#uiListeners) {
+      try {
+        listener();
+      } catch {
+        // UI observers must not interrupt subagent state transitions.
+      }
+    }
   }
 
   #requireRun(id: string): ManagedSubagent {

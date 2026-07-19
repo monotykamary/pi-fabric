@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
@@ -59,6 +59,32 @@ afterEach(async () => {
 });
 
 describe("ActorManager", () => {
+  it("does not poll an unchanged mesh at the configured active interval", async () => {
+    const { mesh } = setup();
+    const tail = vi.spyOn(mesh, "tail");
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(tail).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies and releases actor state subscribers", async () => {
+    const { actors } = setup();
+    const listener = vi.fn();
+    const unsubscribe = actors.subscribe(listener);
+    const actor = await actors.create({ name: "observer", instructions: "Observe." });
+    expect(listener).toHaveBeenCalled();
+
+    const beforeUpdate = listener.mock.calls.length;
+    await actors.setModel(actor.id, "provider/model");
+    expect(listener.mock.calls.length).toBeGreaterThan(beforeUpdate);
+
+    unsubscribe();
+    const beforeUnsubscribedUpdate = listener.mock.calls.length;
+    await actors.setThinking(actor.id, "high");
+    expect(listener).toHaveBeenCalledTimes(beforeUnsubscribedUpdate);
+  });
+
   it("keeps a persistent actor identity and processes direct mailbox messages", async () => {
     const { actors, subagents } = setup();
     const actor = await actors.create({
@@ -599,6 +625,29 @@ describe("ActorManager", () => {
 
     // After resume, host-event dispatch is delivered again.
     expect(actors.dispatchHostEvent("agent_settled", { turn: 4 })).toBe(1);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+  });
+
+  it("delivers mesh messages deferred by stop-the-world immediately after resume", async () => {
+    const { actors, mesh } = setup();
+    const actor = await actors.create({
+      name: "mesh-watcher",
+      instructions: "Watch mesh messages.",
+      responseMode: "text",
+    });
+    actors.haltAll();
+    await mesh.publish({
+      topic: "fabric.steer",
+      kind: "steer",
+      from: { id: "peer", name: "peer", kind: "agent" },
+      to: actor.id,
+      text: "deferred while halted",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(actors.messages(actor.id)).toEqual([]);
+
+    actors.dispatchHostEvent("input", { resumed: true });
+    await waitFor(() => actors.messages(actor.id).some((message) => message.direction === "in"));
     await waitFor(() => actors.status(actor.id).status === "idle");
   });
 

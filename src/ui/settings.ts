@@ -908,14 +908,14 @@ export const buildFabricSettingsItems = (
               "Maximum events returned by a single mesh read.",
             ),
           }),
-          setting("mesh.actorPollMs", "Actor poll interval", formatMs(config.mesh.actorPollMs), {
-            description: "Polling interval for actor mailbox checks.",
+          setting("mesh.actorPollMs", "Actor poll fallback", formatMs(config.mesh.actorPollMs), {
+            description: "Fallback polling interval when mesh filesystem notifications are unavailable.",
             submenu: numericSubmenu(
               theme,
               [50, 100, 250, 500, 1000],
               formatMs,
-              "Actor poll interval",
-              "Polling interval for actor mailbox checks.",
+              "Actor poll fallback",
+              "Fallback polling interval when mesh filesystem notifications are unavailable.",
             ),
           }),
           setting("mesh.actorQueueLimit", "Actor queue limit", String(config.mesh.actorQueueLimit), {

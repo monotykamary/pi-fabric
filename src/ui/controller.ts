@@ -20,7 +20,7 @@ import {
 
 const WIDGET_ID = "pi-fabric";
 const ACTIVITY_REFRESH_MS = 100;
-const IDLE_REFRESH_MS = 2_000;
+const IDLE_DASHBOARD_REFRESH_MS = 2_000;
 
 const emptySnapshot = (): FabricDashboardSnapshot => {
   const now = Date.now();
@@ -55,8 +55,11 @@ export class FabricUiController {
   #meshOffset = 0;
   #timer: NodeJS.Timeout | undefined;
   #activityUnsubscribe: (() => void) | undefined;
+  #actorUnsubscribe: (() => void) | undefined;
+  #subagentUnsubscribe: (() => void) | undefined;
   #scheduledRefresh: NodeJS.Timeout | undefined;
   #widgetTui: TUI | undefined;
+  #dashboardTui: TUI | undefined;
   #widgetMounted = false;
   #widget: FabricWidget | undefined;
   #lastRefreshErrorAt = 0;
@@ -80,6 +83,8 @@ export class FabricUiController {
       this.#meshOffset = this.state.mesh.latestOffset();
     }
     this.#activityUnsubscribe = this.state.activity.subscribe(() => this.#scheduleRefresh());
+    this.#actorUnsubscribe = this.state.actors.subscribe(() => this.#scheduleRefresh());
+    this.#subagentUnsubscribe = this.state.subagents.subscribeUi(() => this.#scheduleRefresh());
     this.#refresh();
     this.#schedulePoll();
   }
@@ -92,11 +97,16 @@ export class FabricUiController {
     this.#widget = undefined;
     this.#activityUnsubscribe?.();
     this.#activityUnsubscribe = undefined;
+    this.#actorUnsubscribe?.();
+    this.#actorUnsubscribe = undefined;
+    this.#subagentUnsubscribe?.();
+    this.#subagentUnsubscribe = undefined;
     if (this.#context?.mode === "tui") {
       this.#context.ui.setWidget(WIDGET_ID, undefined);
     }
     this.#context = undefined;
     this.#widgetTui = undefined;
+    this.#dashboardTui = undefined;
     this.#widgetMounted = false;
     this.#events = [];
     this.#meshOffset = 0;
@@ -226,8 +236,9 @@ export class FabricUiController {
     this.#schedulePoll(true);
     try {
       await context.ui.custom<void>(
-        (tui, theme, _keybindings, done) =>
-          new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
+        (tui, theme, _keybindings, done) => {
+          this.#dashboardTui = tui;
+          return new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
             modelSource,
             ...(this.codePreviewSettings
               ? { codePreviewSettings: this.codePreviewSettings }
@@ -250,7 +261,8 @@ export class FabricUiController {
             onImportActor,
             onExportActor,
             onRemoveGlobalActor,
-          }),
+          });
+        },
         {
           overlay: true,
           overlayOptions: {
@@ -264,6 +276,7 @@ export class FabricUiController {
       );
     } finally {
       this.#dashboardOpen = false;
+      this.#dashboardTui = undefined;
       this.#schedulePoll(true);
     }
   }
@@ -286,10 +299,10 @@ export class FabricUiController {
           isActiveStatus(actor.status) ||
           Boolean(actor.worker && isActiveStatus(actor.worker.status)),
       );
-    const delay =
-      this.#dashboardOpen || active
-        ? this.state.config.ui.refreshMs
-        : Math.max(this.state.config.ui.refreshMs, IDLE_REFRESH_MS);
+    if (!this.#dashboardOpen && !active) return;
+    const delay = active
+      ? this.state.config.ui.refreshMs
+      : Math.max(this.state.config.ui.refreshMs, IDLE_DASHBOARD_REFRESH_MS);
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#refresh();
@@ -390,7 +403,8 @@ export class FabricUiController {
         this.#enrichToolActivity(this.#snapshot);
       }
       this.#renderWidget(context);
-      if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();
+      if (this.#dashboardTui) this.#dashboardTui.requestRender();
+      else if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();
     } catch (error) {
       const now = Date.now();
       if (now - this.#lastRefreshErrorAt >= 10_000) {
