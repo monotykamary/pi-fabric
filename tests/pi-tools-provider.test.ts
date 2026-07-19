@@ -131,7 +131,7 @@ describe("PiToolsProvider lifecycle", () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-write-preview-"));
     const before = `const value = 1;
 `;
-    const after = `export const value = "${"x".repeat(20_000)}";
+    const after = `export const value = "é${"x".repeat(20_000)}";
 `;
     try {
       fs.writeFileSync(path.join(cwd, "example.ts"), before);
@@ -151,6 +151,7 @@ describe("PiToolsProvider lifecycle", () => {
 
       expect(result).toMatchObject({ ok: true, details: null });
       expect(result.output).toContain("Successfully wrote");
+      expect(result.output).toContain(`${Buffer.byteLength(after, "utf8")} bytes`);
       expect(fs.readFileSync(path.join(cwd, "example.ts"), "utf8")).toBe(after);
       expect(String(audits[0]?.args?.content ?? "").length).toBeLessThan(after.length);
       expect(audits[0]?.preview).toMatchObject({

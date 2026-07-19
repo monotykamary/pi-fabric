@@ -83,13 +83,15 @@ const deriveDiffBg = (
   return `\x1b[48;2;${Math.round(base.r + (fgRgb.r - base.r) * intensity)};${Math.round(base.g + (fgRgb.g - base.g) * intensity)};${Math.round(base.b + (fgRgb.b - base.b) * intensity)}m`;
 };
 
+const PRINTABLE_ASCII_RE = /^[\x20-\x7e]*$/;
+const TRUNCATION_SAFE_RE = /^(?:[\x20-\x7e\t]|\x1b\[[0-9;]*m)*$/;
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export const wrapDiffAnsiToWidth = (
   text: string,
   width: number,
-  maxRows: number,
-  continuationPrefix: string,
+  maxRows = 3,
+  continuationPrefix = "",
 ): string[] => {
   if (width <= 0) return [""];
   const rows: string[] = [];
@@ -100,12 +102,9 @@ export const wrapDiffAnsiToWidth = (
   const continuationWidth = visibleWidth(continuationPrefix);
 
   const pushRow = (): boolean => {
-    rows.push(truncateToWidth(row, width, ""));
+    rows.push(truncateWrappedRow(row, rowWidth, width));
     if (rows.length >= maxRows) {
-      const last = rows.at(-1) ?? "";
-      if (visibleWidth(last) >= width && width > 1) {
-        rows[rows.length - 1] = truncateToWidth(last, width - 1, "") + "›";
-      }
+      truncateLastRow(rows, width);
       return false;
     }
     row = continuationPrefix ? state + continuationPrefix : state;
@@ -121,27 +120,53 @@ export const wrapDiffAnsiToWidth = (
       index += ansi.sequence.length;
       continue;
     }
+
     const nextAnsi = text.indexOf("\x1b", index);
     const plainEnd = nextAnsi >= 0 ? nextAnsi : text.length;
     const plain = text.slice(index, plainEnd);
-    for (const { segment } of segmenter.segment(plain)) {
-      const segmentWidth = visibleWidth(segment);
-      if (rowWidth > 0 && rowWidth + segmentWidth > width && !pushRow()) return rows;
-      if (segmentWidth > width && rowWidth === 0) {
-        const clipped = truncateToWidth(segment, width, "");
-        if (clipped) {
-          row += clipped;
-          rowWidth += visibleWidth(clipped);
+    const remainingWidth = width - rowWidth;
+    if (plain.length <= remainingWidth && PRINTABLE_ASCII_RE.test(plain)) {
+      row += plain;
+      rowWidth += plain.length;
+    } else {
+      for (const { segment } of segmenter.segment(plain)) {
+        const segmentWidth = visibleWidth(segment);
+        if (rowWidth > 0 && rowWidth + segmentWidth > width && !pushRow()) return rows;
+        if (rowWidth > 0 && rowWidth + segmentWidth > width) {
+          row = state;
+          rowWidth = 0;
         }
-        if (!pushRow()) return rows;
-        continue;
+        if (segmentWidth > width && rowWidth === 0) {
+          const clipped = truncateToWidth(segment, width, "");
+          if (clipped) {
+            row += clipped;
+            rowWidth += visibleWidth(clipped);
+          }
+          if (!pushRow()) return rows;
+          continue;
+        }
+        row += segment;
+        rowWidth += segmentWidth;
       }
-      row += segment;
-      rowWidth += segmentWidth;
     }
     index = plainEnd;
   }
-  rows.push(truncateToWidth(row, width, ""));
+
+  rows.push(truncateWrappedRow(row, rowWidth, width));
+  if (rows.length > maxRows) return truncateLastRow(rows.slice(0, maxRows), width);
+  return rows;
+};
+
+const truncateWrappedRow = (row: string, rowWidth: number, width: number): string => {
+  if (rowWidth <= width && TRUNCATION_SAFE_RE.test(row)) return row;
+  return truncateToWidth(row, width, "");
+};
+
+const truncateLastRow = (rows: string[], width: number): string[] => {
+  const last = rows.at(-1) ?? "";
+  if (visibleWidth(last) >= width && width > 1) {
+    rows[rows.length - 1] = truncateToWidth(last, width - 1, "") + "›";
+  }
   return rows;
 };
 

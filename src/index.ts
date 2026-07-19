@@ -126,7 +126,7 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 };
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
-  const codePreviewSettings = await loadCodePreviewSettings(process.cwd());
+  const codePreviewSettings = await loadCodePreviewSettings();
   void initHighlighting(
     codePreviewSettings.shikiTheme,
     codePreviewSettings.syntaxHighlighting,
@@ -150,7 +150,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     return {};
   });
 
-  const fabricTool = withCodePreviewShell(
+  const createFabricTool = () => withCodePreviewShell(
     defineTool({
       name: "fabric_exec",
       label: "Fabric",
@@ -735,7 +735,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         };
       },
     }),
+    { mode: codePreviewSettings.toolCallBackground },
   );
+  const fabricTool = createFabricTool();
   const fabricToolLifecycle = new FabricToolLifecycle(
     () => ownsFabricToolSource(pi.getAllTools(), FABRIC_EXTENSION_ENTRY_PATH),
     () => state.initialized ? state.execution.authorizer : undefined,
@@ -833,6 +835,21 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("session_start", async (_event, context) => {
     fabricUi.stop();
     suspendToolCapture();
+    const projectTrusted =
+      typeof context.isProjectTrusted === "function" ? context.isProjectTrusted() : true;
+    try {
+      Object.assign(
+        codePreviewSettings,
+        await loadCodePreviewSettings(context.cwd, projectTrusted),
+      );
+      void initHighlighting(
+        codePreviewSettings.shikiTheme,
+        codePreviewSettings.syntaxHighlighting,
+      );
+      Object.assign(fabricTool, createFabricTool());
+    } catch (error) {
+      console.warn("[pi-fabric] Failed to refresh code preview settings.", error);
+    }
     await state.initialize(context);
     applyFabricMode();
     fabricUi.start(context);

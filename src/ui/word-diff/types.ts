@@ -1,3 +1,4 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 export type DiffWordEmphasis = "all" | "smart" | "off";
 
 export type WordChangeRanges = {

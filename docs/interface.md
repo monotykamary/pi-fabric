@@ -4,7 +4,7 @@ Fabric's UI is built on the public `pi-code-previews` cooperative shell and a ge
 
 ## Code previews
 
-`fabric_exec` inherits the user's border/background mode, collapsed-result behavior, error styling, and tool-call timing without taking ownership of Pi's built-in tool renderers. Its renderer adds a numbered TypeScript preview, live phase/call activity, and compact phase/nested-call summaries.
+`fabric_exec` inherits the user's border/background mode, collapsed-result behavior, error styling, and tool-call timing without taking ownership of Pi's built-in tool renderers. Its renderer adds a numbered TypeScript preview, live phase/call activity, and compact phase/nested-call summaries. Fabric refreshes these settings at session start and applies the project-local layer only when Pi marks the project as trusted.
 
 Nested `pi.read`/`pi.bash`/`pi.grep`/`pi.find`/`pi.ls`/`pi.write`/`pi.edit` calls use the same preview settings and presentation vocabulary as `pi-code-previews`: offset-aware read gutters, syntax and secret warnings, grouped/highlighted grep matches, iconized path trees, bash warnings and output metadata, and proposed/applied edit or overwrite diffs with compact context, line gutters, full-row backgrounds, and word-level emphasis. Large inputs fall back to escaped plain text with an explicit notice. The same layer renders in-memory Activity call details. Rich call data is retained only in current-session renderer/activity state; durable traces keep their existing bounded confidentiality projection.
 

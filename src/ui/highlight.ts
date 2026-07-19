@@ -145,7 +145,7 @@ const escapeControlChars = (text: string): string =>
   text
     .replace(/\x1b/g, "␛")
     .replace(/\r/g, "␍")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "�");
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "�");
 
 const normalizeLanguage = (language: string): string => {
   const normalized = language.toLowerCase();
@@ -258,7 +258,8 @@ const cacheRendered = (key: string, value: string[]): void => {
   renderCache.set(key, { value, size });
   renderCacheChars += size;
   while (renderCache.size > CACHE_LIMIT || renderCacheChars > CACHE_CHAR_LIMIT) {
-    const first = renderCache.keys().next().value as string;
+    const first = renderCache.keys().next().value;
+    if (first === undefined) break;
     const cached = renderCache.get(first);
     if (cached) renderCacheChars -= cached.size;
     renderCache.delete(first);

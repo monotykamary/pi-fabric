@@ -1,11 +1,11 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import {
   changedLineTokens,
   indexedChangedLine,
-  matchChangedLines,
   normalizedChangedContent,
-  type ChangedLinePair,
   type IndexedChangedLine,
-} from "./line-matching.js";
+} from "./changed-line.js";
+import { matchChangedLines, type ChangedLinePair } from "./line-matching.js";
 import type { DiffWordEmphasis } from "./types.js";
 import {
   isAddedDiffLine,

@@ -8,7 +8,18 @@ import { bundledLanguages, bundledThemesInfo } from "shiki";
 import type { FabricRenderAudit } from "./fabric-render.js";
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { markDiffLine } from "./diff-background.js";
+import { countContentLines, selectPreviewTextLines } from "./preview-lines.js";
+import {
+  shouldSkipWriteDiffBytes,
+  shouldSkipWriteDiffComplexity,
+} from "../providers/write-preview.js";
 import { changedLineEmphasis } from "./word-diff/line-emphasis.js";
+import {
+  diffLineNumberWidth,
+  formatDiffLineNumber,
+  parseDiffLine,
+  type ParsedDiffLine,
+} from "./word-diff/parse.js";
 
 export interface CoreToolRenderOptions {
   cwd: string;
@@ -26,12 +37,6 @@ export interface RenderedCoreToolBody {
 type PreviewEntry<T> =
   | { kind: "line"; line: T; index: number }
   | { kind: "hidden"; hidden: number };
-
-type ParsedDiffLine = {
-  kind: "+" | "-" | " ";
-  lineNumber: string;
-  content: string;
-};
 
 type DiffSummary = {
   additions: number;
@@ -83,16 +88,9 @@ const escapeControlChars = (text: string): string =>
   text
     .replace(/\x1b/g, "␛")
     .replace(/\r/g, "␍")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "�");
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, "�");
 
 const expandTabs = (text: string): string => text.replace(/\t/g, "    ");
-
-const countContentLines = (content: string): number => {
-  if (!content) return 0;
-  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const withoutTerminator = normalized.endsWith("\n") ? normalized.slice(0, -1) : normalized;
-  return withoutTerminator.split("\n").length;
-};
 
 const formatBytes = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`;
@@ -152,6 +150,16 @@ const nativeTruncated = (audit: FabricRenderAudit): boolean => {
   return truncation?.truncated === true || audit.resultTruncated === true;
 };
 
+const READ_CONTINUATION_NOTICE =
+  /^\[(?:Showing lines \d+-\d+ of \d+(?: \([^)]+\))?|\d+ more lines in file)\. Use offset=\d+ to continue\.\]$/;
+
+const splitReadContinuationNotice = (text: string): { content: string; notice?: string } => {
+  const match = /^(.*?)(?:\r?\n){2}(\[[^\r\n]+\])$/s.exec(text);
+  const notice = match?.[2];
+  if (!match || !notice || !READ_CONTINUATION_NOTICE.test(notice)) return { content: text };
+  return { content: match[1] ?? "", notice: notice.slice(1, -1) };
+};
+
 const toolLimit = (audit: FabricRenderAudit, options: CoreToolRenderOptions): number => {
   if (options.expanded) return options.maxLines;
   const configured = (() => {
@@ -203,12 +211,6 @@ const previewEntries = <T>(lines: T[], limit: number): { entries: PreviewEntry<T
     ],
     hidden,
   };
-};
-
-const trimPreviewLines = (content: string): string[] => {
-  const lines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
-  return lines;
 };
 
 const secretWarnings = (source: string): string[] => {
@@ -287,10 +289,11 @@ const renderContent = (
   options: CoreToolRenderOptions,
   config: { lineNumbers?: boolean; firstLine?: number; emptyLabel: string; skipLabel: string },
 ): RenderedCoreToolBody => {
-  const lines = trimPreviewLines(content);
-  if (lines.length === 0) return { lines: [theme.fg("muted", config.emptyLabel)], hidden: 0 };
   const limit = toolLimit({ ref: "", tool: config.lineNumbers ? "read" : "write" }, options);
-  const selected = previewEntries(lines, limit);
+  const selected = selectPreviewTextLines(content, limit);
+  if (selected.total === 0) {
+    return { lines: [theme.fg("muted", config.emptyLabel)], hidden: 0 };
+  }
   const skipHighlight =
     options.settings.syntaxHighlighting && content.length > MAX_HIGHLIGHT_CHARS;
   const language =
@@ -307,7 +310,7 @@ const renderContent = (
     const highlighted = language
       ? highlightCode(normalized.join("\n"), language, options.invalidate)
       : null;
-    const width = String((config.firstLine ?? 1) + lines.length - 1).length;
+    const width = String((config.firstLine ?? 1) + selected.total - 1).length;
     for (let index = 0; index < chunk.length; index++) {
       const entry = chunk[index]!;
       const text = highlighted?.[index] ?? theme.fg("toolOutput", normalized[index] || " ");
@@ -470,16 +473,6 @@ const wordEmphasisFor = (
   return emphasis;
 };
 
-const parseDiffLine = (line: string): ParsedDiffLine | null => {
-  const match = line.match(/^([+\- ])(\s*\d*)\s(.*)$/);
-  if (!match) return null;
-  return {
-    kind: match[1] as ParsedDiffLine["kind"],
-    lineNumber: match[2] ?? "",
-    content: match[3] ?? "",
-  };
-};
-
 const summarizeDiff = (diff: string): DiffSummary => {
   let additions = 0;
   let removals = 0;
@@ -587,7 +580,7 @@ const renderDiff = (
   const shown = sourceLines.slice(0, limit);
   const hidden = sourceLines.length - shown.length;
   const parsed = shown.map(parseDiffLine);
-  const width = parsed.reduce((max, line) => Math.max(max, line?.lineNumber.trim().length ?? 0), 0);
+  const width = diffLineNumberWidth(parsed);
   const skipHighlight =
     options.settings.syntaxHighlighting && diff.length > MAX_HIGHLIGHT_CHARS;
   const language =
@@ -622,8 +615,17 @@ const renderDiff = (
     const line = parsed[index];
     if (!line) {
       const safe = escapeControlChars(raw);
-      if (safe.trim() === "...") return theme.fg("muted", "      --- unchanged lines hidden ---");
-      if (safe.trim().startsWith("@@")) return theme.fg("accent", theme.bold(safe));
+      const trimmed = safe.trim();
+      if (trimmed === "...") return theme.fg("muted", "      --- unchanged lines hidden ---");
+      if (trimmed.startsWith("@@")) return theme.fg("accent", theme.bold(safe));
+      if (
+        trimmed.startsWith("---") ||
+        trimmed.startsWith("+++") ||
+        trimmed.startsWith("diff ") ||
+        trimmed.startsWith("index ")
+      ) {
+        return theme.fg("muted", safe);
+      }
       return theme.fg("toolDiffContext", safe);
     }
     let content = highlighted[index] ?? theme.fg("toolOutput", escapeControlChars(expandTabs(line.content)) || " ");
@@ -636,7 +638,7 @@ const renderDiff = (
         "\x1b[49m",
       );
     }
-    const lineNumber = line.lineNumber.trim().padStart(width, " ");
+    const lineNumber = formatDiffLineNumber(line.lineNumber, width);
     if (line.kind === "+") {
       return markDiffLine("add", `${theme.fg("toolDiffAdded", `+${lineNumber} │ `)}${content}`);
     }
@@ -660,14 +662,22 @@ const renderRead = (
   const output = resultOutput(audit);
   if (output === undefined) return null;
   const filePath = argString(audit, "path") ?? "";
-  if (/^Read image file/i.test(output)) return { lines: [theme.fg("dim", escapeControlChars(output))], hidden: 0 };
-  const rendered = renderContent(output, filePath, theme, options, {
+  if (/^Read image file/i.test(output)) {
+    return { lines: [theme.fg("dim", escapeControlChars(output))], hidden: 0 };
+  }
+  const truncated = nativeTruncated(audit);
+  const { content, notice } =
+    truncated || typeof audit.args?.limit === "number"
+      ? splitReadContinuationNotice(output)
+      : { content: output };
+  const rendered = renderContent(content, filePath, theme, options, {
     lineNumbers: options.settings.readLineNumbers,
     firstLine: Math.max(1, Math.floor(numberOf(audit.args?.offset) ?? 1)),
     emptyLabel: "Empty file",
     skipLabel: "Syntax highlighting skipped for large file",
   });
-  if (nativeTruncated(audit)) rendered.lines.push(theme.fg("muted", "╰─ Output truncated by read"));
+  if (notice) rendered.lines.push(theme.fg("muted", `╰─ ${notice}`));
+  else if (truncated) rendered.lines.push(theme.fg("muted", "╰─ Output truncated by read"));
   return rendered;
 };
 
@@ -693,11 +703,39 @@ const renderWrite = (
   const filePath = argString(audit, "path") ?? "";
   const before = getWriteBefore(audit);
   const beforeRecord = recordOf(before);
-  if (audit.success === true && beforeRecord?.kind === "content" && typeof beforeRecord.content === "string") {
-    if (beforeRecord.content === content) {
+  if (audit.success === true && beforeRecord?.kind === "content") {
+    const beforeContent = stringOf(beforeRecord.content);
+    if (beforeContent === undefined) {
+      return {
+        lines: [
+          theme.fg("success", "✓ Write applied") +
+            theme.fg("muted", " · previous content unavailable"),
+        ],
+        hidden: 0,
+      };
+    }
+    if (beforeContent === content) {
       return { lines: [theme.fg("muted", "✓ Write applied · no changes")], hidden: 0 };
     }
-    const diff = createSimpleDiff(beforeRecord.content, content);
+    if (shouldSkipWriteDiffBytes(beforeContent, content)) {
+      return {
+        lines: [
+          theme.fg("success", "✓ Write applied") +
+            theme.fg("muted", " · diff skipped for large content"),
+        ],
+        hidden: 0,
+      };
+    }
+    if (shouldSkipWriteDiffComplexity(beforeContent, content)) {
+      return {
+        lines: [
+          theme.fg("success", "✓ Write applied") +
+            theme.fg("muted", " · diff skipped for complex rewrite"),
+        ],
+        hidden: 0,
+      };
+    }
+    const diff = createSimpleDiff(beforeContent, content);
     const summary = summarizeDiff(diff);
     const header =
       `${theme.fg("success", "✓ Write applied")} ${theme.fg("muted", describeDiffShape(summary))}` +
@@ -819,7 +857,7 @@ const renderGrepLine = (
   audit: FabricRenderAudit,
   theme: Theme,
   options: CoreToolRenderOptions,
-  currentPath: { value: string },
+  currentPath: { value: string; language: string | undefined },
   syntaxHighlight: boolean,
 ): string[] => {
   const match = raw.match(/^(.+):(\d+):\s(.*)$/);
@@ -838,11 +876,11 @@ const renderGrepLine = (
   const lines: string[] = [];
   if (filePath !== currentPath.value) {
     currentPath.value = filePath;
+    currentPath.language = syntaxHighlight ? languageFromPath(filePath) : undefined;
     lines.push(theme.fg("accent", escapeControlChars(filePath)));
   }
-  const language = syntaxHighlight ? languageFromPath(filePath) : undefined;
-  let highlighted = language
-    ? highlightCode(code, language, options.invalidate)?.[0]
+  let highlighted = currentPath.language
+    ? highlightCode(code, currentPath.language, options.invalidate)?.[0]
     : undefined;
   highlighted ??= theme.fg("toolOutput", escapeControlChars(code));
   if (match) {
@@ -878,12 +916,16 @@ const renderGrep = (
   const skipHighlight =
     options.settings.syntaxHighlighting && output.length > MAX_HIGHLIGHT_CHARS;
   const selected = previewEntries(raw, toolLimit(audit, options));
-  const path = { value: "" };
+  const path: { value: string; language: string | undefined } = {
+    value: "",
+    language: undefined,
+  };
   const lines: string[] = [];
   for (const entry of selected.entries) {
     if (entry.kind === "hidden") {
       lines.push(theme.fg("muted", `      --- ${entry.hidden} lines hidden ---`));
       path.value = "";
+      path.language = undefined;
     } else {
       lines.push(
         ...renderGrepLine(

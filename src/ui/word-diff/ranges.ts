@@ -1,3 +1,4 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import type { WordEmphasisToken } from "./tokens.js";
 
 export type TextRange = [number, number];

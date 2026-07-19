@@ -1,3 +1,4 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import {
   mergeRanges,
   mergeRangesByStart,
@@ -9,9 +10,9 @@ import {
 import {
   commonPrefixLength,
   commonSuffixLength,
-  needsBoundarySafeOffsets,
+  rangesAtGraphemeBoundaries,
 } from "./text-boundaries.js";
-import { collectChangedTokenIndexes } from "./token-alignment.js";
+import { collectChangedTokenGaps, type ChangedTokenGap } from "./token-alignment.js";
 import {
   isIdentifierSimilarityPart,
   isIdentifierToken,
@@ -23,25 +24,36 @@ import {
 } from "./tokens.js";
 import type { WordChangeRanges } from "./types.js";
 import { suffixAlignedPairs } from "./alignment.js";
+import { refinedTokenTextRanges } from "./token-text-refinement.js";
 
 const MAX_SOFT_TOKEN_ALIGNMENT_CELLS = 4096;
 const MIN_SOFT_TOKEN_SUBSTITUTION_SIMILARITY = 0.45;
 
 export function refinedRangesForChangedTokens(
+  beforeText: string,
+  beforeTokens: WordEmphasisToken[],
+  afterText: string,
+  afterTokens: WordEmphasisToken[],
+  gaps: ChangedTokenGap[],
+): WordChangeRanges {
+  const ranges = refinedRangesForTokenGaps(beforeTokens, afterTokens, gaps);
+  return {
+    removed: mergeRanges(rangesAtGraphemeBoundaries(beforeText, ranges.removed)),
+    added: mergeRanges(rangesAtGraphemeBoundaries(afterText, ranges.added)),
+  };
+}
+
+function refinedRangesForTokenGaps(
   beforeTokens: WordEmphasisToken[],
   afterTokens: WordEmphasisToken[],
-  removedTokens: Set<number>,
-  addedTokens: Set<number>,
+  gaps: ChangedTokenGap[],
 ): WordChangeRanges {
-  const removedGroups = changedTokenGroups(beforeTokens, removedTokens);
-  const addedGroups = changedTokenGroups(afterTokens, addedTokens);
   const removed: TextRange[] = [];
   const added: TextRange[] = [];
-  const groupCount = Math.max(removedGroups.length, addedGroups.length);
 
-  for (let index = 0; index < groupCount; index++) {
-    const removedGroup = removedGroups[index];
-    const addedGroup = addedGroups[index];
+  for (const gap of gaps) {
+    const removedGroup = nonEmptyTokenGroup(gap.removed);
+    const addedGroup = nonEmptyTokenGroup(gap.added);
     const refined =
       removedGroup && addedGroup
         ? refinedChangedTokenGroupRanges(beforeTokens, removedGroup, afterTokens, addedGroup)
@@ -58,21 +70,8 @@ export function refinedRangesForChangedTokens(
   return { removed: mergeRanges(removed), added: mergeRanges(added) };
 }
 
-function changedTokenGroups(tokens: WordEmphasisToken[], changed: Set<number>): TokenGroup[] {
-  const groups: TokenGroup[] = [];
-  let start: number | undefined;
-  for (let index = 0; index < tokens.length; index++) {
-    if (changed.has(index)) {
-      start ??= index;
-      continue;
-    }
-    if (start !== undefined) {
-      groups.push({ start, end: index });
-      start = undefined;
-    }
-  }
-  if (start !== undefined) groups.push({ start, end: tokens.length });
-  return groups;
+function nonEmptyTokenGroup(group: TokenGroup): TokenGroup | undefined {
+  return group.start < group.end ? group : undefined;
 }
 
 function refinedChangedTokenGroupRanges(
@@ -110,9 +109,22 @@ function refinedTokenPairRanges(
   if (identifierRanges && isNarrowerThanWholeTokens(identifierRanges, beforeToken, afterToken)) {
     if (shouldSuppressUnbalancedIdentifierPartRefinement(beforeToken, afterToken, textRanges))
       return textRanges;
+    if (
+      textRanges &&
+      (textRanges.removed.length === 0 || textRanges.added.length === 0) &&
+      highlightedRangeWidth(textRanges) < highlightedRangeWidth(identifierRanges)
+    )
+      return textRanges;
     return identifierRanges;
   }
   return textRanges ?? identifierRanges;
+}
+
+function highlightedRangeWidth(ranges: WordChangeRanges): number {
+  let width = 0;
+  for (const [start, end] of ranges.removed) width += end - start;
+  for (const [start, end] of ranges.added) width += end - start;
+  return width;
 }
 
 function shouldSuppressUnbalancedIdentifierPartRefinement(
@@ -253,67 +265,18 @@ function refinedIdentifierTokenRanges(
   const afterParts = splitIdentifierToken(afterToken.value, afterToken.start);
   if (beforeParts.length <= 1 && afterParts.length <= 1) return undefined;
 
-  const removed = new Set<number>();
-  const added = new Set<number>();
-  collectChangedTokenIndexes(beforeParts, 0, beforeParts.length, afterParts, 0, afterParts.length, {
-    removed,
-    added,
-  });
-  const ranges = refinedRangesForChangedTokens(beforeParts, afterParts, removed, added);
+  const gaps: ChangedTokenGap[] = [];
+  collectChangedTokenGaps(
+    beforeParts,
+    0,
+    beforeParts.length,
+    afterParts,
+    0,
+    afterParts.length,
+    gaps,
+  );
+  const ranges = refinedRangesForTokenGaps(beforeParts, afterParts, gaps);
   return hasWordChangeRanges(ranges) ? ranges : undefined;
-}
-
-function refinedTokenTextRanges(
-  beforeToken: WordEmphasisToken,
-  afterToken: WordEmphasisToken,
-): WordChangeRanges | undefined {
-  if (beforeToken.value === afterToken.value) return undefined;
-  const prefix = commonPrefixLength(beforeToken.value, afterToken.value);
-  const suffix = commonSuffixLength(beforeToken.value, afterToken.value, prefix);
-  if (!shouldRefineTokenText(beforeToken.value, afterToken.value, prefix, suffix)) return undefined;
-
-  const beforeStart = prefix;
-  const beforeEnd = beforeToken.value.length - suffix;
-  const afterStart = prefix;
-  const afterEnd = afterToken.value.length - suffix;
-  const removed: TextRange[] =
-    beforeStart < beforeEnd
-      ? [[beforeToken.start + beforeStart, beforeToken.start + beforeEnd]]
-      : [];
-  const added: TextRange[] =
-    afterStart < afterEnd ? [[afterToken.start + afterStart, afterToken.start + afterEnd]] : [];
-  return removed.length > 0 || added.length > 0 ? { removed, added } : undefined;
-}
-
-function shouldRefineTokenText(
-  before: string,
-  after: string,
-  prefix: number,
-  suffix: number,
-): boolean {
-  const sharedEdgeLength = prefix + suffix;
-  if (sharedEdgeLength === 0) return false;
-  if (isIdentifierToken(before) && isIdentifierToken(after)) {
-    if (
-      sharedEdgeLength < 2 &&
-      !needsBoundarySafeOffsets(before) &&
-      !needsBoundarySafeOffsets(after)
-    )
-      return false;
-    if (prefix === 0 && suffix > 0) {
-      const beforeChangedLength = before.length - suffix;
-      const afterChangedLength = after.length - suffix;
-      if (
-        beforeChangedLength !== afterChangedLength &&
-        Math.min(beforeChangedLength, afterChangedLength) < 2
-      )
-        return false;
-    }
-    return true;
-  }
-  if (isNumberToken(before) && isNumberToken(after)) return true;
-  if (isMeaningfulOperatorToken(before) && isMeaningfulOperatorToken(after)) return true;
-  return false;
 }
 
 function isNarrowerThanWholeTokens(

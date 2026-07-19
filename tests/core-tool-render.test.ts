@@ -204,6 +204,98 @@ describe("Fabric core tool parity rendering", () => {
     expect(coreToolTitle(read, theme, { cwd: process.cwd(), settings: disabled })).toBeNull();
   });
 
+  it("renders standard unnumbered edit diffs without treating file headers as code", () => {
+    const rendered = renderCoreToolBody(
+      audit("edit", {
+        args: { path: "src/example.ts" },
+        result: {
+          ok: true,
+          output: "edited",
+          details: { diff: "--- a/src/example.ts\n+++ b/src/example.ts\n-old\n+new" },
+        },
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    const text = rendered!.lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+    expect(text).toContain("- │ old");
+    expect(text).toContain("+ │ new");
+    expect(text).toContain("--- a/src/example.ts");
+  });
+
+  it("separates bounded-read continuation metadata from file content", () => {
+    const rendered = renderCoreToolBody(
+      audit("read", {
+        args: { path: "notes.txt", limit: 2 },
+        result: "alpha\nbeta\n\n[Showing lines 1-2 of 8. Use offset=3 to continue.]",
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    const text = rendered!.lines.join("\n");
+    expect(text).toContain("1 │ alpha");
+    expect(text).toContain("2 │ beta");
+    expect(text).toContain("Showing lines 1-2 of 8. Use offset=3 to continue.");
+    expect(text).not.toContain("3 │ [Showing");
+  });
+
+  it("renders blank-only files and escapes C1 controls", () => {
+    const blank = renderCoreToolBody(
+      audit("read", { args: { path: "blank.txt" }, result: "\n\n", success: true }),
+      theme,
+      options(),
+    );
+    const controlled = renderCoreToolBody(
+      audit("read", { args: { path: "control.txt" }, result: "safe\x80text", success: true }),
+      theme,
+      options(),
+    );
+
+    expect(blank!.lines.join("\n")).not.toContain("Empty file");
+    expect(controlled!.lines.join("\n")).toContain("safe�text");
+    expect(controlled!.lines.join("\n")).not.toContain("\x80");
+  });
+
+  it("skips complex write rewrites before invoking the quadratic diff", () => {
+    const before = Array.from({ length: 1_001 }, (_, index) => `before ${index}`).join("\n");
+    const content = Array.from({ length: 1_001 }, (_, index) => `after ${index}`).join("\n");
+    const rendered = renderCoreToolBody(
+      audit("write", {
+        args: { path: "rewrite.txt", content },
+        preview: {
+          details: { codePreviewBeforeWrite: { kind: "content", content: before } },
+          writeBeforeCaptured: true,
+        },
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    expect(rendered!.lines.join("\n")).toContain("diff skipped for complex rewrite");
+  });
+
+  it("reports a redacted prior write snapshot without calling it a new file", () => {
+    const rendered = renderCoreToolBody(
+      audit("write", {
+        args: { path: "existing.txt", content: "after" },
+        preview: {
+          details: { codePreviewBeforeWrite: { kind: "content", byteLength: 6 } },
+          writeBeforeCaptured: true,
+        },
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    expect(rendered!.lines.join("\n")).toContain("previous content unavailable");
+  });
+
   it("does not apply core rendering to another provider with a colliding action name", () => {
     const other = {
       ref: "mcp.files.read",

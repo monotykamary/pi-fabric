@@ -1,3 +1,4 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import type { AddedDiffLine, RemovedDiffLine } from "./parse.js";
 import { expandPreviewTabs } from "./normalize.js";
 import { escapeControlChars } from "./normalize.js";

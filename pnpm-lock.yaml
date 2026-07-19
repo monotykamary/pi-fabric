@@ -18,8 +18,8 @@ importers:
         specifier: ^0.12.3
         version: 0.12.3
       pi-code-previews:
-        specifier: ^0.1.35
-        version: 0.1.35(@earendil-works/pi-coding-agent@0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3))(@earendil-works/pi-tui@0.80.6)
+        specifier: ^0.1.36
+        version: 0.1.36(@earendil-works/pi-coding-agent@0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3))(@earendil-works/pi-tui@0.80.6)
       quickjs-emscripten-core:
         specifier: ^0.32.0
         version: 0.32.0
@@ -1592,8 +1592,8 @@ packages:
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
-  pi-code-previews@0.1.35:
-    resolution: {integrity: sha512-YFTje1RWihQ2KwJ3qM+jCVW5eh84epTqDilDxgIZRNo78TgRzic5hwpNznEksWsVJeEk5+ItOJifyI3rd26rxg==}
+  pi-code-previews@0.1.36:
+    resolution: {integrity: sha512-qzRzxph3S/F03du5wiXBzrm/J27/jXGjz2YPe4SQTj3GjJjCJsvbluPv0sIX4fs1cX6lmTGXl1EZMHzCjUd/tw==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       '@earendil-works/pi-coding-agent': '*'
@@ -3553,7 +3553,7 @@ snapshots:
 
   pathe@2.0.3: {}
 
-  pi-code-previews@0.1.35(@earendil-works/pi-coding-agent@0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3))(@earendil-works/pi-tui@0.80.6):
+  pi-code-previews@0.1.36(@earendil-works/pi-coding-agent@0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3))(@earendil-works/pi-tui@0.80.6):
     dependencies:
       '@earendil-works/pi-coding-agent': 0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@earendil-works/pi-tui': 0.80.6

@@ -1,8 +1,10 @@
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
 import type { WordChangeRanges } from "./types.js";
 import {
   isIdentifierToken,
   isMeaningfulOperatorToken,
   isNumberToken,
+  isSymbolToken,
   wordTokenValues,
 } from "./tokens.js";
 
@@ -35,26 +37,31 @@ function shouldKeepSmartRange(text: string, oppositeSideHasSignal: boolean): boo
   const wordTokens = signalTokens.filter(
     (token) => isIdentifierToken(token) || isNumberToken(token),
   );
-  const hasOperatorSignal = signalTokens.some(isMeaningfulOperatorToken);
+  const hasIntrinsicSignal = signalTokens.some(
+    (token) => isMeaningfulOperatorToken(token) || isSymbolToken(token),
+  );
   if (
     !oppositeSideHasSignal &&
-    !hasOperatorSignal &&
+    !hasIntrinsicSignal &&
     wordTokens.every((token) => LOW_SIGNAL_SYNTAX_TOKENS.has(token))
   )
     return false;
-  if (!oppositeSideHasSignal && !hasOperatorSignal && isWrapperCallNoise(text, wordTokens))
+  if (!oppositeSideHasSignal && !hasIntrinsicSignal && isWrapperCallNoise(text, wordTokens))
     return false;
   return true;
 }
 
 function isSmartSignalToken(token: string): boolean {
-  return isIdentifierToken(token) || isNumberToken(token) || isMeaningfulOperatorToken(token);
+  return (
+    isIdentifierToken(token) ||
+    isNumberToken(token) ||
+    isMeaningfulOperatorToken(token) ||
+    isSymbolToken(token)
+  );
 }
 
 const LOW_SIGNAL_SYNTAX_TOKENS = new Set([
   "as",
-  "async",
-  "await",
   "const",
   "else",
   "export",
@@ -63,7 +70,6 @@ const LOW_SIGNAL_SYNTAX_TOKENS = new Set([
   "if",
   "import",
   "let",
-  "return",
   "var",
 ]);
 

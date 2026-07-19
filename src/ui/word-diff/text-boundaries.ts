@@ -1,50 +1,53 @@
-const MARK_TEXT_PATTERN = /\p{Mark}/u;
-const MARK_CODE_POINT_PATTERN = /^\p{Mark}$/u;
-const SURROGATE_CODE_UNIT_PATTERN = /[\uD800-\uDFFF]/;
+// Adapted from pi-code-previews; see THIRD_PARTY_NOTICES.md.
+const NON_ASCII_TEXT_PATTERN = /[^\x00-\x7F]/;
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+type GraphemeSegments = ReturnType<Intl.Segmenter["segment"]>;
 
-type TextBoundarySegment = { value: string; start: number; end: number };
+export type TextBoundarySegment = { value: string; start: number; end: number };
 
 export function commonPrefixLength(before: string, after: string): number {
-  if (!needsBoundarySafeOffsets(before) && !needsBoundarySafeOffsets(after))
-    return commonPrefixCodeUnitLength(before, after);
-
-  const beforeSegments = textBoundarySegments(before);
-  const afterSegments = textBoundarySegments(after);
-  let index = 0;
-  let prefix = 0;
-  while (index < beforeSegments.length && index < afterSegments.length) {
-    const beforeSegment = segmentAt(beforeSegments, index);
-    const afterSegment = segmentAt(afterSegments, index);
-    if (beforeSegment.value !== afterSegment.value) break;
-    prefix = beforeSegment.end;
-    index++;
-  }
-  return prefix;
+  const prefix = commonPrefixCodeUnitLength(before, after);
+  if (!needsBoundarySafeOffsets(before) && !needsBoundarySafeOffsets(after)) return prefix;
+  return commonGraphemePrefixLength(before, after, prefix);
 }
 
 export function commonSuffixLength(before: string, after: string, prefixLength: number): number {
-  if (!needsBoundarySafeOffsets(before) && !needsBoundarySafeOffsets(after))
-    return commonSuffixCodeUnitLength(before, after, prefixLength);
-
-  const beforeSegments = textBoundarySegments(before);
-  const afterSegments = textBoundarySegments(after);
-  let beforeIndex = beforeSegments.length - 1;
-  let afterIndex = afterSegments.length - 1;
-  let suffix = 0;
-  while (beforeIndex >= 0 && afterIndex >= 0) {
-    const beforeSegment = segmentAt(beforeSegments, beforeIndex);
-    const afterSegment = segmentAt(afterSegments, afterIndex);
-    if (beforeSegment.start < prefixLength || afterSegment.start < prefixLength) break;
-    if (beforeSegment.value !== afterSegment.value) break;
-    suffix += beforeSegment.value.length;
-    beforeIndex--;
-    afterIndex--;
-  }
-  return suffix;
+  const suffix = commonSuffixCodeUnitLength(before, after, prefixLength);
+  if (!needsBoundarySafeOffsets(before) && !needsBoundarySafeOffsets(after)) return suffix;
+  return commonGraphemeSuffixLength(before, after, suffix);
 }
 
 export function needsBoundarySafeOffsets(text: string): boolean {
-  return MARK_TEXT_PATTERN.test(text) || SURROGATE_CODE_UNIT_PATTERN.test(text);
+  return NON_ASCII_TEXT_PATTERN.test(text) || text.includes("\r\n");
+}
+
+export function textBoundarySegments(text: string): TextBoundarySegment[] {
+  if (!needsBoundarySafeOffsets(text)) {
+    return Array.from({ length: text.length }, (_, index) => ({
+      value: text[index] ?? "",
+      start: index,
+      end: index + 1,
+    }));
+  }
+
+  return Array.from(graphemeSegmenter.segment(text), (segment) => ({
+    value: segment.segment,
+    start: segment.index,
+    end: segment.index + segment.segment.length,
+  }));
+}
+
+export function rangesAtGraphemeBoundaries(
+  text: string,
+  ranges: Array<[number, number]>,
+): Array<[number, number]> {
+  if (ranges.length === 0 || !needsBoundarySafeOffsets(text)) return ranges;
+
+  const segmentedText = graphemeSegmenter.segment(text);
+  return ranges.map(([start, end]) => [
+    graphemeStartAtOrBefore(segmentedText, start, text.length),
+    graphemeEndAtOrAfter(segmentedText, end, text.length),
+  ]);
 }
 
 function commonPrefixCodeUnitLength(before: string, after: string): number {
@@ -65,30 +68,75 @@ function commonSuffixCodeUnitLength(before: string, after: string, prefixLength:
   return length;
 }
 
-function textBoundarySegments(text: string): TextBoundarySegment[] {
-  const segments: TextBoundarySegment[] = [];
-  for (let index = 0; index < text.length; ) {
-    const start = index;
-    const codePoint = text.codePointAt(index);
-    if (codePoint === undefined) break;
-    const value = String.fromCodePoint(codePoint);
-    index += value.length;
-
-    if (MARK_CODE_POINT_PATTERN.test(value) && segments.length > 0) {
-      const previous = segments.at(-1);
-      if (previous) {
-        previous.value += value;
-        previous.end = index;
-      }
-    } else {
-      segments.push({ value, start, end: index });
-    }
+function commonGraphemePrefixLength(before: string, after: string, prefix: number): number {
+  const beforeSegments = graphemeSegmenter.segment(before);
+  const afterSegments = graphemeSegmenter.segment(after);
+  let safePrefix = prefix;
+  while (safePrefix > 0) {
+    const beforeBoundary = graphemeBoundaryAtOrBefore(beforeSegments, safePrefix);
+    const afterBoundary = graphemeBoundaryAtOrBefore(afterSegments, safePrefix);
+    const nextPrefix = Math.min(beforeBoundary, afterBoundary);
+    if (nextPrefix === safePrefix) break;
+    safePrefix = nextPrefix;
   }
-  return segments;
+  return safePrefix;
 }
 
-function segmentAt(segments: TextBoundarySegment[], index: number): TextBoundarySegment {
-  const segment = segments[index];
-  if (segment === undefined) throw new RangeError(`Missing text boundary segment ${index}`);
-  return segment;
+function commonGraphemeSuffixLength(before: string, after: string, suffix: number): number {
+  const beforeSegments = graphemeSegmenter.segment(before);
+  const afterSegments = graphemeSegmenter.segment(after);
+  let safeSuffix = suffix;
+  while (safeSuffix > 0) {
+    const beforeStart = before.length - safeSuffix;
+    const afterStart = after.length - safeSuffix;
+    const beforeTrim =
+      graphemeBoundaryAtOrAfter(beforeSegments, beforeStart, before.length) - beforeStart;
+    const afterTrim =
+      graphemeBoundaryAtOrAfter(afterSegments, afterStart, after.length) - afterStart;
+    const trim = Math.max(beforeTrim, afterTrim);
+    if (trim === 0) break;
+    safeSuffix = Math.max(0, safeSuffix - trim);
+  }
+  return safeSuffix;
+}
+
+function graphemeBoundaryAtOrBefore(segments: GraphemeSegments, offset: number): number {
+  if (offset <= 0) return 0;
+  const segment = segments.containing(offset - 1);
+  if (!segment) return offset;
+  const segmentEnd = segment.index + segment.segment.length;
+  return segmentEnd === offset ? offset : segment.index;
+}
+
+function graphemeBoundaryAtOrAfter(
+  segments: GraphemeSegments,
+  offset: number,
+  textLength: number,
+): number {
+  if (offset <= 0) return 0;
+  if (offset >= textLength) return textLength;
+  const segment = segments.containing(offset);
+  if (!segment || segment.index === offset) return offset;
+  return segment.index + segment.segment.length;
+}
+
+function graphemeStartAtOrBefore(
+  segments: GraphemeSegments,
+  offset: number,
+  textLength: number,
+): number {
+  if (offset <= 0) return 0;
+  if (offset >= textLength) return textLength;
+  return segments.containing(offset)?.index ?? offset;
+}
+
+function graphemeEndAtOrAfter(
+  segments: GraphemeSegments,
+  offset: number,
+  textLength: number,
+): number {
+  if (offset <= 0) return 0;
+  if (offset >= textLength) return textLength;
+  const segment = segments.containing(offset - 1);
+  return segment ? segment.index + segment.segment.length : offset;
 }

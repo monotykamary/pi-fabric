@@ -12,15 +12,16 @@ export function suffixAlignedPairs(
   afterLength: number,
   scoreAt: PairScoreAt,
 ): Array<[number, number]> {
-  const dp = Array.from({ length: beforeLength + 1 }, () => new Float64Array(afterLength + 1));
+  const columns = afterLength + 1;
+  const dp = new Float64Array((beforeLength + 1) * columns);
 
   for (let i = beforeLength - 1; i >= 0; i--) {
+    const rowOffset = i * columns;
+    const nextRowOffset = rowOffset + columns;
     for (let j = afterLength - 1; j >= 0; j--) {
       const pairScore = scoreAt(i, j);
-      const align = Number.isFinite(pairScore)
-        ? floatCell(dp, i + 1, j + 1) + pairScore
-        : pairScore;
-      floatRow(dp, i)[j] = Math.max(align, floatCell(dp, i + 1, j), floatCell(dp, i, j + 1));
+      const align = Number.isFinite(pairScore) ? dp[nextRowOffset + j + 1]! + pairScore : pairScore;
+      dp[rowOffset + j] = Math.max(align, dp[nextRowOffset + j]!, dp[rowOffset + j + 1]!);
     }
   }
 
@@ -28,13 +29,15 @@ export function suffixAlignedPairs(
   let i = 0;
   let j = 0;
   while (i < beforeLength && j < afterLength) {
+    const rowOffset = i * columns;
+    const nextRowOffset = rowOffset + columns;
     const pairScore = scoreAt(i, j);
-    const align = Number.isFinite(pairScore) ? floatCell(dp, i + 1, j + 1) + pairScore : pairScore;
-    if (Number.isFinite(pairScore) && sameAlignmentScore(floatCell(dp, i, j), align)) {
+    const align = Number.isFinite(pairScore) ? dp[nextRowOffset + j + 1]! + pairScore : pairScore;
+    if (Number.isFinite(pairScore) && sameAlignmentScore(dp[rowOffset + j]!, align)) {
       pairs.push([i, j]);
       i++;
       j++;
-    } else if (floatCell(dp, i + 1, j) >= floatCell(dp, i, j + 1)) {
+    } else if (dp[nextRowOffset + j]! >= dp[rowOffset + j + 1]!) {
       i++;
     } else {
       j++;
@@ -48,17 +51,18 @@ export function prefixAlignedPairs(
   afterLength: number,
   scoreAt: PairScoreAt,
 ): Array<[number, number]> {
-  const dp = Array.from({ length: beforeLength + 1 }, () =>
-    Array.from({ length: afterLength + 1 }, () => 0),
-  );
+  const columns = afterLength + 1;
+  const dp = new Float64Array((beforeLength + 1) * columns);
 
   for (let i = 1; i <= beforeLength; i++) {
+    const rowOffset = i * columns;
+    const previousRowOffset = rowOffset - columns;
     for (let j = 1; j <= afterLength; j++) {
       const pairScore = scoreAt(i - 1, j - 1);
       const pair = Number.isFinite(pairScore)
-        ? numberCell(dp, i - 1, j - 1) + pairScore
+        ? dp[previousRowOffset + j - 1]! + pairScore
         : pairScore;
-      numberRow(dp, i)[j] = Math.max(numberCell(dp, i - 1, j), numberCell(dp, i, j - 1), pair);
+      dp[rowOffset + j] = Math.max(dp[previousRowOffset + j]!, dp[rowOffset + j - 1]!, pair);
     }
   }
 
@@ -66,13 +70,17 @@ export function prefixAlignedPairs(
   let i = beforeLength;
   let j = afterLength;
   while (i > 0 && j > 0) {
+    const rowOffset = i * columns;
+    const previousRowOffset = rowOffset - columns;
     const pairScore = scoreAt(i - 1, j - 1);
-    const pair = Number.isFinite(pairScore) ? numberCell(dp, i - 1, j - 1) + pairScore : pairScore;
-    if (Number.isFinite(pairScore) && sameAlignmentScore(numberCell(dp, i, j), pair)) {
+    const pair = Number.isFinite(pairScore)
+      ? dp[previousRowOffset + j - 1]! + pairScore
+      : pairScore;
+    if (Number.isFinite(pairScore) && sameAlignmentScore(dp[rowOffset + j]!, pair)) {
       pairs.push([i - 1, j - 1]);
       i--;
       j--;
-    } else if (numberCell(dp, i - 1, j) >= numberCell(dp, i, j - 1)) {
+    } else if (dp[previousRowOffset + j]! >= dp[rowOffset + j - 1]!) {
       i--;
     } else {
       j--;
@@ -100,26 +108,6 @@ export function suffixAlignmentScore(
   }
 
   return numericAt(next, 0);
-}
-
-function floatCell(rows: Float64Array[], rowIndex: number, columnIndex: number): number {
-  return numericAt(floatRow(rows, rowIndex), columnIndex);
-}
-
-function floatRow(rows: Float64Array[], index: number): Float64Array {
-  const row = rows[index];
-  if (row === undefined) throw new RangeError(`Missing alignment row ${index}`);
-  return row;
-}
-
-function numberCell(rows: number[][], rowIndex: number, columnIndex: number): number {
-  return numericAt(numberRow(rows, rowIndex), columnIndex);
-}
-
-function numberRow(rows: number[][], index: number): number[] {
-  const row = rows[index];
-  if (row === undefined) throw new RangeError(`Missing alignment row ${index}`);
-  return row;
 }
 
 function numericAt(values: ArrayLike<number>, index: number): number {

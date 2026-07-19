@@ -19,6 +19,7 @@ import type {
   FabricProviderListRequest,
   FabricRisk,
 } from "../protocol.js";
+import { countContentLines } from "../ui/preview-lines.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
 import {
   createPreviewWriteToolDefinition,
@@ -37,13 +38,6 @@ const riskForTool = (name: PiCoreToolName): FabricRisk => {
   if (readTools.has(name)) return "read";
   if (writeTools.has(name)) return "write";
   return "execute";
-};
-
-const contentLineCount = (content: string): number => {
-  if (!content) return 0;
-  let lines = 1;
-  for (const character of content) if (character === "\n") lines++;
-  return content.endsWith("\n") ? lines - 1 : lines;
 };
 
 const textContent = (content: ToolContent): string =>
@@ -348,7 +342,7 @@ export class PiToolsProvider implements FabricProvider {
     const writeByteLength =
       writeInput !== undefined ? Buffer.byteLength(writeInput, "utf8") : undefined;
     const writeLineCount =
-      writeInput !== undefined ? contentLineCount(writeInput) : undefined;
+      writeInput !== undefined ? countContentLines(writeInput) : undefined;
     const hasWriteBefore =
       name === "write" &&
       detailRecord !== undefined &&

@@ -70,24 +70,29 @@ class BoundedLineList implements Component {
   render(width: number): string[] {
     if (width <= 0) return [];
     const diffBackground = createDiffBackgroundResolver(this.theme, this.diffIntensity);
-    return this.lines.flatMap((rawLine) => {
+    const rows: string[] = [];
+    for (const rawLine of this.lines) {
       const { kind, line } = parseMarkedDiffLine(rawLine);
-      if (!kind) return [truncateBoundedLine(line, width)];
+      if (!kind) {
+        rows.push(truncateBoundedLine(line, width));
+        continue;
+      }
       const pipe = line.indexOf("│ ");
       const continuationPrefix = pipe < 0
         ? ""
         : " ".repeat(visibleWidth(line.slice(0, pipe + 2)));
-      return wrapDiffAnsiToWidth(
+      const wrappedRows = wrapDiffAnsiToWidth(
         line,
         width,
         DIFF_WRAP_ROWS,
-        continuationPrefix,
-      ).map((row) => {
-        const truncated = truncateToWidth(row, width, "");
-        const padding = " ".repeat(Math.max(0, width - visibleWidth(truncated)));
-        return applyDiffBackground(truncated + padding, diffBackground(kind));
-      });
-    });
+        visibleWidth(continuationPrefix) < width ? continuationPrefix : "",
+      );
+      for (const row of wrappedRows) {
+        const padding = " ".repeat(Math.max(0, width - visibleWidth(row)));
+        rows.push(applyDiffBackground(row + padding, diffBackground(kind)));
+      }
+    }
+    return rows;
   }
 
   invalidate(): void {}
