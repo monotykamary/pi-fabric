@@ -23,6 +23,7 @@ import {
   FabricToolOwnership,
   ownsFabricToolSource,
 } from "./core/tool-ownership.js";
+import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
@@ -871,11 +872,18 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       : DEFAULT_FABRIC_CONFIG.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
+    const skills = event.systemPromptOptions.skills ?? [];
+    // Pi omits its entire skill catalog when the active tool set lacks a tool
+    // named read. Restore that catalog in full code mode with only the loader
+    // instruction adapted to Fabric's nested pi.read path.
+    const systemPrompt = effectiveFullCodeMode
+      ? restoreSkillsForFullCodePrompt(event.systemPrompt, skills)
+      : event.systemPrompt;
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code
     // mode preserves Pi's progressive skill loading without exposing read.
     const skillReferenceGuidance = effectiveFullCodeMode
-      ? buildSkillReferenceGuidance(event.prompt, event.systemPromptOptions.skills ?? [])
+      ? buildSkillReferenceGuidance(event.prompt, skills)
       : undefined;
     const guidance = (effectiveFullCodeMode
       ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`.\nReturns: `pi.read`/`pi.grep`/`pi.find`/`pi.ls` → string; `pi.bash`/`pi.edit`/`pi.write` → `{ok, output, details}` (read `.output`).\nExamples: `pi.read('/x')` · `pi.bash({cmd:'ls'})` · `pi.grep('TODO','src')` · `pi.grep({regex:'TODO', ic:true, ctx:2})` · `pi.find('*.ts','src')` · `pi.edit({path:'/x', old:'a', new:'b'})` · `pi.write({path:'/y', text:'z'})` · `pi.ls('src')`.\nShorthands (all accepted): `cmd`/`shell`→command · `query`/`regex`/`search`→pattern · `file`/`dir`→path · `ic`→ignoreCase · `ctx`→context · `max`→limit · `start`→offset · `old`→oldText · `new`/`replacement`→newText · `text`/`contents`→content · `timeoutMs`→timeout.\n`tools` is discovery + generic calls only (`providers`/`list`/`search`/`describe`/`call`/`models`). Call known MCP tools as `mcp.<sanitized_server>.<sanitized_tool>(args)` (for example `mcp.fal_ai.get_model_schema(...)`), captured tools as `extensions.<tool>(args)`, and stable providers as `memory.*`, `state.*`, `schema.*`, or `compact.*`. Use `tools.call({ref,args})` for computed refs. `pi` is the core tools; `π.<key>` is named strings (not a tool)."
@@ -888,7 +896,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       + "\n\n" + FABRIC_TEMPLATE_LITERAL_CAVEAT
       + (skillReferenceGuidance ? `\n\n${skillReferenceGuidance}` : "");
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${guidance}`,
+      systemPrompt: `${systemPrompt}\n\n${guidance}`,
     };
   });
 
