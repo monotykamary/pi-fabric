@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_FABRIC_CONFIG,
+  MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
   effectiveToolCaptureConfig,
   loadFabricConfig,
   normalizeFabricConfig,
@@ -52,7 +53,7 @@ describe("Fabric configuration", () => {
     });
     expect(config.fullCodeMode).toBe(false);
     expect(config.executor.timeoutMs).toBe(1_000);
-    expect(config.executor.memoryLimitBytes).toBe(1024 * 1024 * 1024);
+    expect(config.executor.memoryLimitBytes).toBe(MAX_EXECUTOR_MEMORY_LIMIT_BYTES);
     expect(config.approvals.write).toBe("allow");
     expect(config.approvals.agent).toBe("allow");
     expect(config.subagents.maxConcurrent).toBe(32);

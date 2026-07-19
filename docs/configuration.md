@@ -7,6 +7,8 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 `/fabric settings` writes changes to the same files: trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`.
 
+`executor.memoryLimitBytes` controls the QuickJS heap for each `fabric_exec` program. It may be set as high as the machine's detected physical memory. Large limits can exhaust system memory or destabilize the machine, so users are responsible for choosing a value appropriate for their workload.
+
 ## Full reference
 
 ```json

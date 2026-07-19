@@ -1,7 +1,12 @@
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-import { buildFabricSettingsItems, FabricSettingsComponent, parseBudgetValue } from "../src/ui/settings.js";
+import {
+  buildFabricSettingsItems,
+  executorMemoryLimitOptions,
+  FabricSettingsComponent,
+  parseBudgetValue,
+} from "../src/ui/settings.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 
 const theme = {
@@ -27,6 +32,14 @@ const buildItems = (keepVisibleCandidates: string[] = ["fabric_exec"]) =>
   });
 
 describe("FabricSettingsComponent", () => {
+  it("offers executor memory limits through the machine capacity", () => {
+    const machineCapacity = 24 * 1024 * 1024 * 1024;
+    const values = executorMemoryLimitOptions(machineCapacity);
+
+    expect(values).toContain(512 * 1024 * 1024);
+    expect(values.at(-1)).toBe(machineCapacity);
+  });
+
   it("renders the pi-core style top and bottom borders with search", () => {
     const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {});
     const lines = component.render(80);

@@ -24,7 +24,11 @@ import {
   INHERIT_VALUE,
   type ModelSource,
 } from "./model-picker.js";
-import { saveFabricConfig, type FabricConfig } from "../config.js";
+import {
+  MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+  saveFabricConfig,
+  type FabricConfig,
+} from "../config.js";
 import { THINKING_LEVELS, thinkingLabel } from "../thinking.js";
 import type { CapturedToolCatalog } from "../capture/catalog.js";
 import type { FabricState } from "../fabric-state.js";
@@ -91,7 +95,21 @@ const formatMs = (ms: number): string =>
       : `${ms / 3_600_000}h`;
 
 const formatBytes = (bytes: number): string =>
-  bytes >= 1024 * 1024 ? `${bytes / (1024 * 1024)} MB` : `${bytes / 1024} KB`;
+  bytes >= 1024 * 1024 * 1024
+    ? `${Number((bytes / (1024 * 1024 * 1024)).toFixed(2))} GB`
+    : bytes >= 1024 * 1024
+      ? `${Number((bytes / (1024 * 1024)).toFixed(2))} MB`
+      : `${Number((bytes / 1024).toFixed(2))} KB`;
+
+export const executorMemoryLimitOptions = (
+  maximumBytes = MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+): number[] => {
+  const minimumBytes = 16 * 1024 * 1024;
+  const values: number[] = [];
+  for (let value = minimumBytes; value <= maximumBytes; value *= 2) values.push(value);
+  if (maximumBytes >= minimumBytes && values.at(-1) !== maximumBytes) values.push(maximumBytes);
+  return values;
+};
 
 const formatUsd = (value: number): string =>
   value <= 0 ? "Off" : `$${value.toFixed(2)}`;
@@ -505,13 +523,14 @@ export const buildFabricSettingsItems = (
             "Memory limit",
             formatBytes(config.executor.memoryLimitBytes),
             {
-              description: "Maximum QuickJS heap size for a single fabric_exec program.",
+              description:
+                "Maximum QuickJS heap size for a single fabric_exec program. The upper bound is this machine's physical memory; large allocations may destabilize the system.",
               submenu: numericSubmenu(
                 theme,
-                [16 * 1024 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024, 128 * 1024 * 1024, 256 * 1024 * 1024],
+                executorMemoryLimitOptions(),
                 formatBytes,
                 "Executor memory limit",
-                "Maximum QuickJS heap size for a single fabric_exec program.",
+                "Maximum QuickJS heap size for a single fabric_exec program. The upper bound is this machine's physical memory; large allocations may destabilize the system.",
               ),
             },
           ),

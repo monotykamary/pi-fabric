@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import type { FabricRisk } from "./protocol.js";
@@ -154,6 +155,10 @@ export interface FabricConfig {
 
 export const MIN_SUBAGENT_TIMEOUT_MS = 1_000;
 export const MAX_SUBAGENT_TIMEOUT_MS = 3_600_000;
+export const MAX_EXECUTOR_MEMORY_LIMIT_BYTES = Math.max(
+  8 * 1024 * 1024,
+  Math.min(Number.MAX_SAFE_INTEGER, Math.floor(os.totalmem())),
+);
 
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   fullCodeMode: true,
@@ -444,7 +449,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         executor.memoryLimitBytes,
         DEFAULT_FABRIC_CONFIG.executor.memoryLimitBytes,
         8 * 1024 * 1024,
-        1024 * 1024 * 1024,
+        MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
       ),
       maxOutputChars: boundedInteger(
         executor.maxOutputChars,
