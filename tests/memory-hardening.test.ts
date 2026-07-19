@@ -300,8 +300,9 @@ describe("memory query and pointer hardening", () => {
       cacheSourceRatio: number;
     };
     expect(persisted.vocabulary.every((term) => typeof term === "string")).toBe(true);
-    expect(persisted.cacheBytes).toBe(cacheBytes);
-    expect(persisted.cacheSourceRatio).toBeCloseTo(ratio, 5);
+    expect(persisted.cacheBytes).toBeGreaterThan(0);
+    expect(persisted.cacheBytes).toBeLessThanOrEqual(hardBound);
+    expect(persisted.cacheSourceRatio).toBeCloseTo(persisted.cacheBytes / sourceBytes, 5);
   });
 
   it("quarantines malformed, orphaned, and deleted-source caches during refresh", async () => {

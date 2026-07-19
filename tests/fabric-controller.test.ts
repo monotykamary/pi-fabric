@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
 import { FabricUiController } from "../src/ui/controller.js";
 import type { FabricDashboard } from "../src/ui/dashboard.js";
+import "../src/ui/dashboard.js";
+import "../src/ui/model-picker.js";
 
 const theme = {
   fg: (_c: string, t: string) => t,

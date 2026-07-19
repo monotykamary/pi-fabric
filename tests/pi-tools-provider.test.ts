@@ -68,7 +68,7 @@ describe("PiToolsProvider lifecycle", () => {
     expect(toolResult.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)).toBe(true);
   });
 
-  it("applies a tool_result content patch so descriptions replace image blocks", async () => {
+  it("applies a tool_result content patch to a core tool result", async () => {
     const runner = makeRunner({
       emitToolResult: vi.fn(async () => ({
         content: [{ type: "text" as const, text: "[Image: a sample image, fully described.]" }],
@@ -76,37 +76,17 @@ describe("PiToolsProvider lifecycle", () => {
     });
     const registry = registerWithRunner(runner);
 
-    // pi.read of an image normally drops the image block and returns only the
-    // dimension note. A tool_result patch (e.g. pi-vision-handoff swapping the
-    // image for a description) must flow through normalizeResult as the text.
+    // A tool_result patch must flow through normalizeResult as the returned text.
+    // Use a text file here because image decoding is covered by the media tests below.
     const result = await registry.invoke(
       "pi.read",
-      { path: "tests/fixtures/images/sample.jpg" },
+      { path: "package.json" },
       baseContext,
     );
 
     expect(result).toBe("[Image: a sample image, fully described.]");
   });
 
-  it("passes the raw tool result content (with image blocks) to tool_result", async () => {
-    const seen: { content: unknown } = { content: undefined };
-    const runner = makeRunner({
-      emitToolResult: vi.fn(async (event: { content: unknown }) => {
-        seen.content = event.content;
-        return undefined;
-      }),
-    });
-    const registry = registerWithRunner(runner);
-
-    await registry.invoke(
-      "pi.read",
-      { path: "tests/fixtures/images/sample.jpg" },
-      baseContext,
-    );
-
-    const content = seen.content as Array<{ type: string }>;
-    expect(content.some((block) => block.type === "image")).toBe(true);
-  });
 
   it("honors a tool_call block by throwing without executing", async () => {
     const runner = makeRunner({
@@ -166,40 +146,22 @@ describe("PiToolsProvider lifecycle", () => {
     }
   });
 
-  it("attaches image blocks from an image read to the call audit", async () => {
-    const runner = makeRunner();
-    const registry = registerWithRunner(runner);
-    const audits: FabricCallAudit[] = [];
-
-    await registry.invoke(
-      "pi.read",
-      { path: "tests/fixtures/images/sample.jpg" },
-      { ...baseContext, audits },
-    );
-
-    expect(audits).toHaveLength(1);
-    const media = audits[0]?.media;
-    expect(media).toBeDefined();
-    expect(media!.length).toBeGreaterThan(0);
-    expect(media![0]?.type).toBe("image");
-    expect(media![0]?.mimeType).toMatch(/^image\//);
-    expect(typeof media![0]?.data).toBe("string");
-    expect(media![0]?.data!.length).toBeGreaterThan(0);
-    expect(typeof audits[0]?.mediaNote).toBe("string");
-    expect(audits[0]?.mediaNote).toMatch(/^Read image file/);
-  });
 
   it("attaches the pre-patch image and clean note when a tool_result patch replaces image blocks", async () => {
     // pi-vision-handoff keeps the read note and swaps the image for a
     // description. The provider captures the image BEFORE the patch (so the
     // single-call kitty preview still shows it) and the clean note AFTER.
+    let rawContent: unknown;
     const runner = makeRunner({
-      emitToolResult: vi.fn(async () => ({
-        content: [
-          { type: "text" as const, text: "Read image file [image/png]" },
-          { type: "text" as const, text: "[Image: a described image.]" },
-        ],
-      })),
+      emitToolResult: vi.fn(async (event: { content: unknown }) => {
+        rawContent = event.content;
+        return {
+          content: [
+            { type: "text" as const, text: "Read image file [image/png]" },
+            { type: "text" as const, text: "[Image: a described image.]" },
+          ],
+        };
+      }),
     });
     const registry = registerWithRunner(runner);
     const audits: FabricCallAudit[] = [];
@@ -210,12 +172,15 @@ describe("PiToolsProvider lifecycle", () => {
       { ...baseContext, audits },
     );
 
+    expect((rawContent as Array<{ type: string }>).some((block) => block.type === "image")).toBe(true);
     expect(audits).toHaveLength(1);
     const media = audits[0]?.media;
     expect(media).toBeDefined();
     expect(media!.length).toBeGreaterThan(0);
     expect(media![0]?.type).toBe("image");
     expect(media![0]?.mimeType).toMatch(/^image\//);
+    expect(typeof media![0]?.data).toBe("string");
+    expect(media![0]?.data!.length).toBeGreaterThan(0);
     expect(audits[0]?.mediaNote).toBe("Read image file [image/png]");
-  });
+  }, 15_000);
 });

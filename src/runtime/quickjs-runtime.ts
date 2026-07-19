@@ -735,7 +735,7 @@ export class QuickJsRuntime {
       activePromiseHandle.dispose();
       activePromiseHandle = undefined;
       if (resolution.error) {
-        const deadlineExceeded = interruptedByDeadline || Date.now() > executionDeadlineAt;
+        const deadlineExceeded = timedOut || interruptedByDeadline || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;
         const error = options.signal?.aborted
           ? "Execution cancelled"
