@@ -166,6 +166,20 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines).toEqual(["(no output)"]);
   });
 
+  it("can omit the enclosing tool-call background for standalone renderers", () => {
+    const rendered = renderCoreToolBody(
+      audit("bash", {
+        args: { command: "printf output" },
+        result: { ok: true, output: "output", details: {} },
+        success: true,
+      }),
+      theme,
+      options({ toolCallBackground: false }),
+    );
+
+    expect(rendered!.lines.join("\n")).not.toContain("\x1b[48;2;0;0;0m");
+  });
+
   it("renders bash warnings, timeout metadata, output limits, and full output details", () => {
     const call = audit("bash", {
       args: { command: "sudo rm -rf build", timeout: 30 },
