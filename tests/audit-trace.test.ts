@@ -764,7 +764,17 @@ return true;
     const legacy = {
       success: true,
       phases: ["Legacy"],
-      audits: [{ ref: "pi.read", tool: "read", args: { path: "old.txt" }, result: "old body" }],
+      audits: [
+        {
+          ref: "pi.read",
+          tool: "read",
+          args: { path: "old.txt" },
+          result: "old body",
+          preview: { details: { truncation: { truncated: false } } },
+          startedAt: 10,
+          endedAt: 20,
+        },
+      ],
     };
     expect(readFabricExecutionRenderDetails(legacy)).toMatchObject(legacy);
   });

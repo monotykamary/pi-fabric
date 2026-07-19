@@ -34,6 +34,7 @@ export interface FabricCallAudit {
   result?: unknown;
   media?: FabricMediaBlock[];
   mediaNote?: string;
+  preview?: unknown;
 }
 
 export type FabricRegistryActivityEvent =
@@ -53,6 +54,7 @@ export type FabricRegistryActivityEvent =
       callId: string;
       success: boolean;
       result?: unknown;
+      preview?: unknown;
       error?: string;
     };
 
@@ -347,6 +349,9 @@ export class ActionRegistry {
           for (const block of blocks) activeAudit.media.push(block);
           if (note) activeAudit.mediaNote = note;
         },
+        attachPreview(preview) {
+          activeAudit.preview = preview;
+        },
       });
       const bounded = boundedResult(value, context.maxResultChars);
       const resultError = failedResultError(value);
@@ -355,11 +360,13 @@ export class ActionRegistry {
       activeAudit.resultChars = bounded.chars;
       activeAudit.resultTruncated = bounded.truncated;
       activeAudit.result = previewResult(bounded.value);
+      activeAudit.endedAt = Date.now();
       context.observeInvocation?.({
         type: "call_end",
         callId: nestedToolCallId,
         success: resultError === undefined,
         result: value,
+        ...(activeAudit.preview !== undefined ? { preview: activeAudit.preview } : {}),
         ...(resultError ? { error: resultError } : {}),
       });
       if (resultError) {
@@ -374,6 +381,7 @@ export class ActionRegistry {
       if (audit) {
         audit.success = false;
         audit.error = message;
+        audit.endedAt = Date.now();
         context.observeInvocation?.({
           type: "call_end",
           callId: audit.nestedToolCallId,
@@ -383,7 +391,7 @@ export class ActionRegistry {
       }
       throw error;
     } finally {
-      if (audit) audit.endedAt = Date.now();
+      if (audit) audit.endedAt ??= Date.now();
     }
   }
 

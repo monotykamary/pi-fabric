@@ -11,6 +11,7 @@ import {
 } from "../src/ui/row-balance.js";
 import {
   captureFabricCallHeadlinePreviews,
+  captureFabricCoreToolPreviews,
   captureFabricWritePreviews,
   compactProgressPreview,
   fabricWriteBindings,
@@ -23,6 +24,7 @@ import {
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
   restoreFabricCallHeadlinePreviews,
+  restoreFabricCoreToolPreviews,
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
 } from "../src/ui/fabric-render.js";
@@ -161,6 +163,42 @@ return Promise.all([
 
     expect(nestedCallCode(audit)).toBeNull();
     expect(nestedCallBody(audit)).toBe("first\nsecond");
+  });
+
+  it("restores rich core arguments, results, and renderer metadata after final projection", () => {
+    const live = [
+      {
+        ref: "pi.grep",
+        provider: "pi",
+        tool: "grep",
+        args: { path: "src", pattern: "needle", literal: true },
+        result: "src/a.ts:1: needle",
+        preview: { details: { truncation: { truncated: false } } },
+        success: true,
+      },
+      {
+        ref: "pi.edit",
+        provider: "pi",
+        tool: "edit",
+        args: { path: "src/a.ts", edits: [{ oldText: "old", newText: "new" }] },
+        result: { ok: true, output: "edited", details: { diff: "-1 old\n+1 new" } },
+        success: true,
+      },
+    ];
+    const previews = captureFabricCoreToolPreviews(live);
+    const restored = restoreFabricCoreToolPreviews(
+      [
+        { ref: "pi.grep", provider: "pi", tool: "grep", args: { path: "src" }, success: true },
+        { ref: "pi.edit", provider: "pi", tool: "edit", args: { path: "src/a.ts" }, success: true },
+      ],
+      previews,
+    );
+
+    expect(restored[0]?.args).toMatchObject({ pattern: "needle", literal: true });
+    expect(restored[0]?.result).toBe("src/a.ts:1: needle");
+    expect(restored[0]?.preview).toEqual({ details: { truncation: { truncated: false } } });
+    expect(restored[1]?.args?.edits).toEqual([{ oldText: "old", newText: "new" }]);
+    expect(restored[1]?.result).toMatchObject({ details: { diff: "-1 old\n+1 new" } });
   });
 
   it("restores ephemeral write content after final trace projection", () => {

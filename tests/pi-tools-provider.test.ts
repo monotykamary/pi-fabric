@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   type ExtensionContext,
   type ExtensionRunner,
@@ -122,6 +125,44 @@ describe("PiToolsProvider lifecycle", () => {
     const result = await registry.invoke("pi.ls", { path: process.cwd() }, baseContext);
     expect(typeof result).toBe("string");
     expect((result as string).length).toBeGreaterThan(0);
+  });
+
+  it("captures pre-write content out of band without changing the sandbox result", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-write-preview-"));
+    const before = `const value = 1;
+`;
+    const after = `export const value = "${"x".repeat(20_000)}";
+`;
+    try {
+      fs.writeFileSync(path.join(cwd, "example.ts"), before);
+      const registry = new ActionRegistry();
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
+      const audits: FabricCallAudit[] = [];
+      const result = await registry.invoke(
+        "pi.write",
+        { path: "example.ts", content: after },
+        {
+          ...baseContext,
+          cwd,
+          extensionContext: { cwd } as ExtensionContext,
+          audits,
+        },
+      ) as { ok: boolean; output: string; details: unknown };
+
+      expect(result).toMatchObject({ ok: true, details: null });
+      expect(result.output).toContain("Successfully wrote");
+      expect(fs.readFileSync(path.join(cwd, "example.ts"), "utf8")).toBe(after);
+      expect(String(audits[0]?.args?.content ?? "").length).toBeLessThan(after.length);
+      expect(audits[0]?.preview).toMatchObject({
+        writeBeforeCaptured: true,
+        writeContent: after,
+        writeByteLength: Buffer.byteLength(after, "utf8"),
+        writeLineCount: 1,
+        codePreviewBeforeWrite: { kind: "content", content: before },
+      });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("attaches image blocks from an image read to the call audit", async () => {

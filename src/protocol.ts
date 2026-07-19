@@ -57,6 +57,9 @@ export interface FabricInvocationContext {
   // non-vision note has run; used as the single-call body + content text so the
   // preview shows the clean note instead of the swapped description.
   attachMedia?(blocks: FabricMediaBlock[], note?: string): void;
+  // Ephemeral renderer-only metadata. It is exposed to live Fabric previews but
+  // never projected into the durable execution trace.
+  attachPreview?(preview: unknown): void;
 }
 
 export interface FabricProvider {

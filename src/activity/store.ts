@@ -363,7 +363,7 @@ export class FabricActivityStore {
   finishCall(
     runId: string,
     callId: string,
-    input: { success: boolean; result?: unknown; error?: string },
+    input: { success: boolean; result?: unknown; preview?: unknown; error?: string },
   ): void {
     const run = this.#require(runId);
     const call = run.calls.find((candidate) => candidate.id === callId);
@@ -376,6 +376,7 @@ export class FabricActivityStore {
     const error = cleanText(input.error, MAX_DETAIL_CHARS);
     if (error) call.error = error;
     if (input.result !== undefined) call.result = structuredClone(input.result);
+    if (input.preview !== undefined) call.preview = structuredClone(input.preview);
     const metrics = metricsFrom(input.result);
     if (metrics) call.metrics = { ...(call.metrics ?? {}), ...metrics };
     if (call.status === "completed") {

@@ -70,6 +70,7 @@
   },
   "dependencies": {
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
+    "diff": "^8.0.4",
     "mcporter": "^0.12.3",
     "pi-code-previews": "^0.1.35",
     "quickjs-emscripten-core": "^0.32.0",

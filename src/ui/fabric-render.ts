@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto";
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import type { CodePreviewSettings } from "pi-code-previews";
+import { getKeybindings, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { headlineArg } from "../core/call-preview.js";
+import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
 import ts from "typescript";
+import {
+  applyDiffBackground,
+  createDiffBackgroundResolver,
+  parseMarkedDiffLine,
+  wrapDiffAnsiToWidth,
+  type DiffBackgroundIntensity,
+} from "./diff-background.js";
 
 export interface FabricRenderAudit {
   ref: string;
@@ -14,11 +23,22 @@ export interface FabricRenderAudit {
   args?: Record<string, unknown>;
   result?: unknown;
   resultTruncated?: boolean;
+  preview?: unknown;
+  startedAt?: number;
+  endedAt?: number;
   previewHeadline?: string;
 }
 
+const configuredDiffWrapRows = Number.parseInt(
+  process.env.CODE_PREVIEW_DIFF_WRAP_ROWS ?? "",
+  10,
+);
+const DIFF_WRAP_ROWS =
+  Number.isFinite(configuredDiffWrapRows) && configuredDiffWrapRows > 0
+    ? configuredDiffWrapRows
+    : 3;
+
 const EXPAND_KEYBINDING = "app.tools.expand" as AppKeybinding;
-const NUMBERED_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const COLLAPSED_MULTICALL_LIMIT = 8;
 const EXPANDED_MULTICALL_LIMIT = 30;
 const FULL_SGR_RESET = "\x1b[0m";
@@ -40,17 +60,43 @@ const truncateBoundedLine = (line: string, width: number): string => {
 };
 
 class BoundedLineList implements Component {
-  constructor(readonly lines: string[]) {}
+  constructor(
+    readonly lines: string[],
+    private readonly theme?: Theme,
+    private readonly diffIntensity: DiffBackgroundIntensity = "off",
+  ) {}
 
   render(width: number): string[] {
     if (width <= 0) return [];
-    return this.lines.map((line) => truncateBoundedLine(line, width));
+    const diffBackground = createDiffBackgroundResolver(this.theme, this.diffIntensity);
+    return this.lines.flatMap((rawLine) => {
+      const { kind, line } = parseMarkedDiffLine(rawLine);
+      if (!kind) return [truncateBoundedLine(line, width)];
+      const pipe = line.indexOf("│ ");
+      const continuationPrefix = pipe < 0
+        ? ""
+        : " ".repeat(visibleWidth(line.slice(0, pipe + 2)));
+      return wrapDiffAnsiToWidth(
+        line,
+        width,
+        DIFF_WRAP_ROWS,
+        continuationPrefix,
+      ).map((row) => {
+        const truncated = truncateToWidth(row, width, "");
+        const padding = " ".repeat(Math.max(0, width - visibleWidth(truncated)));
+        return applyDiffBackground(truncated + padding, diffBackground(kind));
+      });
+    });
   }
 
   invalidate(): void {}
 }
 
-export const renderBoundedLines = (lines: string[]): Component => new BoundedLineList(lines);
+export const renderBoundedLines = (
+  lines: string[],
+  theme?: Theme,
+  diffIntensity: DiffBackgroundIntensity = "off",
+): Component => new BoundedLineList(lines, theme, diffIntensity);
 
 export const fabricMulticallCallLimit = (expanded: boolean): number =>
   expanded ? EXPANDED_MULTICALL_LIMIT : COLLAPSED_MULTICALL_LIMIT;
@@ -223,6 +269,8 @@ export interface FabricWriteArgumentPreviewInput {
   bindings: FabricWriteBinding[];
   strings?: Record<string, string> | undefined;
   expanded: boolean;
+  cwd?: string | undefined;
+  settings?: CodePreviewSettings | undefined;
 }
 
 const renderWriteArgumentBody = (
@@ -231,7 +279,22 @@ const renderWriteArgumentBody = (
   expanded: boolean,
   theme: Theme,
   invalidate?: () => void,
+  parity?: { cwd: string; settings: CodePreviewSettings },
 ): { lines: string[]; hidden: number } => {
+  if (parity) {
+    const rendered = renderCoreToolBody(
+      { ref: "pi.write", provider: "pi", tool: "write", args: { path, content } },
+      theme,
+      {
+        cwd: parity.cwd,
+        settings: parity.settings,
+        expanded,
+        maxLines: 200,
+        ...(invalidate ? { invalidate } : {}),
+      },
+    );
+    if (rendered) return rendered;
+  }
   const allLines = safeTerminalText(content).split("\n");
   while (allLines.length > 0 && allLines[allLines.length - 1] === "") allLines.pop();
   const limit = expanded ? Math.min(allLines.length, 200) : 10;
@@ -266,9 +329,15 @@ export const renderFabricWriteArgumentPreview = (
     const binding = input.bindings[0]!;
     const rows = [
       nestedCallTitle(
-        { ref: "pi.write", tool: "write", args: { path: binding.path } },
+        {
+          ref: "pi.write",
+          provider: "pi",
+          tool: "write",
+          args: { path: binding.path, content: available[0] ?? "" },
+        },
         theme,
         invalidate,
+        input.cwd && input.settings ? { cwd: input.cwd, settings: input.settings } : undefined,
       ),
     ];
     const body = renderWriteArgumentBody(
@@ -277,6 +346,7 @@ export const renderFabricWriteArgumentPreview = (
       input.expanded,
       theme,
       invalidate,
+      input.cwd && input.settings ? { cwd: input.cwd, settings: input.settings } : undefined,
     );
     rows.push(...body.lines);
     if (body.hidden > 0) {
@@ -310,9 +380,18 @@ export const renderFabricWriteArgumentPreview = (
           : theme.fg("dim", "○");
     rows.push(
       `${glyph} ${nestedCallTitle(
-        { ref: "pi.write", tool: "write", args: { path: binding.path } },
+        {
+          ref: "pi.write",
+          provider: "pi",
+          tool: "write",
+          args: {
+            path: binding.path,
+            ...(typeof available[index] === "string" ? { content: available[index] } : {}),
+          },
+        },
         theme,
         invalidate,
+        input.cwd && input.settings ? { cwd: input.cwd, settings: input.settings } : undefined,
       )}`,
     );
     if (index === activeIndex) {
@@ -322,6 +401,7 @@ export const renderFabricWriteArgumentPreview = (
         input.expanded,
         theme,
         invalidate,
+        input.cwd && input.settings ? { cwd: input.cwd, settings: input.settings } : undefined,
       );
       for (const line of body.lines) rows.push(`  ${line}`);
       if (body.hidden > 0) {
@@ -421,7 +501,12 @@ export function nestedCallTitle(
   audit: FabricRenderAudit,
   theme: Theme,
   invalidate?: () => void,
+  core?: { cwd: string; settings: CodePreviewSettings },
 ): string {
+  const coreTitle = core
+    ? coreToolTitle(audit, theme, { ...core, ...(invalidate ? { invalidate } : {}) })
+    : null;
+  if (coreTitle) return coreTitle;
   const ref = audit.ref;
   const provider = audit.provider ?? ref.split(".")[0] ?? ref;
   const tool = audit.tool ?? ref.split(".")[1] ?? ref;
@@ -461,6 +546,7 @@ export interface FabricMulticallPartialInput {
   progress?: string | undefined;
   expanded: boolean;
   preview?: FabricMulticallPreview | undefined;
+  core?: { cwd: string; settings: CodePreviewSettings } | undefined;
 }
 
 export const compactProgressPreview = (progress: string): string => {
@@ -502,7 +588,7 @@ export const renderFabricMulticallPartial = (
         : audit.success === false
           ? theme.fg("error", "✗")
           : theme.fg("dim", "›");
-    rows.push(`${glyph} ${nestedCallTitle(audit, theme, invalidate)}`);
+    rows.push(`${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`);
     if (audit.success === false && audit.error) {
       for (const line of safeTerminalText(audit.error).split("\n")) {
         rows.push(`  ${theme.fg("error", line)}`);
@@ -528,7 +614,93 @@ export const renderFabricMulticallPartial = (
         (input.expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
     );
   }
-  return renderBoundedLines(rows);
+  return renderBoundedLines(rows, theme, input.core?.settings.diffIntensity ?? "off");
+};
+
+export interface FabricCoreToolPreview extends FabricRenderAudit {
+  ref: string;
+}
+
+const CORE_TOOL_NAMES = new Set(["bash", "read", "write", "edit", "grep", "find", "ls"]);
+
+export const captureFabricCoreToolPreviews = (
+  audits: FabricRenderAudit[],
+  previous: FabricCoreToolPreview[] = [],
+): FabricCoreToolPreview[] => {
+  const prior = previous.slice();
+  return audits.flatMap((audit) => {
+    if (
+      !audit.tool ||
+      !CORE_TOOL_NAMES.has(audit.tool) ||
+      (audit.provider !== "pi" && audit.ref !== `pi.${audit.tool}`)
+    ) return [];
+    const path = argString(audit.args ?? {}, "path");
+    const index = prior.findIndex(
+      (candidate) =>
+        candidate.ref === audit.ref &&
+        argString(candidate.args ?? {}, "path") === path,
+    );
+    const old = index >= 0 ? prior.splice(index, 1)[0] : undefined;
+    return [{
+      ...(old ?? {}),
+      ...audit,
+      args: { ...(old?.args ?? {}), ...(audit.args ?? {}) },
+      ...(audit.result !== undefined
+        ? { result: audit.result }
+        : old?.result !== undefined
+          ? { result: old.result }
+          : {}),
+      ...(audit.preview !== undefined
+        ? { preview: audit.preview }
+        : old?.preview !== undefined
+          ? { preview: old.preview }
+          : {}),
+    }];
+  });
+};
+
+export const restoreFabricCoreToolPreviews = (
+  audits: FabricRenderAudit[],
+  previews: FabricCoreToolPreview[],
+): FabricRenderAudit[] => {
+  const remaining = previews.slice();
+  return audits.map((audit) => {
+    if (
+      !audit.tool ||
+      !CORE_TOOL_NAMES.has(audit.tool) ||
+      (audit.provider !== "pi" && audit.ref !== `pi.${audit.tool}`)
+    ) return audit;
+    const path = argString(audit.args ?? {}, "path");
+    let index = remaining.findIndex(
+      (preview) =>
+        preview.ref === audit.ref &&
+        argString(preview.args ?? {}, "path") === path,
+    );
+    if (index < 0) index = remaining.findIndex((preview) => preview.ref === audit.ref);
+    if (index < 0) return audit;
+    const preview = remaining.splice(index, 1)[0];
+    if (!preview) return audit;
+    return {
+      ...preview,
+      ...audit,
+      args: { ...(preview.args ?? {}), ...(audit.args ?? {}) },
+      ...(audit.result !== undefined
+        ? { result: audit.result }
+        : preview.result !== undefined
+          ? { result: preview.result }
+          : {}),
+      ...(audit.preview !== undefined
+        ? { preview: audit.preview }
+        : preview.preview !== undefined
+          ? { preview: preview.preview }
+          : {}),
+      ...(audit.resultTruncated !== undefined
+        ? { resultTruncated: audit.resultTruncated }
+        : preview.resultTruncated !== undefined
+          ? { resultTruncated: preview.resultTruncated }
+          : {}),
+    };
+  });
 };
 
 export interface FabricWritePreview {
@@ -539,7 +711,15 @@ export interface FabricWritePreview {
 
 export const captureFabricWritePreviews = (audits: FabricRenderAudit[]): FabricWritePreview[] =>
   audits.flatMap((audit) => {
-    const content = audit.tool === "write" ? argString(audit.args ?? {}, "content") : undefined;
+    const rendererPreview =
+      typeof audit.preview === "object" && audit.preview !== null && !Array.isArray(audit.preview)
+        ? (audit.preview as Record<string, unknown>)
+        : undefined;
+    const content = audit.tool === "write"
+      ? (typeof rendererPreview?.writeContent === "string"
+          ? rendererPreview.writeContent
+          : argString(audit.args ?? {}, "content"))
+      : undefined;
     if (content === undefined) return [];
     return [{ ref: audit.ref, path: argString(audit.args ?? {}, "path"), content }];
   });
@@ -625,11 +805,6 @@ export function nestedCallCode(
     return typeof args.content === "string" ? { code: args.content, lang } : null;
   }
   return null;
-}
-
-/** Whether a nested call's body should be rendered with line numbers (reads/searches/listings). */
-export function isNumberedTool(audit: FabricRenderAudit): boolean {
-  return audit.tool !== undefined && NUMBERED_TOOLS.has(audit.tool);
 }
 
 const escapeControlChars = (text: string): string =>

@@ -11,6 +11,9 @@ importers:
       '@jitl/quickjs-singlefile-mjs-release-sync':
         specifier: ^0.32.0
         version: 0.32.0
+      diff:
+        specifier: ^8.0.4
+        version: 8.0.4
       mcporter:
         specifier: ^0.12.3
         version: 0.12.3

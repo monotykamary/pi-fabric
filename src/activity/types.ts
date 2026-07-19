@@ -76,6 +76,7 @@ export interface FabricActivityCall {
   entityKind?: FabricActivityKind;
   args?: Record<string, unknown>;
   result?: unknown;
+  preview?: unknown;
   progress?: string;
   error?: string;
   detail?: string;

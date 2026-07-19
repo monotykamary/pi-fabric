@@ -1,4 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { CodePreviewSettings } from "pi-code-previews";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import {
   Editor,
@@ -38,7 +39,8 @@ import {
 } from "./dashboard-topology-view.js";
 import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
 import { FabricModelSelector } from "./fabric-model-selector.js";
-import { nestedEditDiff } from "./fabric-render.js";
+import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
+import { nestedEditDiff, renderBoundedLines } from "./fabric-render.js";
 import { FabricThinkingSelector } from "./fabric-thinking-selector.js";
 import { formatClock, formatDuration, formatTokens, padToWidth, safeText, wrapPlainText } from "./format.js";
 import { highlightCode } from "./highlight.js";
@@ -169,6 +171,7 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onImportActor: ((globalActorId: string) => void) | undefined;
   private readonly onExportActor: ((actorId: string) => void) | undefined;
   private readonly onRemoveGlobalActor: ((globalActorId: string) => void) | undefined;
+  private readonly codePreviewSettings: CodePreviewSettings | undefined;
   private pickerActorName: string | undefined;
 
   constructor(
@@ -178,6 +181,7 @@ export class FabricDashboard implements Component, Focusable {
     readonly done: () => void,
     options: {
       modelSource?: ModelSource;
+      codePreviewSettings?: CodePreviewSettings;
       claudeModelSource?: ModelSource;
       onAgentSteer?: (agentId: string, message: string) => void;
       onAgentFollowUp?: (agentId: string, message: string) => void;
@@ -201,6 +205,7 @@ export class FabricDashboard implements Component, Focusable {
   ) {
     this.focused = true;
     this.modelSource = options.modelSource;
+    this.codePreviewSettings = options.codePreviewSettings;
     this.claudeModelSource = options.claudeModelSource;
     this.onAgentSteer = options.onAgentSteer;
     this.onAgentFollowUp = options.onAgentFollowUp;
@@ -1626,6 +1631,52 @@ export class FabricDashboard implements Component, Focusable {
       }
       structuredField(label, value);
     };
+    const coreCallPreview = (call: FabricActivityCall): boolean => {
+      const settings = this.codePreviewSettings;
+      const tool = call.ref.startsWith("pi.") ? call.ref.slice(3) : "";
+      if (!settings || !["bash", "read", "write", "edit", "grep", "find", "ls"].includes(tool)) {
+        return false;
+      }
+      const success = call.status === "completed"
+        ? true
+        : call.status === "failed"
+          ? false
+          : undefined;
+      const audit = {
+        ref: call.ref,
+        provider: "pi",
+        tool,
+        ...(call.args !== undefined ? { args: call.args } : {}),
+        ...(call.result !== undefined ? { result: call.result } : {}),
+        ...(call.preview !== undefined ? { preview: call.preview } : {}),
+        ...(success !== undefined ? { success } : {}),
+        startedAt: call.startedAt,
+        ...(call.finishedAt !== undefined ? { endedAt: call.finishedAt } : {}),
+      };
+      const context = {
+        cwd: this.snapshot().main.cwd ?? process.cwd(),
+        settings,
+        invalidate: this.highlightInvalidate,
+      };
+      const title = coreToolTitle(audit, this.theme, context);
+      const rendered = renderCoreToolBody(audit, this.theme, {
+        ...context,
+        expanded: true,
+        maxLines: 200,
+      });
+      if (!rendered) return false;
+      lines.push(this.theme.fg("dim", "Preview:"));
+      const body = renderBoundedLines(
+        [...(title ? [title] : []), ...rendered.lines],
+        this.theme,
+        settings.diffIntensity,
+      ).render(Math.max(1, width - 2));
+      for (const row of body) lines.push(truncateToWidth(`  ${row}`, width, ""));
+      if (rendered.hidden > 0) {
+        lines.push(this.theme.fg("muted", `  … ${rendered.hidden} more lines`));
+      }
+      return true;
+    };
     const argumentField = (call: FabricActivityCall): void => {
       const args = call.args;
       if (!args || Object.keys(args).length === 0) return;
@@ -1744,9 +1795,10 @@ export class FabricDashboard implements Component, Focusable {
       field("Tool calls", call.metrics?.toolCalls);
       field("Cost", call.metrics?.cost);
       field("Entity", call.entityId);
-      argumentField(call);
+      const renderedCorePreview = coreCallPreview(call);
+      if (!renderedCorePreview) argumentField(call);
       field("Error", call.error);
-      outputField("Output", call.result);
+      if (!renderedCorePreview) outputField("Output", call.result);
     } else if (entity.kind === "item") {
       const item = entity.value;
       field("ID", item.id);

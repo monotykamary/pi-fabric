@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import type { CodePreviewSettings } from "pi-code-previews";
 import type { FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
 import type { FabricThinking } from "../thinking.js";
@@ -56,7 +57,10 @@ export class FabricUiController {
   #lastRefreshErrorAt = 0;
   readonly #transcripts = new AgentTranscriptReader();
 
-  constructor(readonly state: FabricState) {}
+  constructor(
+    readonly state: FabricState,
+    readonly codePreviewSettings?: CodePreviewSettings,
+  ) {}
 
   start(context: ExtensionContext): void {
     this.stop();
@@ -208,6 +212,9 @@ export class FabricUiController {
       (tui, theme, _keybindings, done) =>
         new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
           modelSource,
+          ...(this.codePreviewSettings
+            ? { codePreviewSettings: this.codePreviewSettings }
+            : {}),
           ...(claudeModelSource ? { claudeModelSource } : {}),
           onTargetMessage,
           onAgentStop,

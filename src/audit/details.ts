@@ -21,6 +21,9 @@ export interface FabricLegacyRenderAudit {
   args?: Record<string, unknown>;
   result?: unknown;
   resultTruncated?: boolean;
+  preview?: unknown;
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export interface FabricExecutionRenderDetails {
@@ -90,6 +93,9 @@ const legacyAudit = (value: unknown): FabricLegacyRenderAudit | undefined => {
     ...(typeof value.resultTruncated === "boolean"
       ? { resultTruncated: value.resultTruncated }
       : {}),
+    ...(value.preview !== undefined ? { preview: value.preview } : {}),
+    ...(typeof value.startedAt === "number" ? { startedAt: value.startedAt } : {}),
+    ...(typeof value.endedAt === "number" ? { endedAt: value.endedAt } : {}),
   };
 };
 

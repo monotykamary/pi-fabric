@@ -6,7 +6,14 @@ import {
   type Highlighter,
 } from "shiki";
 
-const MAX_HIGHLIGHT_CHARS = 80_000;
+const configuredMaxHighlightChars = Number.parseInt(
+  process.env.CODE_PREVIEW_MAX_HIGHLIGHT_CHARS ?? "",
+  10,
+);
+const MAX_HIGHLIGHT_CHARS =
+  Number.isFinite(configuredMaxHighlightChars) && configuredMaxHighlightChars > 0
+    ? configuredMaxHighlightChars
+    : 80_000;
 const CACHE_LIMIT = 192;
 const CACHE_CHAR_LIMIT = 4_000_000;
 
@@ -42,9 +49,17 @@ const LANGUAGE_ALIASES = new Map<string, string>([
 const EXACT_BASENAMES = new Map<string, string>([
   ["dockerfile", "dockerfile"],
   ["makefile", "makefile"],
+  ["gnumakefile", "makefile"],
   ["justfile", "makefile"],
+  ["procfile", "shellscript"],
   ["gemfile", "ruby"],
   ["rakefile", "ruby"],
+  ["cargo.lock", "toml"],
+  ["package-lock.json", "json"],
+  ["composer.lock", "json"],
+  ["pnpm-lock.yaml", "yaml"],
+  ["pnpm-lock.yml", "yaml"],
+  ["yarn.lock", "yaml"],
 ]);
 
 const EXTENSION_ALIASES = new Map<string, string>([

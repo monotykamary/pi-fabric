@@ -5,7 +5,6 @@ import {
   createGrepToolDefinition,
   createLsToolDefinition,
   createReadToolDefinition,
-  createWriteToolDefinition,
   type AgentToolResult,
   type ExtensionRunner,
   type ToolDefinition,
@@ -21,6 +20,12 @@ import type {
   FabricRisk,
 } from "../protocol.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
+import {
+  createPreviewWriteToolDefinition,
+  writeContentForPreview,
+} from "./write-preview.js";
+
+const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
 
 const readTools = new Set<PiCoreToolName>(["read", "grep", "find", "ls"]);
 const writeTools = new Set<PiCoreToolName>(["edit", "write"]);
@@ -32,6 +37,13 @@ const riskForTool = (name: PiCoreToolName): FabricRisk => {
   if (readTools.has(name)) return "read";
   if (writeTools.has(name)) return "write";
   return "execute";
+};
+
+const contentLineCount = (content: string): number => {
+  if (!content) return 0;
+  let lines = 1;
+  for (const character of content) if (character === "\n") lines++;
+  return content.endsWith("\n") ? lines - 1 : lines;
 };
 
 const textContent = (content: ToolContent): string =>
@@ -70,10 +82,15 @@ const normalizeResult = (
   if (name === "read" || name === "grep" || name === "find" || name === "ls") {
     return text;
   }
+  let details = result.details;
+  if (name === "write" && details && typeof details === "object" && !Array.isArray(details)) {
+    const { codePreviewBeforeWrite: _before, ...publicDetails } = details as Record<string, unknown>;
+    details = Object.keys(publicDetails).length > 0 ? publicDetails : undefined;
+  }
   return {
     ok: true,
     output: text,
-    details: result.details ?? null,
+    details: details ?? null,
   };
 };
 
@@ -102,7 +119,7 @@ export class PiToolsProvider implements FabricProvider {
       read: createReadToolDefinition(cwd),
       bash: createBashToolDefinition(cwd),
       edit: createEditToolDefinition(cwd),
-      write: createWriteToolDefinition(cwd),
+      write: createPreviewWriteToolDefinition(cwd),
       grep: createGrepToolDefinition(cwd),
       find: createFindToolDefinition(cwd),
       ls: createLsToolDefinition(cwd),
@@ -166,6 +183,7 @@ export class PiToolsProvider implements FabricProvider {
       const result = await this.#capturedTools!.invoke(name, args, context);
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
+      this.#attachPreview(name, result, args, context);
       return normalizeResult(name, result);
     }
     const tool = this.#tools[name];
@@ -183,6 +201,7 @@ export class PiToolsProvider implements FabricProvider {
       );
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
+      this.#attachPreview(name, result, args, context);
       return normalizeResult(name, result);
     }
     return this.#invokeWithEvents(name, tool, args, context, runner);
@@ -300,7 +319,54 @@ export class PiToolsProvider implements FabricProvider {
       const text = textContent(result.content).trim();
       throw new Error(text || (thrown instanceof Error ? thrown.message : `Pi tool ${name} failed`));
     }
+    this.#attachPreview(name, result, args, context);
     return normalizeResult(name, result);
+  }
+
+  #attachPreview(
+    name: PiCoreToolName,
+    result: { content: ToolContent; details?: unknown; isError?: boolean },
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): void {
+    if (result.isError) return;
+    const details = result.details;
+    const detailRecord =
+      typeof details === "object" && details !== null && !Array.isArray(details)
+        ? (details as Record<string, unknown>)
+        : undefined;
+    const bashCommand =
+      name === "bash" &&
+      typeof args.command === "string" &&
+      args.command.length <= MAX_RENDERER_ARGUMENT_CHARS
+        ? args.command
+        : undefined;
+    const writeInput =
+      name === "write" && typeof args.content === "string" ? args.content : undefined;
+    const writeContent =
+      writeInput !== undefined ? writeContentForPreview(writeInput) : undefined;
+    const writeByteLength =
+      writeInput !== undefined ? Buffer.byteLength(writeInput, "utf8") : undefined;
+    const writeLineCount =
+      writeInput !== undefined ? contentLineCount(writeInput) : undefined;
+    const hasWriteBefore =
+      name === "write" &&
+      detailRecord !== undefined &&
+      Object.prototype.hasOwnProperty.call(detailRecord, "codePreviewBeforeWrite");
+    context.attachPreview?.({
+      result: normalizeResult(name, result),
+      ...(bashCommand !== undefined ? { bashCommand } : {}),
+      ...(writeContent !== undefined ? { writeContent } : {}),
+      ...(writeByteLength !== undefined ? { writeByteLength } : {}),
+      ...(writeLineCount !== undefined ? { writeLineCount } : {}),
+      ...(details !== undefined ? { details } : {}),
+      ...(hasWriteBefore
+        ? {
+            codePreviewBeforeWrite: detailRecord?.codePreviewBeforeWrite,
+            writeBeforeCaptured: true,
+          }
+        : {}),
+    });
   }
 
   // `pi.read` of an image file returns `{ type: "image" }` content blocks.

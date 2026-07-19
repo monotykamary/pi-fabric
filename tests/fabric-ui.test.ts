@@ -1,5 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import type { CodePreviewSettings } from "pi-code-previews";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";
@@ -22,6 +23,32 @@ const theme = {
   bg: (_color: string, text: string) => text,
   bold: (text: string) => text,
 } as unknown as Theme;
+
+const codePreviewSettings: CodePreviewSettings = {
+  shikiTheme: "dark-plus",
+  diffIntensity: "subtle",
+  wordEmphasis: "all",
+  toolCallBackground: "on",
+  toolCallTiming: true,
+  readCollapsedLines: 10,
+  readContentPreview: true,
+  writeContentPreview: true,
+  writeCollapsedLines: 10,
+  editDiffPreview: true,
+  editCollapsedLines: 160,
+  grepCollapsedLines: 15,
+  grepResultPreview: true,
+  findResultPreview: true,
+  lsResultPreview: true,
+  pathListCollapsedLines: 20,
+  readLineNumbers: true,
+  bashResultPreview: true,
+  bashWarnings: true,
+  syntaxHighlighting: true,
+  secretWarnings: true,
+  pathIcons: "unicode",
+  tools: ["bash", "read", "write", "edit", "grep", "find", "ls"],
+};
 
 const ansiTheme = {
   fg: (_color: string, text: string) => `\x1b[36m${text}\x1b[39m`,
@@ -646,7 +673,11 @@ describe("Fabric dynamic UI", () => {
           path: "src/example.ts",
           edits: [{ oldText: "const oldValue = 1;", newText: "const newValue = 2;" }],
         },
-        result: { ok: true, output: "edited" },
+        result: {
+          ok: true,
+          output: "edited",
+          details: { diff: "-1 const oldValue = 1;\n+1 const newValue = 2;" },
+        },
         startedAt: now - 900,
         updatedAt: now,
         finishedAt: now,
@@ -659,6 +690,13 @@ describe("Fabric dynamic UI", () => {
         status: "completed",
         args: { path: "src/example.ts", content: "export const value = 2;" },
         result: { ok: true, created: true },
+        preview: {
+          writeBeforeCaptured: true,
+          codePreviewBeforeWrite: {
+            kind: "content",
+            content: "export const value = 1;",
+          },
+        },
         startedAt: now - 800,
         updatedAt: now,
         finishedAt: now,
@@ -683,6 +721,7 @@ describe("Fabric dynamic UI", () => {
       theme,
       () => current,
       vi.fn(),
+      { codePreviewSettings },
     );
     const openDetail = (index: number): string => {
       for (let step = 0; step < index; step++) dashboard.handleInput("j");
@@ -699,22 +738,21 @@ describe("Fabric dynamic UI", () => {
       dashboard.render(120);
       dashboard.handleInput("l");
       const bash = openDetail(0);
-      expect(bash).toContain("Command:");
+      expect(bash).toContain("Preview:");
       expect(bash).toContain("pnpm vitest run tests/fabric-ui.test.ts");
-      expect(bash).toContain("Output:");
-      expect(bash).toContain("Tests passed");
-      expect(bash).not.toContain("**passed**");
+      expect(bash).toContain("Tests **passed**");
+      expect(bash).toContain("1.0s");
 
-      const edit = openDetail(1);
-      expect(edit).toContain("Edits:");
+      const edit = openDetail(1).replace(/\x1b\[[0-9;]*m/g, "");
+      expect(edit).toContain("Preview:");
       expect(edit).toContain("const oldValue = 1;");
       expect(edit).toContain("const newValue = 2;");
 
-      const write = openDetail(1);
-      expect(write).toContain("Content:");
+      const write = openDetail(1).replace(/\x1b\[[0-9;]*m/g, "");
+      expect(write).toContain("Preview:");
+      expect(write).toContain("Write applied");
+      expect(write).toContain("export const value = 1;");
       expect(write).toContain("export const value = 2;");
-      expect(write).toContain("Output:");
-      expect(write).toContain("created: true");
 
       const structured = openDetail(1);
       expect(structured).toContain("Input:");

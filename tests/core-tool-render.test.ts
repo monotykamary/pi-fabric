@@ -1,0 +1,218 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { CodePreviewSettings } from "pi-code-previews";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { describe, expect, it } from "vitest";
+import {
+  coreToolPreviewEnabled,
+  coreToolRendererEnabled,
+  coreToolTitle,
+  renderCoreToolBody,
+  type CoreToolRenderOptions,
+} from "../src/ui/core-tool-render.js";
+import { renderBoundedLines, type FabricRenderAudit } from "../src/ui/fabric-render.js";
+
+const settings: CodePreviewSettings = {
+  shikiTheme: "dark-plus",
+  diffIntensity: "subtle",
+  wordEmphasis: "all",
+  toolCallBackground: "on",
+  toolCallTiming: true,
+  readCollapsedLines: 10,
+  readContentPreview: true,
+  writeContentPreview: true,
+  writeCollapsedLines: 10,
+  editDiffPreview: true,
+  editCollapsedLines: 160,
+  grepCollapsedLines: 15,
+  grepResultPreview: true,
+  findResultPreview: true,
+  lsResultPreview: true,
+  pathListCollapsedLines: 20,
+  readLineNumbers: true,
+  bashResultPreview: true,
+  bashWarnings: true,
+  syntaxHighlighting: true,
+  secretWarnings: true,
+  pathIcons: "unicode",
+  tools: ["bash", "read", "write", "edit", "grep", "find", "ls"],
+};
+
+const theme = {
+  fg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+  getFgAnsi: (color: string) =>
+    color === "toolDiffAdded" ? "\x1b[38;2;80;200;120m" : "\x1b[38;2;220;90;100m",
+  getBgAnsi: () => "\x1b[48;2;0;0;0m",
+} as unknown as Theme;
+
+const options = (
+  overrides: Partial<CoreToolRenderOptions> = {},
+): CoreToolRenderOptions => ({
+  cwd: process.cwd(),
+  settings,
+  expanded: false,
+  maxLines: 200,
+  ...overrides,
+});
+
+const audit = (
+  tool: string,
+  values: Omit<FabricRenderAudit, "ref" | "provider" | "tool">,
+): FabricRenderAudit => ({ ref: `pi.${tool}`, provider: "pi", tool, ...values });
+
+describe("Fabric core tool parity rendering", () => {
+  it("renders offset-aware read gutters and secret warnings", () => {
+    const rendered = renderCoreToolBody(
+      audit("read", {
+        args: { path: "src/example.ts", offset: 20 },
+        result: "const value = 1;\nOPENAI_API_KEY=abcdefghijklmnop",
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines[0]).toContain("possible API key");
+    expect(rendered!.lines.join("\n")).toContain("20 │");
+    expect(rendered!.lines.join("\n")).toContain("21 │");
+  });
+
+  it("renders write result diffs with summaries, gutters, word emphasis, and full-row backgrounds", () => {
+    const rendered = renderCoreToolBody(
+      audit("write", {
+        args: {
+          path: "src/example.ts",
+          content: `const value = "${"new".repeat(40)}";`,
+        },
+        preview: {
+          details: {
+            codePreviewBeforeWrite: {
+              kind: "content",
+              content: `const value = "${"old".repeat(40)}";`,
+            },
+          },
+          writeBeforeCaptured: true,
+        },
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines[0]).toContain("Write applied");
+    expect(rendered!.lines.join("\n")).toContain("replacement");
+    expect(rendered!.lines.join("\n")).toContain("│");
+    expect(rendered!.lines.join("\n")).toContain("\x1b[48;2;148;62;70m");
+    expect(rendered!.lines.join("\n")).toContain("\x1b[48;2;64;132;82m");
+
+    const rows = renderBoundedLines(rendered!.lines, theme, settings.diffIntensity).render(32);
+    const changedRows = rows.filter((line) => line.includes("\x1b[48;2;"));
+    expect(changedRows).toHaveLength(6);
+    expect(changedRows.every((line) => visibleWidth(line) === 32)).toBe(true);
+    const plainRows = changedRows.map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    expect(plainRows.filter((line) => line.startsWith("     ")).length).toBe(4);
+  });
+
+  it("groups grep matches by file, distinguishes context, and emphasizes literal matches", () => {
+    const rendered = renderCoreToolBody(
+      audit("grep", {
+        args: { pattern: "value", path: "src", literal: true },
+        result: [
+          "src/a.ts:3: const value = 1;",
+          "src/a.ts-4- return value;",
+          "src/b.ts:9: const value = 2;",
+        ].join("\n"),
+        success: true,
+      }),
+      theme,
+      options(),
+    );
+
+    const text = rendered!.lines.join("\n");
+    expect(text.match(/src\/a\.ts/g)).toHaveLength(1);
+    expect(text.match(/src\/b\.ts/g)).toHaveLength(1);
+    expect(text).toContain("│");
+    expect(text).toContain("┆");
+    expect(text).toContain("\x1b[48;2;90;74;28m");
+  });
+
+  it.each([
+    ["find", "src/a.ts\nsrc/lib/b.ts"],
+    ["ls", "src/\nREADME.md"],
+  ])("renders %s output as an iconized path tree", (tool, result) => {
+    const rendered = renderCoreToolBody(
+      audit(tool, { args: { path: ".", pattern: "*.ts" }, result, success: true }),
+      theme,
+      options(),
+    );
+
+    expect(rendered!.lines.join("\n")).toMatch(/[▸•]/);
+    expect(rendered!.lines.join("\n")).toContain("src/");
+  });
+
+  it("renders bash warnings, timeout metadata, output limits, and full output details", () => {
+    const call = audit("bash", {
+      args: { command: "sudo rm -rf build", timeout: 30 },
+      preview: { bashCommand: "sudo rm -rf build\necho complete" },
+      result: {
+        ok: true,
+        output: Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"),
+        details: { fullOutputPath: "/tmp/bash.log", truncation: { truncated: true } },
+      },
+      success: true,
+      startedAt: 1_000,
+      endedAt: 2_250,
+    });
+    const title = coreToolTitle(call, theme, {
+      cwd: process.cwd(),
+      settings,
+    });
+    const rendered = renderCoreToolBody(call, theme, options());
+
+    expect(title).toContain("timeout 30s");
+    expect(title).toContain("1.3s");
+    expect(title).toContain("recursive delete");
+    expect(title).toContain("elevated privileges");
+    expect(rendered!.hidden).toBe(5);
+    expect(rendered!.lines.join("\n")).toContain("echo complete");
+    expect(rendered!.lines.join("\n")).toContain("Output truncated by bash");
+    expect(rendered!.lines.join("\n")).toContain("Full output: /tmp/bash.log");
+  });
+
+  it("honors collapsed preview visibility while allowing expanded output", () => {
+    const read = audit("read", { args: { path: "a.txt" }, result: "hidden", success: true });
+    const hiddenSettings = { ...settings, readContentPreview: false };
+    expect(coreToolPreviewEnabled(read, hiddenSettings)).toBe(false);
+    expect(renderCoreToolBody(read, theme, options({ settings: hiddenSettings }))).toBeNull();
+    expect(
+      renderCoreToolBody(
+        read,
+        theme,
+        options({ settings: hiddenSettings, expanded: true }),
+      )?.lines.join("\n"),
+    ).toContain("hidden");
+  });
+
+  it("falls back when a tool is excluded from the configured renderer list", () => {
+    const read = audit("read", { args: { path: "a.txt" }, result: "generic", success: true });
+    const disabled = { ...settings, tools: settings.tools.filter((tool) => tool !== "read") };
+    expect(coreToolRendererEnabled(read, disabled)).toBe(false);
+    expect(coreToolPreviewEnabled(read, disabled)).toBe(true);
+    expect(renderCoreToolBody(read, theme, options({ settings: disabled }))).toBeNull();
+    expect(coreToolTitle(read, theme, { cwd: process.cwd(), settings: disabled })).toBeNull();
+  });
+
+  it("does not apply core rendering to another provider with a colliding action name", () => {
+    const other = {
+      ref: "mcp.files.read",
+      provider: "mcp",
+      tool: "read",
+      args: { path: "remote.txt" },
+      result: "remote",
+    };
+    expect(renderCoreToolBody(other, theme, options())).toBeNull();
+    expect(coreToolTitle(other, theme, { cwd: process.cwd(), settings })).toBeNull();
+  });
+});

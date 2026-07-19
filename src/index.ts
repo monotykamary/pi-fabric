@@ -30,29 +30,35 @@ import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProvi
 import { FabricUiController } from "./ui/controller.js";
 import {
   captureFabricCallHeadlinePreviews,
+  captureFabricCoreToolPreviews,
   captureFabricWritePreviews,
   expandHint,
   fabricMulticallCallLimit,
   fabricWriteBindings,
-  isNumberedTool,
   modelReadHint,
   nestedCallBody,
-  nestedCallCode,
   nestedCallTitle,
-  nestedEditDiff,
   renderBoundedLines,
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
   restoreFabricCallHeadlinePreviews,
+  restoreFabricCoreToolPreviews,
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
   type FabricCallHeadlinePreview,
+  type FabricCoreToolPreview,
   type FabricRenderAudit,
   type FabricWriteBinding,
   type FabricWritePreview,
 } from "./ui/fabric-render.js";
 import { highlightCode, initHighlighting } from "./ui/highlight.js";
+import {
+  coreToolPreviewEnabled,
+  coreToolRendererEnabled,
+  isCoreToolAudit,
+  renderCoreToolBody,
+} from "./ui/core-tool-render.js";
 import { formatFabricValue } from "./ui/structured.js";
 import {
   HiddenRowBorrowingComponent,
@@ -71,6 +77,7 @@ type FabricRendererState = {
   fabricWriteBindingsCode?: string;
   fabricWriteBindings?: FabricWriteBinding[];
   fabricWritePreviews?: FabricWritePreview[];
+  fabricCoreToolPreviews?: FabricCoreToolPreview[];
   fabricCallHeadlinePreviews?: FabricCallHeadlinePreview[];
   fabricResultRowBalance?: ResultRowBalance;
 };
@@ -126,7 +133,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const capturedTools = new CapturedToolCatalog();
   const state = new FabricState(pi, capturedTools);
   const toolOwnership = new FabricToolOwnership(pi);
-  const fabricUi = new FabricUiController(state);
+  const fabricUi = new FabricUiController(state, codePreviewSettings);
 
   pi.events.on(FABRIC_PROVIDER_REGISTER_EVENT, (value: unknown) => {
     const registration = registrationFrom(value);
@@ -213,6 +220,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
                 bindings: rendererState.fabricWriteBindings ?? [],
                 strings: params.strings,
                 expanded: context.expanded,
+                cwd: context.cwd,
+                settings: codePreviewSettings,
               },
               theme,
               context.invalidate,
@@ -271,6 +280,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         const trackRows = (component: Component): Component =>
           observeResultRows(component, rowBalance, { expanded, isPartial });
         if (isPartial) {
+          rendererState.fabricCoreToolPreviews = captureFabricCoreToolPreviews(
+            audits,
+            rendererState.fabricCoreToolPreviews,
+          );
           const headlinePreviews = captureFabricCallHeadlinePreviews(audits);
           if (headlinePreviews.length > 0) {
             rendererState.fabricCallHeadlinePreviews = headlinePreviews;
@@ -278,6 +291,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           const writePreviews = captureFabricWritePreviews(audits);
           if (writePreviews.length > 0) rendererState.fabricWritePreviews = writePreviews;
         } else {
+          if (rendererState.fabricCoreToolPreviews) {
+            audits = restoreFabricCoreToolPreviews(
+              audits,
+              rendererState.fabricCoreToolPreviews,
+            );
+          }
           if (rendererState.fabricCallHeadlinePreviews) {
             audits = restoreFabricCallHeadlinePreviews(
               audits,
@@ -290,59 +309,36 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         }
         const phases = details.phases;
         const nl = "\n";
+        const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings };
 
         const renderBody = (
           audit: FabricRenderAudit,
           limit: number,
         ): { body: string; hidden: number } | null => {
-          let bodyLines: string[] | null = null;
-          let numbered = false;
-          let raw = false;
-          const editDiff = nestedEditDiff(audit, theme, context?.invalidate);
-          if (editDiff) {
-            bodyLines = editDiff;
-            raw = true;
-          } else {
-            const codeInfo = nestedCallCode(audit);
-            if (codeInfo) {
-              const highlighted = highlightCode(
-                codeInfo.code,
-                codeInfo.lang,
-                context?.invalidate,
-              );
-              if (highlighted) {
-                bodyLines = highlighted.map((line) => line || " ");
-                numbered = true;
-                raw = true;
-              }
-            }
-            if (!bodyLines) {
-              const body = nestedCallBody(audit);
-              if (body) {
-                bodyLines = safeTerminalText(body).split(nl);
-                numbered = isNumberedTool(audit);
-              }
-            }
+          const core = renderCoreToolBody(audit, theme, {
+            cwd: context.cwd,
+            settings: codePreviewSettings,
+            expanded,
+            maxLines: limit,
+            ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
+          });
+          if (core) return { body: core.lines.join(nl), hidden: core.hidden };
+          if (coreToolRendererEnabled(audit, codePreviewSettings)) return null;
+
+          const body = nestedCallBody(audit);
+          if (!body) return null;
+          const bodyLines = safeTerminalText(body).split(nl);
+          while (bodyLines.length > 0) {
+            const last = bodyLines[bodyLines.length - 1];
+            if (last === undefined || last.trim() === "") bodyLines.pop();
+            else break;
           }
-          if (bodyLines) {
-            while (bodyLines.length > 0) {
-              const last = bodyLines[bodyLines.length - 1];
-              if (last === undefined || last.trim() === "") bodyLines.pop();
-              else break;
-            }
-            if (bodyLines.length === 0) bodyLines = null;
-          }
-          if (!bodyLines) return null;
+          if (bodyLines.length === 0) return null;
           const shown = bodyLines.slice(0, limit);
-          const body = shown
-            .map((line, index) => {
-              const content = raw ? line : theme.fg("toolOutput", line || " ");
-              return numbered
-                ? `${theme.fg("dim", String(index + 1).padStart(3, " "))} ${content}`
-                : content;
-            })
-            .join(nl);
-          return { body, hidden: bodyLines.length - shown.length };
+          return {
+            body: shown.map((line) => theme.fg("toolOutput", line || " ")).join(nl),
+            hidden: bodyLines.length - shown.length,
+          };
         };
 
         if (isPartial) {
@@ -367,22 +363,33 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
                 : audit.success === false
                   ? theme.fg("error", "✗")
                   : theme.fg("dim", "›");
-            let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate)}`;
+            let text = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
             if (audit.success === false && audit.error) {
               text += nl + `  ${theme.fg("error", safeTerminalText(audit.error))}`;
             } else {
-              const rendered = renderBody(audit, expanded ? 200 : 10);
+              const rendered = renderBody(
+                audit,
+                expanded || coreToolRendererEnabled(audit, codePreviewSettings) ? 200 : 10,
+              );
               if (rendered) {
                 text += nl + rendered.body;
                 if (rendered.hidden > 0) {
                   text += nl + theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`);
                   if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
                 }
+              } else if (
+                isCoreToolAudit(audit) &&
+                !expanded &&
+                !coreToolPreviewEnabled(audit, codePreviewSettings)
+              ) {
+                text += nl + theme.fg("muted", "╰─ ") + expandHint(theme);
               } else if (progress) {
                 text += nl + theme.fg("dim", safeTerminalText(progress));
               }
             }
-            return trackRows(new Text(text, 0, 0));
+            return trackRows(
+              renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+            );
           }
           let preview: { auditIndex: number; body: string; hidden: number } | undefined;
           for (let index = audits.length - 1; index >= 0; index--) {
@@ -396,7 +403,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           }
           return trackRows(
             renderFabricMulticallPartial(
-              { audits, phases, progress, expanded, preview },
+              { audits, phases, progress, expanded, preview, core: corePreviewContext },
               theme,
               context?.invalidate,
             ),
@@ -440,19 +447,22 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")}`);
             if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
           }
-          return trackRows(renderBoundedLines(text.split(nl)));
+          return trackRows(
+            renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+          );
         }
 
         if (audits.length === 1) {
           const audit = audits[0]!;
-          let text = nestedCallTitle(audit, theme, context?.invalidate);
+          let text = nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
           if (audit.success === false) {
             if (audit.error) {
               text += nl + theme.fg("error", safeTerminalText(audit.error));
             }
             return trackRows(new Text(text, 0, 0));
           }
-          const limit = expanded ? 200 : 12;
+          const limit =
+            expanded || coreToolRendererEnabled(audit, codePreviewSettings) ? 200 : 12;
           const rendered = renderBody(audit, limit);
           if (rendered) {
             text += nl + rendered.body;
@@ -462,7 +472,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             }
             const readHint = modelReadHint(audits, output, theme);
             if (readHint) text += nl + readHint;
-          } else if (output) {
+          } else if (
+            isCoreToolAudit(audit) &&
+            !expanded &&
+            !coreToolPreviewEnabled(audit, codePreviewSettings)
+          ) {
+            text += nl + theme.fg("muted", "╰─ ") + expandHint(theme);
+          } else if (output && !isCoreToolAudit(audit)) {
             const lines = safeTerminalText(output).split(nl);
             const outLimit = expanded ? Math.min(lines.length, 200) : 12;
             const outShown = lines.slice(0, outLimit);
@@ -472,7 +488,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
             }
           }
-          return trackRows(renderBoundedLines(text.split(nl)));
+          return trackRows(
+            renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+          );
         }
 
         const failedCalls = audits.filter(
@@ -517,7 +535,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           firstNested = false;
           const glyph =
             audit.success === false ? theme.fg("error", "✗") : theme.fg("dim", "›");
-          text += nl + `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate)}`;
+          text += nl + `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
           if (audit.success === false && audit.error) {
             text += nl + `  ${theme.fg("error", safeTerminalText(audit.error))}`;
           } else if (expanded) {
@@ -563,9 +581,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           }
         }
         return trackRows(
-          !expanded && !showOutput
-            ? renderBoundedLines(text.split(nl))
-            : new Text(text, 0, 0),
+          renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
         );
       },
       async execute(toolCallId, params, signal, onUpdate, context) {

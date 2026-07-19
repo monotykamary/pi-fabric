@@ -32,6 +32,7 @@ const provider = (): FabricProvider => ({
   },
   async invoke(_name, args, invocationContext) {
     invocationContext.activity?.({ type: "progress", message: "echoing" });
+    invocationContext.attachPreview?.({ renderer: "rich" });
     invocationContext.activity?.({
       type: "entity",
       id: "demo-entity",
@@ -99,7 +100,12 @@ describe("ActionRegistry", () => {
         type: "call_update",
         update: { type: "entity", id: "demo-entity", kind: "custom" },
       },
-      { type: "call_end", success: true, result: "hello" },
+      {
+        type: "call_end",
+        success: true,
+        result: "hello",
+        preview: { renderer: "rich" },
+      },
     ]);
   });
 

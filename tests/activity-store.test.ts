@@ -114,7 +114,11 @@ describe("FabricActivityStore", () => {
     store.beginCall("run-d", { callId: "bash-1", ref: "pi.bash", args: { command: "seq 1 3" } });
     store.finishCall("run-d", "bash-1", { success: true, result: { ok: true, output: "line1\nline2" } });
     store.beginCall("run-d", { callId: "read-1", ref: "pi.read", args: { path: "/a.ts" } });
-    store.finishCall("run-d", "read-1", { success: true, result: "export const x = 1;" });
+    store.finishCall("run-d", "read-1", {
+      success: true,
+      result: "export const x = 1;",
+      preview: { details: { truncation: { truncated: false } } },
+    });
     store.beginCall("run-d", { callId: "fail-1", ref: "pi.bash", args: {} });
     store.finishCall("run-d", "fail-1", { success: false, error: "boom" });
 
@@ -123,7 +127,9 @@ describe("FabricActivityStore", () => {
     expect(bash?.args).toEqual({ command: "seq 1 3" });
     expect(bash?.result).toEqual({ ok: true, output: "line1\nline2" });
     expect(bash?.detail).toBe("line1 line2");
-    expect(run?.calls.find((c) => c.id === "read-1")?.detail).toBe("export const x = 1;");
+    const read = run?.calls.find((c) => c.id === "read-1");
+    expect(read?.detail).toBe("export const x = 1;");
+    expect(read?.preview).toEqual({ details: { truncation: { truncated: false } } });
     const failed = run?.calls.find((c) => c.id === "fail-1");
     expect(failed?.status).toBe("failed");
     expect(failed?.error).toBe("boom");
