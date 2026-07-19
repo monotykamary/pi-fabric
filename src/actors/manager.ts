@@ -5,7 +5,8 @@ import path from "node:path";
 import type { FabricAgentRunner, FabricMeshConfig, FabricSubagentTransport } from "../config.js";
 import { MeshStore, type MeshEvent, type MeshIdentity } from "../mesh/store.js";
 import { SubagentManager } from "../subagents/manager.js";
-import type { FabricLogLine, SubagentRunRecord, SubagentRunRequest, SubagentRunResult } from "../subagents/types.js";
+import type { SubagentRunRecord, SubagentRunRequest, SubagentRunResult } from "../subagents/types.js";
+import { readJsonlPage } from "../log-tail.js";
 import type {
   FabricActorDelivery,
   FabricActorDeliveryRequest,
@@ -91,27 +92,6 @@ const readRunRecord = (filePath: string): SubagentRunRecord | undefined => {
   } catch {
     return undefined;
   }
-};
-
-const readJsonlTail = (filePath: string, lines: number): FabricLogLine[] => {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return [];
-  }
-  const all = content.split("\n").filter((line) => line.length > 0);
-  const tail = all.slice(-lines);
-  const offset = all.length - tail.length;
-  return tail.map((raw, index) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      /* keep raw only */
-    }
-    return { index: offset + index, raw, ...(parsed !== undefined ? { parsed } : {}) };
-  });
 };
 
 const directiveSchema: Record<string, unknown> = {
@@ -493,14 +473,17 @@ export class ActorManager {
 
   readLog(
     id: string,
-    opts: { type?: "session" | "run" | "all"; lines?: number; runId?: string } = {},
+    opts: { type?: "session" | "run" | "all"; lines?: number; runId?: string; before?: number } = {},
   ): FabricActorLog {
     const actor = this.#requireActor(id);
     const type = opts.type ?? "session";
     const lines = Math.max(1, Math.min(opts.lines ?? 200, 5000));
     const sessionFile = actor.sessionFile;
     const logDir = path.join(path.dirname(sessionFile), "runs");
-    const session = type === "run" ? [] : readJsonlTail(sessionFile, lines);
+    const sessionPage = type === "run"
+      ? { lines: [], hasMore: false }
+      : readJsonlPage(sessionFile, lines, opts.before);
+    const session = sessionPage.lines;
     let run: FabricActorLog["run"];
     if (type !== "session") {
       const targetRunId = opts.runId ?? actor.lastRunId;
@@ -508,11 +491,15 @@ export class ActorManager {
         const runPath = path.join(logDir, targetRunId);
         if (fs.existsSync(runPath)) {
           const statusRecord = readRunRecord(path.join(runPath, "status.json"));
+          const eventsFile = path.join(runPath, "events.jsonl");
+          const page = readJsonlPage(eventsFile, lines, opts.before);
           run = {
             runId: targetRunId,
-            eventsFile: path.join(runPath, "events.jsonl"),
+            eventsFile,
             ...(statusRecord ? { status: statusRecord } : {}),
-            events: readJsonlTail(path.join(runPath, "events.jsonl"), lines),
+            events: page.lines,
+            hasMore: page.hasMore,
+            ...(page.before !== undefined ? { before: page.before } : {}),
           };
         }
       }
@@ -523,6 +510,8 @@ export class ActorManager {
       sessionFile,
       logDir,
       session,
+      sessionHasMore: sessionPage.hasMore,
+      ...(sessionPage.before !== undefined ? { sessionBefore: sessionPage.before } : {}),
       ...(run ? { run } : {}),
       retainedRuns: this.#retainedRunIds(actor),
     };

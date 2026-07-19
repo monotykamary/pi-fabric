@@ -13,7 +13,10 @@ import {
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
-import { DEFAULT_FABRIC_CONFIG, effectiveToolCaptureConfig } from "./config.js";
+import {
+  DEFAULT_FABRIC_CONFIG,
+  effectiveToolCaptureConfig,
+} from "./config.js";
 import { registerCompactionHook } from "./compaction/hook.js";
 import {
   FabricToolLifecycle,
@@ -48,6 +51,7 @@ import {
   type FabricWritePreview,
 } from "./ui/fabric-render.js";
 import { highlightCode, initHighlighting } from "./ui/highlight.js";
+import { formatFabricValue } from "./ui/structured.js";
 import {
   HiddenRowBorrowingComponent,
   observeResultRows,
@@ -58,9 +62,8 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { truncateMiddle } from "./util.js";
 
-const RESULT_FORMATS = ["auto", "json", "text"] as const;
+const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const MAX_FABRIC_CODE_TRANSFER_LINES = 12;
-type ResultFormat = (typeof RESULT_FORMATS)[number];
 
 type FabricRendererState = {
   fabricWriteBindingsCode?: string;
@@ -92,20 +95,6 @@ const FABRIC_TEMPLATE_LITERAL_CAVEAT =
 
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
-
-const formatValue = (value: unknown, format: ResultFormat): string => {
-  if (value === undefined) return "";
-  if (format === "text" && typeof value === "object" && value !== null && "text" in value) {
-    const text = (value as { text?: unknown }).text;
-    if (typeof text === "string") return text;
-  }
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, format === "json" || format === "auto" ? 2 : 0);
-  } catch {
-    return String(value);
-  }
-};
 
 const registrationFrom = (value: unknown): FabricProviderRegistration | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
@@ -416,6 +405,18 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           .filter((part): part is { type: "text"; text: string } => part.type === "text")
           .map((part) => part.text)
           .join(nl);
+        const styleOutputLines = (lines: string[]): string[] => {
+          if (!details.outputFormat || lines.length === 0) {
+            return lines.map((line) => theme.fg("toolOutput", line || " "));
+          }
+          const highlighted = highlightCode(
+            lines.join(nl),
+            details.outputFormat,
+            context?.invalidate,
+          );
+          return highlighted?.map((line) => line || " ")
+            ?? lines.map((line) => theme.fg("toolOutput", line || " "));
+        };
         const failed = details.success === false;
 
         if (audits.length === 0) {
@@ -432,14 +433,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           const lines = safeTerminalText(output).split(nl);
           const limit = expanded ? Math.min(lines.length, 200) : 12;
           const shown = lines.slice(0, limit);
-          let text = shown
-            .map((line) => theme.fg("toolOutput", line || " "))
-            .join(nl);
+          let text = styleOutputLines(shown).join(nl);
           if (lines.length > shown.length) {
             text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")}`);
             if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
           }
-          return trackRows(new Text(text, 0, 0));
+          return trackRows(renderBoundedLines(text.split(nl)));
         }
 
         if (audits.length === 1) {
@@ -465,15 +464,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             const lines = safeTerminalText(output).split(nl);
             const outLimit = expanded ? Math.min(lines.length, 200) : 12;
             const outShown = lines.slice(0, outLimit);
-            text += nl + outShown
-              .map((line) => theme.fg("toolOutput", line || " "))
-              .join(nl);
+            text += nl + styleOutputLines(outShown).join(nl);
             if (lines.length > outShown.length) {
               text += nl + theme.fg("dim", `… ${countLabel(lines.length - outShown.length, "line")}`);
               if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
             }
           }
-          return trackRows(new Text(text, 0, 0));
+          return trackRows(renderBoundedLines(text.split(nl)));
         }
 
         const failedCalls = audits.filter(
@@ -556,7 +553,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           const shown = lines.slice(0, limit);
           if (shown.length > 0) {
             if (expanded) text += nl + theme.fg("dim", "↩ return");
-            text += nl + shown.map((line) => theme.fg("toolOutput", line || " ")).join(nl);
+            text += nl + styleOutputLines(shown).join(nl);
             if (lines.length > shown.length) {
               text += nl + theme.fg("dim", `… ${countLabel(lines.length - shown.length, "line")} hidden`);
               if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
@@ -604,7 +601,17 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           },
         });
 
-        const persistedDetails = createFabricPersistedExecutionDetails(result);
+        const selectedResultFormat =
+          params.resultFormat ?? state.config.executor.resultFormat;
+        const formattedValue = formatFabricValue(result.value, selectedResultFormat);
+        const outputFormat =
+          formattedValue.language && result.logs.length === 0 && !result.error
+            ? formattedValue.language
+            : undefined;
+        const persistedDetails = createFabricPersistedExecutionDetails({
+          ...result,
+          ...(outputFormat ? { outputFormat } : {}),
+        });
 
         if (result.typeErrors) {
           const text = result.typeErrors
@@ -622,8 +629,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         }
 
         const sections = [...result.logs];
-        const formattedValue = formatValue(result.value, params.resultFormat ?? "auto");
-        if (formattedValue) sections.push(formattedValue);
+        if (formattedValue.text) sections.push(formattedValue.text);
         if (result.error) sections.push(`Runtime error: ${result.error}`);
         const output = truncateMiddle(
           sections.join("\n\n") || "(no output)",

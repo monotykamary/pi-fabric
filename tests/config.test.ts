@@ -71,6 +71,13 @@ describe("Fabric configuration", () => {
     expect(config.mesh.eventContextChars).toBe(1_000_000);
   });
 
+  it("normalizes the default result format", () => {
+    expect(DEFAULT_FABRIC_CONFIG.executor.resultFormat).toBe("auto");
+    expect(normalizeFabricConfig({ executor: { resultFormat: "yaml" } }).executor.resultFormat).toBe("yaml");
+    expect(normalizeFabricConfig({ executor: { resultFormat: "json" } }).executor.resultFormat).toBe("json");
+    expect(normalizeFabricConfig({ executor: { resultFormat: "invalid" } }).executor.resultFormat).toBe("auto");
+  });
+
   it("normalizes the subagent cost budget", () => {
     const enabled = normalizeFabricConfig({ subagents: { budgetUsd: 0.42 } });
     expect(enabled.subagents.budgetUsd).toBe(0.42);

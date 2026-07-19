@@ -60,11 +60,15 @@ export interface FabricActorLog {
   sessionFile: string;
   logDir: string;
   session: FabricLogLine[];
+  sessionHasMore: boolean;
+  sessionBefore?: number;
   run?: {
     runId: string;
     eventsFile: string;
     status?: SubagentRunRecord;
     events: FabricLogLine[];
+    hasMore: boolean;
+    before?: number;
   };
   retainedRuns: string[];
 }

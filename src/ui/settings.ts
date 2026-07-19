@@ -39,6 +39,8 @@ const APPROVAL_MODES = ["allow", "ask", "deny"] as const;
 const RUNNERS = ["pi", "claude"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
+const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
+const COMPACTION_ENGINES = ["fabric", "pi"] as const;
 const ACTOR_SCOPES = ["project", "session"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;
@@ -53,6 +55,7 @@ const ROOT_ITEM_IDS = [
   "subagents",
   "capture",
   "ui",
+  "compaction",
   "mesh",
 ] as const;
 const RELOAD_SECTIONS = new Set(["mesh", "subagents", "mcp"]);
@@ -183,6 +186,8 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return config.capture.enabled ? "enabled" : "disabled";
     case "ui":
       return config.ui.widget;
+    case "compaction":
+      return config.compaction.engine;
     case "mesh":
       return config.mesh.enabled ? "enabled" : "disabled";
     default:
@@ -509,6 +514,11 @@ export const buildFabricSettingsItems = (
               "Character cap applied to the final fabric_exec return value shown to the model.",
             ),
           }),
+          setting("executor.resultFormat", "Result format", config.executor.resultFormat, {
+            description:
+              "Default formatting for fabric_exec return values. Auto renders structured values as syntax-highlighted YAML; each call can override this.",
+            values: RESULT_FORMATS,
+          }),
           setting(
             "executor.maxNestedResultChars",
             "Max nested result chars",
@@ -797,6 +807,22 @@ export const buildFabricSettingsItems = (
               "Event history",
               "Number of mesh events kept in the dashboard history.",
             ),
+          }),
+        ],
+        persist,
+      ),
+    }),
+    setting("compaction", "Compaction", summaryFor("compaction", config), {
+      description: "Compaction engine used at session compaction boundaries.",
+      submenu: sectionSubmenu(
+        theme,
+        "Compaction",
+        "Choose Fabric deterministic compaction or Pi core model-driven compaction.",
+        [
+          setting("compaction.engine", "Engine", config.compaction.engine, {
+            description:
+              "Fabric uses deterministic branch summaries; Pi delegates compaction to Pi core.",
+            values: COMPACTION_ENGINES,
           }),
         ],
         persist,

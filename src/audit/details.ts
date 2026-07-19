@@ -9,6 +9,7 @@ export const FABRIC_EXECUTION_DETAILS_MAX_BYTES = 512 * 1024;
 export interface FabricPersistedExecutionDetailsV1 {
   success: boolean;
   trace: FabricExecutionTraceV1;
+  outputFormat?: "yaml" | "json";
 }
 
 export interface FabricLegacyRenderAudit {
@@ -26,6 +27,7 @@ export interface FabricExecutionRenderDetails {
   success?: boolean;
   error?: string;
   progress?: string;
+  outputFormat?: "yaml" | "json";
   phases: string[];
   audits: FabricLegacyRenderAudit[];
 }
@@ -44,10 +46,12 @@ const cloneTrace = (trace: FabricExecutionTraceV1): FabricExecutionTraceV1 =>
 export const createFabricPersistedExecutionDetails = (input: {
   success: boolean;
   trace: FabricExecutionTraceV1;
+  outputFormat?: "yaml" | "json";
 }): FabricPersistedExecutionDetailsV1 => {
   const details: FabricPersistedExecutionDetailsV1 = {
     success: input.success,
     trace: cloneTrace(input.trace),
+    ...(input.outputFormat ? { outputFormat: input.outputFormat } : {}),
   };
   while (
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
@@ -129,6 +133,9 @@ export const readFabricExecutionRenderDetails = (
         ? { error: trace.error }
         : {}),
     ...(typeof value.progress === "string" ? { progress: value.progress } : {}),
+    ...(value.outputFormat === "yaml" || value.outputFormat === "json"
+      ? { outputFormat: value.outputFormat }
+      : {}),
     phases: oldPhases ?? trace?.phases ?? [],
     audits: oldAudits ?? trace?.operations.map(auditFromOperation) ?? [],
   };

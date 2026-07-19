@@ -380,7 +380,12 @@ const descriptors: FabricActionDescriptor[] = [
           description:
             "session = actor session transcript (default for actors); run = last retained run's events; all = both",
         },
-        lines: { type: "number", minimum: 1, description: "Tail line limit (default 200)" },
+        lines: { type: "number", minimum: 1, description: "Page line limit (default 200)" },
+        before: {
+          type: "number",
+          minimum: 0,
+          description: "Exclusive line cursor returned by a previous page to load older entries",
+        },
         runId: { type: "string", description: "Specific retained run (default: actor's last run)" },
       },
       required: ["id"],
@@ -747,13 +752,19 @@ export class AgentsProvider implements FabricProvider {
         const type = args.type === "run" || args.type === "all" ? args.type : "session";
         const lines = typeof args.lines === "number" ? args.lines : 200;
         const runId = typeof args.runId === "string" ? args.runId : undefined;
+        const before = typeof args.before === "number" ? args.before : undefined;
         try {
           const actor = this.actorManager.status(id);
-          return this.actorManager.readLog(actor.id, { type, lines, ...(runId ? { runId } : {}) });
+          return this.actorManager.readLog(actor.id, {
+            type,
+            lines,
+            ...(runId ? { runId } : {}),
+            ...(before !== undefined ? { before } : {}),
+          });
         } catch {
           /* not an actor — fall through to subagent */
         }
-        return this.manager.readLog(id, { lines });
+        return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
       }
       default:
         throw new Error(`Unknown agents action: ${actionName}`);

@@ -161,6 +161,21 @@ Two response modes are available:
 
 Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. The creator fixes delivery policy; an actor cannot escalate it in a response. Use `agents.ask()` for a blocking exchange, `agents.tell()` for fire-and-forget mail, `agents.messages()` for history, and `agents.remove()` for cleanup.
 
+## Paged agent logs
+
+`agents.log()` reads JSONL logs in bounded pages instead of loading the complete file. The first call returns the newest entries. When `hasMore` (or `sessionHasMore` for an actor session) is true, pass the returned `before` (or `sessionBefore`) cursor to load the next older page:
+
+```ts
+const newest = await agents.log({ id, type: "run", lines: 100 });
+if ("before" in newest && newest.hasMore) {
+  const older = await agents.log({ id, type: "run", lines: 100, before: newest.before });
+  return older;
+}
+return newest;
+```
+
+Log-line `offset` values and page cursors are byte offsets into the JSONL file.
+
 ## Global actor templates
 
 Persistent actors live in a project mesh, but a persona worth reusing across projects belongs in a project-independent **template library** stored in your agent dir (`~/.pi/agent/fabric/actors/`). Templates carry only an actor definition — name, instructions, subscriptions, and run settings — never any history (mailbox, session transcript, or run logs). They are not live; you stamp one into a project to make it run.

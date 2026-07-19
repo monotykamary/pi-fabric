@@ -51,11 +51,12 @@ describe("FabricSettingsComponent", () => {
       "Subagents",
       "Capture",
       "UI",
+      "Compaction",
       "Mesh",
     ]) {
       expect(lines).toContain(label);
     }
-    expect(items.length).toBe(8);
+    expect(items.length).toBe(9);
   });
 
   it("marks submenu rows with a drill-in marker and leaves inline toggles plain", () => {
@@ -90,6 +91,17 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("Timeout");
     expect(lines).toContain("Memory limit");
     expect(lines).toContain("Max output chars");
+    expect(lines).toContain("Result format");
+    expect(lines).toContain("auto");
+  });
+
+  it("exposes the compaction engine", () => {
+    const items = buildItems();
+    const compaction = items.find((item) => item.id === "compaction");
+    expect(compaction?.currentValue).toBe("fabric");
+    const lines = compaction!.submenu!("", () => {}).render(80).join("\n");
+    expect(lines).toContain("Engine");
+    expect(lines).toContain("fabric");
   });
 
   it("surfaces the recursion budget in the Subagents section", () => {

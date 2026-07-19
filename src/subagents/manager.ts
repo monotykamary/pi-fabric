@@ -24,7 +24,6 @@ import { ScreenTransport } from "./transports/screen-transport.js";
 import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
   FabricBudgetSummary,
-  FabricLogLine,
   FabricSteeringMode,
   FabricSubagentLog,
   SubagentHandleInfo,
@@ -45,6 +44,7 @@ import {
   readBudgetLedger,
 } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
+import { readJsonlPage } from "../log-tail.js";
 
 const STATUS_POLL_MS = 100;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
@@ -122,31 +122,10 @@ const readNestedAgents = (runDirectory: string, depth = 0): SubagentRunRecord[] 
   return agents;
 };
 
-const readJsonlTail = (filePath: string, lines: number): FabricLogLine[] => {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return [];
-  }
-  const all = content.split("\n").filter((line) => line.length > 0);
-  const tail = all.slice(-lines);
-  const offset = all.length - tail.length;
-  return tail.map((raw, index) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      /* keep raw only */
-    }
-    return { index: offset + index, raw, ...(parsed !== undefined ? { parsed } : {}) };
-  });
-};
-
 const summarizeRunLog = (runDirectory: string, lines: number): string => {
-  const tail = readJsonlTail(path.join(runDirectory, "events.jsonl"), lines);
+  const page = readJsonlPage(path.join(runDirectory, "events.jsonl"), lines);
   const summary: string[] = [];
-  for (const entry of tail) {
+  for (const entry of page.lines) {
     const parsed = entry.parsed as Record<string, unknown> | undefined;
     if (!parsed || typeof parsed.type !== "string") continue;
     const detail =
@@ -529,14 +508,22 @@ export class SubagentManager {
     return { cleaned: cleaned || !fs.existsSync(managed.runDirectory) };
   }
 
-  readLog(id: string, opts: { lines?: number } = {}): FabricSubagentLog {
+  readLog(id: string, opts: { lines?: number; before?: number } = {}): FabricSubagentLog {
     const managed = this.#requireRun(id);
     const runDirectory = managed.runDirectory;
     const logFile = path.join(runDirectory, "events.jsonl");
     const lines = Math.max(1, Math.min(opts.lines ?? 200, 5000));
-    const events = readJsonlTail(logFile, lines);
+    const page = readJsonlPage(logFile, lines, opts.before);
     const statusRecord = readRecord(path.join(runDirectory, "status.json"));
-    return { id, runDirectory, logFile, events, ...(statusRecord ? { status: statusRecord } : {}) };
+    return {
+      id,
+      runDirectory,
+      logFile,
+      events: page.lines,
+      hasMore: page.hasMore,
+      ...(page.before !== undefined ? { before: page.before } : {}),
+      ...(statusRecord ? { status: statusRecord } : {}),
+    };
   }
 
   steer(id: string, message: string, data?: unknown): SubagentSteerResult {

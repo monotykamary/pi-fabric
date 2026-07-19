@@ -16,7 +16,8 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
     "timeoutMs": 120000,
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,
-    "maxNestedResultChars": 2000000
+    "maxNestedResultChars": 2000000,
+    "resultFormat": "auto"
   },
   "approvals": {
     "read": "allow",
@@ -87,6 +88,12 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
   }
 }
 ```
+
+## Result formatting
+
+`executor.resultFormat` sets the default for `fabric_exec` return values and is available under `/fabric settings` → **Executor**. `"auto"` keeps strings as text and renders structured values as syntax-highlighted YAML. `"yaml"`, `"json"`, and `"text"` force the corresponding behavior. A call-level `resultFormat` parameter overrides the configured default.
+
+The compaction engine is available under `/fabric settings` → **Compaction**. Select `"fabric"` for deterministic compaction or `"pi"` to delegate to Pi core.
 
 ## Code modes
 

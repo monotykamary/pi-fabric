@@ -8,6 +8,7 @@ type FabricApprovalMode = "allow" | "ask" | "deny";
 export type FabricSubagentTransport = "auto" | "process" | "tmux" | "screen" | "localterm";
 export type FabricAgentRunner = "pi" | "claude";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
+export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
 
@@ -16,6 +17,7 @@ interface FabricExecutorConfig {
   memoryLimitBytes: number;
   maxOutputChars: number;
   maxNestedResultChars: number;
+  resultFormat: FabricResultFormat;
 }
 
 export interface FabricApprovalConfig {
@@ -152,6 +154,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     memoryLimitBytes: 64 * 1024 * 1024,
     maxOutputChars: 100_000,
     maxNestedResultChars: 2_000_000,
+    resultFormat: "auto",
   },
   approvals: {
     read: "allow",
@@ -331,6 +334,14 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 const widgetModeValue = (value: unknown, fallback: FabricUiWidgetMode): FabricUiWidgetMode =>
   value === "auto" || value === "always" || value === "hidden" ? value : fallback;
 
+const resultFormatValue = (
+  value: unknown,
+  fallback: FabricResultFormat,
+): FabricResultFormat =>
+  value === "auto" || value === "yaml" || value === "json" || value === "text"
+    ? value
+    : fallback;
+
 const compactionEngineValue = (
   value: unknown,
   fallback: FabricCompactionEngine,
@@ -435,6 +446,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.executor.maxNestedResultChars,
         10_000,
         20_000_000,
+      ),
+      resultFormat: resultFormatValue(
+        executor.resultFormat,
+        DEFAULT_FABRIC_CONFIG.executor.resultFormat,
       ),
     },
     approvals: {

@@ -78,7 +78,8 @@ interface FabricModelInfo {
   supportsAutoMode?: boolean;
 }
 interface FabricLogLine {
-  index: number;
+  index?: number;
+  offset: number;
   raw: string;
   parsed?: unknown;
 }
@@ -88,6 +89,8 @@ interface FabricSubagentLog {
   logFile: string;
   status?: FabricAgentResult;
   events: FabricLogLine[];
+  hasMore: boolean;
+  before?: number;
 }
 interface FabricActorLog {
   actorId: string;
@@ -95,11 +98,15 @@ interface FabricActorLog {
   sessionFile: string;
   logDir: string;
   session: FabricLogLine[];
+  sessionHasMore: boolean;
+  sessionBefore?: number;
   run?: {
     runId: string;
     eventsFile: string;
     status?: FabricAgentResult;
     events: FabricLogLine[];
+    hasMore: boolean;
+    before?: number;
   };
   retainedRuns: string[];
 }
@@ -230,6 +237,7 @@ interface FabricAgentsApi {
     id: string;
     type?: "session" | "run" | "all";
     lines?: number;
+    before?: number;
     runId?: string;
   }): Promise<FabricActorLog | FabricSubagentLog>;
 }

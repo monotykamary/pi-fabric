@@ -174,7 +174,9 @@ export interface SubagentTransportAdapter {
 }
 
 export interface FabricLogLine {
-  index: number;
+  /** Legacy absolute line index; newer paged readers expose byte offset instead. */
+  index?: number;
+  offset: number;
   raw: string;
   parsed?: unknown;
 }
@@ -185,6 +187,8 @@ export interface FabricSubagentLog {
   logFile: string;
   status?: SubagentRunRecord;
   events: FabricLogLine[];
+  hasMore: boolean;
+  before?: number;
 }
 
 export type FabricSteeringMode = "all" | "one-at-a-time";
