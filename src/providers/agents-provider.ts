@@ -61,6 +61,7 @@ const idSchema = {
 
 const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 const AGENT_PREVIEW_TEXT_CODE_POINTS = 2_000;
+const AGENT_PREVIEW_TOOL_LIMIT = 8;
 
 const tailCodePoints = (value: string, limit: number): string => {
   if (value.length <= limit) return value;
@@ -539,7 +540,10 @@ const attachAgentToolPreview = (
     const tools = enabled()
       ? (() => {
           const log = manager.readLog(id, { lines: 240 });
-          return recentTranscriptTools(projectAgentLogLines(log.events, log.hasMore), 3);
+          return recentTranscriptTools(
+            projectAgentLogLines(log.events, log.hasMore),
+            AGENT_PREVIEW_TOOL_LIMIT,
+          );
         })()
       : [];
     context.attachPreview({

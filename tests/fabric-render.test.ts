@@ -389,6 +389,145 @@ return Promise.all([
     expect(lines.join("\n")).not.toContain("[agent");
   });
 
+  it("renders a highlighted bounded agent preview when expanded", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { task: "implement" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-child-123",
+              name: "implementor",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              text: Array.from({ length: 10 }, (_, index) => `narrative ${index + 1}`).join("\n"),
+              tools: Array.from({ length: 8 }, (_, index) => ({
+                id: `child-read-${index}`,
+                kind: "tool" as const,
+                label: "read",
+                toolName: "read",
+                status: "completed" as const,
+                args: { path: `src/file-${index}.ts` },
+              })),
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showNestedToolCalls: true,
+      },
+      plainTheme,
+    ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
+    const visible = lines.join("\n");
+
+    expect(lines[1]).toContain("run implement › agent implementor · pi · agent-ch");
+    expect(visible).toContain("… 2 earlier narrative lines");
+    expect(lines.some((line) => line.trim() === "narrative 1")).toBe(false);
+    expect(visible).toContain("narrative 10");
+    expect(visible).toContain("… 2 earlier tool calls");
+    expect(visible).not.toContain("src/file-1.ts");
+    expect(visible).toContain("read src/file-7.ts");
+  });
+
+  it("reuses highlighted core tool bodies inside expanded agents", () => {
+    const settings = {
+      tools: ["edit"],
+      editDiffPreview: true,
+      editCollapsedLines: 160,
+      syntaxHighlighting: false,
+      secretWarnings: true,
+      diffIntensity: "subtle",
+      wordEmphasis: "all",
+      toolCallBackground: "off",
+    } as CodePreviewSettings;
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.run",
+            provider: "agents",
+            tool: "run",
+            args: { name: "implementor" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-child-123",
+              name: "implementor",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              tools: [
+                {
+                  id: "child-edit",
+                  kind: "tool",
+                  label: "edit",
+                  toolName: "edit",
+                  status: "completed",
+                  args: {
+                    path: "src/child.ts",
+                    edits: [{ oldText: "const before = 1;", newText: "const after = 2;" }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: true,
+        showNestedToolCalls: true,
+        core: { cwd: process.cwd(), settings },
+      },
+      plainTheme,
+    ).render(120).join("\n").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+
+    expect(lines).toContain("run implementor › agent implementor · pi · agent-ch");
+    expect(lines).toContain("✓ edit src/child.ts");
+    expect(lines).toContain("const before = 1;");
+    expect(lines).toContain("const after = 2;");
+  });
+
+  it("uses a compact expanded budget for large agent groups", () => {
+    const audits = Array.from({ length: 10 }, (_, agentIndex) => ({
+      ref: "agents.run",
+      provider: "agents",
+      tool: "run",
+      args: { name: `agent-${agentIndex}` },
+      preview: {
+        kind: "fabric-agent-tools" as const,
+        id: `agent-child-${agentIndex}`,
+        name: `agent-${agentIndex}`,
+        status: "running",
+        runner: "pi" as const,
+        owner: "agent" as const,
+        text: "first narrative\nlatest narrative",
+        tools: Array.from({ length: 3 }, (_, toolIndex) => ({
+          id: `tool-${agentIndex}-${toolIndex}`,
+          kind: "tool" as const,
+          label: "read",
+          toolName: "read",
+          status: "completed" as const,
+          args: { path: `src/agent-${agentIndex}-file-${toolIndex}.ts` },
+        })),
+      },
+    }));
+    const lines = renderFabricMulticallPartial(
+      { audits, phases: [], expanded: true, showNestedToolCalls: true },
+      plainTheme,
+    ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
+    const visible = lines.join("\n");
+
+    expect(visible).toContain("run agent-0 › agent agent-0 · pi · agent-ch");
+    expect(visible).not.toContain("first narrative");
+    expect(visible).toContain("latest narrative");
+    expect(visible).not.toContain("src/agent-0-file-1.ts");
+    expect(visible).toContain("src/agent-0-file-2.ts");
+    expect(lines.length).toBeLessThanOrEqual(60);
+  });
+
   it("renders a write body while a multicall remains partial", () => {
     const lines = renderFabricMulticallPartial(
       {
