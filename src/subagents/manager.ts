@@ -52,7 +52,9 @@ const NESTED_SNAPSHOT_POLL_MS = 500;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
 const MAX_NAME_LENGTH = 60;
 const MAX_UI_TEXT_CHARS = 16_000;
+const MAX_UI_ERROR_CHARS = 8_000;
 const MAX_UI_VALUE_CHARS = 64_000;
+const MAX_RETAINED_UI_RUNS = 240;
 
 interface ManagedSubagent {
   id: string;
@@ -64,8 +66,8 @@ interface ManagedSubagent {
   statusFile: string;
   runDirectory: string;
   transport: SubagentTransportHandle;
-  result: Promise<SubagentRunResult>;
-  resolve(result: SubagentRunResult): void;
+  result: Promise<SubagentRunResult> | undefined;
+  resolve: ((result: SubagentRunResult) => void) | undefined;
   release(): void;
   abortSignal: AbortSignal | undefined;
   abortHandler: (() => void) | undefined;
@@ -122,10 +124,22 @@ const boundedUiValue = (value: unknown): unknown => {
 };
 
 const compactUiRecord = (record: SubagentRunRecord): SubagentRunRecord => {
-  const { text, value, nestedAgents, ...rest } = record;
+  const { task, text, error, value, nestedAgents, ...rest } = record;
   return {
     ...rest,
+    task:
+      task.length <= MAX_UI_TEXT_CHARS
+        ? task
+        : `${task.slice(0, MAX_UI_TEXT_CHARS)}…`,
     text: text.length <= MAX_UI_TEXT_CHARS ? text : `${text.slice(0, MAX_UI_TEXT_CHARS)}…`,
+    ...(error
+      ? {
+          error:
+            error.length <= MAX_UI_ERROR_CHARS
+              ? error
+              : `${error.slice(0, MAX_UI_ERROR_CHARS)}…`,
+        }
+      : {}),
     ...(value !== undefined ? { value: boundedUiValue(value) } : {}),
     ...(nestedAgents && nestedAgents.length > 0
       ? { nestedAgents: nestedAgents.map((nested) => compactUiRecord(nested)) }
@@ -149,11 +163,13 @@ const readNestedAgents = (runDirectory: string, depth = 0): SubagentRunRecord[] 
     if (!record) continue;
     const nestedAgents = readNestedAgents(runDirectory, depth + 1);
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
-    agents.push({
-      ...safeRecord,
-      logFile: path.join(runDirectory, "events.jsonl"),
-      ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
-    });
+    agents.push(
+      compactUiRecord({
+        ...safeRecord,
+        logFile: path.join(runDirectory, "events.jsonl"),
+        ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
+      }),
+    );
   }
   return agents;
 };
@@ -485,7 +501,15 @@ export class SubagentManager {
   async wait(id: string): Promise<SubagentRunResult> {
     const managed = this.#requireRun(id);
     managed.background = false;
-    return managed.result;
+    if (!managed.settled) {
+      if (!managed.result) throw new Error(`Subagent ${id} has no pending result`);
+      return managed.result;
+    }
+    const record = readRecord(managed.statusFile) ?? managed.latestRecord;
+    if (!record || !terminalStatuses.has(record.status)) {
+      throw new Error(`Subagent ${id} settled without a result`);
+    }
+    return this.#withTransportMetadata(record, managed) as SubagentRunResult;
   }
 
   detachSignal(id: string): void {
@@ -500,14 +524,18 @@ export class SubagentManager {
 
   status(id: string): SubagentRunRecord | SubagentHandleInfo {
     const managed = this.#requireRun(id);
-    const record = managed.latestRecord ?? readRecord(managed.statusFile);
+    const record = managed.settled
+      ? readRecord(managed.statusFile) ?? managed.latestRecord
+      : managed.latestRecord ?? readRecord(managed.statusFile);
     if (!record) return this.#handleInfo(managed, "running");
     managed.latestRecord = record;
     if (!managed.latestUiRecord) {
       managed.latestUiRecord = compactUiRecord(record);
       this.#invalidateUiList();
     }
-    return structuredClone(this.#withTransportMetadata(record, managed));
+    const result = structuredClone(this.#withTransportMetadata(record, managed));
+    this.#pruneRetainedUiRecords();
+    return result;
   }
 
   list(): Array<SubagentRunRecord | SubagentHandleInfo> {
@@ -518,17 +546,28 @@ export class SubagentManager {
     if (this.#uiListCache?.revision === this.#uiListRevision) {
       return this.#uiListCache.value;
     }
-    const value = [...this.#runs.values()].map((managed) => {
-      let record = managed.latestUiRecord;
-      if (!record) {
-        const latest = managed.latestRecord ?? readRecord(managed.statusFile);
-        if (!latest) return this.#handleInfo(managed, "running");
-        managed.latestRecord = latest;
-        record = compactUiRecord(latest);
-        managed.latestUiRecord = record;
-      }
-      return structuredClone(compactUiRecord(this.#withTransportMetadata(record, managed)));
-    });
+    const runs = [...this.#runs.values()];
+    const active = runs.filter((managed) => !managed.settled);
+    const settled = runs.filter((managed) => managed.settled);
+    const retainedSettledCount = Math.max(0, MAX_RETAINED_UI_RUNS - active.length);
+    const retainedSettled =
+      retainedSettledCount > 0 ? settled.slice(-retainedSettledCount) : [];
+    const visible = new Set([...active, ...retainedSettled]);
+    const value = runs
+      .filter((managed) => visible.has(managed))
+      .map((managed) => {
+        let record = managed.latestUiRecord;
+        if (!record) {
+          const latest = managed.latestRecord ?? readRecord(managed.statusFile);
+          if (!latest) return this.#handleInfo(managed, "running");
+          managed.latestRecord = latest;
+          record = compactUiRecord(latest);
+          managed.latestUiRecord = record;
+        }
+        return structuredClone(
+          compactUiRecord(this.#withTransportMetadata(record, managed)),
+        );
+      });
     this.#uiListCache = { revision: this.#uiListRevision, value };
     return value;
   }
@@ -549,7 +588,7 @@ export class SubagentManager {
 
   async stop(id: string): Promise<SubagentRunResult> {
     const managed = this.#requireRun(id);
-    if (managed.settled) return managed.result;
+    if (managed.settled) return this.wait(id);
     managed.background = false;
     const existing = readRecord(managed.statusFile);
     if (existing && terminalStatuses.has(existing.status)) {
@@ -577,6 +616,8 @@ export class SubagentManager {
       await removeTree(managed.runDirectory);
     }
     this.#runs.delete(id);
+    this.#invalidateUiList();
+    this.#pruneRetainedUiRecords();
     return { cleaned: cleaned || !fs.existsSync(managed.runDirectory) };
   }
 
@@ -748,7 +789,10 @@ export class SubagentManager {
     if (managed.abortSignal && managed.abortHandler) {
       managed.abortSignal.removeEventListener("abort", managed.abortHandler);
     }
+    managed.abortSignal = undefined;
+    managed.abortHandler = undefined;
     managed.release();
+    managed.release = () => {};
     if (this.#budget) {
       appendBudgetLedger(this.#budget.file, {
         id: result.id,
@@ -765,10 +809,20 @@ export class SubagentManager {
       const summary = this.#budgetSummary();
       if (summary) result.budget = summary;
     }
-    managed.latestRecord = result;
-    managed.latestUiRecord = compactUiRecord(result);
+    const compactResult = compactUiRecord(result);
+    managed.latestRecord = compactResult;
+    managed.latestUiRecord = compactResult;
+    if (managed.nestedSnapshot) {
+      managed.nestedSnapshot = managed.nestedSnapshot.map((record) =>
+        compactUiRecord(record),
+      );
+    }
     this.#invalidateUiList();
-    managed.resolve(result);
+    this.#pruneRetainedUiRecords();
+    managed.resolve?.(result);
+    managed.result = undefined;
+    managed.resolve = undefined;
+    managed.task = "";
     if (
       managed.background &&
       !this.#closing &&
@@ -819,6 +873,17 @@ export class SubagentManager {
       if (adapter && (await adapter.available())) return adapter;
     }
     throw new Error("No Fabric subagent transport is available");
+  }
+
+  #pruneRetainedUiRecords(): void {
+    const settled = [...this.#runs.values()].filter((managed) => managed.settled);
+    if (settled.length <= MAX_RETAINED_UI_RUNS) return;
+    for (const managed of settled.slice(0, -MAX_RETAINED_UI_RUNS)) {
+      delete managed.latestRecord;
+      delete managed.latestUiRecord;
+      delete managed.nestedSnapshot;
+      delete managed.nestedSnapshotAt;
+    }
   }
 
   #invalidateUiList(): void {

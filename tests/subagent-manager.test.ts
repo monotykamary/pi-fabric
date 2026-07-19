@@ -53,6 +53,7 @@ describe("SubagentManager", () => {
     expect(compact.value).toMatchObject({ fabricTruncated: true });
     expect(manager.listForUi()).toBe(records);
     expect((manager.status(result.id) as SubagentRunRecord).text).toHaveLength(100_000);
+    expect((await manager.wait(result.id)).text).toHaveLength(100_000);
   });
 
   it("readLog returns the run's event stream and status", async () => {
