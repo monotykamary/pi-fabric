@@ -30,16 +30,41 @@ One type-checked TS program in a QuickJS sandbox. Only the `return` value reache
 Aliases (normalized to canonical before the host validates args): `cmd`/`shell`/`cmdline`→`command`, `timeoutMs`→`timeout`; `query`/`regex`/`search`→`pattern`; `ic`/`caseInsensitive`→`ignoreCase`; `globPattern`→`glob`; `ctx`→`context`; `max`→`limit`; `file`/`dir`→`path`; `start`→`offset`; `old`→`oldText`; `new`/`replacement`→`newText`; `contents`/`body`/`text`→`content`. Misspelled keys still fail the excess-property type check.
 
 ## First-class provider calls
-Use direct proxies when the action is known:
+Use direct proxies when the action is known. No-argument actions such as `schema.status()`, `state.get()`, and `compact.status()` take no options object. Provider calls still cross the same registry validation, approval, audit, timeout, and cancellation path as generic calls.
 
-- `mcp.<sanitized_server>.<sanitized_tool>(args)` — for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`; see `references/mcp.md`.
-- `memory.recall/expand/sessions(args)`
-- `state.transition/get/history/complexity/verify/goal/checkGoal(args)`
-- `schema.status/hypothesize/verify/commit/abort(args)`
-- `compact.request/status/cancel(args)`
-- `extensions.<tool>(args)` in full code mode
+### Stable provider return shapes
 
-No-argument actions such as `schema.status()`, `state.get()`, and `compact.status()` take no options object. Provider calls still cross the same registry validation, approval, audit, timeout, and cancellation path as generic calls.
+All calls return promises. Fields ending in `?` are optional; `unknown` marks provider data whose nested schema is not stable at this surface.
+
+| Call | Resolves to |
+|------|-------------|
+| `memory.recall(args?)` | `{scope?,branches?,query?,queryMode?,matchedCount?,totalMatches?,totalItems?,segmentCount?,segments?,digestHits?,items?,page?,pageSize?,hasNext?,coverage?,text?,error?}` |
+| `memory.expand(args)` | `{session?,sourceHash?,branches?,lineageFingerprint?,expanded?:unknown[],error?}` |
+| `memory.sessions(args?)` | `{scope?,branches?,sessions?:SessionInfo[],error?}`; slice `result.sessions ?? []`, not the wrapper |
+| `state.transition(args)` | `{event:FabricMeshEvent,head:unknown}` |
+| `state.get()` | `{head,goal,complexity,certification,recentLabels:string[]}` |
+| `state.history(args?)` | `{transitions:unknown[],labels:string[],certifications:unknown[]}` |
+| `state.complexity(args?)` | `{files:ComplexityFile[],netDelta:number}` |
+| `state.verify(args?)` | `{certified,violated,certificationStatus,results,failures,certificate?,reportingError?,evidenceDigest,resultDigest}` |
+| `state.goal(args)` | mesh state entry `{key,value,version,updatedAt,updatedBy}` |
+| `state.checkGoal(args?)` | `{passed:boolean,output:string,exitCode:number\|null,error?}` |
+| `schema.status()` | `{mode,certificateTtlMs,maxFiles,maxBytes,trustedCommands,generation,lastOutcome,hypotheses}` |
+| `schema.hypothesize(args)` | `{hypothesisId,status,state,fingerprint,generation}` |
+| `schema.verify(args)` | `{verified,hypothesisId,certificate?,issuedAt?,expiresAt?,reason?,results}` |
+| `schema.commit(args)` | `{outcome,transactionId,generation?,paths?,postconditions?,complexityReductionCertified?,stateTransition?,error?,rollbackError?}` |
+| `schema.abort(args)` | `{aborted:true,hypothesisId}` |
+| `compact.request(args?)` | `{requested:true,intent:{reason?,instructions?,preserve?,requestedBy,requestedAt}}` |
+| `compact.status()` | `{pending?:CompactIntent,last?:{at,requestedBy,status,summary?,tokensBefore?,estimatedTokensAfter?,error?}}` |
+| `compact.cancel()` | `{cancelled:true}` |
+
+`SessionInfo` is `{id,file,cwd,mtime,entryCount,tier:"hot"|"cold",branches,lineageFingerprint}`. Memory failures are returned in `error: {code,message,...}`; ambiguous-session failures may return only `{error}`. Check `error` before relying on optional success fields.
+
+### Dynamic provider return shapes
+
+- `mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to the server-defined result, commonly `{text:string,content:unknown[],structuredContent:unknown}`; for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`. See `references/mcp.md`.
+- `extensions.<tool>(args)` in full code mode resolves to `{content:Array<{type,text?,...}>,text:string,details?,isError:boolean,terminate?,source:{path,source,scope,origin,baseDir?}}`.
+
+The guest TypeScript declarations contain the complete argument and return contracts. For a discovered or dynamic action, use `tools.describe({ref})`; inspect `outputSchema` when supplied, otherwise treat the result as `unknown`.
 
 ## `tools` — discovery & generic calls
 Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`); bare names are rejected. `tools.providers()`→`[{name,description}]` · `tools.search({query,limit?})`→`FabricAction[]`(`ref,name,description,inputSchema,risk`) · `tools.describe({ref})`→full `FabricAction` (read `inputSchema` first) · `tools.call({ref,args?})` · `tools.list({provider?,namespace?,query?,limit?})` · `tools.models()`→Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})`→Claude Code runtime models with canonical `claude/<value>` keys. Use `tools.call()` for refs discovered or computed at runtime, or names that cannot use property access—not as the default for known actions. Calling a core-tool name on `tools` (e.g. `tools.read(...)`) throws with a hint to use `pi.read(...)`.
