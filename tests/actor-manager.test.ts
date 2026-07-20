@@ -1044,3 +1044,69 @@ describe("ActorManager steering relay", () => {
     expect(actors.messages(actor.id).some((message) => message.direction === "out")).toBe(true);
   });
 });
+
+describe("ActorManager extensions flag (read-only Pi actors)", () => {
+    it("runs a read-only Pi actor (extensions:false) without fabric_exec or recursion", async () => {
+      const { actors, subagents } = setup();
+      const runSpy = vi.spyOn(subagents, "run");
+      const actor = await actors.create({
+        name: "readonly-nav",
+        instructions: "Read-only navigator.",
+        runner: "pi",
+        extensions: false,
+        tools: ["read"],
+        responseMode: "text",
+      });
+      expect(actor.extensions).toBe(false);
+      await actors.ask(actor.id, "probe");
+      const request = runSpy.mock.calls[0]?.[0] as Partial<{ extensions: boolean; recursive: boolean }> | undefined;
+      expect(request?.extensions).toBe(false);
+      expect(request?.recursive).toBe(false);
+    });
+
+    it("defaults to Fabric-enabled (extensions true, recursive true) for a Pi actor", async () => {
+      const { actors, subagents } = setup();
+      const runSpy = vi.spyOn(subagents, "run");
+      const actor = await actors.create({
+        name: "default-nav",
+        instructions: "Default navigator.",
+        runner: "pi",
+        responseMode: "text",
+      });
+      expect(actor.extensions).toBeUndefined();
+      await actors.ask(actor.id, "probe");
+      const request = runSpy.mock.calls[0]?.[0] as Partial<{ extensions: boolean; recursive: boolean }> | undefined;
+      expect(request?.extensions).toBe(true);
+      expect(request?.recursive).toBe(true);
+    });
+
+    it("persists extensions:false across close and restore", async () => {
+      const setupState = setup(true);
+      const created = await setupState.actors.create({
+        name: "persistent-readonly",
+        instructions: "Survive restart read-only.",
+        runner: "pi",
+        extensions: false,
+        tools: ["read"],
+        responseMode: "text",
+      });
+      await setupState.actors.close();
+      actorManagers.splice(actorManagers.indexOf(setupState.actors), 1);
+      const restored = new ActorManager(
+        "test",
+        setupState.identity,
+        setupState.mesh,
+        setupState.meshConfig,
+        setupState.subagents,
+        () => {},
+        { actorRoot: path.join(setupState.root, "actors"), persistent: true },
+      );
+      actorManagers.push(restored);
+      const runSpy = vi.spyOn(setupState.subagents, "run");
+      expect(restored.list().find((a) => a.name === "persistent-readonly")?.extensions).toBe(false);
+      await restored.ask(created.id, "probe");
+      const request = runSpy.mock.calls[0]?.[0] as Partial<{ extensions: boolean; recursive: boolean }> | undefined;
+      expect(request?.extensions).toBe(false);
+      expect(request?.recursive).toBe(false);
+    });
+});

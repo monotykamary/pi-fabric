@@ -202,6 +202,7 @@ interface FabricActorRequest {
   tools?: string[];
   transport?: FabricTransport;
   timeoutMs?: number;
+  extensions?: boolean;
 }
 interface FabricActorInfo {
   id: string;
@@ -217,6 +218,7 @@ interface FabricActorInfo {
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
+  extensions?: boolean;
   queued: number;
   messages: number;
   createdAt: number;

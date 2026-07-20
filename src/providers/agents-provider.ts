@@ -183,6 +183,7 @@ const descriptors: FabricActionDescriptor[] = [
         tools: runProperties.tools,
         transport: runProperties.transport,
         timeoutMs: runProperties.timeoutMs,
+        extensions: runProperties.extensions,
         scope: { type: "string", enum: ["project", "global"] },
       },
       required: ["name", "instructions"],
@@ -559,6 +560,7 @@ const actorRequest = (
       ? { transport: args.transport }
       : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
   };
 };
 

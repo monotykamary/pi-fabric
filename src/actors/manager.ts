@@ -50,6 +50,7 @@ interface ManagedActor {
   tools?: string[];
   transport?: FabricSubagentTransport;
   timeoutMs?: number;
+  extensions?: boolean;
   sessionFile: string;
   queue: ActorQueueItem[];
   messages: FabricActorMessage[];
@@ -223,6 +224,7 @@ export class ActorManager {
       ...(request.tools ? { tools: [...new Set(request.tools)] } : {}),
       ...(request.transport ? { transport: request.transport } : {}),
       ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
+      ...(typeof request.extensions === "boolean" ? { extensions: request.extensions } : {}),
       sessionFile: path.join(actorDirectory, "session.jsonl"),
       queue: [],
       draining: false,
@@ -296,7 +298,8 @@ export class ActorManager {
    * Replace an existing actor's tool allowlist. The new list takes effect on
    * the next queued message; an in-flight run keeps its launch-time tools. An
    * empty list leaves a Pi actor with only its host-required fabric_exec tool
-   * and a Claude actor with no tools.
+   * and a Claude actor with no tools — unless the Pi actor was created with
+   * `extensions: false`, in which case an empty list leaves it with no tools.
    */
   async setTools(id: string, tools: string[]): Promise<FabricActorInfo> {
     const actor = this.#requireActor(id);
@@ -892,8 +895,8 @@ export class ActorManager {
       ].join("\n\n"),
       name: actor.name,
       runner: actor.runner,
-      recursive: actor.runner === "pi",
-      extensions: true,
+      recursive: (actor.extensions ?? true) && actor.runner === "pi",
+      extensions: actor.extensions ?? true,
       sessionFile: actor.sessionFile,
       systemPrompt: this.#systemPrompt(actor),
       actorId: actor.id,
@@ -920,10 +923,13 @@ export class ActorManager {
             "Do not wrap the JSON in Markdown fences.",
           ].join(" ")
         : "Respond with the useful result for this message. Keep durable state in your session context.";
+    const fabricEnabled = actor.extensions ?? true;
     const coordinationInstruction =
-      actor.runner === "pi"
-        ? "You may use Fabric for tools and durable coordination. In fabric_exec, agents.main() discovers the user-facing Main target; agents.steer() and agents.followUp() message Main or other known agents, while mesh.self(), mesh.members(), mesh.publish(), mesh.read(), mesh.get(), and mesh.put() support durable coordination. Use addressed messages or shared versioned state when useful."
-        : "The Fabric host manages your mailbox, subscriptions, delivery, and lifecycle. This Claude runner has Claude Code tools but not fabric_exec or direct mesh APIs; coordinate through the messages the host delivers.";
+      actor.runner === "pi" && !fabricEnabled
+        ? "The Fabric host manages your mailbox, subscriptions, delivery, and lifecycle. You do not have fabric_exec or direct agents/mesh APIs; reply with your analysis and the host delivers it. Do not attempt to call fabric_exec, agents, or mesh tools."
+        : actor.runner === "pi"
+          ? "You may use Fabric for tools and durable coordination. In fabric_exec, agents.main() discovers the user-facing Main target; agents.steer() and agents.followUp() message Main or other known agents, while mesh.self(), mesh.members(), mesh.publish(), mesh.read(), mesh.get(), and mesh.put() support durable coordination. Use addressed messages or shared versioned state when useful."
+          : "The Fabric host manages your mailbox, subscriptions, delivery, and lifecycle. This Claude runner has Claude Code tools but not fabric_exec or direct mesh APIs; coordinate through the messages the host delivers.";
     return [
       `You are ${actor.name}, a persistent Fabric actor with identity ${actor.id}, running through ${actor.runner}.`,
       actor.instructions,
@@ -1209,6 +1215,7 @@ export class ActorManager {
       ...(actor.tools ? { tools: actor.tools } : {}),
       ...(actor.transport ? { transport: actor.transport } : {}),
       ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
+      ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
       sessionFile: actor.sessionFile,
       messages: actor.messages,
       createdAt: actor.createdAt,
@@ -1284,6 +1291,7 @@ export class ActorManager {
           ? { transport: record.transport }
           : {}),
         ...(typeof record.timeoutMs === "number" ? { timeoutMs: record.timeoutMs } : {}),
+        ...(typeof record.extensions === "boolean" ? { extensions: record.extensions } : {}),
         sessionFile: path.join(this.#actorRoot, record.id, "session.jsonl"),
         queue: [],
         draining: false,
@@ -1326,6 +1334,7 @@ export class ActorManager {
       ...(actor.model ? { model: actor.model } : {}),
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
+      ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
       queued: actor.queue.length,
       messages: actor.messages.length,
       createdAt: actor.createdAt,
