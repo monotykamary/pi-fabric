@@ -151,10 +151,11 @@ export class FabricState {
     await this.#closeInternal();
     this.activity.reset();
     this.#cwd = context.cwd;
+    const projectTrusted = context.isProjectTrusted();
     this.#config = loadFabricConfig({
       cwd: context.cwd,
       agentDir: getAgentDir(),
-      projectTrusted: context.isProjectTrusted(),
+      projectTrusted,
     });
     this.#registry = new ActionRegistry();
     const enforceSchema = this.#config.schema.mode === "enforce";
@@ -176,6 +177,11 @@ export class FabricState {
     if (capturedToolsProvider) this.#registry.register(capturedToolsProvider);
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
+    const ownsPersistentActorRegistry =
+      identity.kind === "main" &&
+      !enforceSchema &&
+      projectTrusted &&
+      this.#config.mesh.enabled;
     const mainAgent = new MainAgentController(
       this.pi,
       mainAgentId,
@@ -272,7 +278,7 @@ export class FabricState {
           { deliverAs: delivery, triggerTurn },
         );
       },
-      !enforceSchema && context.isProjectTrusted() && this.#config.mesh.enabled
+      ownsPersistentActorRegistry
         ? {
             actorRoot:
               this.#config.mesh.actorScope === "session"

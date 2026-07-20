@@ -232,22 +232,27 @@ export class FabricUiController {
     this.#schedulePoll(true);
     try {
       await context.ui.custom<void>(
-        (tui, theme, _keybindings, done) => {
+        (tui, theme, keybindings, done) => {
           this.#dashboardTui = tui;
           return new FabricDashboard(tui, theme, () => this.#snapshot, () => done(undefined), {
             modelSource,
+            keybindings,
             ...(this.codePreviewSettings
               ? { codePreviewSettings: this.codePreviewSettings }
               : {}),
             ...(claudeModelSource ? { claudeModelSource } : {}),
             onTargetMessage,
             onAgentStop,
-            agentTranscript: (agent) => this.#transcripts.read(this.#agentTranscriptSource(agent)),
-            actorTranscript: (actor) => this.#transcripts.read(this.#actorTranscriptSource(actor)),
+            agentTranscript: (agent, followLatest) =>
+              this.#transcripts.read(this.#agentTranscriptSource(agent), followLatest),
+            actorTranscript: (actor, followLatest) =>
+              this.#transcripts.read(this.#actorTranscriptSource(actor), followLatest),
             loadOlderTranscript: (target) =>
               this.#transcripts.loadOlder(this.#transcriptSource(target)),
-            loadFullTranscript: (target) =>
-              this.#transcripts.loadAll(this.#transcriptSource(target)),
+            loadNewerTranscript: (target) =>
+              this.#transcripts.loadNewer(this.#transcriptSource(target)),
+            loadLatestTranscript: (target) =>
+              this.#transcripts.loadLatest(this.#transcriptSource(target)),
             onActorModel,
             onActorThinking,
             onActorEvents,

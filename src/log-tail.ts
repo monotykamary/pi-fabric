@@ -52,6 +52,7 @@ export const readJsonlPageFromDescriptor = (
   limit: number,
   before?: number,
   knownSize?: number,
+  maxBytes?: number,
 ): JsonlPage => {
   try {
     const size = knownSize ?? fs.fstatSync(descriptor).size;
@@ -59,12 +60,18 @@ export const readJsonlPageFromDescriptor = (
       ? Math.max(0, Math.min(before, size))
       : size;
     const boundedLimit = Math.max(1, Math.trunc(limit));
+    const boundedBytes =
+      maxBytes === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.trunc(maxBytes));
     let buffer = Buffer.alloc(0);
     let bufferStart = fileEnd;
     let records: BufferedLine[] = [];
 
-    while (bufferStart > 0 && records.length <= boundedLimit) {
-      const length = Math.min(READ_CHUNK_BYTES, bufferStart);
+    while (
+      bufferStart > 0 &&
+      records.length <= boundedLimit &&
+      buffer.length < boundedBytes
+    ) {
+      const length = Math.min(READ_CHUNK_BYTES, bufferStart, boundedBytes - buffer.length);
       const chunkStart = bufferStart - length;
       const chunk = Buffer.allocUnsafe(length);
       const bytesRead = fs.readSync(descriptor, chunk, 0, length, chunkStart);
@@ -91,11 +98,12 @@ export const readJsonlPage = (
   filePath: string,
   limit: number,
   before?: number,
+  maxBytes?: number,
 ): JsonlPage => {
   let descriptor: number | undefined;
   try {
     descriptor = fs.openSync(filePath, "r");
-    return readJsonlPageFromDescriptor(descriptor, limit, before);
+    return readJsonlPageFromDescriptor(descriptor, limit, before, undefined, maxBytes);
   } catch {
     return { lines: [], hasMore: false };
   } finally {

@@ -42,6 +42,9 @@ const DIFF_WRAP_ROWS =
 const EXPAND_KEYBINDING = "app.tools.expand" as AppKeybinding;
 const COLLAPSED_MULTICALL_LIMIT = 8;
 const EXPANDED_MULTICALL_LIMIT = 30;
+const AGENT_RESPONSE_LINE_CODE_POINTS = 240;
+const EXPANDED_AGENT_TOOL_BODY_COUNT = 2;
+const EXPANDED_AGENT_TOOL_BODY_LINES = 12;
 const FULL_SGR_RESET = "\x1b[0m";
 const TEXT_SGR_RESET = "\x1b[22;23;24;27;29;39m";
 
@@ -581,25 +584,6 @@ const transcriptToolAudit = (entry: FabricTranscriptEntry): FabricRenderAudit =>
   };
 };
 
-interface FabricAgentExpandedBudget {
-  tools: number;
-  textLines: number;
-  bodyLines: number;
-}
-
-const DEFAULT_AGENT_EXPANDED_BUDGET: FabricAgentExpandedBudget = {
-  tools: 6,
-  textLines: 8,
-  bodyLines: 16,
-};
-
-const agentExpandedBudget = (agentCount: number): FabricAgentExpandedBudget => {
-  if (agentCount <= 1) return DEFAULT_AGENT_EXPANDED_BUDGET;
-  if (agentCount <= 3) return { tools: 4, textLines: 5, bodyLines: 10 };
-  if (agentCount <= 8) return { tools: 2, textLines: 2, bodyLines: 4 };
-  return { tools: 1, textLines: 1, bodyLines: 0 };
-};
-
 export const renderNestedAgentToolLines = (
   audit: FabricRenderAudit,
   theme: Theme,
@@ -608,102 +592,78 @@ export const renderNestedAgentToolLines = (
     showTools?: boolean | undefined;
     core?: { cwd: string; settings: CodePreviewSettings } | undefined;
     invalidate?: (() => void) | undefined;
-    expandedBudget?: FabricAgentExpandedBudget | undefined;
   },
 ): string[] => {
   if (!isFabricNestedToolPreview(audit.preview)) return [];
   const rawPreviewText = safeTerminalText(audit.preview.text ?? "").trim();
+  const responseLines = rawPreviewText
+    ? rawPreviewText.split("\n").flatMap((line) => {
+        const normalized = line.replace(/\s+/g, " ").trim();
+        if (!normalized) return [""];
+        const codePoints = Array.from(normalized);
+        const chunks: string[] = [];
+        for (let offset = 0; offset < codePoints.length; offset += AGENT_RESPONSE_LINE_CODE_POINTS) {
+          chunks.push(codePoints.slice(offset, offset + AGENT_RESPONSE_LINE_CODE_POINTS).join(""));
+        }
+        return chunks;
+      })
+    : [];
   const tools = options.showTools === false ? [] : audit.preview.tools;
-  const chevron = theme.fg("dim", "›");
-
-  if (options.expanded) {
-    const budget = options.expandedBudget ?? DEFAULT_AGENT_EXPANDED_BUDGET;
-    const owner = theme.fg("toolTitle", theme.bold(audit.preview.owner));
-    const name = theme.fg("accent", safeTerminalText(audit.preview.name));
-    const metadata = theme.fg(
-      "dim",
-      ` · ${audit.preview.runner ?? "pi"} · ${audit.preview.id.slice(0, 8)}`,
-    );
-    const lines = [`${chevron} ${owner} ${name}${metadata}`];
-
-    const textLines = rawPreviewText
-      .split("\n")
-      .map((line) => line.replace(/\s+/g, " ").trim())
-      .filter(Boolean);
-    const shownText = textLines.slice(-budget.textLines);
-    if (shownText.length < textLines.length) {
-      lines.push(theme.fg("dim", `  … ${textLines.length - shownText.length} earlier narrative lines`));
-    }
-    for (const line of shownText) {
-      lines.push(`  ${theme.fg("toolOutput", truncateOneLine(line, 240))}`);
-    }
-
-    const shownTools = budget.tools > 0 ? tools.slice(-budget.tools) : [];
-    if (shownTools.length < tools.length) {
-      lines.push(theme.fg("dim", `  … ${tools.length - shownTools.length} earlier tool calls`));
-    }
-    for (const entry of shownTools) {
-      const nestedAudit = transcriptToolAudit(entry);
-      const glyph = entry.status === "running"
-        ? theme.fg("warning", "◐")
-        : entry.status === "failed"
-          ? theme.fg("error", "✗")
-          : theme.fg("success", "✓");
-      lines.push(`  ${glyph} ${nestedCallTitle(
-        nestedAudit,
-        theme,
-        options.invalidate,
-        options.core,
-      )}`);
-      if (!options.core || budget.bodyLines <= 0) continue;
-      const body = renderCoreToolBody(nestedAudit, theme, {
-        cwd: options.core.cwd,
-        settings: options.core.settings,
-        expanded: true,
-        maxLines: budget.bodyLines,
-        ...(options.invalidate ? { invalidate: options.invalidate } : {}),
-      });
-      if (!body) continue;
-      for (const row of body.lines) lines.push(`    ${row}`);
-      if (body.hidden > 0) {
-        lines.push(theme.fg("dim", `    … ${body.hidden} more lines`));
-      }
-    }
-    return lines;
-  }
-
-  const previewText = truncateOneLine(rawPreviewText, 240);
   const runningTool = tools.slice().reverse().find((entry) => entry.status === "running");
   const latestTool = tools.at(-1);
-  const selectedTool = runningTool ?? (!previewText ? latestTool : undefined);
-  if (!selectedTool && !previewText) return [];
-  if (!selectedTool) {
-    return [`${chevron} ${theme.fg("toolOutput", previewText)}`];
+  const visibleTools = options.expanded
+    ? tools
+    : runningTool
+      ? [runningTool]
+      : responseLines.length === 0 && latestTool
+        ? [latestTool]
+        : [];
+  const chevron = theme.fg("dim", "›");
+  const lines: string[] = [];
+
+  for (const responseLine of responseLines) {
+    const text = theme.fg("toolOutput", responseLine || " ");
+    lines.push(lines.length === 0 ? `${chevron} ${text}` : `  ${text}`);
   }
 
-  const nestedAudit = transcriptToolAudit(selectedTool);
-  const lines = [
-    `${chevron} ${nestedCallTitle(
+  for (let toolIndex = 0; toolIndex < visibleTools.length; toolIndex++) {
+    const entry = visibleTools[toolIndex]!;
+    const nestedAudit = transcriptToolAudit(entry);
+    const title = nestedCallTitle(
       nestedAudit,
       theme,
       options.invalidate,
       options.core,
-    )}`,
-  ];
-  const codeChange = nestedAudit.tool === "edit" || nestedAudit.tool === "write";
-  if (!options.core || (selectedTool.status !== "running" && !codeChange)) {
-    return lines;
+    );
+    if (lines.length === 0) {
+      lines.push(`${chevron} ${title}`);
+    } else {
+      const glyph = entry.status === "running"
+        ? theme.fg("warning", "◐")
+        : entry.status === "failed"
+          ? theme.fg("error", "✗")
+          : theme.fg("dim", "›");
+      lines.push(`  ${glyph} ${title}`);
+    }
+    if (
+      !options.expanded ||
+      !options.core ||
+      toolIndex < visibleTools.length - EXPANDED_AGENT_TOOL_BODY_COUNT
+    ) continue;
+    const body = renderCoreToolBody(nestedAudit, theme, {
+      cwd: options.core.cwd,
+      settings: options.core.settings,
+      expanded: true,
+      maxLines: EXPANDED_AGENT_TOOL_BODY_LINES,
+      ...(options.invalidate ? { invalidate: options.invalidate } : {}),
+    });
+    if (!body) continue;
+    for (const row of body.lines) lines.push(`    ${row}`);
+    if (body.hidden > 0) {
+      lines.push(theme.fg("dim", `    … ${body.hidden} more lines`));
+    }
   }
-  const body = renderCoreToolBody(nestedAudit, theme, {
-    cwd: options.core.cwd,
-    settings: options.core.settings,
-    expanded: false,
-    maxLines: 6,
-    ...(options.invalidate ? { invalidate: options.invalidate } : {}),
-  });
-  if (!body) return lines;
-  for (const row of body.lines) lines.push(`  ${row}`);
-  if (body.hidden > 0) lines.push(theme.fg("dim", `  … ${body.hidden} more lines`));
+
   return lines;
 };
 
@@ -753,9 +713,6 @@ export const renderFabricMulticallPartial = (
 
   const callLimit = fabricMulticallCallLimit(input.expanded);
   const callsShown = input.audits.slice(0, callLimit);
-  const expandedBudget = agentExpandedBudget(
-    callsShown.filter((audit) => isFabricNestedToolPreview(audit.preview)).length,
-  );
   for (let index = 0; index < callsShown.length; index++) {
     const audit = callsShown[index]!;
     if (input.expanded && index > 0) rows.push("");
@@ -769,7 +726,6 @@ export const renderFabricMulticallPartial = (
       expanded: input.expanded,
       showTools: input.showNestedToolCalls,
       core: input.core,
-      expandedBudget,
       ...(invalidate ? { invalidate } : {}),
     });
     let callRow = `${glyph} ${nestedCallTitle(audit, theme, invalidate, input.core)}`;

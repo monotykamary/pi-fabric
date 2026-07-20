@@ -85,6 +85,9 @@ const transcriptMarkdownTheme = (theme: Theme, invalidate: () => void): Markdown
     code.split("\n").map((line) => theme.fg("mdCodeBlock", line)),
 });
 
+const TRANSCRIPT_EXPANDED_TOOL_LINES = 40;
+const TRANSCRIPT_STRUCTURED_LINES = 40;
+
 const safeMarkdownText = (value: string): string =>
   value
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -98,6 +101,11 @@ export interface FabricDashboardMessageTarget {
 }
 
 type FabricTranscriptTarget = FabricUiAgent | FabricUiActor;
+
+interface FabricDashboardKeybindings {
+  matches(data: string, keybinding: "app.tools.expand"): boolean;
+  getKeys(keybinding: "app.tools.expand"): string[];
+}
 
 export class FabricDashboard implements Component, Focusable {
   focused = false;
@@ -116,8 +124,8 @@ export class FabricDashboard implements Component, Focusable {
   private detailId: string | undefined;
   private detailScroll = 0;
   private detailMaxScroll = 0;
-  private transcriptRenderedLines = 0;
-  private preserveTranscriptLines: number | undefined;
+  private transcriptPageAnchor: "start" | "end" | undefined;
+  private transcriptToolsExpanded = false;
   private detailSelectionRestore:
     | { runSelectionTouched: boolean; phaseSelectionTouched: boolean }
     | undefined;
@@ -157,10 +165,15 @@ export class FabricDashboard implements Component, Focusable {
         delivery: FabricAgentMessageDelivery,
       ) => void)
     | undefined;
-  private readonly agentTranscript: ((agent: FabricUiAgent) => FabricAgentTranscript) | undefined;
-  private readonly actorTranscript: ((actor: FabricUiActor) => FabricAgentTranscript) | undefined;
+  private readonly agentTranscript:
+    | ((agent: FabricUiAgent, followLatest: boolean) => FabricAgentTranscript)
+    | undefined;
+  private readonly actorTranscript:
+    | ((actor: FabricUiActor, followLatest: boolean) => FabricAgentTranscript)
+    | undefined;
   private readonly loadOlderTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
-  private readonly loadFullTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
+  private readonly loadNewerTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
+  private readonly loadLatestTranscript: ((target: FabricTranscriptTarget) => boolean) | undefined;
   private readonly onActorModel:
     | ((actorId: string, model: string | undefined) => void)
     | undefined;
@@ -181,6 +194,7 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onExportActor: ((actorId: string) => void) | undefined;
   private readonly onRemoveGlobalActor: ((globalActorId: string) => void) | undefined;
   private readonly codePreviewSettings: CodePreviewSettings | undefined;
+  private readonly keybindings: FabricDashboardKeybindings | undefined;
   private pickerActorName: string | undefined;
 
   constructor(
@@ -191,6 +205,7 @@ export class FabricDashboard implements Component, Focusable {
     options: {
       modelSource?: ModelSource;
       codePreviewSettings?: CodePreviewSettings;
+      keybindings?: FabricDashboardKeybindings;
       claudeModelSource?: ModelSource;
       onAgentSteer?: (agentId: string, message: string) => void;
       onAgentFollowUp?: (agentId: string, message: string) => void;
@@ -200,10 +215,17 @@ export class FabricDashboard implements Component, Focusable {
         message: string,
         delivery: FabricAgentMessageDelivery,
       ) => void;
-      agentTranscript?: (agent: FabricUiAgent) => FabricAgentTranscript;
-      actorTranscript?: (actor: FabricUiActor) => FabricAgentTranscript;
+      agentTranscript?: (
+        agent: FabricUiAgent,
+        followLatest: boolean,
+      ) => FabricAgentTranscript;
+      actorTranscript?: (
+        actor: FabricUiActor,
+        followLatest: boolean,
+      ) => FabricAgentTranscript;
       loadOlderTranscript?: (target: FabricTranscriptTarget) => boolean;
-      loadFullTranscript?: (target: FabricTranscriptTarget) => boolean;
+      loadNewerTranscript?: (target: FabricTranscriptTarget) => boolean;
+      loadLatestTranscript?: (target: FabricTranscriptTarget) => boolean;
       onActorModel?: (actorId: string, model: string | undefined) => void;
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
@@ -218,6 +240,7 @@ export class FabricDashboard implements Component, Focusable {
     this.focused = true;
     this.modelSource = options.modelSource;
     this.codePreviewSettings = options.codePreviewSettings;
+    this.keybindings = options.keybindings;
     this.claudeModelSource = options.claudeModelSource;
     this.onAgentSteer = options.onAgentSteer;
     this.onAgentFollowUp = options.onAgentFollowUp;
@@ -226,7 +249,8 @@ export class FabricDashboard implements Component, Focusable {
     this.agentTranscript = options.agentTranscript;
     this.actorTranscript = options.actorTranscript;
     this.loadOlderTranscript = options.loadOlderTranscript;
-    this.loadFullTranscript = options.loadFullTranscript;
+    this.loadNewerTranscript = options.loadNewerTranscript;
+    this.loadLatestTranscript = options.loadLatestTranscript;
     this.onActorModel = options.onActorModel;
     this.onActorThinking = options.onActorThinking;
     this.onActorEvents = options.onActorEvents;
@@ -317,9 +341,14 @@ export class FabricDashboard implements Component, Focusable {
         if (detail && this.hasTranscript(detail)) {
           this.detailView = this.detailView === "summary" ? "transcript" : "summary";
           this.detailScroll = 0;
-          this.preserveTranscriptLines = undefined;
+          this.transcriptPageAnchor = undefined;
           this.transcriptFollowing = true;
         }
+      } else if (
+        this.detailView === "transcript" &&
+        this.matchesTranscriptToolToggle(data)
+      ) {
+        this.transcriptToolsExpanded = !this.transcriptToolsExpanded;
       } else if (matchesKey(data, Key.up) || data === "k") {
         if (this.detailScroll > 0) {
           if (this.detailView === "transcript") this.transcriptFollowing = false;
@@ -328,7 +357,7 @@ export class FabricDashboard implements Component, Focusable {
           const detail = allEntities.find((entity) => entity.id === this.detailId);
           const target = detail ? this.transcriptTarget(detail) : undefined;
           if (target && this.loadOlderTranscript?.(target)) {
-            this.preserveTranscriptLines = this.transcriptRenderedLines;
+            this.transcriptPageAnchor = "end";
             this.transcriptFollowing = false;
           }
         }
@@ -336,17 +365,24 @@ export class FabricDashboard implements Component, Focusable {
         if (this.detailScroll < this.detailMaxScroll) {
           if (this.detailView === "transcript") this.transcriptFollowing = false;
           this.detailScroll++;
+        } else if (this.detailView === "transcript") {
+          const detail = allEntities.find((entity) => entity.id === this.detailId);
+          const target = detail ? this.transcriptTarget(detail) : undefined;
+          if (target && this.loadNewerTranscript?.(target)) {
+            this.transcriptPageAnchor = "start";
+            this.transcriptFollowing = false;
+          }
         }
       } else if (data === "G" && this.detailView === "transcript") {
-        this.preserveTranscriptLines = undefined;
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
+        const target = detail ? this.transcriptTarget(detail) : undefined;
+        if (target) this.loadLatestTranscript?.(target);
+        this.transcriptPageAnchor = undefined;
         this.transcriptFollowing = true;
         this.detailScroll = this.detailMaxScroll;
       } else if (matchesKey(data, Key.home) || data === "g") {
         if (this.detailView === "transcript") {
-          const detail = allEntities.find((entity) => entity.id === this.detailId);
-          const target = detail ? this.transcriptTarget(detail) : undefined;
-          if (target) this.loadFullTranscript?.(target);
-          this.preserveTranscriptLines = undefined;
+          this.transcriptPageAnchor = undefined;
           this.transcriptFollowing = false;
         }
         this.detailScroll = 0;
@@ -560,7 +596,7 @@ export class FabricDashboard implements Component, Focusable {
         this.detailId = selected.id;
         this.detailView = "transcript";
         this.detailScroll = 0;
-        this.preserveTranscriptLines = undefined;
+        this.transcriptPageAnchor = undefined;
         this.transcriptFollowing = true;
       }
     } else if (matchesKey(data, Key.enter)) {
@@ -707,9 +743,28 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   private transcriptFor(entity: Entity): FabricAgentTranscript | undefined {
-    if (entity.kind === "agent") return this.agentTranscript?.(entity.value);
-    if (entity.kind === "actor") return this.actorTranscript?.(entity.value);
+    if (entity.kind === "agent") {
+      return this.agentTranscript?.(entity.value, this.transcriptFollowing);
+    }
+    if (entity.kind === "actor") {
+      return this.actorTranscript?.(entity.value, this.transcriptFollowing);
+    }
     return undefined;
+  }
+
+  private matchesTranscriptToolToggle(data: string): boolean {
+    if (this.keybindings) return this.keybindings.matches(data, "app.tools.expand");
+    const keybindings = getKeybindings();
+    const keys = keybindings.getKeys("app.tools.expand");
+    return keys.length > 0
+      ? keybindings.matches(data, "app.tools.expand")
+      : matchesKey(data, Key.ctrl("o"));
+  }
+
+  private transcriptToolToggleHint(): string {
+    const keys = (this.keybindings ?? getKeybindings()).getKeys("app.tools.expand");
+    const key = keys.length > 0 ? keys.join("/") : this.keybindings ? "unbound" : "ctrl+o";
+    return `${key} ${this.transcriptToolsExpanded ? "collapse" : "expand"} tools`;
   }
 
   private messageTarget(entity: Entity): FabricDashboardMessageTarget | undefined {
@@ -852,7 +907,10 @@ export class FabricDashboard implements Component, Focusable {
       ...(agentActions.length > 1 ? [["Agents", agentActions.join(" · ")]] : []),
       ...(actorActions.length > 0 ? [["Actors", actorActions.join(" · ")]] : []),
       ...(templateActions.length > 0 ? [["Templates", templateActions.join(" · ")]] : []),
-      ["Details", "↑↓/jk scroll · g top · t transcript/summary · G resume follow · ? close help"],
+      [
+        "Details",
+        `↑↓/jk lazy scroll · g page top · G live tail · ${this.transcriptToolToggleHint()} · t transcript/summary · ? close help`,
+      ],
     ];
     for (const [label, value] of help) {
       const prefix = `${this.theme.fg("accent", `${label}:`)} `;
@@ -1487,16 +1545,12 @@ export class FabricDashboard implements Component, Focusable {
     this.detailMaxScroll = maxScroll;
     if (transcriptView && this.transcriptFollowing) {
       this.detailScroll = maxScroll;
-    } else if (transcriptView && this.preserveTranscriptLines !== undefined) {
-      this.detailScroll = Math.max(
-        0,
-        Math.min(maxScroll, content.length - this.preserveTranscriptLines),
-      );
-      this.preserveTranscriptLines = undefined;
+    } else if (transcriptView && this.transcriptPageAnchor) {
+      this.detailScroll = this.transcriptPageAnchor === "end" ? maxScroll : 0;
+      this.transcriptPageAnchor = undefined;
     } else {
       this.detailScroll = Math.max(0, Math.min(this.detailScroll, maxScroll));
     }
-    if (transcriptView) this.transcriptRenderedLines = content.length;
     const visible = content.slice(this.detailScroll, this.detailScroll + maxBody);
     for (const line of visible) lines.push(this.row(width, line));
     while (lines.length < maxBody + 1) lines.push(this.row(width, ""));
@@ -1506,7 +1560,7 @@ export class FabricDashboard implements Component, Focusable {
         ? ` · ${this.detailScroll + 1}-${Math.min(content.length, this.detailScroll + maxBody)}/${content.length}`
         : "";
     const navigation = transcriptView
-      ? `↑↓/jk scroll · g top · G follow:${this.transcriptFollowing ? "on" : "off"}/bottom · t summary · esc back${range}`
+      ? `↑↓/jk lazy scroll · ${this.transcriptToolToggleHint()} · g page top · G follow:${this.transcriptFollowing ? "on" : "off"}/live tail · t summary · esc back${range}`
       : `↑↓/jk scroll · ${this.hasTranscript(entity) ? "t transcript · " : ""}esc back${range}`;
     lines.push(this.row(width, this.theme.fg("dim", navigation)));
     for (const actionLine of actionLines) {
@@ -1536,7 +1590,7 @@ export class FabricDashboard implements Component, Focusable {
     }
     const lines: string[] = [];
     if (transcript.hasMore ?? transcript.truncated) {
-      lines.push(this.theme.fg("dim", "↑ earlier activity omitted · press g to load the true top"));
+      lines.push(this.theme.fg("dim", "↑ older activity available · scroll past the top to load"));
     }
     for (const entry of transcript.entries) {
       if (entry.kind === "tool") {
@@ -1582,6 +1636,9 @@ export class FabricDashboard implements Component, Focusable {
         for (const line of wrapped) lines.push(truncateToWidth(`  ${line}`, width, ""));
       }
     }
+    if (transcript.hasNewer) {
+      lines.push(this.theme.fg("dim", "↓ newer activity available · scroll past the bottom to load"));
+    }
     return lines;
   }
 
@@ -1592,20 +1649,6 @@ export class FabricDashboard implements Component, Focusable {
   ): string[] {
     const depth = Math.max(0, entry.depth ?? 0);
     const padding = "  ".repeat(depth);
-    if (!entry.args && entry.text) {
-      const status = entry.status ?? "completed";
-      return [
-        truncateToWidth(
-          colorStatus(
-            this.theme,
-            status,
-            `${padding}${entry.label} · ${status} · ${safeText(entry.text)}`,
-          ),
-          width,
-          "",
-        ),
-      ];
-    }
     const bodyPadding = `${padding}  `;
     const glyph = colorStatus(
       this.theme,
@@ -1624,18 +1667,24 @@ export class FabricDashboard implements Component, Focusable {
       : undefined;
     const title = context ? coreToolTitle(audit, this.theme, context) : null;
     const headline = title ?? this.theme.fg("toolTitle", this.theme.bold(entry.toolName ?? entry.label));
+    const collapsedSummary =
+      !this.transcriptToolsExpanded && entry.text
+        ? ` · ${safeText(entry.text).replace(/\s+/g, " ").trim()}`
+        : "";
     const lines = [
       truncateToWidth(
-        `${padding}${glyph} ${headline}${this.theme.fg("dim", status)}`,
+        `${padding}${glyph} ${headline}${this.theme.fg("dim", `${status}${collapsedSummary}`)}`,
         width,
         "",
       ),
     ];
+    if (!this.transcriptToolsExpanded) return lines;
+
     const rendered = context
       ? renderCoreToolBody(audit, this.theme, {
           ...context,
           expanded: true,
-          maxLines: 200,
+          maxLines: TRANSCRIPT_EXPANDED_TOOL_LINES,
           toolCallBackground: false,
         })
       : null;
@@ -1655,7 +1704,11 @@ export class FabricDashboard implements Component, Focusable {
     if (entry.args && Object.keys(entry.args).length > 0) {
       lines.push(...this.transcriptStructuredLines("input", entry.args, width, bodyPadding));
     } else if (entry.text) {
-      for (const row of wrapPlainText(entry.text, Math.max(1, width - visibleWidth(bodyPadding)), 10_000)) {
+      for (const row of wrapPlainText(
+        entry.text,
+        Math.max(1, width - visibleWidth(bodyPadding)),
+        10_000,
+      )) {
         lines.push(truncateToWidth(`${bodyPadding}${row}`, width, ""));
       }
     }
@@ -1709,15 +1762,23 @@ export class FabricDashboard implements Component, Focusable {
   ): string[] {
     const yaml = formatJsonAsYaml(value) ?? safeText(value);
     if (!yaml) return [];
+    const yamlLines = yaml.split("\n");
+    const shownYamlLines = yamlLines.slice(0, TRANSCRIPT_STRUCTURED_LINES);
     const highlighted =
-      highlightCode(yaml, "yaml", this.highlightInvalidate) ??
-      yaml.split("\n").map((line) => this.theme.fg("mdCodeBlock", line || " "));
+      highlightCode(shownYamlLines.join("\n"), "yaml", this.highlightInvalidate) ??
+      shownYamlLines.map((line) => this.theme.fg("mdCodeBlock", line || " "));
     const lines = [truncateToWidth(`${padding}${this.theme.fg("dim", `${label}:`)}`, width, "")];
     const nestedPadding = `${padding}  `;
     for (const row of highlighted) {
       for (const wrapped of wrapTextWithAnsi(row, Math.max(1, width - visibleWidth(nestedPadding)))) {
         lines.push(truncateToWidth(`${nestedPadding}${wrapped}`, width, ""));
+        if (lines.length > TRANSCRIPT_STRUCTURED_LINES) break;
       }
+      if (lines.length > TRANSCRIPT_STRUCTURED_LINES) break;
+    }
+    const hiddenLines = Math.max(0, yamlLines.length - shownYamlLines.length);
+    if (hiddenLines > 0) {
+      lines.push(this.theme.fg("dim", `${nestedPadding}… ${hiddenLines} more lines`));
     }
     return lines;
   }
@@ -2243,6 +2304,7 @@ export class FabricDashboard implements Component, Focusable {
     this.detailId = undefined;
     this.detailScroll = 0;
     this.detailMaxScroll = 0;
+    this.transcriptPageAnchor = undefined;
     this.detailSelectionRestore = undefined;
     this.detailView = "summary";
     this.transcriptFollowing = true;
@@ -2276,6 +2338,7 @@ export class FabricDashboard implements Component, Focusable {
     this.detailId = undefined;
     this.detailScroll = 0;
     this.detailMaxScroll = 0;
+    this.transcriptPageAnchor = undefined;
     this.detailView = "summary";
     this.transcriptFollowing = true;
   }
@@ -2295,19 +2358,15 @@ export class FabricDashboard implements Component, Focusable {
     this.detailMaxScroll = Math.max(0, content.length - maxBody);
     if (transcriptView && this.transcriptFollowing) {
       this.detailScroll = this.detailMaxScroll;
-    } else if (transcriptView && this.preserveTranscriptLines !== undefined) {
-      this.detailScroll = Math.max(
-        0,
-        Math.min(this.detailMaxScroll, content.length - this.preserveTranscriptLines),
-      );
-      this.preserveTranscriptLines = undefined;
+    } else if (transcriptView && this.transcriptPageAnchor) {
+      this.detailScroll = this.transcriptPageAnchor === "end" ? this.detailMaxScroll : 0;
+      this.transcriptPageAnchor = undefined;
     } else {
       this.detailScroll = Math.max(0, Math.min(this.detailScroll, this.detailMaxScroll));
     }
-    if (transcriptView) this.transcriptRenderedLines = content.length;
     const title = `${entity.label}${transcriptView ? " · transcript" : ""}`;
     const hint = transcriptView
-      ? `g top · G follow:${this.transcriptFollowing ? "on" : "off"}/bottom · t summary · esc`
+      ? `${this.transcriptToolToggleHint()} · g page top · G follow:${this.transcriptFollowing ? "on" : "off"}/tail · t summary · esc`
       : `${this.hasTranscript(entity) ? "t transcript · " : ""}esc`;
     return [title, ...content.slice(this.detailScroll, this.detailScroll + maxBody), hint]
       .map((line) => truncateToWidth(line, width, ""))

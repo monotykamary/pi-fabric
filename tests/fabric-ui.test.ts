@@ -1593,10 +1593,11 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("opens actor transcripts and uses g/G for the true top and followed tail", () => {
+  it("lazy-loads actor transcript pages and toggles tool details with the native binding", () => {
     const actorTranscript = vi.fn(() => ({
       truncated: true,
       hasMore: true,
+      hasNewer: true,
       entries: [
         {
           id: "actor-edit",
@@ -1612,33 +1613,60 @@ describe("Fabric dynamic UI", () => {
         },
       ],
     }));
-    const loadFullTranscript = vi.fn(() => true);
+    const loadOlderTranscript = vi.fn(() => true);
+    const loadNewerTranscript = vi.fn(() => true);
+    const loadLatestTranscript = vi.fn(() => true);
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
       theme,
       snapshot,
       vi.fn(),
-      { actorTranscript, loadFullTranscript, codePreviewSettings },
+      {
+        actorTranscript,
+        loadOlderTranscript,
+        loadNewerTranscript,
+        loadLatestTranscript,
+        codePreviewSettings,
+      },
     );
     try {
       dashboard.render(120);
       dashboard.handleInput("j");
       dashboard.handleInput("l");
       dashboard.handleInput(" ");
-      const transcript = dashboard.render(100).join("\n");
-      const visible = transcript.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-      expect(actorTranscript).toHaveBeenCalled();
-      expect(visible).toContain("actor · advisor · transcript");
-      expect(visible).toContain("src/actor.ts");
-      expect(visible).toContain("const before = 1;");
-      expect(visible).toContain("const after = 2;");
+      const collapsed = dashboard.render(100).join("\n");
+      const collapsedVisible = collapsed.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      expect(actorTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "actor-1", name: "advisor" }),
+        true,
+      );
+      expect(collapsedVisible).toContain("actor · advisor · transcript");
+      expect(collapsedVisible).toContain("src/actor.ts");
+      expect(collapsedVisible).not.toContain("const before = 1;");
+      expect(collapsedVisible).not.toContain("const after = 2;");
+      expect(collapsedVisible).toContain("ctrl+o expand tools");
+
+      dashboard.handleInput("\x0f");
+      const expanded = dashboard.render(100).join("\n");
+      const expandedVisible = expanded.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      expect(expandedVisible).toContain("const before = 1;");
+      expect(expandedVisible).toContain("const after = 2;");
+      expect(expandedVisible).toContain("ctrl+o collapse tools");
 
       dashboard.handleInput("g");
-      expect(loadFullTranscript).toHaveBeenCalledWith(
+      dashboard.handleInput("k");
+      expect(loadOlderTranscript).toHaveBeenCalledWith(
         expect.objectContaining({ id: "actor-1", name: "advisor" }),
       );
-      expect(dashboard.render(100).join("\n")).toContain("G follow:off");
+      dashboard.render(100);
+      dashboard.handleInput("j");
+      expect(loadNewerTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "actor-1", name: "advisor" }),
+      );
       dashboard.handleInput("G");
+      expect(loadLatestTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "actor-1", name: "advisor" }),
+      );
       expect(dashboard.render(100).join("\n")).toContain("G follow:on");
     } finally {
       dashboard.dispose();
@@ -1668,7 +1696,7 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput(" ");
       const transcript = dashboard.render(80).join("\n");
       expect(transcript).toContain("transcript · live");
-      expect(transcript).toContain("earlier activity omitted");
+      expect(transcript).toContain("older activity available");
       expect(transcript).toContain("Live review");
       expect(transcript).toContain("Reviewing the event stream");
       expect(transcript).toContain("Tail");

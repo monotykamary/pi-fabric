@@ -6,11 +6,13 @@ import type {
 import {
   commandAvailable,
   executeFile,
+  processIsAlive,
   workerCommand,
 } from "./process-utils.js";
 
 interface LocaltermSession {
   id: string;
+  pid: number;
 }
 
 export class LocaltermTransport implements SubagentTransportAdapter {
@@ -40,19 +42,15 @@ export class LocaltermTransport implements SubagentTransportAdapter {
       "--json",
     ]);
     const session = JSON.parse(stdout) as LocaltermSession;
-    if (!session.id) throw new Error("LocalTerm did not return a session id");
+    if (!session.id || !Number.isSafeInteger(session.pid) || session.pid <= 0) {
+      throw new Error("LocalTerm did not return a valid session");
+    }
     return {
       kind: this.kind,
       sessionId: session.id,
       attachCommand: `localterm session attach ${session.id}`,
       async isAlive() {
-        try {
-          const result = await executeFile("localterm", ["session", "ls", "--json"]);
-          const sessions = JSON.parse(result.stdout) as LocaltermSession[];
-          return sessions.some((candidate) => candidate.id === session.id);
-        } catch {
-          return false;
-        }
+        return processIsAlive(session.pid);
       },
       async stop() {
         try {

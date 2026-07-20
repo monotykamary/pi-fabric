@@ -229,7 +229,7 @@ return Promise.all([
     expect(nestedCallBody(restored[0]!)).toBe("# Cached preview");
   });
 
-  it("renders child-agent edit activity beneath its parent call", () => {
+  it("renders child-agent tool activity as one line beneath its parent call", () => {
     const settings = {
       tools: ["edit"],
       editDiffPreview: true,
@@ -282,8 +282,8 @@ return Promise.all([
     const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     expect(visible).toContain("run implement › edit src/child.ts");
     expect(visible).not.toContain("[agent");
-    expect(visible).toContain("const before = 1;");
-    expect(visible).toContain("const after = 2;");
+    expect(visible).not.toContain("const before = 1;");
+    expect(visible).not.toContain("const after = 2;");
   });
 
   it("renders agent narrative while nested tool rows are hidden", () => {
@@ -302,7 +302,7 @@ return Promise.all([
               status: "running",
               runner: "pi",
               owner: "agent",
-              text: "Inspecting the routing configuration now.",
+              text: "Inspecting the routing configuration now.\nThe response stays expanded.",
               tools: [
                 {
                   id: "child-read",
@@ -325,6 +325,7 @@ return Promise.all([
 
     const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     expect(visible).toContain("run implement › Inspecting the routing configuration now.");
+    expect(visible).toContain("The response stays expanded.");
     expect(visible).not.toContain("[agent");
     expect(visible).not.toContain("src/private.ts");
   });
@@ -384,12 +385,12 @@ return Promise.all([
 
     expect(lines).toContain("◐ run reader › Reviewing the routing configuration.");
     const searcherLine = lines.find((line) => line.includes("run searcher"));
-    expect(searcherLine).toContain("› grep");
-    expect(lines).not.toContain(expect.stringContaining("I will inspect the tests."));
+    expect(searcherLine).toContain("I will inspect the tests.");
+    expect(lines.some((line) => line.includes("grep"))).toBe(true);
     expect(lines.join("\n")).not.toContain("[agent");
   });
 
-  it("renders a highlighted bounded agent preview when expanded", () => {
+  it("keeps assistant responses expanded and agent tools one-line", () => {
     const lines = renderFabricMulticallPartial(
       {
         audits: [
@@ -425,16 +426,15 @@ return Promise.all([
     ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
     const visible = lines.join("\n");
 
-    expect(lines[1]).toContain("run implement › agent implementor · pi · agent-ch");
-    expect(visible).toContain("… 2 earlier narrative lines");
-    expect(lines.some((line) => line.trim() === "narrative 1")).toBe(false);
+    expect(lines[1]).toContain("run implement › narrative 1");
     expect(visible).toContain("narrative 10");
-    expect(visible).toContain("… 2 earlier tool calls");
-    expect(visible).not.toContain("src/file-1.ts");
+    expect(visible).toContain("read src/file-0.ts");
     expect(visible).toContain("read src/file-7.ts");
+    expect(visible).not.toContain("earlier narrative lines");
+    expect(visible).not.toContain("earlier tool calls");
   });
 
-  it("reuses highlighted core tool bodies inside expanded agents", () => {
+  it("expands recent agent tool bodies only with the transcript keybinding", () => {
     const settings = {
       tools: ["edit"],
       editDiffPreview: true,
@@ -484,13 +484,12 @@ return Promise.all([
       plainTheme,
     ).render(120).join("\n").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 
-    expect(lines).toContain("run implementor › agent implementor · pi · agent-ch");
-    expect(lines).toContain("✓ edit src/child.ts");
+    expect(lines).toContain("run implementor › edit src/child.ts");
     expect(lines).toContain("const before = 1;");
     expect(lines).toContain("const after = 2;");
   });
 
-  it("uses a compact expanded budget for large agent groups", () => {
+  it("preserves assistant responses and one-line tools for large agent groups", () => {
     const audits = Array.from({ length: 10 }, (_, agentIndex) => ({
       ref: "agents.run",
       provider: "agents",
@@ -520,10 +519,9 @@ return Promise.all([
     ).render(160).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, ""));
     const visible = lines.join("\n");
 
-    expect(visible).toContain("run agent-0 › agent agent-0 · pi · agent-ch");
-    expect(visible).not.toContain("first narrative");
+    expect(visible).toContain("run agent-0 › first narrative");
     expect(visible).toContain("latest narrative");
-    expect(visible).not.toContain("src/agent-0-file-1.ts");
+    expect(visible).toContain("src/agent-0-file-0.ts");
     expect(visible).toContain("src/agent-0-file-2.ts");
     expect(lines.length).toBeLessThanOrEqual(60);
   });

@@ -57,6 +57,22 @@ describe("readJsonlPage", () => {
     expect(older.lines.map((line) => (line.parsed as { index: number }).index)).toEqual([1994, 1995, 1996]);
   });
 
+  it("bounds bytes read while retaining complete tail records", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-log-tail-"));
+    roots.push(root);
+    const file = path.join(root, "events.jsonl");
+    const records = [
+      JSON.stringify({ index: 0, text: "x".repeat(4_096) }),
+      JSON.stringify({ index: 1 }),
+      JSON.stringify({ index: 2 }),
+    ];
+    fs.writeFileSync(file, `${records.join("\n")}\n`);
+
+    const page = readJsonlPage(file, 10, undefined, 1_024);
+    expect(page.lines.map((line) => line.parsed)).toEqual([{ index: 1 }, { index: 2 }]);
+    expect(page.hasMore).toBe(true);
+  });
+
   it("parses only complete records and preserves malformed lines as raw text", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-log-tail-"));
     roots.push(root);

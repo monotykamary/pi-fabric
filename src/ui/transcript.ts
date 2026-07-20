@@ -2,14 +2,17 @@ import fs from "node:fs";
 import { readJsonlPageFromDescriptor } from "../log-tail.js";
 import type { FabricLogLine } from "../subagents/types.js";
 
-const PAGE_LINES = 240;
+const PAGE_LINES = 40;
+const MAX_PAGE_BYTES = 512 * 1024;
 const MAX_CACHE_ENTRIES = 32;
-const MAX_LIVE_LINES = 2_000;
-const MAX_LIVE_ENTRIES = 1_000;
-const MAX_TRACKED_ACTIVE_TOOLS = 64;
+const FORWARD_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_TOOL_SUMMARY_CHARS = 500;
 const TRANSCRIPT_ENTRY_LIMIT = 80;
 const MAX_ENCODED_STRING_CHARS = 160;
+const MAX_TRANSCRIPT_MESSAGE_CHARS = 40_000;
+const MAX_TRANSCRIPT_VALUE_CHARS = 40_000;
+const MAX_TRANSCRIPT_STRING_CHARS = 12_000;
+const MAX_TRANSCRIPT_VALUE_NODES = 400;
 const secretKey = /authorization|api[-_]?key|token|password|secret|cookie|credential|private[-_]?key/i;
 
 type FabricTranscriptEntryStatus = "running" | "completed" | "failed";
@@ -32,6 +35,7 @@ export interface FabricAgentTranscript {
   /** Kept for compatibility; true means older pages are available. */
   truncated: boolean;
   hasMore?: boolean;
+  hasNewer?: boolean;
   updatedAt?: number;
 }
 
@@ -52,20 +56,20 @@ export interface FabricNestedToolPreview {
   tools: FabricTranscriptEntry[];
 }
 
+interface RedactionBudget {
+  chars: number;
+  nodes: number;
+}
+
 interface CachedTranscript {
   device: number;
   inode: number;
   modifiedAt: number;
   offset: number;
-  remainder: Buffer;
-  remainderOffset: number;
-  lines: FabricLogLine[];
-  before: number | undefined;
+  completeEnd: number;
+  pageStart: number;
+  pageEnd: number;
   hasMore: boolean;
-  accumulator: TranscriptAccumulator;
-  entriesTrimmed: boolean;
-  linesTrimmed: boolean;
-  retainAll: boolean;
   transcript: FabricAgentTranscript;
 }
 
@@ -93,8 +97,8 @@ const graphemes = (value: string): string[] =>
     ? [...graphemeSegmenter.segment(value)].map((entry) => entry.segment)
     : Array.from(value);
 
-const clip = (value: string, max: number): string => {
-  const normalized = terminalSafe(value);
+const clip = (value: string, max: number, trim = true): string => {
+  const normalized = terminalSafe(value, trim);
   if (normalized.length <= max) return normalized;
   const parts = graphemes(normalized);
   if (parts.length <= max) return normalized;
@@ -160,37 +164,67 @@ const redactInlineSecrets = (value: string): string =>
     )
     .replace(/(https?:\/\/)[^\s/:@]+:[^\s/@]+@/gi, "$1[redacted]@");
 
-const redact = (value: unknown, key = "", depth = 0): unknown => {
+const redact = (
+  value: unknown,
+  key = "",
+  depth = 0,
+  budget: RedactionBudget = {
+    chars: MAX_TRANSCRIPT_VALUE_CHARS,
+    nodes: MAX_TRANSCRIPT_VALUE_NODES,
+  },
+): unknown => {
   if (secretKey.test(key)) return "[redacted]";
   if (depth > 12) return "[nested value]";
+  if (budget.nodes <= 0) return "[value omitted]";
+  budget.nodes--;
   if (typeof value === "string") {
-    const hidden = redactInlineSecrets(terminalSafe(value, false));
-    if (
-      hidden.length >= MAX_ENCODED_STRING_CHARS &&
-      /^[A-Za-z0-9+/=_-]+$/.test(hidden)
-    ) {
-      return `[large encoded value · ${hidden.length} chars]`;
+    const safe = terminalSafe(value, false);
+    if (safe.length >= MAX_ENCODED_STRING_CHARS && /^[A-Za-z0-9+/=_-]+$/.test(safe)) {
+      return `[large encoded value · ${safe.length} chars]`;
     }
+    const available = Math.max(0, Math.min(MAX_TRANSCRIPT_STRING_CHARS, budget.chars));
+    if (available === 0) return "[text omitted]";
+    const hidden = redactInlineSecrets(clip(safe, available, false));
+    budget.chars = Math.max(0, budget.chars - hidden.length);
     return hidden;
   }
-  if (Array.isArray(value)) return value.map((entry) => redact(entry, key, depth + 1));
+  if (Array.isArray(value)) {
+    const entries: unknown[] = [];
+    for (const entry of value) {
+      if (budget.nodes <= 0) {
+        entries.push(`[${value.length - entries.length} entries omitted]`);
+        break;
+      }
+      entries.push(redact(entry, key, depth + 1, budget));
+    }
+    return entries;
+  }
   const record = recordOf(value);
   if (!record) return value;
-  return Object.fromEntries(
-    Object.entries(record).map(([name, entry]) => [name, redact(entry, name, depth + 1)]),
-  );
+  const entries = Object.entries(record);
+  const redacted: Record<string, unknown> = {};
+  for (let index = 0; index < entries.length; index++) {
+    if (budget.nodes <= 0) {
+      redacted["…"] = `[${entries.length - index} fields omitted]`;
+      break;
+    }
+    const [name, entry] = entries[index]!;
+    redacted[name] = redact(entry, name, depth + 1, budget);
+  }
+  return redacted;
 };
 
 const redactRecord = (value: unknown): Record<string, unknown> | undefined => {
   const record = recordOf(value);
-  return record ? (redact(record) as Record<string, unknown>) : undefined;
+  if (!record) return undefined;
+  return recordOf(redact(record));
 };
 
-const compactValue = (value: unknown): string => {
+const compactRedactedValue = (value: unknown): string => {
   try {
-    return clip(JSON.stringify(redact(value)).replace(/\s+/g, " "), MAX_TOOL_SUMMARY_CHARS);
+    return clip(JSON.stringify(value).replace(/\s+/g, " "), MAX_TOOL_SUMMARY_CHARS);
   } catch {
-    return clip(String(redact(value) ?? "").replace(/\s+/g, " "), MAX_TOOL_SUMMARY_CHARS);
+    return clip(String(value ?? "").replace(/\s+/g, " "), MAX_TOOL_SUMMARY_CHARS);
   }
 };
 
@@ -206,37 +240,6 @@ class TranscriptAccumulator {
 
   append(events: Array<Record<string, unknown>>): void {
     for (const event of events) this.#append(event);
-  }
-
-  trim(maxEntries: number): boolean {
-    if (this.entries.length <= maxEntries) return false;
-    const protectedEntries = new Set<FabricTranscriptEntry>([
-      ...this.#activeTools.slice(-MAX_TRACKED_ACTIVE_TOOLS),
-      ...(this.#assistant ? [this.#assistant] : []),
-      ...(this.#retry ? [this.#retry] : []),
-      ...(this.#compaction ? [this.#compaction] : []),
-    ]);
-    let removable = this.entries.length - maxEntries;
-    const removed = new Set<FabricTranscriptEntry>();
-    const retained = this.entries.filter((entry) => {
-      if (removable <= 0 || protectedEntries.has(entry)) return true;
-      removable--;
-      removed.add(entry);
-      return false;
-    });
-    if (removed.size === 0) return false;
-    this.entries.splice(0, this.entries.length, ...retained);
-    for (const [id, entry] of this.#tools) {
-      if (removed.has(entry)) this.#tools.delete(id);
-    }
-    for (const [label, entries] of this.#anonymousTools) {
-      const active = entries.filter((entry) => !removed.has(entry));
-      if (active.length > 0) this.#anonymousTools.set(label, active);
-      else this.#anonymousTools.delete(label);
-    }
-    const active = this.#activeTools.filter((entry) => !removed.has(entry));
-    this.#activeTools.splice(0, this.#activeTools.length, ...active);
-    return true;
   }
 
   snapshot(
@@ -276,7 +279,7 @@ class TranscriptAccumulator {
     status: FabricTranscriptEntryStatus = "completed",
     label = kind === "assistant" ? "Agent" : "User",
   ): void {
-    const safe = terminalSafe(text);
+    const safe = clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS);
     if (!safe) return;
     this.entries.push({ id, kind, label, text: safe, status });
   }
@@ -299,7 +302,7 @@ class TranscriptAccumulator {
     const safeArgs = args === undefined ? undefined : redactRecord(args);
     if (existing) {
       if (safeArgs !== undefined) existing.args = safeArgs;
-      if (args !== undefined) existing.text = compactValue(args);
+      if (args !== undefined) existing.text = compactRedactedValue(safeArgs ?? redact(args));
       return existing;
     }
     const parent = this.#toolParent(id);
@@ -311,7 +314,9 @@ class TranscriptAccumulator {
       toolName: safeLabel,
       status: "running",
       ...(safeArgs !== undefined ? { args: safeArgs } : {}),
-      ...(args !== undefined ? { text: compactValue(args) } : {}),
+      ...(args !== undefined
+        ? { text: compactRedactedValue(safeArgs ?? redact(args)) }
+        : {}),
       ...(parent ? { parentId: parent.id, depth: (parent.depth ?? 0) + 1 } : {}),
     };
     this.entries.push(entry);
@@ -330,7 +335,7 @@ class TranscriptAccumulator {
       entry.status = failed ? "failed" : "completed";
       if (safeResult !== undefined) entry.result = safeResult;
       if (failed && result !== undefined) {
-        const failure = compactValue(result);
+        const failure = compactRedactedValue(safeResult);
         entry.text = clip(
           `${entry.text ? `${entry.text} · ` : ""}error: ${failure}`,
           MAX_TOOL_SUMMARY_CHARS,
@@ -348,7 +353,7 @@ class TranscriptAccumulator {
       toolName: safeLabel,
       status: failed ? "failed" : "completed",
       ...(safeResult !== undefined ? { result: safeResult } : {}),
-      ...(failed && result !== undefined ? { text: compactValue(result) } : {}),
+      ...(failed && safeResult !== undefined ? { text: compactRedactedValue(safeResult) } : {}),
     });
   }
 
@@ -449,12 +454,16 @@ class TranscriptAccumulator {
             id,
             kind: "assistant",
             label: "Claude",
-            text,
+            text: clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS, false),
             status: "running",
           };
           this.entries.push(this.#assistant);
         } else {
-          this.#assistant.text = `${this.#assistant.text ?? ""}${text}`;
+          this.#assistant.text = clip(
+            `${this.#assistant.text ?? ""}${text}`,
+            MAX_TRANSCRIPT_MESSAGE_CHARS,
+            false,
+          );
         }
       }
       return;
@@ -475,7 +484,7 @@ class TranscriptAccumulator {
       const text = terminalSafe(contentText(message.content));
       if (text) {
         if (this.#assistant) {
-          this.#assistant.text = text;
+          this.#assistant.text = clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS);
           this.#finishAssistant("completed");
         } else {
           this.#pushMessage("assistant", id, text, "completed", "Claude");
@@ -550,10 +559,16 @@ class TranscriptAccumulator {
       const text = terminalSafe(contentText(message.content));
       if (!text) return;
       if (!this.#assistant) {
-        this.#assistant = { id, kind: "assistant", label: "Agent", text, status: "running" };
+        this.#assistant = {
+          id,
+          kind: "assistant",
+          label: "Agent",
+          text: clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS),
+          status: "running",
+        };
         this.entries.push(this.#assistant);
       } else {
-        this.#assistant.text = text;
+        this.#assistant.text = clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS);
         if (!this.entries.includes(this.#assistant)) this.entries.push(this.#assistant);
       }
       return;
@@ -580,7 +595,7 @@ class TranscriptAccumulator {
       }
       if (!this.#assistant) this.#pushMessage("assistant", id, text);
       else {
-        this.#assistant.text = text;
+        this.#assistant.text = clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS);
         this.#finishAssistant("completed");
       }
       return;
@@ -708,49 +723,69 @@ const parsedEvents = (lines: FabricLogLine[]): Array<Record<string, unknown>> =>
     .map((line) => recordOf(line.parsed) ?? parseRaw(line.raw))
     .filter((event): event is Record<string, unknown> => event !== undefined);
 
-const readRange = (descriptor: number, start: number, end: number): Buffer => {
-  const length = Math.max(0, end - start);
-  if (length === 0) return Buffer.alloc(0);
-  const chunks: Buffer[] = [];
-  let offset = start;
-  while (offset < end) {
-    const size = Math.min(256 * 1024, end - offset);
-    const chunk = Buffer.allocUnsafe(size);
-    const bytesRead = fs.readSync(descriptor, chunk, 0, size, offset);
-    if (bytesRead <= 0) break;
-    chunks.push(chunk.subarray(0, bytesRead));
-    offset += bytesRead;
-  }
-  return Buffer.concat(chunks);
-};
+interface ForwardTranscriptPage {
+  lines: FabricLogLine[];
+  end: number;
+}
 
-const splitAppendedLines = (
-  data: Buffer,
-  startOffset: number,
-): { lines: FabricLogLine[]; remainder: Buffer; remainderOffset: number } => {
-  const lines: FabricLogLine[] = [];
-  let start = 0;
-  for (let index = 0; index < data.length; index++) {
-    if (data[index] !== 0x0a) continue;
-    const raw = data.subarray(start, index).toString("utf8").replace(/\r$/, "");
-    if (raw) {
-      const offset = startOffset + start;
-      const parsed = parseRaw(raw);
-      lines.push({ offset, raw, ...(parsed ? { parsed } : {}) });
+const completeLogEnd = (descriptor: number, size: number, fallback = 0): number => {
+  if (size <= 0) return 0;
+  const scanFloor = Math.max(0, size - MAX_PAGE_BYTES);
+  let scanEnd = size;
+  while (scanEnd > scanFloor) {
+    const scanStart = Math.max(scanFloor, scanEnd - FORWARD_READ_CHUNK_BYTES);
+    const chunk = Buffer.allocUnsafe(scanEnd - scanStart);
+    const bytesRead = fs.readSync(descriptor, chunk, 0, chunk.length, scanStart);
+    if (bytesRead <= 0) return 0;
+    for (let index = bytesRead - 1; index >= 0; index--) {
+      if (chunk[index] === 0x0a) return scanStart + index + 1;
     }
-    start = index + 1;
+    scanEnd = scanStart;
   }
-  return {
-    lines,
-    remainder: Buffer.from(data.subarray(start)),
-    remainderOffset: startOffset + start,
-  };
+  return Math.min(fallback, size);
 };
 
-export const projectAgentLogLines = (
-  lines: FabricLogLine[],
-  olderAvailable = false,
-): FabricAgentTranscript => projectAgentTranscript(parsedEvents(lines), olderAvailable);
+const readForwardPage = (
+  descriptor: number,
+  start: number,
+  end: number,
+): ForwardTranscriptPage => {
+  const lines: FabricLogLine[] = [];
+  const readLimit = Math.min(end, Math.max(0, start) + MAX_PAGE_BYTES);
+  let readOffset = Math.max(0, start);
+  let pending = Buffer.alloc(0);
+  let pendingOffset = readOffset;
+  let pageEnd = readOffset;
+
+  while (readOffset < readLimit && lines.length < PAGE_LINES) {
+    const chunkSize = Math.min(FORWARD_READ_CHUNK_BYTES, readLimit - readOffset);
+    const chunk = Buffer.allocUnsafe(chunkSize);
+    const bytesRead = fs.readSync(descriptor, chunk, 0, chunkSize, readOffset);
+    if (bytesRead <= 0) break;
+    const data = pending.length > 0
+      ? Buffer.concat([pending, chunk.subarray(0, bytesRead)])
+      : chunk.subarray(0, bytesRead);
+    const dataOffset = pending.length > 0 ? pendingOffset : readOffset;
+    let lineStart = 0;
+    for (let index = 0; index < data.length; index++) {
+      if (data[index] !== 0x0a) continue;
+      const raw = data.subarray(lineStart, index).toString("utf8").replace(/\r$/, "");
+      pageEnd = dataOffset + index + 1;
+      if (raw) {
+        const offset = dataOffset + lineStart;
+        const parsed = parseRaw(raw);
+        lines.push({ offset, raw, ...(parsed ? { parsed } : {}) });
+        if (lines.length >= PAGE_LINES) return { lines, end: pageEnd };
+      }
+      lineStart = index + 1;
+    }
+    pending = Buffer.from(data.subarray(lineStart));
+    pendingOffset = dataOffset + lineStart;
+    readOffset += bytesRead;
+  }
+
+  return { lines, end: readOffset >= end ? end : pageEnd };
+};
 
 export const isFabricNestedToolPreview = (value: unknown): value is FabricNestedToolPreview => {
   const record = recordOf(value);
@@ -785,90 +820,105 @@ export const recentTranscriptTools = (
 export class AgentTranscriptReader {
   readonly #cache = new Map<string, CachedTranscript>();
 
-  read(source: FabricTranscriptSource): FabricAgentTranscript {
+  read(
+    source: FabricTranscriptSource,
+    followLatest = true,
+  ): FabricAgentTranscript {
     const filePath = source.logFile;
-    if (!filePath) return { entries: [], truncated: false, hasMore: false };
+    if (!filePath) {
+      return { entries: [], truncated: false, hasMore: false, hasNewer: false };
+    }
     const cached = this.#cache.get(filePath);
     let descriptor: number | undefined;
     try {
       const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
       const stat = fs.fstatSync(descriptor);
-      if (!stat.isFile()) return cached?.transcript ?? { entries: [], truncated: false, hasMore: false };
+      if (!stat.isFile()) {
+        return cached?.transcript ?? {
+          entries: [],
+          truncated: false,
+          hasMore: false,
+          hasNewer: false,
+        };
+      }
       const sameFile = cached?.device === stat.dev && cached.inode === stat.ino;
       const sameSizeRewrite =
         sameFile && cached.offset === stat.size && cached.modifiedAt !== stat.mtimeMs;
-      let state = cached;
-      if (!state || !sameFile || stat.size < state.offset || sameSizeRewrite) {
-        state = this.#initialState(descriptor, stat);
-      } else if (stat.size > state.offset) {
-        const appended = readRange(descriptor, state.offset, stat.size);
-        const startOffset = state.remainder.length > 0 ? state.remainderOffset : state.offset;
-        const split = splitAppendedLines(Buffer.concat([state.remainder, appended]), startOffset);
-        state.lines.push(...split.lines);
-        state.accumulator.append(parsedEvents(split.lines));
-        state.remainder = split.remainder;
-        state.remainderOffset = split.remainderOffset;
-        state.offset = stat.size;
-        state.modifiedAt = stat.mtimeMs;
-        this.#trimLiveState(state);
-        state.transcript = this.#snapshot(state);
+      let state: CachedTranscript;
+      if (!cached || !sameFile || stat.size < cached.offset || sameSizeRewrite) {
+        state = this.#latestState(descriptor, stat);
+      } else if (stat.size !== cached.offset || stat.mtimeMs !== cached.modifiedAt) {
+        const wasAtTail = cached.pageEnd >= cached.completeEnd;
+        const completeEnd = completeLogEnd(descriptor, stat.size, cached.completeEnd);
+        if (
+          cached.pageEnd > completeEnd ||
+          (followLatest && wasAtTail && completeEnd > cached.completeEnd)
+        ) {
+          state = this.#latestState(descriptor, stat, completeEnd);
+        } else {
+          state = {
+            ...cached,
+            modifiedAt: stat.mtimeMs,
+            offset: stat.size,
+            completeEnd,
+            transcript: {
+              ...cached.transcript,
+              hasNewer: cached.pageEnd < completeEnd,
+              updatedAt: stat.mtimeMs,
+            },
+          };
+        }
+      } else {
+        state = cached;
       }
       this.#remember(filePath, state);
       return state.transcript;
     } catch {
-      return cached?.transcript ?? { entries: [], truncated: false, hasMore: false };
+      return cached?.transcript ?? {
+        entries: [],
+        truncated: false,
+        hasMore: false,
+        hasNewer: false,
+      };
     } finally {
-      if (descriptor !== undefined) fs.closeSync(descriptor);
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
     }
   }
 
   loadOlder(source: FabricTranscriptSource): boolean {
     const filePath = source.logFile;
     if (!filePath) return false;
-    this.read(source);
-    const state = this.#cache.get(filePath);
-    if (!state?.hasMore) return false;
-    if (state.entriesTrimmed && !state.linesTrimmed) {
-      state.accumulator = this.#accumulator(state.lines);
-      state.entriesTrimmed = false;
-      state.retainAll = true;
-      state.hasMore = Boolean(state.before && state.before > 0);
-      state.transcript = this.#snapshot(state);
-      this.#remember(filePath, state);
-      return true;
-    }
-    const cursor = state.before ?? state.lines[0]?.offset;
-    if (cursor === undefined || cursor <= 0) {
-      state.hasMore = false;
-      state.entriesTrimmed = false;
-      state.transcript = this.#snapshot(state);
-      return false;
-    }
+    this.read(source, false);
+    const cached = this.#cache.get(filePath);
+    if (!cached?.hasMore || cached.pageStart <= 0) return false;
     let descriptor: number | undefined;
     try {
       const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
       const stat = fs.fstatSync(descriptor);
-      if (!stat.isFile() || stat.dev !== state.device || stat.ino !== state.inode) return false;
-      const page = readJsonlPageFromDescriptor(descriptor, PAGE_LINES, cursor, state.offset);
-      const start = page.lines[0]?.offset;
-      if (start === undefined) {
-        state.hasMore = false;
-        state.transcript = this.#snapshot(state);
-        return false;
-      }
-      const split = splitAppendedLines(readRange(descriptor, start, state.offset), start);
-      state.lines = split.lines;
-      state.remainder = split.remainder;
-      state.remainderOffset = split.remainderOffset;
-      state.before = page.before;
-      state.hasMore = page.hasMore;
-      state.accumulator = this.#accumulator(state.lines);
-      state.entriesTrimmed = false;
-      state.linesTrimmed = false;
-      state.retainAll = true;
-      state.transcript = this.#snapshot(state);
+      if (!stat.isFile() || stat.dev !== cached.device || stat.ino !== cached.inode) return false;
+      const completeEnd = completeLogEnd(descriptor, stat.size, cached.completeEnd);
+      const pageEnd = Math.min(cached.pageStart, completeEnd);
+      const page = readJsonlPageFromDescriptor(
+        descriptor,
+        PAGE_LINES,
+        pageEnd,
+        stat.size,
+        MAX_PAGE_BYTES,
+      );
+      const pageStart = page.lines[0]?.offset;
+      if (pageStart === undefined) return false;
+      const state = this.#stateForPage(
+        stat,
+        completeEnd,
+        page.lines,
+        pageStart,
+        pageEnd,
+        page.hasMore,
+      );
       this.#remember(filePath, state);
       return true;
     } catch {
@@ -880,32 +930,56 @@ export class AgentTranscriptReader {
     }
   }
 
-  loadAll(source: FabricTranscriptSource): boolean {
+  loadNewer(source: FabricTranscriptSource): boolean {
     const filePath = source.logFile;
     if (!filePath) return false;
-    this.read(source);
-    const state = this.#cache.get(filePath);
-    if (!state?.hasMore) return false;
+    this.read(source, false);
+    const cached = this.#cache.get(filePath);
+    if (!cached || cached.pageEnd >= cached.completeEnd) return false;
     let descriptor: number | undefined;
     try {
       const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
       const stat = fs.fstatSync(descriptor);
-      if (!stat.isFile() || stat.dev !== state.device || stat.ino !== state.inode) return false;
-      const split = splitAppendedLines(readRange(descriptor, 0, state.offset), 0);
-      const previousEntries = state.accumulator.entries.length;
-      state.lines = split.lines;
-      state.remainder = split.remainder;
-      state.remainderOffset = split.remainderOffset;
-      state.before = undefined;
-      state.hasMore = false;
-      state.accumulator = this.#accumulator(state.lines);
-      state.entriesTrimmed = false;
-      state.linesTrimmed = false;
-      state.retainAll = true;
-      state.transcript = this.#snapshot(state);
+      if (!stat.isFile() || stat.dev !== cached.device || stat.ino !== cached.inode) return false;
+      const completeEnd = completeLogEnd(descriptor, stat.size, cached.completeEnd);
+      const page = readForwardPage(descriptor, cached.pageEnd, completeEnd);
+      if (page.lines.length === 0 || page.end <= cached.pageEnd) return false;
+      const state = this.#stateForPage(
+        stat,
+        completeEnd,
+        page.lines,
+        cached.pageEnd,
+        page.end,
+        cached.pageEnd > 0,
+      );
       this.#remember(filePath, state);
-      return state.accumulator.entries.length > previousEntries;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch {}
+      }
+    }
+  }
+
+  loadLatest(source: FabricTranscriptSource): boolean {
+    const filePath = source.logFile;
+    if (!filePath) return false;
+    this.read(source, false);
+    const cached = this.#cache.get(filePath);
+    let descriptor: number | undefined;
+    try {
+      const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+      descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isFile()) return false;
+      if (cached && (stat.dev !== cached.device || stat.ino !== cached.inode)) return false;
+      const completeEnd = completeLogEnd(descriptor, stat.size, cached?.completeEnd ?? 0);
+      const state = this.#latestState(descriptor, stat, completeEnd);
+      this.#remember(filePath, state);
+      return true;
     } catch {
       return false;
     } finally {
@@ -919,69 +993,54 @@ export class AgentTranscriptReader {
     this.#cache.clear();
   }
 
-  #initialState(descriptor: number, stat: fs.Stats): CachedTranscript {
-    const page = readJsonlPageFromDescriptor(descriptor, PAGE_LINES, undefined, stat.size);
-    const lines = [...page.lines];
-    let remainder: Buffer = Buffer.alloc(0);
-    let remainderOffset = stat.size;
-    if (stat.size > 0) {
-      const lastByte = Buffer.allocUnsafe(1);
-      fs.readSync(descriptor, lastByte, 0, 1, stat.size - 1);
-      if (lastByte[0] !== 0x0a) {
-        const partial = lines.at(-1);
-        if (partial) {
-          lines.pop();
-          remainderOffset = partial.offset;
-          remainder = readRange(descriptor, partial.offset, stat.size);
-        }
-      }
-    }
-    const accumulator = this.#accumulator(lines);
-    const state: CachedTranscript = {
+  #latestState(
+    descriptor: number,
+    stat: fs.Stats,
+    knownCompleteEnd?: number,
+  ): CachedTranscript {
+    const completeEnd = knownCompleteEnd ?? completeLogEnd(descriptor, stat.size);
+    const page = readJsonlPageFromDescriptor(
+      descriptor,
+      PAGE_LINES,
+      completeEnd,
+      stat.size,
+      MAX_PAGE_BYTES,
+    );
+    return this.#stateForPage(
+      stat,
+      completeEnd,
+      page.lines,
+      page.lines[0]?.offset ?? completeEnd,
+      completeEnd,
+      page.hasMore,
+    );
+  }
+
+  #stateForPage(
+    stat: fs.Stats,
+    completeEnd: number,
+    lines: FabricLogLine[],
+    pageStart: number,
+    pageEnd: number,
+    hasMore: boolean,
+  ): CachedTranscript {
+    const accumulator = new TranscriptAccumulator();
+    accumulator.append(parsedEvents(lines));
+    const transcript = {
+      ...accumulator.snapshot(hasMore, stat.mtimeMs, Number.MAX_SAFE_INTEGER),
+      hasNewer: pageEnd < completeEnd,
+    };
+    return {
       device: stat.dev,
       inode: stat.ino,
       modifiedAt: stat.mtimeMs,
       offset: stat.size,
-      remainder,
-      remainderOffset,
-      lines,
-      before: page.before,
-      hasMore: page.hasMore,
-      accumulator,
-      entriesTrimmed: false,
-      linesTrimmed: false,
-      retainAll: false,
-      transcript: { entries: [], truncated: page.hasMore, hasMore: page.hasMore },
+      completeEnd,
+      pageStart,
+      pageEnd,
+      hasMore: transcript.hasMore ?? false,
+      transcript,
     };
-    state.transcript = this.#snapshot(state);
-    return state;
-  }
-
-  #accumulator(lines: FabricLogLine[]): TranscriptAccumulator {
-    const accumulator = new TranscriptAccumulator();
-    accumulator.append(parsedEvents(lines));
-    return accumulator;
-  }
-
-  #trimLiveState(state: CachedTranscript): void {
-    if (state.retainAll) return;
-    if (state.accumulator.trim(MAX_LIVE_ENTRIES)) {
-      state.entriesTrimmed = true;
-      state.hasMore = true;
-    }
-    if (state.lines.length <= MAX_LIVE_LINES) return;
-    state.lines.splice(0, state.lines.length - MAX_LIVE_LINES);
-    state.linesTrimmed = true;
-    state.hasMore = true;
-    state.before ??= state.lines[0]?.offset;
-  }
-
-  #snapshot(state: CachedTranscript): FabricAgentTranscript {
-    return state.accumulator.snapshot(
-      state.hasMore || state.entriesTrimmed,
-      state.modifiedAt,
-      Number.MAX_SAFE_INTEGER,
-    );
   }
 
   #remember(filePath: string, state: CachedTranscript): void {

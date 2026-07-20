@@ -42,6 +42,16 @@ export const commandAvailable = async (command: string): Promise<boolean> => {
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
 
+export const processIsAlive = (pid: number): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const workerCommand = (workerPath: string, workerArguments: string[]): string =>
   [process.execPath, workerPath, ...workerArguments].map(shellQuote).join(" ");
 
@@ -66,12 +76,7 @@ export const spawnDetached = (
       } catch { /* process group already exited */ }
     },
     async isAlive() {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
+      return processIsAlive(pid);
     },
   };
 };

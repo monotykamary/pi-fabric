@@ -15,7 +15,7 @@ import type {
 import { SubagentManager } from "../subagents/manager.js";
 import type { SubagentRunRequest } from "../subagents/types.js";
 import { isFabricThinking } from "../thinking.js";
-import { projectAgentLogLines, recentTranscriptTools } from "../ui/transcript.js";
+import { AgentTranscriptReader, recentTranscriptTools } from "../ui/transcript.js";
 
 const runProperties = {
   task: { type: "string", description: "A self-contained task for the child agent" },
@@ -528,24 +528,23 @@ const actorRequest = (
   };
 };
 
+type AgentProgressStatus = ReturnType<SubagentManager["status"]>;
+
 const attachAgentToolPreview = (
-  manager: SubagentManager,
-  id: string,
+  status: AgentProgressStatus,
+  transcripts: AgentTranscriptReader,
   context: FabricInvocationContext,
   enabled: () => boolean,
 ): void => {
   if (!context.attachPreview) return;
   try {
-    const status = manager.status(id);
-    const tools = enabled()
-      ? (() => {
-          const log = manager.readLog(id, { lines: 240 });
-          return recentTranscriptTools(
-            projectAgentLogLines(log.events, log.hasMore),
+    const tools =
+      enabled() && "logFile" in status && status.logFile
+        ? recentTranscriptTools(
+            transcripts.read({ id: status.id, status: status.status, logFile: status.logFile }),
             AGENT_PREVIEW_TOOL_LIMIT,
-          );
-        })()
-      : [];
+          )
+        : [];
     context.attachPreview({
       kind: "fabric-agent-tools",
       id: status.id,
@@ -559,7 +558,7 @@ const attachAgentToolPreview = (
       tools,
     });
   } catch {
-    // The worker may settle and clean up between status and log reads.
+    // The worker may settle and clean up while its final preview is being read.
   }
 };
 
@@ -593,13 +592,24 @@ const actorWorker = (
   return candidates.at(-1);
 };
 
+const agentProgressRevision = (status: AgentProgressStatus): string =>
+  [
+    status.status,
+    "updatedAt" in status ? status.updatedAt : 0,
+    "currentTool" in status ? status.currentTool : "",
+    "toolCalls" in status ? status.toolCalls : 0,
+    "turns" in status ? status.turns : 0,
+  ].join(":");
+
 const waitWithProgress = async (
   manager: SubagentManager,
+  transcripts: AgentTranscriptReader,
   id: string,
   context: FabricInvocationContext,
   nestedToolsEnabled: () => boolean,
 ): Promise<unknown> => {
   const result = manager.wait(id);
+  let lastProgressRevision: string | undefined;
   try {
     while (true) {
       const settled = await pollResult(result);
@@ -613,7 +623,10 @@ const waitWithProgress = async (
         return settled.value;
       }
       const status = manager.status(id);
-      attachAgentToolPreview(manager, id, context, nestedToolsEnabled);
+      const revision = agentProgressRevision(status);
+      if (revision === lastProgressRevision) continue;
+      lastProgressRevision = revision;
+      attachAgentToolPreview(status, transcripts, context, nestedToolsEnabled);
       const currentTool =
         "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
       context.update(`Agent ${id.slice(0, 8)}: ${status.status}${currentTool}`);
@@ -627,23 +640,34 @@ const waitWithProgress = async (
       }
     }
   } finally {
-    attachAgentToolPreview(manager, id, context, nestedToolsEnabled);
+    try {
+      attachAgentToolPreview(manager.status(id), transcripts, context, nestedToolsEnabled);
+    } catch {
+      // The run may have been cleaned up during cancellation.
+    }
   }
 };
 
 const waitWithActorProgress = async (
   manager: SubagentManager,
+  transcripts: AgentTranscriptReader,
   actorId: string,
   result: Promise<FabricActorMessage>,
   context: FabricInvocationContext,
   nestedToolsEnabled: () => boolean,
 ): Promise<FabricActorMessage> => {
+  let lastProgressRevision: string | undefined;
   try {
     while (true) {
       const settled = await pollResult(result);
       const worker = actorWorker(manager, actorId, settled.done);
-      if (worker) attachAgentToolPreview(manager, worker.id, context, nestedToolsEnabled);
+      const revision = worker ? agentProgressRevision(worker) : "queued";
+      if (worker && (settled.done || revision !== lastProgressRevision)) {
+        attachAgentToolPreview(worker, transcripts, context, nestedToolsEnabled);
+      }
       if (settled.done) return settled.value;
+      if (revision === lastProgressRevision) continue;
+      lastProgressRevision = revision;
       const currentTool =
         worker && "currentTool" in worker && worker.currentTool ? ` · ${worker.currentTool}` : "";
       context.update(
@@ -654,11 +678,12 @@ const waitWithActorProgress = async (
     }
   } finally {
     const worker = actorWorker(manager, actorId, true);
-    if (worker) attachAgentToolPreview(manager, worker.id, context, nestedToolsEnabled);
+    if (worker) attachAgentToolPreview(worker, transcripts, context, nestedToolsEnabled);
   }
 };
 
 export class AgentsProvider implements FabricProvider {
+  readonly #transcripts = new AgentTranscriptReader();
   readonly name = "agents";
   readonly description =
     "The user-facing Main target, one-shot Pi or Claude Code agents, and persistent mailbox actors over process, tmux, screen, LocalTerm, or Herdr";
@@ -711,7 +736,13 @@ export class AgentsProvider implements FabricProvider {
         context.update(
           `Agent ${handle.id.slice(0, 8)} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
-        return waitWithProgress(this.manager, handle.id, context, this.nestedToolsEnabled);
+        return waitWithProgress(
+          this.manager,
+          this.#transcripts,
+          handle.id,
+          context,
+          this.nestedToolsEnabled,
+        );
       }
       case "spawn": {
         const handle = await this.manager.spawn(
@@ -734,7 +765,13 @@ export class AgentsProvider implements FabricProvider {
         const id = String(args.id);
         const status = this.manager.status(id);
         context.activity?.({ type: "entity", id, kind: "agent", name: status.name });
-        return waitWithProgress(this.manager, id, context, this.nestedToolsEnabled);
+        return waitWithProgress(
+          this.manager,
+          this.#transcripts,
+          id,
+          context,
+          this.nestedToolsEnabled,
+        );
       }
       case "status": {
         const id = String(args.id);
@@ -793,6 +830,7 @@ export class AgentsProvider implements FabricProvider {
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return waitWithActorProgress(
           this.manager,
+          this.#transcripts,
           actor.id,
           this.actorManager.ask(actor.id, String(args.message), args.data, context.signal),
           context,
@@ -984,6 +1022,7 @@ export class AgentsProvider implements FabricProvider {
   }
 
   async close(): Promise<void> {
+    this.#transcripts.clear();
     await this.actorManager.close();
     await this.manager.close();
   }

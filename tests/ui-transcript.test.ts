@@ -202,6 +202,31 @@ describe("agent transcript projection", () => {
     expect(assistant?.text).toContain("👩‍💻");
   });
 
+  it("bounds oversized messages and structured tool values before caching", () => {
+    const oversized = "large value ".repeat(20_000);
+    const transcript = projectAgentTranscript([
+      {
+        type: "tool_execution_start",
+        toolCallId: "large-tool",
+        toolName: "read",
+        args: { path: "large.txt", payload: oversized },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "large-tool",
+        toolName: "read",
+        result: { content: oversized },
+      },
+      { type: "message_end", message: { role: "assistant", content: oversized } },
+    ]);
+
+    const tool = transcript.entries[0];
+    const assistant = transcript.entries[1];
+    expect(JSON.stringify(tool?.args).length).toBeLessThan(20_000);
+    expect(JSON.stringify(tool?.result).length).toBeLessThan(20_000);
+    expect(assistant?.text?.length).toBeLessThanOrEqual(40_000);
+  });
+
   it("retains a stable ring tail while old transcript entries roll off", () => {
     const events = Array.from({ length: 90 }, (_, index) => ({
       type: "message_end",
@@ -255,7 +280,7 @@ describe("agent transcript projection", () => {
     });
   });
 
-  it("pages older JSONL records and can load the true beginning", () => {
+  it("navigates an unbounded log through bounded lazy pages", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-transcript-"));
     temporaryDirectories.push(directory);
     const logFile = path.join(directory, "events.jsonl");
@@ -275,17 +300,31 @@ describe("agent transcript projection", () => {
     const reader = new AgentTranscriptReader();
 
     const tail = reader.read(agent);
-    expect(tail.entries).toHaveLength(240);
-    expect(tail.entries[0]?.text).toBe("page-280");
+    expect(tail.entries).toHaveLength(40);
+    expect(tail.entries[0]?.text).toBe("page-480");
     expect(tail.hasMore).toBe(true);
-    expect(reader.loadOlder(agent)).toBe(true);
-    expect(reader.read(agent).entries[0]?.text).toBe("page-40");
-    expect(reader.loadAll(agent)).toBe(true);
-    const full = reader.read(agent);
-    expect(full.entries).toHaveLength(520);
-    expect(full.entries[0]?.text).toBe("page-0");
-    expect(full.entries.at(-1)?.text).toBe("page-519");
-    expect(full.hasMore).toBe(false);
+    expect(tail.hasNewer).toBe(false);
+
+    for (let page = 0; page < 12; page++) {
+      expect(reader.loadOlder(agent)).toBe(true);
+      expect(reader.read(agent, false).entries.length).toBeLessThanOrEqual(40);
+    }
+    const beginning = reader.read(agent, false);
+    expect(beginning.entries).toHaveLength(40);
+    expect(beginning.entries[0]?.text).toBe("page-0");
+    expect(beginning.entries.at(-1)?.text).toBe("page-39");
+    expect(beginning.hasMore).toBe(false);
+    expect(beginning.hasNewer).toBe(true);
+    expect(reader.loadOlder(agent)).toBe(false);
+
+    for (let page = 0; page < 12; page++) {
+      expect(reader.loadNewer(agent)).toBe(true);
+      expect(reader.read(agent, false).entries.length).toBeLessThanOrEqual(40);
+    }
+    const returnedTail = reader.read(agent, false);
+    expect(returnedTail.entries[0]?.text).toBe("page-480");
+    expect(returnedTail.entries.at(-1)?.text).toBe("page-519");
+    expect(returnedTail.hasNewer).toBe(false);
   });
 
   it("tails a live JSONL file and refreshes when it grows", () => {
@@ -338,7 +377,7 @@ describe("agent transcript projection", () => {
     expect(reader.read(agent).entries[0]).toMatchObject({ text: "界面 🚀", status: "completed" });
   });
 
-  it("bounds live transcript memory and restores full history on demand", () => {
+  it("bounds live transcript pages and freezes a paused page while the log grows", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-transcript-"));
     temporaryDirectories.push(directory);
     const logFile = path.join(directory, "events.jsonl");
@@ -361,15 +400,23 @@ describe("agent transcript projection", () => {
     );
 
     const live = reader.read(agent);
-    expect(live.entries).toHaveLength(1_000);
+    expect(live.entries).toHaveLength(40);
+    expect(live.entries[0]?.text).toBe("live-1460");
     expect(live.entries.at(-1)?.text).toBe("live-1499");
     expect(live.hasMore).toBe(true);
-    expect(reader.loadAll(agent)).toBe(true);
-    const full = reader.read(agent);
-    expect(full.entries).toHaveLength(1_501);
-    expect(full.entries[0]?.text).toBe("initial");
-    expect(full.entries.at(-1)?.text).toBe("live-1499");
-    expect(full.hasMore).toBe(false);
+    expect(reader.loadOlder(agent)).toBe(true);
+
+    fs.appendFileSync(logFile, `${event("live-1500")}\n`);
+    const paused = reader.read(agent, false);
+    expect(paused.entries).toHaveLength(40);
+    expect(paused.entries.at(-1)?.text).toBe("live-1459");
+    expect(paused.hasNewer).toBe(true);
+
+    expect(reader.loadLatest(agent)).toBe(true);
+    const latest = reader.read(agent);
+    expect(latest.entries).toHaveLength(40);
+    expect(latest.entries.at(-1)?.text).toBe("live-1500");
+    expect(latest.hasNewer).toBe(false);
   });
 
   it("invalidates same-size rewrites and retains cached data across transient failures", () => {
