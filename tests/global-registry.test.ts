@@ -51,10 +51,11 @@ describe("GlobalActorRegistry", () => {
 
   it("persists across instances in the same agent dir", () => {
     const { agentDir, registry } = setup();
-    registry.create(baseRequest);
+    registry.create({ ...baseRequest, extensions: false });
     const reloaded = new GlobalActorRegistry(agentDir, 64 * 1024);
     expect(reloaded.list()).toHaveLength(1);
     expect(reloaded.resolve("reviewer")?.instructions).toBe(baseRequest.instructions);
+    expect(reloaded.resolve("reviewer")?.extensions).toBe(false);
   });
 
   it("rejects duplicate names without overwrite and replaces with it", () => {
@@ -78,6 +79,10 @@ describe("GlobalActorRegistry", () => {
     expect(patched.instructions).toBe("Be brief.");
     expect(patched.name).toBe("reviewer");
     expect(patched.events).toEqual(["turn_end"]);
+
+    const fabricDisabled = registry.update(created.id, { extensions: false });
+    expect(fabricDisabled.extensions).toBe(false);
+    expect(registry.update(created.id, { instructions: "Stay brief." }).extensions).toBe(false);
 
     expect(() => registry.update(created.id, { instructions: "   " })).toThrow(/empty/);
     expect(() => registry.update(created.id, { name: "bad name!" })).toThrow(/Invalid/);
@@ -108,7 +113,12 @@ describe("GlobalActorRegistry", () => {
 
   it("strips identity and timestamps in toRequest and supports renaming", () => {
     const { registry } = setup();
-    const created = registry.create({ ...baseRequest, runner: "claude", model: "claude/haiku" });
+    const created = registry.create({
+      ...baseRequest,
+      runner: "claude",
+      model: "claude/haiku",
+      extensions: false,
+    });
     const request = registry.toRequest(created);
     expect(request).not.toHaveProperty("id");
     expect(request).not.toHaveProperty("createdAt");
@@ -116,6 +126,7 @@ describe("GlobalActorRegistry", () => {
     expect(request.name).toBe("reviewer");
     expect(request.runner).toBe("claude");
     expect(request.model).toBe("claude/haiku");
+    expect(request.extensions).toBe(false);
 
     const renamed = registry.toRequest(created, "reviewer-2");
     expect(renamed.name).toBe("reviewer-2");

@@ -160,6 +160,11 @@ export class GlobalActorRegistry {
       ...(patch.tools !== undefined ? { tools: patch.tools } : existing.tools ? { tools: existing.tools } : {}),
       ...(patch.transport !== undefined ? { transport: patch.transport } : existing.transport ? { transport: existing.transport } : {}),
       ...(patch.timeoutMs !== undefined ? { timeoutMs: patch.timeoutMs } : existing.timeoutMs ? { timeoutMs: existing.timeoutMs } : {}),
+      ...(patch.extensions !== undefined
+        ? { extensions: patch.extensions }
+        : typeof existing.extensions === "boolean"
+          ? { extensions: existing.extensions }
+          : {}),
     };
     const validated = this.#validate(merged);
     if (validated.name !== existing.name) {
@@ -212,6 +217,7 @@ export class GlobalActorRegistry {
       ...(def.tools ? { tools: [...def.tools] } : {}),
       ...(def.transport ? { transport: def.transport } : {}),
       ...(def.timeoutMs ? { timeoutMs: def.timeoutMs } : {}),
+      ...(typeof def.extensions === "boolean" ? { extensions: def.extensions } : {}),
     };
     return request;
   }
@@ -253,6 +259,7 @@ export class GlobalActorRegistry {
     const transport =
       def.transport !== undefined && TRANSPORTS.has(def.transport) ? def.transport : undefined;
     const timeoutMs = typeof def.timeoutMs === "number" ? def.timeoutMs : undefined;
+    const extensions = typeof def.extensions === "boolean" ? def.extensions : undefined;
     return {
       name,
       instructions,
@@ -268,6 +275,7 @@ export class GlobalActorRegistry {
       ...(tools ? { tools } : {}),
       ...(transport ? { transport } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
+      ...(extensions !== undefined ? { extensions } : {}),
     };
   }
 
@@ -322,6 +330,7 @@ export class GlobalActorRegistry {
       const transport: FabricSubagentTransport | undefined =
         record.transport !== undefined && TRANSPORTS.has(record.transport) ? record.transport : undefined;
       const timeoutMs = typeof record.timeoutMs === "number" ? record.timeoutMs : undefined;
+      const extensions = typeof record.extensions === "boolean" ? record.extensions : undefined;
       const def: GlobalActorDefinition = {
         id: record.id,
         name: record.name,
@@ -340,6 +349,7 @@ export class GlobalActorRegistry {
         ...(tools ? { tools } : {}),
         ...(transport ? { transport } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
+        ...(extensions !== undefined ? { extensions } : {}),
       };
       this.#actors.set(def.id, def);
     }

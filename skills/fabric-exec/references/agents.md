@@ -85,7 +85,7 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 - `triggerTurn` fires on the first event of a coalesced burst; `coalesce` is on by default.
 - `timeoutMs` follows the same floor as one-shot agents: omit it normally and set it only above `subagents.timeoutMs` when an activation needs longer.
 - `tools` is the actor's persisted allowlist and defaults to `subagents.defaultTools`. Replace it for future activations with `agents.setTools({ id, tools })`; an empty list disables optional tools. Pi actors retain the host-required `fabric_exec` tool unless created with `extensions: false`. Use `scope: "global"` to update a reusable template instead.
-- `extensions` is `true` by default (a Pi actor is recursively Fabric-equipped with the host-required `fabric_exec` tool). Set `extensions: false` to create a read-only Pi actor: the activation runs with `extensions: false` and `recursive: false`, so `fabric_exec` is not injected and the actor cannot call `agents.*` or `mesh.*`; the host still manages its mailbox and delivery (same coordination model as a Claude actor). Fixed at creation.
+- `extensions` is `true` by default (a Pi actor is recursively Fabric-equipped with the host-required `fabric_exec` tool). Set `extensions: false` to disable Fabric for a Pi actor: the activation runs with `extensions: false` and `recursive: false`, so `fabric_exec` is not injected and the actor cannot call `agents.*` or `mesh.*`; the host still manages its mailbox and delivery (same coordination model as a Claude actor). This does not restrict ordinary tools: also use `tools: ["read", "grep", "find", "ls"]` for a read-only actor or `tools: []` for no tools. Fixed at creation.
 
 ```ts
 return agents.create({

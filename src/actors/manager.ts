@@ -498,6 +498,7 @@ export class ActorManager {
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
       ...(actor.transport ? { transport: actor.transport } : {}),
       ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
+      ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
     };
   }
 

@@ -31,10 +31,11 @@ export interface FabricActorRequest {
   /**
    * Fabric capability for the actor. Defaults to true (today's behavior: a Pi
    * actor is recursively Fabric-equipped with the host-required fabric_exec
-   * tool). Set false to create a read-only Pi actor: the activation runs with
+   * tool). Set false to disable Fabric for a Pi actor: the activation runs with
    * extensions:false and recursive:false so fabric_exec is not injected and the
    * actor cannot call agents.* or mesh.*; the host still manages its mailbox
-   * and delivery (same model as a Claude actor). Fixed at creation.
+   * and delivery (same model as a Claude actor). This does not restrict the
+   * actor's ordinary tool allowlist. Fixed at creation.
    */
   extensions?: boolean;
 }

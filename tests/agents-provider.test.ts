@@ -290,7 +290,11 @@ describe("AgentsProvider global actors", () => {
 
   it("exports a project actor to a global template without its history", async () => {
     const { provider, actors, globalActors } = setup();
-    const actor = (await provider.invoke("create", createRequest, context)) as { id: string };
+    const actor = (await provider.invoke(
+      "create",
+      { ...createRequest, extensions: false, tools: ["read"] },
+      context,
+    )) as { id: string };
     // build some mailbox history so we can prove it is not exported
     await provider.invoke("ask", { id: actor.id, message: "inspect auth" }, context);
     await waitFor(() => actors.status(actor.id).status === "idle");
@@ -307,12 +311,15 @@ describe("AgentsProvider global actors", () => {
     const stored = globalActors.resolve("reviewer")!;
     expect(stored).not.toHaveProperty("messages");
     expect(stored).not.toHaveProperty("sessionFile");
+    expect(stored.extensions).toBe(false);
 
     // re-importing yields a fresh actor with no inherited history
     const fresh = (await provider.invoke("import", { name: "reviewer", as: "reviewer-2" }, context)) as {
       messages: number;
+      extensions?: boolean;
     };
     expect(fresh.messages).toBe(0);
+    expect(fresh.extensions).toBe(false);
   });
 
   it("export collides without overwrite and replaces with it", async () => {
