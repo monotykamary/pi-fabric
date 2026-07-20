@@ -1,8 +1,8 @@
 ---
 name: fabric-exec
 description: >-
-  Reference for writing `fabric_exec` TypeScript programs in the QuickJS
-  sandbox: the mental model (one program, return only the final value), the
+  Reference for writing `fabric_exec` TypeScript programs in the isolated
+  QuickJS runtime (or the trusted unsafe Node-process escape hatch): the mental model (one program, return only the final value), the
   core `pi` tools (read/bash/edit/write/grep/find/ls) with exact signatures,
   `tools` discovery, `π` named strings, first-class Fabric provider and MCP
   proxies, and the validate, describe, retry error loop. Load before your first
@@ -12,7 +12,7 @@ description: >-
 
 # fabric_exec — core reference
 
-One type-checked TS program in a QuickJS sandbox. Only the `return` value reaches the model; `print()`/`console.log` go to the activity panel. `π` is not a tool.
+One type-checked TS program in a fresh executor (isolated QuickJS by default). Only the `return` value reaches the model; `print()`/`console.log` go to the activity panel. `π` is not a tool.
 
 ## `pi` core tools (full code mode only)
 `pi.<tool>(arg)` — single arg: bare string (primary field) or options object. Multi-arg positional calls are accepted for `grep`/`find` (`pattern, path, limit`), `write` (`path, content`), and `edit` (`path, oldText, newText`); one-field tools (`read`/`bash`/`ls`) stay single-arg — a 2-arg call on those is a type error so the extra arg isn't silently dropped.

@@ -25,7 +25,8 @@ import {
   type ModelSource,
 } from "./model-picker.js";
 import {
-  MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+  maxExecutorMemoryLimitBytes,
+  QUICKJS_MAX_MEMORY_LIMIT_BYTES,
   saveFabricConfig,
   type FabricConfig,
 } from "../config.js";
@@ -44,6 +45,7 @@ const RUNNERS = ["pi", "claude"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
+const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
 const ACTOR_SCOPES = ["project", "session"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
@@ -102,7 +104,7 @@ const formatBytes = (bytes: number): string =>
       : `${Number((bytes / 1024).toFixed(2))} KB`;
 
 export const executorMemoryLimitOptions = (
-  maximumBytes = MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+  maximumBytes = QUICKJS_MAX_MEMORY_LIMIT_BYTES,
 ): number[] => {
   const minimumBytes = 16 * 1024 * 1024;
   const values: number[] = [];
@@ -201,7 +203,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "fullCodeMode":
       return config.fullCodeMode ? "true" : "false";
     case "executor":
-      return formatMs(config.executor.timeoutMs);
+      return `${config.executor.runtime} · ${formatMs(config.executor.timeoutMs)}`;
     case "approvals":
       return config.approvals.execute;
     case "mcp":
@@ -457,6 +459,10 @@ export const buildFabricSettingsItems = (
   const fullCodeDescription = envFullCode
     ? "Fabric owns Pi core tools (read, bash, edit, write, grep, find, ls) via fabric_exec. Currently overridden by the PI_FABRIC_FULL_CODE_MODE environment variable."
     : "Fabric owns Pi core tools (read, bash, edit, write, grep, find, ls) via fabric_exec. Disable to keep native tools model-facing (orchestration-only mode).";
+  const executorMemoryDescription = (): string =>
+    config.executor.runtime === "quickjs"
+      ? "Maximum QuickJS heap size. WASM32 limits this to less than 4 GiB."
+      : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
 
   const defaultToolsItem = setting(
     "subagents.defaultTools",
@@ -502,12 +508,19 @@ export const buildFabricSettingsItems = (
       values: BOOLEANS,
     }),
     setting("executor", "Executor", summaryFor("executor", config), {
-      description: "QuickJS sandbox resource limits for fabric_exec programs.",
+      description: "Runtime and resource limits for fabric_exec programs.",
       submenu: sectionSubmenu(
         theme,
         "Executor",
-        "QuickJS sandbox resource limits for fabric_exec programs.",
+        "Runtime and resource limits for fabric_exec programs.",
         [
+          setting("executor.runtime", "Runtime", config.executor.runtime, {
+            description:
+              config.schema.mode === "enforce"
+                ? "Schema enforce mode requires the isolated QuickJS runtime."
+                : "QuickJS is isolated and limited by WASM32. Node process supports larger heaps but is an unsafe trusted-code escape hatch, not a security sandbox.",
+            values: config.schema.mode === "enforce" ? ["quickjs"] : EXECUTOR_RUNTIMES,
+          }),
           setting("executor.timeoutMs", "Timeout", formatMs(config.executor.timeoutMs), {
             description: "Maximum wall-clock time for a single fabric_exec program.",
             submenu: numericSubmenu(
@@ -523,15 +536,15 @@ export const buildFabricSettingsItems = (
             "Memory limit",
             formatBytes(config.executor.memoryLimitBytes),
             {
-              description:
-                "Maximum QuickJS heap size for a single fabric_exec program. The upper bound is this machine's physical memory; large allocations may destabilize the system.",
-              submenu: numericSubmenu(
-                theme,
-                executorMemoryLimitOptions(),
-                formatBytes,
-                "Executor memory limit",
-                "Maximum QuickJS heap size for a single fabric_exec program. The upper bound is this machine's physical memory; large allocations may destabilize the system.",
-              ),
+              description: executorMemoryDescription(),
+              submenu: (currentValue, done) =>
+                numericSubmenu(
+                  theme,
+                  executorMemoryLimitOptions(maxExecutorMemoryLimitBytes(config.executor.runtime)),
+                  formatBytes,
+                  "Executor memory limit",
+                  executorMemoryDescription(),
+                )(currentValue, done),
             },
           ),
           setting("executor.maxOutputChars", "Max output chars", String(config.executor.maxOutputChars), {

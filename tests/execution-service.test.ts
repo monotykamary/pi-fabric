@@ -42,6 +42,24 @@ describe("FabricExecutionService", () => {
     }
   });
 
+  it("uses the configured disposable Node process executor", async () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.executor.runtime = "node-process";
+    config.executor.memoryLimitBytes = 128 * 1024 * 1024;
+    const service = new FabricExecutionService(new ActionRegistry(), config);
+    const result = await service.execute({
+      code: 'print("native"); return { answer: 42 };',
+      signal: undefined,
+      parentToolCallId: "native-test",
+      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
+      onPartial() {},
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.logs).toEqual(["native"]);
+    expect(result.value).toEqual({ answer: 42 });
+  });
+
   it("coalesces all parallel nested calls through one global debounce and flushes on settle", async () => {
     const registry = new ActionRegistry();
     const descriptor = {

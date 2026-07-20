@@ -40,6 +40,21 @@ describe("FabricSettingsComponent", () => {
     expect(values.at(-1)).toBe(machineCapacity);
   });
 
+  it("surfaces the unsafe Node process executor and its larger memory range", () => {
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.executor.runtime = "node-process";
+    const items = buildFabricSettingsItems(theme, config, () => {}, {
+      keepVisibleCandidates: ["fabric_exec"],
+      modelSource: fakeModelSource,
+    });
+    const executor = items.find((item) => item.id === "executor")!;
+    const lines = executor.submenu!("", () => {}).render(100).join("\n");
+
+    expect(lines).toContain("node-process");
+    expect(lines).toContain("unsafe");
+    expect(lines).toContain("trusted-code escape hatch");
+  });
+
   it("renders the pi-core style top and bottom borders with search", () => {
     const component = new FabricSettingsComponent(theme, buildItems(), () => {}, () => {});
     const lines = component.render(80);
@@ -101,6 +116,8 @@ describe("FabricSettingsComponent", () => {
     expect(executor?.submenu).toBeDefined();
     const submenu = executor!.submenu!("", () => {});
     const lines = submenu.render(80).join("\n");
+    expect(lines).toContain("Runtime");
+    expect(lines).toContain("quickjs");
     expect(lines).toContain("Timeout");
     expect(lines).toContain("Memory limit");
     expect(lines).toContain("Max output chars");

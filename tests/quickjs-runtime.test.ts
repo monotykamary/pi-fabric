@@ -7,6 +7,17 @@ const options = {
 };
 
 describe("QuickJsRuntime", () => {
+  it("rejects memory limits that overflow the WASM32 size_t", async () => {
+    const result = await new QuickJsRuntime().execute(
+      "return 1;",
+      async () => undefined,
+      { ...options, memoryLimitBytes: 4 * 1024 ** 3 },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toContain("WASM32 maximum");
+  });
+
   it("runs parallel host calls and returns structured data", async () => {
     const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => ({
       ref,

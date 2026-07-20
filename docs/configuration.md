@@ -7,7 +7,9 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 `/fabric settings` writes changes to the same files: trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`.
 
-`executor.memoryLimitBytes` controls the QuickJS heap for each `fabric_exec` program. It may be set as high as the machine's detected physical memory. Large limits can exhaust system memory or destabilize the machine, so users are responsible for choosing a value appropriate for their workload.
+`executor.runtime` selects `"quickjs"` (the default isolated WASM runtime) or `"node-process"` (a disposable native V8 process). QuickJS memory limits are capped at `4294967295` bytes because its WASM32 `size_t` cannot represent 4 GiB; larger values are rejected rather than wrapped. Node process limits may be set as high as detected physical memory and are passed to V8 as `--max-old-space-size`.
+
+`node-process` is an explicit trusted-code escape hatch, not a security sandbox. It preserves Fabric's IPC host bridge, approvals, audit records, timeout, and cancellation, but Node's `vm` API is not a security boundary. Enable it only for workloads and projects whose generated code you are willing to run with the local user account's authority. Each invocation receives a fresh child process and is forcibly terminated when it settles, times out, or is cancelled. Schema enforce mode always forces `quickjs`. Large limits in either runtime can exhaust system memory or destabilize the machine.
 
 ## Full reference
 
@@ -15,6 +17,7 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 {
   "fullCodeMode": true,
   "executor": {
+    "runtime": "quickjs",
     "timeoutMs": 120000,
     "memoryLimitBytes": 67108864,
     "maxOutputChars": 100000,

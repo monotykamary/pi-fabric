@@ -33,11 +33,13 @@ import type {
   FabricSandboxResult,
   FabricSandboxTerminationReason,
 } from "./runtime/quickjs-runtime.js";
+import type { NodeProcessRuntime } from "./runtime/node-process-runtime.js";
 import type { FabricTypeError } from "./runtime/type-checker.js";
 
 let runtimeDependencies:
   | Promise<{
       QuickJsRuntime: typeof import("./runtime/quickjs-runtime.js").QuickJsRuntime;
+      NodeProcessRuntime: typeof import("./runtime/node-process-runtime.js").NodeProcessRuntime;
       typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
       guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
     }>
@@ -46,10 +48,12 @@ let runtimeDependencies:
 const loadRuntimeDependencies = () =>
   runtimeDependencies ??= Promise.all([
     import("./runtime/quickjs-runtime.js"),
+    import("./runtime/node-process-runtime.js"),
     import("./runtime/type-checker.js"),
     import("./runtime/guest-types.js"),
-  ]).then(([runtime, checker, guest]) => ({
-    QuickJsRuntime: runtime.QuickJsRuntime,
+  ]).then(([quickjs, nodeProcess, checker, guest]) => ({
+    QuickJsRuntime: quickjs.QuickJsRuntime,
+    NodeProcessRuntime: nodeProcess.NodeProcessRuntime,
     typeCheckFabricCode: checker.typeCheckFabricCode,
     guestTypeDeclarations: guest.guestTypeDeclarations,
   }));
@@ -104,7 +108,8 @@ export interface FabricExecutionOptions {
 }
 
 export class FabricExecutionService {
-  #runtime: QuickJsRuntime | undefined;
+  #runtime: QuickJsRuntime | NodeProcessRuntime | undefined;
+  #runtimeKind: FabricConfig["executor"]["runtime"] | undefined;
 
   constructor(
     readonly registry: ActionRegistry,
@@ -322,7 +327,13 @@ export class FabricExecutionService {
     };
     let sandboxResult: FabricSandboxResult;
     try {
-      this.#runtime ??= new dependencies.QuickJsRuntime();
+      const runtimeKind = this.config.executor.runtime;
+      if (!this.#runtime || this.#runtimeKind !== runtimeKind) {
+        this.#runtime = runtimeKind === "node-process"
+          ? new dependencies.NodeProcessRuntime()
+          : new dependencies.QuickJsRuntime();
+        this.#runtimeKind = runtimeKind;
+      }
       sandboxResult = await this.#runtime.execute(
         options.code,
         async (ref, args, runtimeSignal) => {

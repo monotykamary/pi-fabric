@@ -49,7 +49,7 @@ interface FabricExecutionTraceOperationV1 {
 }
 ```
 
-`sequence` is assigned when the host bridge receives any durable operation. Parallel completion updates that record without changing operation order. Action attempts are issued before reference resolution, preparation, schema validation, approval, and execution guards. Discovery and workflow attempts are likewise issued before their guards, lookups, validation, or activity mutation. Failures in those stages therefore remain visible. QuickJS returns a typed termination reason; trace sealing uses that reason for deadline and cancellation outcomes and never classifies exception text.
+`sequence` is assigned when the host bridge receives any durable operation. Parallel completion updates that record without changing operation order. Action attempts are issued before reference resolution, preparation, schema validation, approval, and execution guards. Discovery and workflow attempts are likewise issued before their guards, lookups, validation, or activity mutation. Failures in those stages therefore remain visible. The configured executor returns a typed termination reason; trace sealing uses that reason for deadline and cancellation outcomes and never classifies exception text.
 
 V1 retains `type: "call"` for wire compatibility. Exact internal refs distinguish discovery, lifecycle, and combinator operations from provider action calls. V1 also keeps `result` optional, but all discovery, workflow lifecycle, and combinator results are omitted. The generic recorder omits provider results except for the exact `{ created: true }` creation outcome from `pi.write`; no output or provider details accompany it. It projects arguments by exact reference:
 
@@ -89,7 +89,7 @@ These operations preserve bridge issue order alongside actions and discovery. Th
 
 ### Workflow combinator spans
 
-Calls to `workflow.parallel` and `workflow.pipeline` are instrumented in the QuickJS guest implementation and recorded as `fabric.workflow.parallel` and `fabric.workflow.pipeline`. Start creates one operation; end updates that same operation. Persisted metadata is limited to `kind`, numeric `itemCount`, numeric `stageCount` for pipelines, and effective bounded `concurrency` for parallel calls. Empty combinators are represented. Pipeline execution naturally nests its parallel fan-out, so the pipeline operation is issued before the nested parallel operation and both precede stage actions.
+Calls to `workflow.parallel` and `workflow.pipeline` are instrumented in the shared guest implementation and recorded as `fabric.workflow.parallel` and `fabric.workflow.pipeline`. Start creates one operation; end updates that same operation. Persisted metadata is limited to `kind`, numeric `itemCount`, numeric `stageCount` for pipelines, and effective bounded `concurrency` for parallel calls. Empty combinators are represented. Pipeline execution naturally nests its parallel fan-out, so the pipeline operation is issued before the nested parallel operation and both precede stage actions.
 
 Guest span IDs are deterministic execution-local bridge correlation values. They are never persisted, and the internal start/end bridge is closure-private rather than part of the guest API. Internal span calls do not enter provider resolution, authorization, approval, or agent-budget accounting. A thrown stage closes active spans as failed; runtime failure, deadline, or cancellation seals any still-open operation with the typed final execution outcome.
 

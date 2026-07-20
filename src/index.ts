@@ -155,7 +155,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       name: "fabric_exec",
       label: "Fabric",
       description:
-        "Execute type-checked TypeScript in a QuickJS sandbox for Pi core tools, MCP, Fabric providers, discovery, and extensions. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
+        "Execute type-checked TypeScript through Fabric's configured executor for Pi core tools, MCP, Fabric providers, discovery, and extensions. QuickJS is isolated by default; the optional Node process is an unsafe trusted-code escape hatch. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
       promptSnippet:
         "Pi core tools, MCP, Fabric providers, discovery, and extensions",
       promptGuidelines: [

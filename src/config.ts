@@ -16,10 +16,12 @@ export type FabricSubagentTransport =
 export type FabricAgentRunner = "pi" | "claude";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
+export type FabricExecutorRuntime = "quickjs" | "node-process";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
 
 interface FabricExecutorConfig {
+  runtime: FabricExecutorRuntime;
   timeoutMs: number;
   memoryLimitBytes: number;
   maxOutputChars: number;
@@ -155,14 +157,21 @@ export interface FabricConfig {
 
 export const MIN_SUBAGENT_TIMEOUT_MS = 1_000;
 export const MAX_SUBAGENT_TIMEOUT_MS = 3_600_000;
+export const QUICKJS_MAX_MEMORY_LIMIT_BYTES = 0xffff_ffff;
 export const MAX_EXECUTOR_MEMORY_LIMIT_BYTES = Math.max(
   8 * 1024 * 1024,
   Math.min(Number.MAX_SAFE_INTEGER, Math.floor(os.totalmem())),
 );
 
+export const maxExecutorMemoryLimitBytes = (runtime: FabricExecutorRuntime): number =>
+  runtime === "quickjs"
+    ? Math.min(QUICKJS_MAX_MEMORY_LIMIT_BYTES, MAX_EXECUTOR_MEMORY_LIMIT_BYTES)
+    : MAX_EXECUTOR_MEMORY_LIMIT_BYTES;
+
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   fullCodeMode: true,
   executor: {
+    runtime: "quickjs",
     timeoutMs: 120_000,
     memoryLimitBytes: 64 * 1024 * 1024,
     maxOutputChars: 100_000,
@@ -350,6 +359,12 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 const widgetModeValue = (value: unknown, fallback: FabricUiWidgetMode): FabricUiWidgetMode =>
   value === "auto" || value === "always" || value === "hidden" ? value : fallback;
 
+const executorRuntimeValue = (
+  value: unknown,
+  fallback: FabricExecutorRuntime,
+): FabricExecutorRuntime =>
+  value === "quickjs" || value === "node-process" ? value : fallback;
+
 const resultFormatValue = (
   value: unknown,
   fallback: FabricResultFormat,
@@ -391,6 +406,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const mesh = objectValue(input.mesh);
   const memory = objectValue(input.memory);
   const schema = objectValue(input.schema);
+  const schemaMode = schemaModeValue(schema.mode, DEFAULT_FABRIC_CONFIG.schema.mode);
+  const configuredExecutorRuntime = executorRuntimeValue(
+    executor.runtime,
+    DEFAULT_FABRIC_CONFIG.executor.runtime,
+  );
+  const executorRuntime = schemaMode === "enforce" ? "quickjs" : configuredExecutorRuntime;
   const configuredTools = Array.isArray(subagents.defaultTools)
     ? subagents.defaultTools.filter(
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
@@ -439,6 +460,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   return {
     fullCodeMode: booleanValue(input.fullCodeMode, DEFAULT_FABRIC_CONFIG.fullCodeMode),
     executor: {
+      runtime: executorRuntime,
       timeoutMs: boundedInteger(
         executor.timeoutMs,
         DEFAULT_FABRIC_CONFIG.executor.timeoutMs,
@@ -449,7 +471,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         executor.memoryLimitBytes,
         DEFAULT_FABRIC_CONFIG.executor.memoryLimitBytes,
         8 * 1024 * 1024,
-        MAX_EXECUTOR_MEMORY_LIMIT_BYTES,
+        maxExecutorMemoryLimitBytes(executorRuntime),
       ),
       maxOutputChars: boundedInteger(
         executor.maxOutputChars,
@@ -707,7 +729,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       ),
     },
     schema: {
-      mode: schemaModeValue(schema.mode, DEFAULT_FABRIC_CONFIG.schema.mode),
+      mode: schemaMode,
       certificateTtlMs: boundedInteger(
         schema.certificateTtlMs,
         DEFAULT_FABRIC_CONFIG.schema.certificateTtlMs,

@@ -44,7 +44,7 @@ const quickJsModule = (): Promise<QuickJsModule> => {
   return quickJsModulePromise;
 };
 
-const guestSetup = `
+export const GUEST_SETUP = `
 (() => {
 const __fabricBridge = globalThis.__fabricHostCall;
 delete globalThis.__fabricHostCall;
@@ -504,6 +504,18 @@ export class QuickJsRuntime {
         error: "Execution cancelled",
       };
     }
+    if (
+      !Number.isSafeInteger(options.memoryLimitBytes) ||
+      options.memoryLimitBytes < 1 ||
+      options.memoryLimitBytes > 0xffff_ffff
+    ) {
+      return {
+        value: undefined,
+        logs: [],
+        terminationReason: "runtime_error",
+        error: "QuickJS memory limit must be an integer between 1 byte and 4294967295 bytes (WASM32 maximum)",
+      };
+    }
     const module = await quickJsModule();
     const context = module.newContext();
     const runtime = context.runtime;
@@ -661,7 +673,7 @@ export class QuickJsRuntime {
       context.setProp(context.global, "__fabricTokenBudget", tokenBudget);
       tokenBudget.dispose();
 
-      const setupResult = context.evalCode(guestSetup, "pi-fabric-setup.js");
+      const setupResult = context.evalCode(GUEST_SETUP, "pi-fabric-setup.js");
       if (setupResult.error) {
         const deadlineExceeded = interruptedByDeadline || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;

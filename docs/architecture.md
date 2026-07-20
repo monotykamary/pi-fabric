@@ -6,7 +6,8 @@
 fabric_exec
     │
     ▼
-TypeScript checker → QuickJS sandbox
+TypeScript checker → QuickJS sandbox (default)
+                   └→ disposable Node process (unsafe opt-in)
     │ JSON-only host bridge
     ▼
 ActionRegistry
@@ -20,7 +21,9 @@ ActionRegistry
 ActivityStore → compact widget + footer status + interactive dashboard
 ```
 
-Guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`; accessing a key that was not provided throws a clear, actionable error listing the provided keys rather than silently returning `undefined`.
+In the default QuickJS runtime, guest code has no `process`, `require`, filesystem, network, or subprocess globals. All effects cross the host bridge, where schemas, approvals, audit records, timeouts, and cancellation apply. Each execution receives a fresh QuickJS context. Named strings passed in the `strings` tool parameter are available as `π.key`; accessing a key that was not provided throws a clear, actionable error listing the provided keys rather than silently returning `undefined`.
+
+The optional `node-process` executor runs the same type-checked guest API and host-call protocol in a fresh child process with a configurable V8 heap. It exists for workloads that exceed WASM32's memory ceiling. It is not a security boundary: Node's `vm` module cannot safely contain hostile code, so this mode is restricted to trusted configuration, described as unsafe in `/fabric settings`, and disabled by Schema enforce mode. Parent-side deadlines and cancellation terminate the entire child process.
 
 ## Tool discovery and generic calls
 
@@ -45,7 +48,7 @@ Refs are namespaced: `pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `sch
 
 The model-facing `fabric_exec` schema is intentionally flat — one large `code` string plus scalar/optional parameters — with no nested arrays-of-objects containing escaped content. Newer SOTA models are post-trained on one dominant harness's flat tool shapes and can invent trailing keys at the highest-entropy point of a nested escaped-JSON field (e.g. right after closing a long multiline string), which a strict schema rejects. The only nested field, `display`, ignores unknown keys: extras are accepted by the schema and filtered to `{ name, description }` before execution, mirroring the silent-filter behavior the dominant harness's client is trained against.
 
-Fabric's architecture is itself a mitigation for this class of bug. The model authors TypeScript that calls tools, so it never has to faithfully emit an alternative tool schema under sampling pressure; nested object construction happens in deterministic, type-checked code. The residual failure mode is incorrect TypeScript, caught by the QuickJS type-checker with an actionable, line-numbered error — the validate/report/retry loop at the code level rather than the JSON-schema level.
+Fabric's architecture is itself a mitigation for this class of bug. The model authors TypeScript that calls tools, so it never has to faithfully emit an alternative tool schema under sampling pressure; nested object construction happens in deterministic, type-checked code. The residual failure mode is incorrect TypeScript, caught by Fabric's TypeScript checker with an actionable, line-numbered error — the validate/report/retry loop at the code level rather than the JSON-schema level.
 
 For sessions that also call pi tools directly (`read`/`write`/`edit`/`grep`/`find`/`ls`/`bash`), install [pi-tool-repair](https://github.com/monotykamary/pi-tool-repair) as a companion. It validates-then-repairs the finite set of tool-call mistakes those direct calls make — invented keys, wrong field names, stringified arrays, anchor bleed, and leaked tool-call grammars — before tools execute. It hooks `before_provider_request`/`message_end`/`tool_call`; fabric registers a tool, so the two do not conflict.
 
@@ -57,7 +60,7 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 - Captured tools execute with the full privileges of their owning extension. Hiding a tool schema is context optimization, not sandboxing. Captured tools retain their definitions and native renderers, but nested calls render as part of the enclosing Fabric execution rather than as separate native tool rows.
 - Registry interception composes through the public `ExtensionRunner.getAllRegisteredTools()` method. An extension that replaces that method without delegating to the previous implementation can prevent capture.
 - MCP servers and external providers execute with their own host privileges. Review their configuration and code.
-- Type checking improves reliability but is not a security boundary; QuickJS isolation and the host capability bridge are the boundaries.
+- Type checking improves reliability but is not a security boundary. In the default runtime, QuickJS isolation and the host capability bridge are the boundaries. The optional Node process deliberately gives up the QuickJS boundary and must be treated as trusted native execution.
 - Child Pi processes load normal extensions by default so provider-backed models continue to work. Claude children use the official installed CLI and its existing authentication. Both runners restrict the active model-facing tools to `defaultTools`; Pi adds `fabric_exec` only for explicit recursion, while Claude rejects recursion and unmapped tools.
 - Claude `extensions: true` preserves the user's normal Claude Code customizations, including applicable settings and hooks; those hooks execute with their usual host privileges. Use `extensions: false` for Claude safe mode. `Bash` remains unrestricted inside the child when allowed, just as Fabric's `bash` capability is.
 - Claude model discovery uses a local initialization control request and does not invoke a model. Actual one-shot and actor activations use the account/API billing already configured in Claude Code; Fabric records the CLI's reported `total_cost_usd` in normal usage and budget ledgers.
