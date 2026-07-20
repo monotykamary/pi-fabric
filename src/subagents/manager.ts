@@ -60,6 +60,8 @@ const MAX_UI_ERROR_CHARS = 8_000;
 const MAX_UI_VALUE_CHARS = 64_000;
 const MAX_RETAINED_UI_RUNS = 240;
 const MAX_RETAINED_RUN_HANDLES = 1_000;
+const MAX_LOG_SUMMARY_CHARS = 7_000;
+const MAX_LOG_DETAIL_CHARS = 900;
 
 export const effectiveSubagentTimeoutMs = (
   configuredTimeoutMs: number,
@@ -116,6 +118,12 @@ const terminalStatuses = new Set(["completed", "failed", "stopped", "timed_out"]
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const retryablePiStartupError = (error: string | undefined): boolean =>
+  typeof error === "string" &&
+  /\b(?:no|missing)\s+(?:api key|credentials?)\b|\b(?:api key|credentials?)\s+(?:was\s+)?not found\b/i.test(
+    error,
+  );
 
 const safeName = (value: string): string =>
   value
@@ -206,17 +214,24 @@ const summarizeRunLog = (runDirectory: string, lines: number): string => {
   for (const entry of page.lines) {
     const parsed = entry.parsed as Record<string, unknown> | undefined;
     if (!parsed || typeof parsed.type !== "string") continue;
-    const detail =
+    const rawDetail =
       typeof parsed.error === "string"
         ? parsed.error
         : typeof parsed.message === "string"
           ? parsed.message
           : typeof parsed.toolName === "string"
             ? parsed.toolName
-            : "";
-    summary.push(detail ? `${parsed.type}: ${detail}` : parsed.type);
+            : typeof parsed.text === "string"
+              ? parsed.text
+              : "";
+    const type = parsed.type.replace(/\s+/g, " ").trim().slice(0, 80);
+    const detail = rawDetail
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_LOG_DETAIL_CHARS);
+    summary.push(detail ? `${type}: ${detail}` : type);
   }
-  return summary.join(" | ");
+  return summary.join(" | ").slice(-MAX_LOG_SUMMARY_CHARS);
 };
 
 const writeRecord = (filePath: string, record: SubagentRunRecord): void => {
@@ -787,6 +802,7 @@ export class SubagentManager {
       this.#closing ||
       managed.abortSignal?.aborted ||
       record.status !== "failed" ||
+      !retryablePiStartupError(record.error) ||
       record.turns !== 0 ||
       record.toolCalls !== 0 ||
       record.usage.input !== 0 ||

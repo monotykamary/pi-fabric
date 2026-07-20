@@ -13,7 +13,8 @@ const marker = path.join(path.dirname(statusFile), "startup-attempts");
 const attempts = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) + 1 : 1;
 fs.writeFileSync(marker, String(attempts));
 const now = Date.now();
-const failed = attempts === 1;
+const retryable = task !== "Reject startup";
+const failed = retryable ? attempts === 1 : true;
 fs.writeFileSync(
   statusFile,
   JSON.stringify({
@@ -30,7 +31,9 @@ fs.writeFileSync(
     turns: failed ? 0 : 1,
     toolCalls: 0,
     text: failed ? "" : "startup retry recovered",
-    ...(failed ? { error: "No API key found for openai-codex" } : {}),
+    ...(failed
+      ? { error: retryable ? "No API key found for openai-codex" : "provider rejected the prompt" }
+      : {}),
     exitCode: 0,
     usage: failed
       ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }

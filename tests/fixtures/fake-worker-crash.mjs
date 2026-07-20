@@ -44,6 +44,10 @@ if (logFile) {
     JSON.stringify({ type: "response", command: "prompt", success: false, error: "model rate limit exceeded" }) +
       "\n",
   );
+  fs.appendFileSync(
+    logFile,
+    JSON.stringify({ type: "worker_stderr", text: "provider authentication failed\nretry required" }) + "\n",
+  );
 }
 
 // Exit without writing a terminal status, simulating a worker that died mid-run.

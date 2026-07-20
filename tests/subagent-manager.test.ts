@@ -120,6 +120,24 @@ describe("SubagentManager", () => {
     ).toBe("2");
   });
 
+  it("does not retry deterministic failures before the first turn", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Reject startup", transport: "process" });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toBe("provider rejected the prompt");
+    expect(
+      fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"),
+    ).toBe("1");
+  });
+
   it("keeps full results in the API and compact projections for the dashboard", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
@@ -531,6 +549,7 @@ describe("SubagentManager", () => {
     expect(result.status).toBe("failed");
     expect(result.error).toContain("exited without a result");
     expect(result.error).toContain("model rate limit exceeded");
+    expect(result.error).toContain("worker_stderr: provider authentication failed retry required");
   });
 
   it("rejects empty tasks", async () => {
