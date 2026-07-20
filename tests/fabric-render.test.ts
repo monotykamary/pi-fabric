@@ -11,6 +11,7 @@ import {
   type ResultRowBalance,
 } from "../src/ui/row-balance.js";
 import {
+  captureFabricAgentPreviews,
   captureFabricCallHeadlinePreviews,
   captureFabricCoreToolPreviews,
   captureFabricWritePreviews,
@@ -24,6 +25,7 @@ import {
   renderBoundedLines,
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
+  restoreFabricAgentPreviews,
   restoreFabricCallHeadlinePreviews,
   restoreFabricCoreToolPreviews,
   restoreFabricWritePreviews,
@@ -242,6 +244,138 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
     expect(nestedCallBody(restored[0]!)).toBe("# Cached preview");
   });
 
+  it("keeps a waiting agent's running tool inline ahead of stale narrative", () => {
+    const lines = renderFabricMulticallPartial(
+      {
+        audits: [
+          {
+            ref: "agents.wait",
+            provider: "agents",
+            tool: "wait",
+            args: { id: "agent-child-12345678" },
+            preview: {
+              kind: "fabric-agent-tools",
+              id: "agent-child-12345678",
+              name: "researcher",
+              status: "running",
+              runner: "pi",
+              owner: "agent",
+              text: "I previously inspected the repository.",
+              tools: [
+                {
+                  id: "child-read",
+                  kind: "tool",
+                  label: "read",
+                  toolName: "read",
+                  status: "running",
+                  args: { path: "src/current.ts" },
+                },
+              ],
+            },
+          },
+        ],
+        phases: [],
+        expanded: false,
+        showNestedToolCalls: true,
+      },
+      plainTheme,
+    ).render(120);
+
+    expect(lines).toContain("◆ Fabric running · 0/1 calls");
+    expect(lines).toContain("◐ wait researcher › read src/current.ts");
+    expect(lines.join("\n")).not.toContain("previously inspected");
+  });
+
+  it("restores friendly agent previews after ephemeral live details disappear", () => {
+    const live = [
+      {
+        ref: "agents.wait",
+        provider: "agents",
+        tool: "wait",
+        args: { id: "agent-child-12345678" },
+        preview: {
+          kind: "fabric-agent-tools",
+          id: "agent-child-12345678",
+          name: "researcher",
+          status: "completed",
+          owner: "agent",
+          text: "Review complete.",
+          tools: [],
+        },
+      },
+    ];
+    const previews = captureFabricAgentPreviews(live);
+    const restored = restoreFabricAgentPreviews(
+      [{ ref: "agents.wait", provider: "agents", tool: "wait", args: { id: "agent-child-12345678" }, success: true }],
+      previews,
+    );
+
+    expect(nestedCallTitle(restored[0]!, plainTheme)).toBe("wait researcher");
+    expect(restored[0]?.preview).toEqual(live[0]?.preview);
+  });
+
+  it("keeps later active calls visible when a collapsed multicall exceeds its limit", () => {
+    const audits = Array.from({ length: 10 }, (_, index) => ({
+      ref: "agents.wait",
+      provider: "agents",
+      tool: "wait",
+      args: { id: `agent-${index}` },
+      ...(index === 9 ? {} : { success: true }),
+      ...(index === 9
+        ? {
+            preview: {
+              kind: "fabric-agent-tools" as const,
+              id: "agent-9",
+              name: "active-agent",
+              status: "running",
+              owner: "agent" as const,
+              tools: [],
+            },
+          }
+        : {}),
+    }));
+    const lines = renderFabricMulticallPartial(
+      { audits, phases: [], expanded: false },
+      plainTheme,
+    ).render(120).join("\n");
+
+    expect(lines).toContain("wait active-agent");
+    expect(lines).toContain("… 2 nested calls hidden");
+  });
+
+  it("clips collapsed multicall narrative inline and reveals it when expanded", () => {
+    const narrative = "A long agent update that must remain visible across narrow terminal rows without losing its ending.";
+    const audits = [{
+      ref: "agents.wait",
+      provider: "agents",
+      tool: "wait",
+      args: { id: "agent-child" },
+      preview: {
+        kind: "fabric-agent-tools" as const,
+        id: "agent-child",
+        name: "researcher",
+        status: "running",
+        owner: "agent" as const,
+        text: narrative,
+        tools: [],
+      },
+    }];
+    const collapsed = renderFabricMulticallPartial(
+      { audits, phases: [], expanded: false },
+      plainTheme,
+    ).render(40);
+    const expanded = renderFabricMulticallPartial(
+      { audits, phases: [], expanded: true },
+      plainTheme,
+    ).render(40);
+
+    expect(collapsed).toHaveLength(2);
+    expect(collapsed.every((line) => visibleWidth(line) <= 40)).toBe(true);
+    expect(collapsed.join(" ")).not.toContain("without losing its ending.");
+    expect(expanded.length).toBeGreaterThan(2);
+    expect(expanded.join(" ").replace(/\s+/g, " ")).toContain("without losing its ending.");
+  });
+
   it("renders child-agent tool activity as one line beneath its parent call", () => {
     const settings = {
       tools: ["edit"],
@@ -299,7 +433,7 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
     expect(visible).not.toContain("const after = 2;");
   });
 
-  it("renders agent narrative while nested tool rows are hidden", () => {
+  it("keeps collapsed multicall narrative on one inline row when tools are hidden", () => {
     const lines = renderFabricMulticallPartial(
       {
         audits: [
@@ -337,8 +471,10 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
     ).render(120).join("\n");
 
     const visible = lines.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
-    expect(visible).toContain("run implement › Inspecting the routing configuration now.");
-    expect(visible).toContain("The response stays expanded.");
+    expect(visible).toContain(
+      "run implement › Inspecting the routing configuration now. The response stays expanded.",
+    );
+    expect(visible.split("\n")).toHaveLength(2);
     expect(visible).not.toContain("[agent");
     expect(visible).not.toContain("src/private.ts");
   });
@@ -398,8 +534,8 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
 
     expect(lines).toContain("◐ run reader › Reviewing the routing configuration.");
     const searcherLine = lines.find((line) => line.includes("run searcher"));
-    expect(searcherLine).toContain("I will inspect the tests.");
-    expect(lines.some((line) => line.includes("grep"))).toBe(true);
+    expect(searcherLine).toContain("grep tests");
+    expect(lines.join("\n")).not.toContain("I will inspect the tests.");
     expect(lines.join("\n")).not.toContain("[agent");
   });
 
@@ -500,6 +636,149 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
     expect(lines).toContain("run implementor › edit src/child.ts");
     expect(lines).toContain("const before = 1;");
     expect(lines).toContain("const after = 2;");
+  });
+
+  it("renders transcript content blocks for the two most recent expanded agent tools", async () => {
+    await initHighlighting("dark-plus", true);
+    const settings = {
+      tools: ["read", "grep"],
+      readContentPreview: true,
+      readLineNumbers: true,
+      grepResultPreview: true,
+      syntaxHighlighting: true,
+      secretWarnings: true,
+      diffIntensity: "subtle",
+      wordEmphasis: "all",
+      toolCallBackground: "off",
+    } as CodePreviewSettings;
+    const nestedSuccessBackground = "\x1b[48;2;1;2;3m";
+    const nestedTheme = {
+      ...plainTheme,
+      getBgAnsi: () => nestedSuccessBackground,
+    } as unknown as Theme;
+    const raw = renderFabricMulticallPartial(
+      {
+        audits: [{
+          ref: "agents.run",
+          provider: "agents",
+          tool: "run",
+          args: { name: "reader" },
+          preview: {
+            kind: "fabric-agent-tools",
+            id: "agent-reader",
+            name: "reader",
+            status: "completed",
+            owner: "agent",
+            text: "Inspection complete.",
+            tools: [
+              {
+                id: "child-read",
+                kind: "tool",
+                label: "read",
+                toolName: "read",
+                status: "completed",
+                args: { path: "src/expanded.ts" },
+                result: {
+                  content: [{ type: "text", text: "export const expandedBody = true;" }],
+                  details: {},
+                },
+              },
+              {
+                id: "child-grep",
+                kind: "tool",
+                label: "grep",
+                toolName: "grep",
+                status: "completed",
+                args: { pattern: "expandedBody", path: "src", literal: true },
+                result: {
+                  content: [{
+                    type: "text",
+                    text: "src/expanded.ts:1: export const expandedBody = true;",
+                  }],
+                  details: {},
+                },
+              },
+            ],
+          },
+        }],
+        phases: [],
+        expanded: true,
+        showNestedToolCalls: true,
+        core: { cwd: process.cwd(), settings },
+      },
+      nestedTheme,
+    ).render(140).join("\n");
+    const lines = raw.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+
+    expect(raw).toContain("\x1b[38;2;");
+    expect(raw).not.toContain(nestedSuccessBackground);
+    expect(lines).toContain("read src/expanded.ts");
+    expect(lines).toContain("grep /expandedBody/ in src");
+    expect(lines).toContain("export const expandedBody = true;");
+    expect(lines).not.toContain("No matches found");
+  });
+
+  it("preserves diff-specific backgrounds when nested tool backgrounds are disabled", () => {
+    const successBackground = "\x1b[48;2;10;10;10m";
+    const errorBackground = "\x1b[48;2;20;10;10m";
+    const diffTheme = {
+      ...plainTheme,
+      getFgAnsi: (color: string) => color === "toolDiffAdded"
+        ? "\x1b[38;2;80;200;120m"
+        : "\x1b[38;2;220;90;100m",
+      getBgAnsi: (color: string) => color === "toolErrorBg"
+        ? errorBackground
+        : successBackground,
+    } as unknown as Theme;
+    const settings = {
+      tools: ["edit"],
+      editDiffPreview: true,
+      editCollapsedLines: 160,
+      syntaxHighlighting: false,
+      secretWarnings: true,
+      diffIntensity: "subtle",
+      wordEmphasis: "all",
+      toolCallBackground: "on",
+    } as CodePreviewSettings;
+    const raw = renderFabricMulticallPartial(
+      {
+        audits: [{
+          ref: "agents.run",
+          provider: "agents",
+          tool: "run",
+          args: { name: "editor" },
+          preview: {
+            kind: "fabric-agent-tools",
+            id: "agent-editor",
+            name: "editor",
+            status: "completed",
+            owner: "agent",
+            tools: [{
+              id: "child-edit",
+              kind: "tool",
+              label: "edit",
+              toolName: "edit",
+              status: "completed",
+              args: {
+                path: "src/example.ts",
+                edits: [{
+                  oldText: "const before = 1;",
+                  newText: "const after = 2;",
+                }],
+              },
+            }],
+          },
+        }],
+        phases: [],
+        expanded: true,
+        core: { cwd: process.cwd(), settings },
+      },
+      diffTheme,
+    ).render(120).join("\n");
+
+    expect(raw).toContain("\x1b[48;2;");
+    expect(raw).not.toContain(successBackground);
+    expect(raw).not.toContain(errorBackground);
   });
 
   it("preserves assistant responses and one-line tools for large agent groups", () => {

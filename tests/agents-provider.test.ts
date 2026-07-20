@@ -161,6 +161,38 @@ describe("AgentsProvider runner support", () => {
     });
   });
 
+  it("attaches previews and reports friendly names while waiting for spawned agents", async () => {
+    const { provider } = setup();
+    const updates: string[] = [];
+    const previews: Array<Record<string, unknown>> = [];
+    const previewContext: FabricInvocationContext = {
+      ...context,
+      update(message) {
+        updates.push(message);
+      },
+      attachPreview(preview) {
+        previews.push(preview as Record<string, unknown>);
+      },
+    };
+    const handle = await provider.invoke(
+      "spawn",
+      { task: "return a short result", name: "wait-preview-agent", transport: "process" },
+      previewContext,
+    ) as { id: string; name: string };
+
+    await provider.invoke("wait", { id: handle.id }, previewContext);
+
+    expect(updates.some((message) => message.startsWith("Agent wait-preview-agent:"))).toBe(true);
+    expect(updates.join("\n")).not.toContain(handle.id.slice(0, 8));
+    expect(previews.at(-1)).toMatchObject({
+      kind: "fabric-agent-tools",
+      id: handle.id,
+      name: "wait-preview-agent",
+      status: "completed",
+      owner: "agent",
+    });
+  });
+
   it("attaches the final preview for actors that settle before the first poll", async () => {
     const { provider } = setup();
     const actor = (await provider.invoke("create", createRequest, context)) as { id: string };

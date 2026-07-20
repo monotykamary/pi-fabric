@@ -1621,6 +1621,17 @@ describe("Fabric dynamic UI", () => {
   });
 
   it("lazy-loads actor transcript pages and toggles tool details with the native binding", () => {
+    const nestedSuccessBackground = "\x1b[48;2;10;10;10m";
+    const nestedErrorBackground = "\x1b[48;2;20;10;10m";
+    const dashboardTheme = {
+      ...theme,
+      getFgAnsi: (color: string) => color === "toolDiffAdded"
+        ? "\x1b[38;2;80;200;120m"
+        : "\x1b[38;2;220;90;100m",
+      getBgAnsi: (color: string) => color === "toolErrorBg"
+        ? nestedErrorBackground
+        : nestedSuccessBackground,
+    } as unknown as Theme;
     const actorTranscript = vi.fn(() => ({
       truncated: true,
       hasMore: true,
@@ -1638,6 +1649,17 @@ describe("Fabric dynamic UI", () => {
           },
           text: "editing actor source",
         },
+        {
+          id: "actor-grep",
+          kind: "tool" as const,
+          label: "grep",
+          toolName: "grep",
+          status: "completed" as const,
+          args: { pattern: "actorValue", path: "src", literal: true },
+          result: {
+            content: [{ type: "text", text: "src/actor.ts:1: const actorValue = true;" }],
+          },
+        },
       ],
     }));
     const loadOlderTranscript = vi.fn(() => true);
@@ -1645,7 +1667,7 @@ describe("Fabric dynamic UI", () => {
     const loadLatestTranscript = vi.fn(() => true);
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 24 } } as unknown as TUI,
-      theme,
+      dashboardTheme,
       snapshot,
       vi.fn(),
       {
@@ -1676,8 +1698,12 @@ describe("Fabric dynamic UI", () => {
       dashboard.handleInput("\x0f");
       const expanded = dashboard.render(100).join("\n");
       const expandedVisible = expanded.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+      expect(expanded).toContain("\x1b[48;2;");
+      expect(expanded).not.toContain(nestedSuccessBackground);
+      expect(expanded).not.toContain(nestedErrorBackground);
       expect(expandedVisible).toContain("const before = 1;");
       expect(expandedVisible).toContain("const after = 2;");
+      expect(expandedVisible).toContain("const actorValue = true;");
       expect(expandedVisible).toContain("ctrl+o collapse tools");
 
       dashboard.handleInput("g");

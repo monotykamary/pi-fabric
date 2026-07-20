@@ -78,6 +78,84 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines.join("\n")).toContain("21 │");
   });
 
+  it.each([
+    {
+      tool: "read",
+      args: { path: "src/transcript.ts" },
+      output: "export const transcriptBody = true;",
+      expected: "transcriptBody",
+    },
+    {
+      tool: "grep",
+      args: { pattern: "transcriptBody", path: "src", literal: true },
+      output: "src/transcript.ts:1: export const transcriptBody = true;",
+      expected: "transcriptBody",
+    },
+    {
+      tool: "find",
+      args: { pattern: "*.ts", path: "src" },
+      output: "src/transcript.ts",
+      expected: "transcript.ts",
+    },
+    {
+      tool: "ls",
+      args: { path: "src" },
+      output: "transcript.ts",
+      expected: "transcript.ts",
+    },
+    {
+      tool: "bash",
+      args: { command: "printf transcript-body" },
+      output: "transcript-body",
+      expected: "transcript-body",
+    },
+  ])("renders $tool transcript content blocks through the regular core UI", ({
+    tool,
+    args,
+    output,
+    expected,
+  }) => {
+    const rendered = renderCoreToolBody(
+      audit(tool, {
+        args,
+        result: {
+          content: [
+            { type: "text", text: output },
+            { type: "image", data: "ignored" },
+          ],
+          details: {},
+        },
+        success: true,
+      }),
+      theme,
+      options({ expanded: true }),
+    );
+
+    expect(rendered).not.toBeNull();
+    expect(rendered!.lines.join("\n")).toContain(expected);
+    expect(rendered!.lines.join("\n")).not.toContain("No matches found");
+  });
+
+  it("joins multiple transcript text blocks in their original order", () => {
+    const rendered = renderCoreToolBody(
+      audit("read", {
+        args: { path: "src/blocks.ts" },
+        result: {
+          content: [
+            { type: "text", text: "const firstBlock = 1;" },
+            { type: "text", text: "const secondBlock = 2;" },
+          ],
+        },
+        success: true,
+      }),
+      theme,
+      options({ expanded: true }),
+    );
+
+    const text = rendered!.lines.join("\n");
+    expect(text.indexOf("firstBlock")).toBeLessThan(text.indexOf("secondBlock"));
+  });
+
   it("renders write result diffs with summaries, gutters, word emphasis, and full-row backgrounds", () => {
     const rendered = renderCoreToolBody(
       audit("write", {

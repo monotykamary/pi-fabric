@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "pi-code-previews";
-import { getKeybindings, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import {
+  getKeybindings,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+  type Component,
+} from "@earendil-works/pi-tui";
 import { highlightCode, languageFromPath } from "./highlight.js";
 import { headlineArg } from "../core/call-preview.js";
 import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
@@ -72,6 +78,7 @@ class BoundedLineList implements Component {
     readonly lines: string[],
     private readonly theme?: Theme,
     private readonly diffIntensity: DiffBackgroundIntensity = "off",
+    private readonly wrapLineIndexes?: ReadonlySet<number>,
   ) {}
 
   render(width: number): string[] {
@@ -79,10 +86,20 @@ class BoundedLineList implements Component {
     if (width <= 0) return this.#cache(width, []);
     const diffBackground = createDiffBackgroundResolver(this.theme, this.diffIntensity);
     const rows: string[] = [];
-    for (const rawLine of this.lines) {
+    for (let lineIndex = 0; lineIndex < this.lines.length; lineIndex++) {
+      const rawLine = this.lines[lineIndex]!;
       const { kind, line } = parseMarkedDiffLine(rawLine);
       if (!kind) {
-        rows.push(truncateBoundedLine(line, width));
+        if (this.wrapLineIndexes?.has(lineIndex)) {
+          const continuationIndent = width > 2 ? "  " : "";
+          const wrapped = wrapTextWithAnsi(
+            line,
+            Math.max(1, width - visibleWidth(continuationIndent)),
+          );
+          rows.push(
+            ...wrapped.map((row, index) => index === 0 ? row : continuationIndent + row),
+          );
+        } else rows.push(truncateBoundedLine(line, width));
         continue;
       }
       const pipe = line.indexOf("│ ");
@@ -119,10 +136,33 @@ export const renderBoundedLines = (
   lines: string[],
   theme?: Theme,
   diffIntensity: DiffBackgroundIntensity = "off",
-): Component => new BoundedLineList(lines, theme, diffIntensity);
+  wrapLineIndexes?: ReadonlySet<number>,
+): Component => new BoundedLineList(lines, theme, diffIntensity, wrapLineIndexes);
 
 export const fabricMulticallCallLimit = (expanded: boolean): number =>
   expanded ? EXPANDED_MULTICALL_LIMIT : COLLAPSED_MULTICALL_LIMIT;
+
+const visibleMulticallAudits = (
+  audits: FabricRenderAudit[],
+  expanded: boolean,
+): Array<{ audit: FabricRenderAudit; auditIndex: number }> => {
+  const limit = fabricMulticallCallLimit(expanded);
+  if (expanded || audits.length <= limit) {
+    return audits.slice(0, limit).map((audit, auditIndex) => ({ audit, auditIndex }));
+  }
+  const active = audits
+    .map((audit, auditIndex) => ({ audit, auditIndex }))
+    .filter(({ audit }) => audit.success === undefined);
+  const selected = new Set(
+    active.slice(-limit).map(({ auditIndex }) => auditIndex),
+  );
+  for (let auditIndex = 0; auditIndex < audits.length && selected.size < limit; auditIndex++) {
+    if (!selected.has(auditIndex)) selected.add(auditIndex);
+  }
+  return [...selected]
+    .sort((left, right) => left - right)
+    .map((auditIndex) => ({ audit: audits[auditIndex]!, auditIndex }));
+};
 
 /** Render the "keybinding to expand" hint, mirroring pi core's native tool previews. */
 export function expandHint(theme: Theme): string {
@@ -374,9 +414,11 @@ const providerCallDetail = (
   tool: string,
   args: Record<string, unknown>,
   result: unknown,
+  preview: unknown,
 ): string => {
   if (provider === "agents") {
     const name = argString(args, "name");
+    const previewName = isFabricNestedToolPreview(preview) ? preview.name : undefined;
     const id = shortIdOf(args.id);
     const message = argString(args, "message");
     const task = argString(args, "task");
@@ -390,15 +432,15 @@ const providerCallDetail = (
       case "status":
       case "actorStatus":
       case "messages":
-        return id ?? name ?? "";
+        return previewName ?? name ?? id ?? "";
       case "ask":
       case "tell":
-        return [id ?? name, message ? truncateOneLine(message, 48) : ""]
+        return [previewName ?? name ?? id, message ? truncateOneLine(message, 48) : ""]
           .filter(Boolean)
           .join(" ");
       case "run":
       case "spawn":
-        return name ?? (task ? truncateOneLine(task, 64) : "");
+        return name ?? (task ? truncateOneLine(task, 64) : previewName ?? "");
       case "actors":
       case "list":
         return countOf(result);
@@ -454,7 +496,7 @@ export function nestedCallTitle(
   const tool = audit.tool ?? ref.split(".")[1] ?? ref;
   const title = theme.fg("toolTitle", theme.bold(tool));
   const args = audit.args ?? {};
-  const providerDetail = providerCallDetail(provider, tool, args, audit.result);
+  const providerDetail = providerCallDetail(provider, tool, args, audit.result, audit.preview);
   if (providerDetail) return `${title} ${theme.fg("accent", providerDetail)}`;
   const command = argString(args, "command");
   if (command) {
@@ -509,6 +551,7 @@ export const renderNestedAgentToolLines = (
   theme: Theme,
   options: {
     expanded: boolean;
+    compact?: boolean | undefined;
     showTools?: boolean | undefined;
     core?: { cwd: string; settings: CodePreviewSettings } | undefined;
     invalidate?: (() => void) | undefined;
@@ -517,31 +560,39 @@ export const renderNestedAgentToolLines = (
   if (!isFabricNestedToolPreview(audit.preview)) return [];
   const rawPreviewText = safeTerminalText(audit.preview.text ?? "").trim();
   const responseLines = rawPreviewText
-    ? rawPreviewText.split("\n").flatMap((line) => {
-        const normalized = line.replace(/\s+/g, " ").trim();
-        if (!normalized) return [""];
-        const codePoints = Array.from(normalized);
-        const chunks: string[] = [];
-        for (let offset = 0; offset < codePoints.length; offset += AGENT_RESPONSE_LINE_CODE_POINTS) {
-          chunks.push(codePoints.slice(offset, offset + AGENT_RESPONSE_LINE_CODE_POINTS).join(""));
-        }
-        return chunks;
-      })
+    ? options.compact
+      ? [rawPreviewText.replace(/\s+/g, " ").trim()]
+      : rawPreviewText.split("\n").flatMap((line) => {
+          const normalized = line.replace(/\s+/g, " ").trim();
+          if (!normalized) return [""];
+          const codePoints = Array.from(normalized);
+          const chunks: string[] = [];
+          for (
+            let offset = 0;
+            offset < codePoints.length;
+            offset += AGENT_RESPONSE_LINE_CODE_POINTS
+          ) {
+            chunks.push(codePoints.slice(offset, offset + AGENT_RESPONSE_LINE_CODE_POINTS).join(""));
+          }
+          return chunks;
+        })
     : [];
   const tools = options.showTools === false ? [] : audit.preview.tools;
   const runningTool = tools.slice().reverse().find((entry) => entry.status === "running");
   const latestTool = tools.at(-1);
+  const collapsedRunningTool = !options.expanded ? runningTool : undefined;
+  const visibleResponseLines = collapsedRunningTool ? [] : responseLines;
   const visibleTools = options.expanded
     ? tools
-    : runningTool
-      ? [runningTool]
+    : collapsedRunningTool
+      ? [collapsedRunningTool]
       : responseLines.length === 0 && latestTool
         ? [latestTool]
         : [];
   const chevron = theme.fg("dim", "›");
   const lines: string[] = [];
 
-  for (const responseLine of responseLines) {
+  for (const responseLine of visibleResponseLines) {
     const text = theme.fg("toolOutput", responseLine || " ");
     lines.push(lines.length === 0 ? `${chevron} ${text}` : `  ${text}`);
   }
@@ -575,6 +626,7 @@ export const renderNestedAgentToolLines = (
       settings: options.core.settings,
       expanded: true,
       maxLines: EXPANDED_AGENT_TOOL_BODY_LINES,
+      toolCallBackground: false,
       ...(options.invalidate ? { invalidate: options.invalidate } : {}),
     });
     if (!body) continue;
@@ -627,15 +679,15 @@ export const renderFabricMulticallPartial = (
   if (progress) header += theme.fg("dim", ` · ${progress}`);
 
   const rows = [header];
+  const wrapLineIndexes = input.expanded ? new Set<number>() : undefined;
   if (input.phases.length > 0) {
     rows.push(theme.fg("dim", input.phases.map((phase) => `◆ ${phase}`).join("  ")));
   }
 
-  const callLimit = fabricMulticallCallLimit(input.expanded);
-  const callsShown = input.audits.slice(0, callLimit);
-  for (let index = 0; index < callsShown.length; index++) {
-    const audit = callsShown[index]!;
-    if (input.expanded && index > 0) rows.push("");
+  const callsShown = visibleMulticallAudits(input.audits, input.expanded);
+  for (let visibleIndex = 0; visibleIndex < callsShown.length; visibleIndex++) {
+    const { audit, auditIndex } = callsShown[visibleIndex]!;
+    if (input.expanded && visibleIndex > 0) rows.push("");
     const glyph =
       audit.success === undefined
         ? theme.fg("warning", "◐")
@@ -644,6 +696,7 @@ export const renderFabricMulticallPartial = (
           : theme.fg("dim", "›");
     const nested = renderNestedAgentToolLines(audit, theme, {
       expanded: input.expanded,
+      compact: !input.expanded,
       showTools: input.showNestedToolCalls,
       core: input.core,
       ...(invalidate ? { invalidate } : {}),
@@ -654,8 +707,9 @@ export const renderFabricMulticallPartial = (
     } else if (nested[0]) {
       callRow += ` ${nested[0]}`;
     }
+    if (nested.length > 0) wrapLineIndexes?.add(rows.length);
     rows.push(callRow);
-    if (audit.success !== false && input.preview?.auditIndex === index) {
+    if (audit.success !== false && input.preview?.auditIndex === auditIndex) {
       for (const line of input.preview.body.split("\n")) rows.push(`  ${line}`);
       if (input.preview.hidden > 0) {
         rows.push(
@@ -666,7 +720,12 @@ export const renderFabricMulticallPartial = (
         );
       }
     }
-    if (audit.success !== false && nested.length > 1) rows.push(...nested.slice(1));
+    if (audit.success !== false && nested.length > 1) {
+      for (const line of nested.slice(1)) {
+        wrapLineIndexes?.add(rows.length);
+        rows.push(line);
+      }
+    }
   }
 
   const callsHidden = input.audits.length - callsShown.length;
@@ -677,7 +736,12 @@ export const renderFabricMulticallPartial = (
         (input.expanded ? "" : theme.fg("dim", " · ") + expandHint(theme)),
     );
   }
-  return renderBoundedLines(rows, theme, input.core?.settings.diffIntensity ?? "off");
+  return renderBoundedLines(
+    rows,
+    theme,
+    input.core?.settings.diffIntensity ?? "off",
+    wrapLineIndexes,
+  );
 };
 
 export interface FabricCoreToolPreview extends FabricRenderAudit {
@@ -763,6 +827,51 @@ export const restoreFabricCoreToolPreviews = (
           ? { resultTruncated: preview.resultTruncated }
           : {}),
     };
+  });
+};
+
+export interface FabricAgentPreview {
+  ref: string;
+  id: string;
+  preview: unknown;
+}
+
+export const captureFabricAgentPreviews = (
+  audits: FabricRenderAudit[],
+  previous: FabricAgentPreview[] = [],
+): FabricAgentPreview[] => {
+  const captured = previous.slice();
+  const indexes = new Map(
+    captured.map((preview, index) => [`${preview.ref}\0${preview.id}`, index]),
+  );
+  for (const audit of audits) {
+    if (!isFabricNestedToolPreview(audit.preview)) continue;
+    const entry = { ref: audit.ref, id: audit.preview.id, preview: audit.preview };
+    const key = `${entry.ref}\0${entry.id}`;
+    const index = indexes.get(key);
+    if (index === undefined) {
+      indexes.set(key, captured.length);
+      captured.push(entry);
+    } else captured[index] = entry;
+  }
+  return captured;
+};
+
+export const restoreFabricAgentPreviews = (
+  audits: FabricRenderAudit[],
+  previews: FabricAgentPreview[],
+): FabricRenderAudit[] => {
+  const remaining = previews.slice();
+  return audits.map((audit) => {
+    if (isFabricNestedToolPreview(audit.preview)) return audit;
+    const requestedId = argString(audit.args ?? {}, "id");
+    let index = requestedId
+      ? remaining.findIndex((preview) => preview.ref === audit.ref && preview.id === requestedId)
+      : -1;
+    if (index < 0) index = remaining.findIndex((preview) => preview.ref === audit.ref);
+    if (index < 0) return audit;
+    const preview = remaining.splice(index, 1)[0];
+    return preview ? { ...audit, preview: preview.preview } : audit;
   });
 };
 

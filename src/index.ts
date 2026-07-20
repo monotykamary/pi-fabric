@@ -29,6 +29,7 @@ import { FabricState } from "./fabric-state.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
+  captureFabricAgentPreviews,
   captureFabricCallHeadlinePreviews,
   captureFabricCoreToolPreviews,
   captureFabricWritePreviews,
@@ -42,11 +43,13 @@ import {
   renderFabricMulticallPartial,
   renderFabricWriteArgumentPreview,
   renderNestedAgentToolLines,
+  restoreFabricAgentPreviews,
   restoreFabricCallHeadlinePreviews,
   restoreFabricCoreToolPreviews,
   restoreFabricWritePreviews,
   restoreLegacyBashCommands,
   safeTerminalText,
+  type FabricAgentPreview,
   type FabricCallHeadlinePreview,
   type FabricCoreToolPreview,
   type FabricRenderAudit,
@@ -80,6 +83,7 @@ type FabricRendererState = {
   fabricWritePreviews?: FabricWritePreview[];
   fabricCoreToolPreviews?: FabricCoreToolPreview[];
   fabricCallHeadlinePreviews?: FabricCallHeadlinePreview[];
+  fabricAgentPreviews?: FabricAgentPreview[];
   fabricResultRowBalance?: ResultRowBalance;
 };
 
@@ -285,6 +289,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             audits,
             rendererState.fabricCoreToolPreviews,
           );
+          rendererState.fabricAgentPreviews = captureFabricAgentPreviews(
+            audits,
+            rendererState.fabricAgentPreviews,
+          );
           const headlinePreviews = captureFabricCallHeadlinePreviews(audits);
           if (headlinePreviews.length > 0) {
             rendererState.fabricCallHeadlinePreviews = headlinePreviews;
@@ -298,6 +306,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               rendererState.fabricCoreToolPreviews,
             );
           }
+          if (rendererState.fabricAgentPreviews) {
+            audits = restoreFabricAgentPreviews(audits, rendererState.fabricAgentPreviews);
+          }
           if (rendererState.fabricCallHeadlinePreviews) {
             audits = restoreFabricCallHeadlinePreviews(
               audits,
@@ -310,7 +321,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         }
         const phases = details.phases;
         const nl = "\n";
+        const allRowIndexes = (lines: string[], enabled: boolean): ReadonlySet<number> | undefined =>
+          enabled ? new Set(lines.map((_line, index) => index)) : undefined;
         const corePreviewContext = { cwd: context.cwd, settings: codePreviewSettings };
+        const showNestedToolCalls = state.initialized
+          ? state.config.ui.showNestedToolCalls
+          : DEFAULT_FABRIC_CONFIG.ui.showNestedToolCalls;
 
         const renderBody = (
           audit: FabricRenderAudit,
@@ -388,9 +404,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
                 text += nl + theme.fg("dim", safeTerminalText(progress));
               }
             }
-            const showNestedToolCalls = state.initialized
-              ? state.config.ui.showNestedToolCalls
-              : DEFAULT_FABRIC_CONFIG.ui.showNestedToolCalls;
             const nested = renderNestedAgentToolLines(audit, theme, {
               expanded,
               showTools: showNestedToolCalls,
@@ -403,8 +416,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               else text = `${text.slice(0, firstBreak)} ${nested[0]}${text.slice(firstBreak)}`;
               if (nested.length > 1) text += nl + nested.slice(1).join(nl);
             }
+            const textLines = text.split(nl);
             return trackRows(
-              renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+              renderBoundedLines(
+                textLines,
+                theme,
+                codePreviewSettings.diffIntensity,
+                allRowIndexes(textLines, nested.length > 0),
+              ),
             );
           }
           let preview: { auditIndex: number; body: string; hidden: number } | undefined;
@@ -426,9 +445,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
                 expanded,
                 preview,
                 core: corePreviewContext,
-                showNestedToolCalls: state.initialized
-                  ? state.config.ui.showNestedToolCalls
-                  : DEFAULT_FABRIC_CONFIG.ui.showNestedToolCalls,
+                showNestedToolCalls,
               },
               theme,
               context?.invalidate,
@@ -481,15 +498,25 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         if (audits.length === 1) {
           const audit = audits[0]!;
           let text = nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext);
+          const nested = renderNestedAgentToolLines(audit, theme, {
+            expanded,
+            showTools: showNestedToolCalls,
+            core: corePreviewContext,
+            ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
+          });
           if (audit.success === false) {
             if (audit.error) {
               text += nl + theme.fg("error", safeTerminalText(audit.error));
             }
             return trackRows(new Text(text, 0, 0));
           }
+          if (nested[0]) {
+            text += ` ${nested[0]}`;
+            if (nested.length > 1) text += nl + nested.slice(1).join(nl);
+          }
           const limit =
             expanded || coreToolRendererEnabled(audit, codePreviewSettings) ? 200 : 12;
-          const rendered = renderBody(audit, limit);
+          const rendered = nested.length > 0 ? null : renderBody(audit, limit);
           if (rendered) {
             text += nl + rendered.body;
             if (rendered.hidden > 0) {
@@ -504,7 +531,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
             !coreToolPreviewEnabled(audit, codePreviewSettings)
           ) {
             text += nl + theme.fg("muted", "╰─ ") + expandHint(theme);
-          } else if (output && !isCoreToolAudit(audit)) {
+          } else if (nested.length === 0 && output && !isCoreToolAudit(audit)) {
             const lines = safeTerminalText(output).split(nl);
             const outLimit = expanded ? Math.min(lines.length, 200) : 12;
             const outShown = lines.slice(0, outLimit);
@@ -514,8 +541,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
               if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
             }
           }
+          const textLines = text.split(nl);
           return trackRows(
-            renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+            renderBoundedLines(
+              textLines,
+              theme,
+              codePreviewSettings.diffIntensity,
+              allRowIndexes(textLines, nested.length > 0),
+            ),
           );
         }
 
@@ -555,36 +588,54 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           }
         }
         let firstNested = true;
+        const textRows = text.split(nl);
+        const agentWrapLineIndexes = new Set<number>();
         for (let index = 0; index < callsShown.length; index++) {
           const audit = callsShown[index]!;
-          if (expanded && !firstNested) text += nl;
+          if (expanded && !firstNested) textRows.push("");
           firstNested = false;
           const glyph =
             audit.success === false ? theme.fg("error", "✗") : theme.fg("dim", "›");
-          text += nl + `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
+          const nested = renderNestedAgentToolLines(audit, theme, {
+            expanded,
+            compact: !expanded,
+            showTools: showNestedToolCalls,
+            core: corePreviewContext,
+            ...(context?.invalidate ? { invalidate: context.invalidate } : {}),
+          });
+          let callRow = `${glyph} ${nestedCallTitle(audit, theme, context?.invalidate, corePreviewContext)}`;
+          if (nested[0] && audit.success !== false) {
+            callRow += ` ${nested[0]}`;
+            if (expanded) agentWrapLineIndexes.add(textRows.length);
+          }
+          textRows.push(callRow);
           if (audit.success === false && audit.error) {
-            text += nl + `  ${theme.fg("error", safeTerminalText(audit.error))}`;
-          } else if (expanded) {
-            const rendered = renderBody(audit, 40);
-            if (rendered) {
-              text += nl + rendered.body;
-              if (rendered.hidden > 0) {
-                text += nl + theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`);
+            textRows.push(`  ${theme.fg("error", safeTerminalText(audit.error))}`);
+          } else {
+            if (nested.length > 1) {
+              for (const line of nested.slice(1)) {
+                agentWrapLineIndexes.add(textRows.length);
+                textRows.push(line);
               }
             }
-          } else if (collapsedPreview?.auditIndex === index) {
-            text += nl + collapsedPreview.body
-              .split(nl)
-              .map((line) => `  ${line}`)
-              .join(nl);
-            if (collapsedPreview.hidden > 0) {
-              text += nl + theme.fg(
-                "dim",
-                `  … ${countLabel(collapsedPreview.hidden, "line")}`,
-              );
+            const rendered = nested.length === 0 && expanded ? renderBody(audit, 40) : null;
+            if (rendered) {
+              textRows.push(...rendered.body.split(nl));
+              if (rendered.hidden > 0) {
+                textRows.push(theme.fg("dim", `… ${countLabel(rendered.hidden, "line")}`));
+              }
+            } else if (nested.length === 0 && collapsedPreview?.auditIndex === index) {
+              textRows.push(...collapsedPreview.body.split(nl).map((line) => `  ${line}`));
+              if (collapsedPreview.hidden > 0) {
+                textRows.push(theme.fg(
+                  "dim",
+                  `  … ${countLabel(collapsedPreview.hidden, "line")}`,
+                ));
+              }
             }
           }
         }
+        text = textRows.join(nl);
         if (callsHidden > 0) {
           text += nl + theme.fg("dim", `… ${countLabel(callsHidden, "nested call")} hidden`);
           if (!expanded) text += theme.fg("dim", " · ") + expandHint(theme);
@@ -607,7 +658,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           }
         }
         return trackRows(
-          renderBoundedLines(text.split(nl), theme, codePreviewSettings.diffIntensity),
+          renderBoundedLines(
+            text.split(nl),
+            theme,
+            codePreviewSettings.diffIntensity,
+            agentWrapLineIndexes,
+          ),
         );
       },
       async execute(toolCallId, params, signal, onUpdate, context) {

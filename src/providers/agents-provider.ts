@@ -645,7 +645,8 @@ const waitWithProgress = async (
       attachAgentToolPreview(status, transcripts, context, nestedToolsEnabled);
       const currentTool =
         "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
-      context.update(`Agent ${id.slice(0, 8)}: ${status.status}${currentTool}`);
+      const displayName = status.actorName ?? status.name;
+      context.update(`Agent ${displayName}: ${status.status}${currentTool}`);
       if ("usage" in status) {
         context.activity?.({
           type: "metrics",
@@ -664,7 +665,10 @@ const waitWithProgress = async (
     return settled;
   } finally {
     try {
-      attachAgentToolPreview(manager.status(id), transcripts, context, nestedToolsEnabled);
+      const status = manager.status(id);
+      attachAgentToolPreview(status, transcripts, context, nestedToolsEnabled);
+      const displayName = status.actorName ?? status.name;
+      context.update(`Agent ${displayName}: ${status.status}`);
     } catch {
       // The run may have been cleaned up during cancellation.
     }
@@ -675,6 +679,7 @@ const waitWithActorProgress = async (
   manager: SubagentManager,
   transcripts: AgentTranscriptReader,
   actorId: string,
+  actorName: string,
   result: Promise<FabricActorMessage>,
   context: FabricInvocationContext,
   nestedToolsEnabled: () => boolean,
@@ -693,8 +698,8 @@ const waitWithActorProgress = async (
         worker && "currentTool" in worker && worker.currentTool ? ` · ${worker.currentTool}` : "";
       context.update(
         worker
-          ? `Actor ${actorId.slice(0, 8)}: ${worker.status}${currentTool}`
-          : `Actor ${actorId.slice(0, 8)}: queued`,
+          ? `Actor ${actorName}: ${worker.status}${currentTool}`
+          : `Actor ${actorName}: queued`,
       );
     });
   } finally {
@@ -755,7 +760,7 @@ export class AgentsProvider implements FabricProvider {
           name: handle.name,
         });
         context.update(
-          `Agent ${handle.id.slice(0, 8)} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
+          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
         return waitWithProgress(
           this.manager,
@@ -778,7 +783,7 @@ export class AgentsProvider implements FabricProvider {
           name: handle.name,
         });
         context.update(
-          `Agent ${handle.id.slice(0, 8)} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
+          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
         );
         return handle;
       }
@@ -853,6 +858,7 @@ export class AgentsProvider implements FabricProvider {
           this.manager,
           this.#transcripts,
           actor.id,
+          actor.name,
           this.actorManager.ask(actor.id, String(args.message), args.data, context.signal),
           context,
           this.nestedToolsEnabled,

@@ -132,11 +132,27 @@ const normalizedResult = (audit: FabricRenderAudit): unknown => {
   return preview && "result" in preview ? preview.result : audit.result;
 };
 
+const contentOutput = (value: unknown): string | undefined => {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value)) return undefined;
+  const text = value
+    .flatMap((part) => {
+      const record = recordOf(part);
+      return record?.type === "text" && typeof record.text === "string"
+        ? [record.text]
+        : [];
+    })
+    .join("\n");
+  return text || undefined;
+};
+
 const resultOutput = (audit: FabricRenderAudit): string | undefined => {
   const result = normalizedResult(audit);
   if (typeof result === "string") return result;
   const record = recordOf(result);
-  return stringOf(record?.output) ?? stringOf(record?.text);
+  return stringOf(record?.output)
+    ?? stringOf(record?.text)
+    ?? contentOutput(record?.content);
 };
 
 const resultDetails = (audit: FabricRenderAudit): Record<string, unknown> | undefined => {
