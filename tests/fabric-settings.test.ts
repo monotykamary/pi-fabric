@@ -6,6 +6,7 @@ import {
   executorMemoryLimitOptions,
   FabricSettingsComponent,
   parseBudgetValue,
+  parseFormattedNumericValue,
 } from "../src/ui/settings.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 
@@ -164,6 +165,66 @@ describe("FabricSettingsComponent", () => {
     const lines = subagents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Recursion budget");
     expect(lines).toContain("$0.25");
+  });
+
+  it("persists formatted numeric settings while keeping their normalized labels", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const items = buildFabricSettingsItems(
+      theme,
+      structuredClone(DEFAULT_FABRIC_CONFIG),
+      (id, value) => applied.push({ id, value }),
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const executor = items.find((item) => item.id === "executor")!;
+    const section = executor.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex(
+      (item: { id: string }) => item.id === "executor.memoryLimitBytes",
+    );
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({
+      value: String(128 * 1024 * 1024),
+      label: "128 MB",
+    });
+
+    expect(applied.at(-1)).toEqual({
+      id: "executor.memoryLimitBytes",
+      value: 128 * 1024 * 1024,
+    });
+    expect(list.items[list.selectedIndex].currentValue).toBe("128 MB");
+    expect(section.render(100).join("\n")).not.toContain("134217728");
+  });
+
+  it("persists labeled thinking levels using their canonical values", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const items = buildFabricSettingsItems(
+      theme,
+      structuredClone(DEFAULT_FABRIC_CONFIG),
+      (id, value) => applied.push({ id, value }),
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const subagents = items.find((item) => item.id === "subagents")!;
+    const section = subagents.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    list.selectedIndex = list.items.findIndex(
+      (item: { id: string }) => item.id === "subagents.thinking",
+    );
+    list.activateItem();
+    list.submenuComponent.selectList.onSelect({ value: "high", label: "High" });
+
+    expect(applied.at(-1)).toEqual({ id: "subagents.thinking", value: "high" });
+    expect(list.items[list.selectedIndex].currentValue).toBe("High");
+  });
+
+  it("parses every formatted numeric settings style", () => {
+    expect(parseFormattedNumericValue("128 MB")).toBe(128 * 1024 * 1024);
+    expect(parseFormattedNumericValue("250ms")).toBe(250);
+    expect(parseFormattedNumericValue("2m")).toBe(120_000);
+    expect(parseFormattedNumericValue("$0.25")).toBe(0.25);
+    expect(parseFormattedNumericValue("500k")).toBe(500_000);
+    expect(parseFormattedNumericValue("2M")).toBe(2_000_000);
+    expect(parseFormattedNumericValue("2,000,000")).toBe(2_000_000);
+    expect(parseFormattedNumericValue("Off")).toBe(0);
   });
 
   it("parses currency-formatted budget values back to numbers", () => {

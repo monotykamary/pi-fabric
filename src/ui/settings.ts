@@ -90,11 +90,13 @@ const formatDebounce = (ms: number): string =>
   ms === 0 ? "Off" : ms < 1_000 ? `${ms}ms` : `${ms / 1_000}s`;
 
 const formatMs = (ms: number): string =>
-  ms < 60_000
-    ? `${Math.round(ms / 1_000)}s`
-    : ms < 3_600_000
-      ? `${ms / 60_000}m`
-      : `${ms / 3_600_000}h`;
+  ms < 1_000
+    ? `${ms}ms`
+    : ms < 60_000
+      ? `${ms / 1_000}s`
+      : ms < 3_600_000
+        ? `${ms / 60_000}m`
+        : `${ms / 3_600_000}h`;
 
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 * 1024
@@ -159,25 +161,42 @@ export const parseBudgetValue = (value: string): number => {
   return Number.isFinite(digits) ? digits : 0;
 };
 
+export const parseFormattedNumericValue = (value: string): number => {
+  const normalized = value.trim();
+  if (normalized === "Off") return 0;
+  if (normalized.startsWith("$")) return parseBudgetValue(normalized);
+
+  const bytes = normalized.match(/^([0-9]+(?:\.[0-9]+)?) (KB|MB|GB)$/);
+  if (bytes) {
+    const amount = Number(bytes[1]);
+    const units = { KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 } as const;
+    return Math.round(amount * units[bytes[2] as keyof typeof units]);
+  }
+
+  const duration = normalized.match(/^([0-9]+(?:\.[0-9]+)?)(ms|s|m|h)$/);
+  if (duration) {
+    const amount = Number(duration[1]);
+    const units = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
+    return Math.round(amount * units[duration[2] as keyof typeof units]);
+  }
+
+  const tokens = normalized.match(/^([0-9]+(?:\.[0-9]+)?)(k|M)$/);
+  if (tokens) return Math.round(Number(tokens[1]) * (tokens[2] === "M" ? 1_000_000 : 1_000));
+  return Number(normalized.replaceAll(",", ""));
+};
+
 const coerceValue = (id: string, value: string, config: FabricConfig): unknown => {
   const current = getPath(config, id);
   if (typeof current === "boolean") return value === "true";
-  if (typeof current === "number") {
-    // budgetUsd is the only currency field; its submenu values are formatted
-    // as "$0.10" / "Off", so strip the currency formatting before coercing.
-    if (id === "subagents.budgetUsd") return parseBudgetValue(value);
-    if (id === "ui.nestedToolDebounceMs") {
-      if (value === "Off") return 0;
-      const parsed = Number.parseFloat(value);
-      return value.endsWith("s") && !value.endsWith("ms") ? parsed * 1_000 : parsed;
-    }
-    return Number(value);
-  }
+  if (typeof current === "number") return parseFormattedNumericValue(value);
   // The model picker stores the canonical "provider/id" string, or "Inherit"
   // for no override; persist an empty string so normalizeFabricConfig drops it
   // and the subagent inherits the host's default model.
   if (id === "subagents.model" || id === "subagents.claude.model") {
     return value === INHERIT_VALUE ? "" : value;
+  }
+  if (id === "subagents.thinking") {
+    return THINKING_LEVELS.find((level) => thinkingLabel(level) === value) ?? value;
   }
   return value;
 };
@@ -257,7 +276,7 @@ const numericSubmenu = (
     description,
     options,
     selectedValue,
-    (value) => done(value),
+    (value) => done(options.find((option) => option.value === value)?.label ?? value),
     () => done(),
   );
 };
@@ -364,7 +383,7 @@ const thinkingSubmenu = (
     "Reasoning effort forwarded to spawned subagents and actors when a call does not specify one. The level is clamped to each model's supported levels (next highest if unsupported).",
     options,
     currentValue,
-    (value) => done(value),
+    (value) => done(options.find((option) => option.value === value)?.label ?? value),
     () => done(),
   );
 };
@@ -547,7 +566,7 @@ export const buildFabricSettingsItems = (
                 )(currentValue, done),
             },
           ),
-          setting("executor.maxOutputChars", "Max output chars", String(config.executor.maxOutputChars), {
+          setting("executor.maxOutputChars", "Max output chars", config.executor.maxOutputChars.toLocaleString(), {
             description: "Character cap applied to the final fabric_exec return value shown to the model.",
             submenu: numericSubmenu(
               theme,
@@ -565,7 +584,7 @@ export const buildFabricSettingsItems = (
           setting(
             "executor.maxNestedResultChars",
             "Max nested result chars",
-            String(config.executor.maxNestedResultChars),
+            config.executor.maxNestedResultChars.toLocaleString(),
             {
               description: "Character cap applied to results returned by nested tool calls inside the sandbox.",
               submenu: numericSubmenu(
@@ -951,7 +970,7 @@ export const buildFabricSettingsItems = (
               "Transcript entries forwarded to actors as context.",
             ),
           }),
-          setting("mesh.eventContextChars", "Event context chars", String(config.mesh.eventContextChars), {
+          setting("mesh.eventContextChars", "Event context chars", config.mesh.eventContextChars.toLocaleString(), {
             description: "Character cap applied to host events dispatched to actors.",
             submenu: numericSubmenu(
               theme,
