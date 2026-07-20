@@ -233,6 +233,17 @@ export class FabricState {
     this.#subagents = new SubagentManager(context.cwd, subagentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
       mainAgentId,
+      preparePiModel: async (modelKey) => {
+        const separator = modelKey.indexOf("/");
+        if (separator <= 0 || separator === modelKey.length - 1) return;
+        const model = context.modelRegistry.find(
+          modelKey.slice(0, separator),
+          modelKey.slice(separator + 1),
+        );
+        if (!model) return;
+        const auth = await context.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) throw new Error(auth.error);
+      },
       onBackgroundComplete: (result) => {
         const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
         const duration =

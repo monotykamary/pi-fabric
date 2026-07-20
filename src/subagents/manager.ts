@@ -35,6 +35,7 @@ import type {
   SubagentSteerResult,
   SubagentTransportAdapter,
   SubagentTransportHandle,
+  SubagentTransportLaunch,
 } from "./types.js";
 import { WorktreeManager } from "./worktree-manager.js";
 import {
@@ -46,7 +47,11 @@ import {
 } from "./budget-ledger.js";
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
-import { SUBAGENT_STATUS_POLL_INTERVAL_MS } from "./constants.js";
+import {
+  SUBAGENT_STARTUP_MAX_ATTEMPTS,
+  SUBAGENT_STARTUP_RETRY_BASE_DELAY_MS,
+  SUBAGENT_STATUS_POLL_INTERVAL_MS,
+} from "./constants.js";
 const NESTED_SNAPSHOT_POLL_MS = 500;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
 const MAX_NAME_LENGTH = 60;
@@ -83,6 +88,9 @@ interface ManagedSubagent {
   statusFile: string;
   runDirectory: string;
   transport: SubagentTransportHandle;
+  adapter: SubagentTransportAdapter;
+  launch: SubagentTransportLaunch;
+  startupAttempts: number;
   result: Promise<SubagentRunResult> | undefined;
   resolve: ((result: SubagentRunResult) => void) | undefined;
   release(): void;
@@ -272,6 +280,8 @@ export class SubagentManager {
   readonly #mainAgentId: string | undefined;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
+  readonly #preparePiModel: ((model: string) => Promise<void>) | undefined;
+  readonly #piModelPreparations = new Map<string, Promise<void>>();
   readonly #budget: BudgetLedgerState | undefined;
   readonly #budgetOwned: boolean;
   readonly #uiListeners = new Set<() => void>();
@@ -295,6 +305,7 @@ export class SubagentManager {
       fullCodeMode?: boolean;
       mainAgentId?: string;
       onBackgroundComplete?: (result: SubagentRunResult) => void;
+      preparePiModel?: (model: string) => Promise<void>;
     } = {},
   ) {
     this.#semaphore = new Semaphore(config.maxConcurrent);
@@ -308,6 +319,7 @@ export class SubagentManager {
     this.#claudeBinary =
       options.claudeBinary ?? process.env.PI_FABRIC_CLAUDE_BINARY ?? config.claude.binary;
     this.#onBackgroundComplete = options.onBackgroundComplete;
+    this.#preparePiModel = options.preparePiModel;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#mainAgentId =
@@ -328,6 +340,26 @@ export class SubagentManager {
       new HerdrTransport(),
     ];
     this.#transports = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
+  }
+
+  async #prepareModel(model: string): Promise<void> {
+    if (!this.#preparePiModel) return;
+    const separator = model.indexOf("/");
+    const provider = separator > 0 ? model.slice(0, separator) : model;
+    const existing = this.#piModelPreparations.get(provider);
+    if (existing) {
+      await existing;
+      return;
+    }
+    const preparation = this.#preparePiModel(model);
+    this.#piModelPreparations.set(provider, preparation);
+    try {
+      await preparation;
+    } finally {
+      if (this.#piModelPreparations.get(provider) === preparation) {
+        this.#piModelPreparations.delete(provider);
+      }
+    }
   }
 
   subscribeUi(listener: () => void): () => void {
@@ -355,6 +387,7 @@ export class SubagentManager {
     const model =
       request.model ?? (runner === "claude" ? this.config.claude.model : this.config.model);
     if (runner === "claude" && model) normalizeClaudeModel(model);
+    if (runner === "pi" && model) await this.#prepareModel(model);
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
       if (spent >= this.#budget.budget) {
@@ -461,13 +494,14 @@ export class SubagentManager {
         ...(branch ? ["--branch", branch] : []),
         ...(worktree ? ["--worktree", worktree] : []),
       ];
-      const transport = await adapter.launch({
+      const launch: SubagentTransportLaunch = {
         id,
         name,
         cwd: agentCwd,
         workerPath: this.#workerPath,
         workerArguments,
-      });
+      };
+      const transport = await adapter.launch(launch);
       let resolveResult: ((result: SubagentRunResult) => void) | undefined;
       const result = new Promise<SubagentRunResult>((resolve) => {
         resolveResult = resolve;
@@ -487,6 +521,9 @@ export class SubagentManager {
         statusFile,
         runDirectory,
         transport,
+        adapter,
+        launch,
+        startupAttempts: 1,
         result,
         resolve: resolveResult,
         release,
@@ -738,6 +775,54 @@ export class SubagentManager {
     }
   }
 
+  async #retryStartup(
+    managed: ManagedSubagent,
+    record: SubagentRunRecord,
+    deadline: number,
+  ): Promise<boolean> {
+    if (
+      managed.runner !== "pi" ||
+      managed.startupAttempts >= SUBAGENT_STARTUP_MAX_ATTEMPTS ||
+      managed.settled ||
+      this.#closing ||
+      managed.abortSignal?.aborted ||
+      record.status !== "failed" ||
+      record.turns !== 0 ||
+      record.toolCalls !== 0 ||
+      record.usage.input !== 0 ||
+      record.usage.output !== 0 ||
+      record.usage.cacheRead !== 0 ||
+      record.usage.cacheWrite !== 0
+    ) {
+      return false;
+    }
+    const retryDelayMs =
+      SUBAGENT_STARTUP_RETRY_BASE_DELAY_MS * 2 ** (managed.startupAttempts - 1);
+    if (Date.now() + retryDelayMs >= deadline) return false;
+    await this.#waitForTransportExit(managed);
+    await delay(retryDelayMs);
+    if (managed.settled || this.#closing || managed.abortSignal?.aborted) return false;
+    managed.startupAttempts++;
+    try {
+      fs.rmSync(managed.statusFile, { force: true });
+      managed.transport = await managed.adapter.launch(managed.launch);
+      delete managed.latestRecord;
+      delete managed.latestUiRecord;
+      managed.lastLivenessCheckAt = 0;
+      this.#invalidateUiList();
+      return true;
+    } catch (error) {
+      const retryError = error instanceof Error ? error.message : String(error);
+      const failed = {
+        ...record,
+        error: `${record.error ?? "Subagent startup failed"} · retry launch failed: ${retryError}`,
+      };
+      writeRecord(managed.statusFile, failed);
+      managed.latestRecord = failed;
+      return false;
+    }
+  }
+
   async #monitor(managed: ManagedSubagent, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
@@ -761,6 +846,7 @@ export class SubagentManager {
         managed.runnerSessionId = record.runnerSessionId;
       }
       if (record && terminalStatuses.has(record.status)) {
+        if (await this.#retryStartup(managed, record, deadline)) continue;
         this.#settle(managed, this.#withTransportMetadata(record, managed) as SubagentRunResult);
         return;
       }

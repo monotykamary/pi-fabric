@@ -72,6 +72,54 @@ describe("SubagentManager", () => {
     expect(manager.status(result.id).status).toBe("completed");
   });
 
+  it("coalesces concurrent Pi model preparation by provider", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const preparePiModel = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      preparePiModel,
+    });
+    managers.push(manager);
+
+    const results = await Promise.all([
+      manager.run({
+        task: "First prepared child",
+        model: "openai-codex/gpt-first",
+        transport: "process",
+      }),
+      manager.run({
+        task: "Second prepared child",
+        model: "openai-codex/gpt-second",
+        transport: "process",
+      }),
+    ]);
+
+    expect(results.every((result) => result.status === "completed")).toBe(true);
+    expect(preparePiModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a Pi child that fails before its first turn", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Recover startup", transport: "process" });
+
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("startup retry recovered");
+    expect(
+      fs.readFileSync(path.join(manager.runDirectory(result.id)!, "startup-attempts"), "utf8"),
+    ).toBe("2");
+  });
+
   it("keeps full results in the API and compact projections for the dashboard", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
