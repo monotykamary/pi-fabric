@@ -107,6 +107,7 @@ interface FabricUiConfig {
 
 interface FabricCompactionConfig {
   engine: FabricCompactionEngine;
+  targetContextRatio: number;
 }
 
 export interface FabricMeshConfig {
@@ -236,6 +237,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   },
   compaction: {
     engine: "fabric",
+    targetContextRatio: 0.65,
   },
   mesh: {
     enabled: true,
@@ -597,6 +599,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     compaction: {
       engine: compactionEngineValue(compaction.engine, DEFAULT_FABRIC_CONFIG.compaction.engine),
+      targetContextRatio: boundedFloat(
+        compaction.targetContextRatio,
+        DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
+        0.25,
+        0.85,
+      ),
     },
     mesh: {
       enabled: booleanValue(mesh.enabled, DEFAULT_FABRIC_CONFIG.mesh.enabled),

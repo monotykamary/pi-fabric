@@ -976,6 +976,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       state.initialized
         ? state.config.compaction.engine
         : DEFAULT_FABRIC_CONFIG.compaction.engine,
+    getTargetContextRatio: () =>
+      state.initialized
+        ? state.config.compaction.targetContextRatio
+        : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
   });
 
   pi.on("before_agent_start", async (event) => {

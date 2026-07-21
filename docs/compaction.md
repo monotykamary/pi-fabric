@@ -2,9 +2,18 @@
 
 Pi Fabric provides an LLM-free compactor through `session_before_compact`. It is the default engine; set `compaction.engine` to `"pi"` to defer to Pi's compactor.
 
+Fabric targets 65% of the model's advertised context window after compaction by default. This is configurable from `/fabric-settings` or `compaction.targetContextRatio` (bounded to `0.25`–`0.85`):
+
 ```json
-{ "compaction": { "engine": "pi" } }
+{
+  "compaction": {
+    "engine": "fabric",
+    "targetContextRatio": 0.65
+  }
+}
 ```
+
+Use `{ "compaction": { "engine": "pi" } }` to disable the Fabric engine.
 
 ## Invariants
 
@@ -13,13 +22,14 @@ Pi Fabric provides an LLM-free compactor through `session_before_compact`. It is
 3. **Rendered summaries are never semantic input.** `compaction`, branch-summary prose, custom summary prose, and unknown roles produce no normalized events. A valid Fabric branch-summary details envelope may contribute its typed facts; its `summary` string never does. Top-level Pi `custom_message` entries are different: Pi puts them in model context, so Fabric preserves their typed `customType`, text content, visibility, and bounded JSON details. Non-context-bearing `custom` state entries remain excluded.
 4. **Structure drives projection.** The core uses entry/message types, roles, content-part types, custom-message fields, tool names, JSON arguments, call ids, `isError`, exit codes, entry ids, ordering, valid Fabric execution traces, and valid Fabric branch-summary facts. It has no semantic regex over prose, code, shell commands, or tool output. Whitespace normalization, bounded truncation, exact identity comparisons, and path segmentation are mechanical operations.
 5. **Serialization is deterministic and bounded.** Identical branch entries and instructions produce byte-identical output. The rendered result is at most 32 KiB in UTF-8.
+6. **The nominal model window is the safety boundary.** Fabric calibrates Pi's structural token estimate against `preparation.tokensBefore`, retains as much recent raw context as fits the configured occupancy target, and reserves both Pi's response budget and an additional estimator-error margin. Undocumented provider headroom is never part of the budget.
 
 This prevents both summary-chain drift and deterministic forgetting. Pi replaces the previous rendered summary, but Fabric re-derives the original goal, cumulative successful file addresses, error state, and user scope changes from raw branch history each time.
 
 ## Pipeline
 
 ```text
-active branch entries ─┬─► live window ─► closure-safe cut ─► firstKeptEntryId
+active branch entries ─┬─► live window ─► calibrated token budget ─► closure-safe cut ─► firstKeptEntryId
                        └─► raw cumulative prefix ─► normalize ─► project ─► bound/render
 ```
 
@@ -37,12 +47,20 @@ The last compaction marker identifies the live window:
 - a compact-all marker or missing/orphan kept id starts it after the marker;
 - without a marker, the whole supplied active path is live.
 
-Fabric begins with the last live context-turn boundary: a user message or top-level Pi `custom_message`. Hidden (`display: false`) and visible custom messages have identical context semantics. It then computes structural spans for every call id across the supplied branch. If any span crosses the candidate boundary, the cut moves backward to the context turn containing the earliest crossing and closure is checked again. Therefore both directions are enforced:
+When Pi supplies the active model metadata, Fabric chooses the live cut by token budget rather than always preserving or discarding the whole latest user turn:
+
+1. Sum Pi's public structural message estimates for the current context.
+2. Calibrate that estimate with `preparation.tokensBefore`. This compensates for provider tokenization, system prompts, tool schemas, and other fixed context that a character heuristic cannot observe directly.
+3. Reserve the maximum 32 KiB summary, then target `contextWindow × targetContextRatio` while honoring `keepRecentTokens` when it remains safe.
+4. Cap the target below `contextWindow - reserveTokens` with an additional estimator-error margin, and below 95% of `tokensBefore` so a low-usage manual compaction cannot expand context. The advertised window is authoritative even when a provider accepts larger requests.
+5. Select the earliest eligible boundary whose retained suffix fits the budget. User/custom boundaries and assistant boundaries are eligible, so a single enormous autonomous turn can be split instead of surviving compaction intact. On repeated compaction, the kept boundary must follow the previous compaction marker in raw log order; Pi replays entries contiguously from `firstKeptEntryId`, so allowing a boundary before that marker would replay the old rendered summary beside the new one.
+
+Fabric computes structural spans for every call id across the supplied branch and rejects any candidate that separates an actual call/result pair. Therefore both directions are enforced:
 
 - no summarized tool call has a kept result;
 - no kept tool call has a summarized result.
 
-This handles parallel calls, delayed results, reverse/malformed ordering, and malformed prior boundaries. If no non-crossing earlier turn exists, Fabric uses compact-all (`firstKeptEntryId: ""`), so no kept side remains to orphan either half.
+This handles parallel calls, delayed results, reverse/malformed ordering, and malformed prior boundaries. If no non-crossing boundary fits, Fabric uses compact-all (`firstKeptEntryId: ""`), so no kept side remains to orphan either half. If the rendered deterministic summary itself makes the calibrated projection exceed the target, Fabric cancels rather than persisting an expanding or over-budget result. If model metadata is unavailable, the legacy latest-turn closure-safe cut remains as a compatibility fallback.
 
 The live cut determines only what Pi keeps. Summary source is the raw active-branch prefix before that new boundary. Earlier compaction and branch-summary prose within that prefix is skipped by normalization.
 
@@ -115,7 +133,8 @@ New summaries emit `details.compactor: "fabric"` and `details.version: 2` with:
 - prior recognized Fabric v1/v2 marker counts;
 - per-projection omission counts and the typed preserve count (valid v1 requests cannot exceed the preserve limit);
 - instruction mode, canonicalization, source size, truncation, and preserve counts;
-- stable kept/source entry-id addresses and the source timestamp.
+- stable kept/source entry-id addresses and the source timestamp;
+- when adaptive budgeting is active: advertised window, target ratio/tokens, Pi reserve and recent settings, raw estimate, calibration scale, fixed overhead, retained raw tokens, and Fabric's `projectedTokensAfter`. Pi core independently recomputes its own `estimatedTokensAfter` after persisting the compaction.
 
 Only exact Fabric versions 1 and 2 are recognized. v1 details and rendered prose are not reused as truth. On the next compaction, an old session naturally migrates to v2 because the new result is rebuilt from raw active-branch entries. V2 validation accepts the legacy commit-omission counter for old records, but new summaries do not emit a commit projection or counter.
 

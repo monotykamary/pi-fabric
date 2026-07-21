@@ -5,6 +5,7 @@ import { normalizeFabricConfig, DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import {
   computeCut,
   compileFabricSummary,
+  type FabricCompactionBudgetDetails,
   fabricCompactionVersion,
   registerCompactionHook,
 } from "../src/compaction/hook.js";
@@ -18,9 +19,15 @@ import {
 } from "../src/compaction/instructions.js";
 import { normalizeEntries } from "../src/compaction/normalize.js";
 import { project, projectOutstanding } from "../src/compaction/projections.js";
+import {
+  buildSessionContext,
+  estimateTokens,
+  sessionEntryToContextMessages,
+} from "@earendil-works/pi-coding-agent";
 import type {
   CompactionEntry,
   ExtensionAPI,
+  ExtensionContext,
   SessionBeforeCompactEvent,
   SessionEntry,
   SessionMessageEntry,
@@ -160,14 +167,22 @@ const nextCallId = (): string => callId(++callCounter);
 const buildSession = (...entries: SessionEntry[]): SessionEntry[] => entries;
 
 describe("compaction config", () => {
-  it("defaults to the fabric engine", () => {
+  it("defaults to the fabric engine and a 65% post-compaction target", () => {
     expect(DEFAULT_FABRIC_CONFIG.compaction.engine).toBe("fabric");
+    expect(DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio).toBe(0.65);
   });
 
-  it("normalizes a pi engine escape hatch and rejects unknown values", () => {
-    expect(normalizeFabricConfig({ compaction: { engine: "pi" } }).compaction.engine).toBe("pi");
-    expect(normalizeFabricConfig({ compaction: { engine: "bogus" } }).compaction.engine).toBe("fabric");
-    expect(normalizeFabricConfig({}).compaction.engine).toBe("fabric");
+  it("normalizes the engine escape hatch and bounded occupancy target", () => {
+    const configured = normalizeFabricConfig({
+      compaction: { engine: "pi", targetContextRatio: 0.7 },
+    }).compaction;
+    expect(configured).toEqual({ engine: "pi", targetContextRatio: 0.7 });
+    expect(normalizeFabricConfig({ compaction: { engine: "bogus", targetContextRatio: 2 } }).compaction)
+      .toEqual({ engine: "fabric", targetContextRatio: 0.85 });
+    expect(normalizeFabricConfig({ compaction: { targetContextRatio: 0.1 } }).compaction.targetContextRatio)
+      .toBe(0.25);
+    expect(normalizeFabricConfig({ compaction: { targetContextRatio: "large" } }).compaction.targetContextRatio)
+      .toBe(0.65);
   });
 });
 
@@ -927,6 +942,339 @@ describe("compaction cut never orphans a tool_result from its tool_call", () => 
     );
     assertNoOrphan(reverse);
     expect(computeCut(reverse)).toMatchObject({ ok: true, firstKeptEntryId: "" });
+  });
+});
+
+describe("adaptive compaction budget", () => {
+  const longSingleTurn = (): { entries: SessionEntry[]; tokensBefore: number } => {
+    const entries: SessionEntry[] = [];
+    appendLinked(entries, user("Preserve the original print calibration goal"));
+    for (let index = 0; index < 36; index++) {
+      const id = `adaptive-${index}`;
+      appendLinked(
+        entries,
+        assistant(toolCallPart(id, "read", { path: `models/part-${index}.stl` })),
+        toolResult(id, "read", `mesh-${index}: ${"x".repeat(12_000)}`),
+        assistant(textPart(`Completed calibration stage ${index}`)),
+      );
+    }
+
+    let rawTokens = 0;
+    for (const entry of entries) {
+      const messages = sessionEntryToContextMessages(entry);
+      rawTokens += messages.reduce((total, message) => total + estimateTokens(message), 0);
+      if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+      const contextTokens = Math.round(6_000 + rawTokens * 1.4);
+      entry.message.usage.input = contextTokens;
+      entry.message.usage.totalTokens = contextTokens;
+    }
+    return { entries, tokensBefore: Math.round(6_000 + rawTokens * 1.4) };
+  };
+
+  it("splits a huge current turn near the configured target without crossing tool pairs", () => {
+    resetIds();
+    resetClock();
+    const { entries, tokensBefore } = longSingleTurn();
+    const result = compileFabricSummary(
+      entries,
+      tokensBefore,
+      [],
+      undefined,
+      {
+        contextWindow: 100_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 10_000,
+        keepRecentTokens: 20_000,
+      },
+    );
+    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+
+    expect(result.compaction.firstKeptEntryId).not.toBe("");
+    expect(result.compaction.firstKeptEntryId).not.toBe(entries[0]!.id);
+    const projectedTokensAfter = result.compaction.details?.budget?.projectedTokensAfter;
+    expect(projectedTokensAfter).toBeGreaterThan(50_000);
+    expect(projectedTokensAfter).toBeLessThanOrEqual(65_000);
+    expect(result.compaction.details?.budget).toMatchObject({
+      strategy: "adaptive",
+      contextWindow: 100_000,
+      targetContextRatio: 0.65,
+      targetContextTokens: 65_000,
+      reserveTokens: 10_000,
+      keepRecentTokens: 20_000,
+    });
+
+    const boundaryIndex = entries.findIndex(
+      (entry) => entry.id === result.compaction.firstKeptEntryId,
+    );
+    const sides = new Map<string, Set<"summary" | "kept">>();
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index]!;
+      if (entry.type !== "message") continue;
+      const side = index < boundaryIndex ? "summary" : "kept";
+      const message = entry.message as { role?: string; toolCallId?: string; content?: unknown };
+      if (Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (!part || typeof part !== "object" || (part as { type?: string }).type !== "toolCall") continue;
+          const id = (part as { id?: string }).id;
+          if (!id) continue;
+          const found = sides.get(id) ?? new Set();
+          found.add(side);
+          sides.set(id, found);
+        }
+      }
+      if (message.role === "toolResult" && message.toolCallId) {
+        const found = sides.get(message.toolCallId) ?? new Set();
+        found.add(side);
+        sides.set(message.toolCallId, found);
+      }
+    }
+    expect([...sides.values()].every((side) => side.size === 1)).toBe(true);
+    expect(result.compaction.summary).toContain("Preserve the original print calibration goal");
+  });
+
+  it("never expands a compaction that starts below the configured window target", () => {
+    resetIds();
+    resetClock();
+    const { entries, tokensBefore } = longSingleTurn();
+    const result = compileFabricSummary(
+      entries,
+      tokensBefore,
+      [],
+      undefined,
+      {
+        contextWindow: 400_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 20_000,
+        keepRecentTokens: 20_000,
+      },
+    );
+    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    const budget = result.compaction.details?.budget;
+    expect(budget?.targetContextTokens).toBe(Math.floor(tokensBefore * 0.95));
+    expect(budget?.projectedTokensAfter).toBeLessThanOrEqual(Math.floor(tokensBefore * 0.95));
+  });
+
+  it("cancels rather than expanding when even compact-all cannot fit the target", () => {
+    resetIds();
+    resetClock();
+    const result = compileFabricSummary(
+      [user("tiny goal"), assistant(textPart("tiny result"))],
+      100,
+      [],
+      undefined,
+      {
+        contextWindow: 100_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 10_000,
+        keepRecentTokens: 20_000,
+      },
+    );
+    expect(result).toMatchObject({
+      cancel: true,
+      reason: "fabric: no deterministic summary fits the adaptive context target",
+    });
+  });
+
+  it("keeps observed fixed prompt overhead outside the shrinkable message budget", () => {
+    resetIds();
+    resetClock();
+    const { entries } = longSingleTurn();
+    for (const entry of entries) {
+      if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+      entry.message.usage.input = 0;
+      entry.message.usage.totalTokens = 0;
+    }
+    const rawTokens = buildSessionContext(entries).messages.reduce(
+      (total, message) => total + estimateTokens(message),
+      0,
+    );
+    const result = compileFabricSummary(
+      entries,
+      rawTokens + 40_000,
+      [],
+      undefined,
+      {
+        contextWindow: 100_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 10_000,
+        keepRecentTokens: 20_000,
+      },
+    );
+    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    expect(result.compaction.details?.budget?.fixedOverheadTokens).toBe(40_000);
+    expect(result.compaction.details?.budget?.projectedTokensAfter).toBeLessThanOrEqual(65_000);
+  });
+
+  it("never treats a prior compaction marker as live retained context", () => {
+    resetIds();
+    resetClock();
+    const original = user("Original cumulative goal");
+    const kept = assistant(textPart("previous retained tail"));
+    const previous = compactionEntry(kept.id, "old rendered summary");
+    const branch: SessionEntry[] = [];
+    appendLinked(
+      branch,
+      original,
+      kept,
+      previous,
+      user("Continue after compaction"),
+      assistant(textPart("new work ".repeat(5_000))),
+      user("Latest request"),
+      assistant(textPart("latest result")),
+    );
+    const cut = computeCut(branch, {
+      tokensBefore: 20_000,
+      budget: {
+        contextWindow: 50_000,
+        targetContextRatio: 0.65,
+        reserveTokens: 5_000,
+        keepRecentTokens: 2_000,
+      },
+    });
+    if (!cut.ok) throw new Error("expected adaptive cut");
+    expect(cut.summarized.some((entry) => entry.id === previous.id)).toBe(false);
+    expect(cut.firstKeptEntryId).not.toBe(previous.id);
+    const keptIndex = branch.findIndex((entry) => entry.id === cut.firstKeptEntryId);
+    const previousIndex = branch.findIndex((entry) => entry.id === previous.id);
+    expect(keptIndex).toBeGreaterThan(previousIndex);
+
+    const next = {
+      ...compactionEntry(cut.firstKeptEntryId, "new rendered summary"),
+      parentId: branch.at(-1)!.id,
+    } as CompactionEntry;
+    const rebuilt = buildSessionContext([...branch, next]).messages;
+    expect(rebuilt.filter((message) => message.role === "compactionSummary")).toHaveLength(1);
+    expect(JSON.stringify(rebuilt)).toContain("new rendered summary");
+    expect(JSON.stringify(rebuilt)).not.toContain("old rendered summary");
+  });
+
+  it("retains one cumulative summary and safe utilization through 20 adaptive cycles", () => {
+    resetIds();
+    resetClock();
+    const branch: SessionEntry[] = [];
+    appendLinked(branch, user("Long-running adaptive endurance goal"));
+
+    for (let cycle = 0; cycle < 20; cycle++) {
+      const previousMarkerIndex = branch.map((entry) => entry.type).lastIndexOf("compaction");
+      const newStart = previousMarkerIndex + 1;
+      for (let operation = 0; operation < 14; operation++) {
+        const id = `endurance-${cycle}-${operation}`;
+        appendLinked(
+          branch,
+          assistant(toolCallPart(id, "read", { path: `cycle-${cycle}/${operation}.txt` })),
+          toolResult(id, "read", `cycle ${cycle} operation ${operation} ${"x".repeat(10_000)}`),
+          assistant(textPart(`cycle ${cycle} operation ${operation} complete`)),
+        );
+      }
+
+      let rawTokens = previousMarkerIndex >= 0
+        ? buildSessionContext(branch.slice(0, previousMarkerIndex + 1)).messages.reduce(
+            (total, message) => total + estimateTokens(message),
+            0,
+          )
+        : 0;
+      for (let index = newStart; index < branch.length; index++) {
+        const entry = branch[index]!;
+        rawTokens += sessionEntryToContextMessages(entry).reduce(
+          (total, message) => total + estimateTokens(message),
+          0,
+        );
+        if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+        const contextTokens = Math.round(6_000 + rawTokens * 1.4);
+        entry.message.usage.input = contextTokens;
+        entry.message.usage.totalTokens = contextTokens;
+      }
+      const tokensBefore = Math.round(6_000 + rawTokens * 1.4);
+      const result = compileFabricSummary(
+        branch,
+        tokensBefore,
+        [],
+        undefined,
+        {
+          contextWindow: 100_000,
+          targetContextRatio: 0.65,
+          reserveTokens: 10_000,
+          keepRecentTokens: 20_000,
+        },
+      );
+      if (!("compaction" in result)) throw new Error(`cycle ${cycle} failed`);
+      const budget = result.compaction.details?.budget;
+      expect(budget?.projectedTokensAfter).toBeGreaterThan(30_000);
+      expect(budget?.projectedTokensAfter).toBeLessThanOrEqual(budget!.targetContextTokens);
+      if (previousMarkerIndex >= 0 && result.compaction.firstKeptEntryId) {
+        const keptIndex = branch.findIndex(
+          (entry) => entry.id === result.compaction.firstKeptEntryId,
+        );
+        expect(keptIndex).toBeGreaterThan(previousMarkerIndex);
+      }
+
+      appendLinked(branch, {
+        ...compactionEntry(
+          result.compaction.firstKeptEntryId,
+          result.compaction.summary,
+          result.compaction.details,
+        ),
+        tokensBefore,
+      } as CompactionEntry);
+      const rebuilt = buildSessionContext(branch).messages;
+      expect(rebuilt.filter((message) => message.role === "compactionSummary")).toHaveLength(1);
+      expect(result.compaction.summary).toContain("Long-running adaptive endurance goal");
+    }
+  });
+
+  it("caps the target below the nominal window reserve even when configured higher", () => {
+    resetIds();
+    resetClock();
+    const { entries, tokensBefore } = longSingleTurn();
+    const result = compileFabricSummary(
+      entries,
+      tokensBefore,
+      [],
+      undefined,
+      {
+        contextWindow: 100_000,
+        targetContextRatio: 0.85,
+        reserveTokens: 30_000,
+        keepRecentTokens: 80_000,
+      },
+    );
+    if (!("compaction" in result)) throw new Error("expected adaptive compaction");
+    expect(result.compaction.details?.budget?.targetContextTokens).toBe(63_000);
+    expect(result.compaction.details?.budget?.projectedTokensAfter).toBeLessThanOrEqual(63_000);
+  });
+
+  it("uses live model metadata and Pi settings through the registered hook", () => {
+    resetIds();
+    resetClock();
+    let handler: ((event: SessionBeforeCompactEvent, context: ExtensionContext) => unknown) | undefined;
+    const pi = {
+      on(name: string, candidate: unknown) {
+        if (name === "session_before_compact") {
+          handler = candidate as typeof handler;
+        }
+      },
+    } as unknown as ExtensionAPI;
+    registerCompactionHook(pi, {
+      getEngine: () => "fabric",
+      getTargetContextRatio: () => 0.65,
+    });
+    const { entries, tokensBefore } = longSingleTurn();
+    const event = {
+      type: "session_before_compact",
+      branchEntries: entries,
+      preparation: {
+        tokensBefore,
+        settings: { enabled: true, reserveTokens: 10_000, keepRecentTokens: 20_000 },
+      },
+    } as unknown as SessionBeforeCompactEvent;
+    const context = {
+      model: { contextWindow: 100_000 },
+    } as unknown as ExtensionContext;
+    const result = handler!(event, context) as {
+      compaction: { details: { budget: FabricCompactionBudgetDetails } };
+    };
+    expect(result.compaction.details.budget.projectedTokensAfter).toBeLessThanOrEqual(65_000);
+    expect(result.compaction.details.budget.contextWindow).toBe(100_000);
   });
 });
 

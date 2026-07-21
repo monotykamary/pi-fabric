@@ -47,6 +47,17 @@ const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const EXECUTOR_RUNTIMES = ["quickjs", "node-process"] as const;
 const COMPACTION_ENGINES = ["fabric", "pi"] as const;
+const COMPACTION_TARGET_RATIOS = [
+  "0.25",
+  "0.4",
+  "0.5",
+  "0.6",
+  "0.65",
+  "0.7",
+  "0.75",
+  "0.8",
+  "0.85",
+] as const;
 const ACTOR_SCOPES = ["project", "session"] as const;
 const RISKS = ["read", "write", "execute", "network", "agent"] as const;
 const CORE_RISK_TOOLS = ["read", "grep", "find", "edit", "write", "bash"] as const;
@@ -930,6 +941,16 @@ export const buildFabricSettingsItems = (
               "Fabric uses deterministic branch summaries; Pi delegates compaction to Pi core.",
             values: COMPACTION_ENGINES,
           }),
+          setting(
+            "compaction.targetContextRatio",
+            "Target occupancy",
+            String(config.compaction.targetContextRatio),
+            {
+              description:
+                "Fraction of the advertised model window Fabric targets after compaction.",
+              values: COMPACTION_TARGET_RATIOS,
+            },
+          ),
         ],
         persist,
       ),

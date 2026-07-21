@@ -154,6 +154,8 @@ describe("FabricSettingsComponent", () => {
     const lines = compaction!.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Engine");
     expect(lines).toContain("fabric");
+    expect(lines).toContain("Target occupancy");
+    expect(lines).toContain("0.65");
   });
 
   it("surfaces nested-tool visibility and the global debounce in UI settings", () => {

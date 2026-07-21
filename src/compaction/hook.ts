@@ -1,12 +1,17 @@
-import type {
-  CompactionResult,
-  ExtensionAPI,
-  ExtensionContext,
-  SessionBeforeCompactEvent,
-  SessionBeforeTreeEvent,
-  SessionEntry,
+import {
+  buildSessionContext,
+  calculateContextTokens,
+  DEFAULT_COMPACTION_SETTINGS,
+  estimateTokens,
+  sessionEntryToContextMessages,
+  type CompactionResult,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type SessionBeforeCompactEvent,
+  type SessionBeforeTreeEvent,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { clipUtf8 } from "./bounds.js";
+import { clipUtf8, MAX_SUMMARY_BYTES } from "./bounds.js";
 import { NO_BUILTIN_ENRICHERS, runEnrichers, type CompactionEnricher } from "./enrichers.js";
 import { compileFabricBranchSummary } from "./branch-summary.js";
 import {
@@ -28,12 +33,58 @@ interface LiveEntry {
   entry: SessionEntry;
   branchIndex: number;
   turnBoundary: boolean;
+  cutPoint: boolean;
+  estimatedTokens: number;
   message?: {
     role?: unknown;
     content?: unknown;
     toolCallId?: unknown;
   };
 }
+
+interface CallResultSpan {
+  first: number;
+  last: number;
+  hasCall: boolean;
+  hasResult: boolean;
+}
+
+export interface FabricCompactionBudget {
+  contextWindow: number;
+  targetContextRatio: number;
+  reserveTokens: number;
+  keepRecentTokens: number;
+}
+
+export interface FabricCompactionBudgetDetails {
+  strategy: "adaptive";
+  contextWindow: number;
+  targetContextRatio: number;
+  targetContextTokens: number;
+  reserveTokens: number;
+  keepRecentTokens: number;
+  rawTokensBefore: number;
+  tokenScale: number;
+  fixedOverheadTokens: number;
+  retainedRawTokens: number;
+  projectedTokensAfter: number;
+}
+
+interface AdaptiveCutPlan {
+  contextWindow: number;
+  targetContextRatio: number;
+  targetContextTokens: number;
+  reserveTokens: number;
+  keepRecentTokens: number;
+  rawTokensBefore: number;
+  tokenScale: number;
+  fixedOverheadTokens: number;
+  recentRawTokenBudget: number;
+}
+
+const SUMMARY_RAW_TOKEN_BUDGET = Math.ceil(MAX_SUMMARY_BYTES / 4);
+const HARD_CEILING_SAFETY_RATIO = 0.9;
+const MAX_PRECOMPACTION_RATIO = 0.95;
 
 const isMessageEntry = (entry: SessionEntry): entry is Extract<SessionEntry, { type: "message" }> =>
   entry.type === "message";
@@ -58,6 +109,14 @@ const toolCallIdsOf = (message: { content?: unknown }): string[] => {
   return ids;
 };
 
+const contextMessages = (entry: SessionEntry): ReturnType<typeof sessionEntryToContextMessages> => {
+  try {
+    return sessionEntryToContextMessages(entry);
+  } catch {
+    return [];
+  }
+};
+
 const findLastCompaction = (entries: SessionEntry[]): { index: number; firstKeptEntryId: string } | undefined => {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index]!;
@@ -72,19 +131,27 @@ const collectContextEntries = (entries: SessionEntry[], startIndex: number): Liv
   const contextEntries: LiveEntry[] = [];
   for (let index = Math.max(0, startIndex); index < entries.length; index++) {
     const entry = entries[index]!;
-    if (entry.type === "custom_message") {
-      if (isPiCustomMessageEntry(entry)) {
-        contextEntries.push({ entry, branchIndex: index, turnBoundary: true });
-      }
-      continue;
-    }
-    if (!isMessageEntry(entry) || isHiddenEmptyCustom(entry.message)) continue;
-    const message = entry.message as NonNullable<LiveEntry["message"]>;
+    if (entry.type === "compaction") continue;
+    if (entry.type === "custom_message" && !isPiCustomMessageEntry(entry)) continue;
+    if (isMessageEntry(entry) && isHiddenEmptyCustom(entry.message)) continue;
+    const messages = contextMessages(entry);
+    if (messages.length === 0) continue;
+    const roles = messages.map((message) => message.role);
+    const rawMessage = isMessageEntry(entry)
+      ? entry.message as NonNullable<LiveEntry["message"]>
+      : undefined;
     contextEntries.push({
       entry,
       branchIndex: index,
-      turnBoundary: message.role === "user",
-      message,
+      turnBoundary: roles.some((role) =>
+        role === "user"
+        || role === "custom"
+        || role === "bashExecution"
+        || role === "branchSummary"
+        || role === "compactionSummary"),
+      cutPoint: roles.some((role) => role !== "toolResult"),
+      estimatedTokens: messages.reduce((total, message) => total + estimateTokens(message), 0),
+      ...(rawMessage ? { message: rawMessage } : {}),
     });
   }
   return contextEntries;
@@ -115,29 +182,42 @@ const lastBoundaryIndex = (live: LiveEntry[]): number => {
   return -1;
 };
 
-const callResultSpans = (entries: SessionEntry[]): Map<string, { first: number; last: number }> => {
-  const spans = new Map<string, { first: number; last: number }>();
-  const record = (id: string, index: number): void => {
+const callResultSpans = (entries: SessionEntry[]): Map<string, CallResultSpan> => {
+  const spans = new Map<string, CallResultSpan>();
+  const record = (id: string, index: number, kind: "call" | "result"): void => {
     if (!id) return;
-    const span = spans.get(id);
-    if (span) {
-      span.first = Math.min(span.first, index);
-      span.last = Math.max(span.last, index);
-    } else {
-      spans.set(id, { first: index, last: index });
-    }
+    const span = spans.get(id) ?? {
+      first: index,
+      last: index,
+      hasCall: false,
+      hasResult: false,
+    };
+    span.first = Math.min(span.first, index);
+    span.last = Math.max(span.last, index);
+    if (kind === "call") span.hasCall = true;
+    else span.hasResult = true;
+    spans.set(id, span);
   };
   for (let index = 0; index < entries.length; index++) {
     const entry = entries[index]!;
     if (!isMessageEntry(entry)) continue;
     const message = entry.message as NonNullable<LiveEntry["message"]>;
-    for (const id of toolCallIdsOf(message)) record(id, index);
+    for (const id of toolCallIdsOf(message)) record(id, index, "call");
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
-      record(message.toolCallId, index);
+      record(message.toolCallId, index, "result");
     }
   }
   return spans;
 };
+
+const spanCrosses = (span: CallResultSpan, boundaryIndex: number): boolean =>
+  span.hasCall
+  && span.hasResult
+  && span.first < boundaryIndex
+  && span.last >= boundaryIndex;
+
+const closureSafe = (spans: Map<string, CallResultSpan>, boundaryIndex: number): boolean =>
+  [...spans.values()].every((span) => !spanCrosses(span, boundaryIndex));
 
 const closeCut = (
   branchEntries: SessionEntry[],
@@ -150,7 +230,7 @@ const closeCut = (
     const boundaryIndex = live[liveIndex]!.branchIndex;
     let earliestCrossing = boundaryIndex;
     for (const span of spans.values()) {
-      if (span.first < boundaryIndex && span.last >= boundaryIndex) {
+      if (spanCrosses(span, boundaryIndex)) {
         earliestCrossing = Math.min(earliestCrossing, span.first);
       }
     }
@@ -162,6 +242,120 @@ const closeCut = (
   return 0;
 };
 
+const rawContextTokens = (branchEntries: SessionEntry[]): number =>
+  buildSessionContext(branchEntries).messages.reduce(
+    (total, message) => total + estimateTokens(message),
+    0,
+  );
+
+interface UsageCheckpoint {
+  rawTokens: number;
+  contextTokens: number;
+}
+
+const usageCheckpoints = (branchEntries: SessionEntry[]): UsageCheckpoint[] => {
+  const lastCompaction = findLastCompaction(branchEntries);
+  const startIndex = lastCompaction ? lastCompaction.index + 1 : 0;
+  let rawTokens = lastCompaction
+    ? rawContextTokens(branchEntries.slice(0, lastCompaction.index + 1))
+    : 0;
+  const checkpoints: UsageCheckpoint[] = [];
+  for (let index = startIndex; index < branchEntries.length; index++) {
+    for (const message of contextMessages(branchEntries[index]!)) {
+      rawTokens += estimateTokens(message);
+      if (message.role !== "assistant") continue;
+      const contextTokens = calculateContextTokens(message.usage);
+      if (Number.isFinite(contextTokens) && contextTokens > 0) {
+        checkpoints.push({ rawTokens, contextTokens });
+      }
+    }
+  }
+  return checkpoints;
+};
+
+// Fit an upper affine envelope: context ≈ fixed overhead + scale × raw messages.
+// Only post-marker usage is comparable; the fallback treats all unexplained tokens as fixed.
+const tokenCalibration = (
+  branchEntries: SessionEntry[],
+  tokensBefore: number,
+  rawTokensBefore: number,
+): { tokenScale: number; fixedOverheadTokens: number } => {
+  const minimumDelta = Math.max(4_096, Math.floor(rawTokensBefore * 0.1));
+  const checkpoints = usageCheckpoints(branchEntries).filter(
+    (checkpoint) => checkpoint.rawTokens < rawTokensBefore
+      && checkpoint.contextTokens <= tokensBefore,
+  );
+  const slopes = checkpoints.flatMap((checkpoint) => {
+    const rawDelta = rawTokensBefore - checkpoint.rawTokens;
+    const contextDelta = tokensBefore - checkpoint.contextTokens;
+    return rawDelta >= minimumDelta && contextDelta >= 0
+      ? [contextDelta / rawDelta]
+      : [];
+  }).filter((slope) => Number.isFinite(slope) && slope >= 0);
+
+  if (slopes.length === 0) {
+    return {
+      tokenScale: 1,
+      fixedOverheadTokens: Math.max(0, tokensBefore - rawTokensBefore),
+    };
+  }
+
+  const tokenScale = Math.max(1, ...slopes);
+  const fixedOverheadTokens = Math.max(
+    0,
+    tokensBefore - tokenScale * rawTokensBefore,
+    ...checkpoints.map(
+      (checkpoint) => checkpoint.contextTokens - tokenScale * checkpoint.rawTokens,
+    ),
+  );
+  return { tokenScale, fixedOverheadTokens };
+};
+
+const adaptiveCutPlan = (
+  branchEntries: SessionEntry[],
+  tokensBefore: number,
+  budget: FabricCompactionBudget,
+): AdaptiveCutPlan | undefined => {
+  if (!Number.isFinite(budget.contextWindow) || budget.contextWindow <= 0) return undefined;
+  const contextWindow = Math.floor(budget.contextWindow);
+  const reserveTokens = Math.max(0, Math.floor(budget.reserveTokens));
+  const keepRecentTokens = Math.max(0, Math.floor(budget.keepRecentTokens));
+  const targetContextRatio = Math.max(0.25, Math.min(0.85, budget.targetContextRatio));
+  const rawTokensBefore = rawContextTokens(branchEntries);
+  const { tokenScale, fixedOverheadTokens } = tokenCalibration(
+    branchEntries,
+    tokensBefore,
+    rawTokensBefore,
+  );
+  const hardCeiling = Math.max(1, contextWindow - reserveTokens);
+  const safeCeiling = Math.max(1, Math.floor(hardCeiling * HARD_CEILING_SAFETY_RATIO));
+  const configuredTarget = Math.floor(contextWindow * targetContextRatio);
+  const keepRecentTarget = Math.ceil(
+    fixedOverheadTokens + (keepRecentTokens + SUMMARY_RAW_TOKEN_BUDGET) * tokenScale,
+  );
+  const reductionCeiling = Math.max(1, Math.floor(tokensBefore * MAX_PRECOMPACTION_RATIO));
+  const targetContextTokens = Math.min(
+    safeCeiling,
+    reductionCeiling,
+    Math.max(configuredTarget, keepRecentTarget),
+  );
+  const rawPostBudget = Math.max(
+    0,
+    Math.floor((targetContextTokens - fixedOverheadTokens) / tokenScale),
+  );
+  return {
+    contextWindow,
+    targetContextRatio,
+    targetContextTokens,
+    reserveTokens,
+    keepRecentTokens,
+    rawTokensBefore,
+    tokenScale,
+    fixedOverheadTokens,
+    recentRawTokenBudget: Math.max(0, rawPostBudget - SUMMARY_RAW_TOKEN_BUDGET),
+  };
+};
+
 export type CutResult =
   | {
       ok: true;
@@ -170,10 +364,15 @@ export type CutResult =
       firstSummarizedEntryId: string;
       lastSummarizedEntryId: string;
       lastTimestamp: string;
+      budget?: Omit<FabricCompactionBudgetDetails, "projectedTokensAfter">;
     }
   | { ok: false; reason: "empty" };
 
-const boundary = (summarized: SessionEntry[], firstKeptEntryId: string): CutResult => {
+const boundary = (
+  summarized: SessionEntry[],
+  firstKeptEntryId: string,
+  budget?: Omit<FabricCompactionBudgetDetails, "projectedTokensAfter">,
+): CutResult => {
   if (summarized.length === 0) return { ok: false, reason: "empty" };
   const first = summarized[0]!;
   const last = summarized.at(-1)!;
@@ -184,17 +383,73 @@ const boundary = (summarized: SessionEntry[], firstKeptEntryId: string): CutResu
     firstSummarizedEntryId: first.id,
     lastSummarizedEntryId: last.id,
     lastTimestamp: last.timestamp,
+    ...(budget ? { budget } : {}),
   };
 };
 
-export const computeCut = (branchEntries: SessionEntry[]): CutResult => {
+const computeAdaptiveCut = (
+  branchEntries: SessionEntry[],
+  live: LiveEntry[],
+  plan: AdaptiveCutPlan,
+): CutResult => {
+  const suffixTokens = new Array<number>(live.length + 1).fill(0);
+  for (let index = live.length - 1; index >= 0; index--) {
+    suffixTokens[index] = suffixTokens[index + 1]! + live[index]!.estimatedTokens;
+  }
+  const spans = callResultSpans(branchEntries);
+  // Pi replays entries contiguously from firstKeptEntryId, including compaction markers.
+  const previousCompactionIndex = findLastCompaction(branchEntries)?.index ?? -1;
+  let cutIndex = live.length;
+  for (let index = 1; index < live.length; index++) {
+    const item = live[index]!;
+    if (item.branchIndex <= previousCompactionIndex) continue;
+    if (!item.cutPoint || suffixTokens[index]! > plan.recentRawTokenBudget) continue;
+    if (!closureSafe(spans, item.branchIndex)) continue;
+    cutIndex = index;
+    break;
+  }
+  const retainedRawTokens = suffixTokens[cutIndex] ?? 0;
+  const details = {
+    strategy: "adaptive" as const,
+    contextWindow: plan.contextWindow,
+    targetContextRatio: plan.targetContextRatio,
+    targetContextTokens: plan.targetContextTokens,
+    reserveTokens: plan.reserveTokens,
+    keepRecentTokens: plan.keepRecentTokens,
+    rawTokensBefore: plan.rawTokensBefore,
+    tokenScale: plan.tokenScale,
+    fixedOverheadTokens: plan.fixedOverheadTokens,
+    retainedRawTokens,
+  };
+  if (cutIndex >= live.length) {
+    return boundary(live.map((item) => item.entry), "", details);
+  }
+  return boundary(
+    live.slice(0, cutIndex).map((item) => item.entry),
+    live[cutIndex]!.entry.id,
+    details,
+  );
+};
+
+export const computeCut = (
+  branchEntries: SessionEntry[],
+  options?: { tokensBefore: number; budget: FabricCompactionBudget },
+): CutResult => {
   const live = collectLive(branchEntries);
   if (live.length === 0) return { ok: false, reason: "empty" };
+
+  if (options) {
+    const plan = adaptiveCutPlan(branchEntries, options.tokensBefore, options.budget);
+    if (plan) return computeAdaptiveCut(branchEntries, live, plan);
+  }
 
   const lastBoundary = lastBoundaryIndex(live);
   if (lastBoundary <= 0) return boundary(live.map((item) => item.entry), "");
   const closed = closeCut(branchEntries, live, lastBoundary);
-  if (closed <= 0) return boundary(live.map((item) => item.entry), "");
+  const previousCompactionIndex = findLastCompaction(branchEntries)?.index ?? -1;
+  if (closed <= 0 || live[closed]!.branchIndex <= previousCompactionIndex) {
+    return boundary(live.map((item) => item.entry), "");
+  }
 
   return boundary(
     live.slice(0, closed).map((item) => item.entry),
@@ -240,6 +495,7 @@ export interface FabricCompactionDetailsV2 {
     cumulativeSourceRange: EntryRange;
     recall: "session-entry-id-range";
   };
+  budget?: FabricCompactionBudgetDetails;
   timestamp: string;
 }
 
@@ -303,6 +559,22 @@ const isFabricV2Details = (value: Record<string, unknown>): boolean => {
     && typeof value.stableAddresses.firstKeptEntryId === "string"
     && isEntryRange(value.stableAddresses.cumulativeSourceRange)
     && value.stableAddresses.recall === "session-entry-id-range"
+    && (value.budget === undefined || (
+      isRecord(value.budget)
+      && value.budget.strategy === "adaptive"
+      && hasFiniteNumbers(value.budget, [
+        "contextWindow",
+        "targetContextRatio",
+        "targetContextTokens",
+        "reserveTokens",
+        "keepRecentTokens",
+        "rawTokensBefore",
+        "tokenScale",
+        "fixedOverheadTokens",
+        "retainedRawTokens",
+        "projectedTokensAfter",
+      ])
+    ))
     && typeof value.timestamp === "string";
 };
 
@@ -352,6 +624,7 @@ export const compileFabricSummary = (
   tokensBefore: number,
   enrichers: readonly CompactionEnricher[] = NO_BUILTIN_ENRICHERS,
   customInstructions?: string,
+  budget?: FabricCompactionBudget,
 ): { compaction: CompactionResult<FabricCompactionDetailsV2> } | {
   cancel: true;
   reason: string;
@@ -365,7 +638,10 @@ export const compileFabricSummary = (
       instructionError: instructions.error,
     };
   }
-  const cut = computeCut(branchEntries);
+  const cut = computeCut(
+    branchEntries,
+    budget ? { tokensBefore, budget } : undefined,
+  );
   if (!cut.ok) return { cancel: true, reason: "fabric: nothing to compact" };
 
   const source = cumulativeSource(branchEntries, cut.firstKeptEntryId);
@@ -380,6 +656,24 @@ export const compileFabricSummary = (
     lastTimestamp: source.timestamp,
     requestLines: instructions.requestLines,
   });
+  const projectedTokensAfter = cut.budget
+    ? Math.ceil(
+        cut.budget.fixedOverheadTokens
+        + (cut.budget.retainedRawTokens + Math.ceil(summary.length / 4))
+        * cut.budget.tokenScale,
+      )
+    : undefined;
+  const budgetDetails = cut.budget && projectedTokensAfter !== undefined
+    ? { ...cut.budget, projectedTokensAfter }
+    : undefined;
+  // The maximum-summary reservation should make this unreachable unless fixed overhead alone
+  // makes the target infeasible. Never persist an expanding or nominally unsafe result.
+  if (budgetDetails && budgetDetails.projectedTokensAfter > budgetDetails.targetContextTokens) {
+    return {
+      cancel: true,
+      reason: "fabric: no deterministic summary fits the adaptive context target",
+    };
+  }
   const versions = priorFabricVersions(branchEntries);
   const sectionHeaders = SECTION_HEADERS
     .filter(({ key }) => sections[key].length > 0)
@@ -415,6 +709,7 @@ export const compileFabricSummary = (
       cumulativeSourceRange: source.range,
       recall: "session-entry-id-range",
     },
+    ...(budgetDetails ? { budget: budgetDetails } : {}),
     timestamp: source.timestamp,
   };
 
@@ -439,6 +734,7 @@ const SECTION_HEADERS: { key: keyof Sections; header: string }[] = [
 
 export interface CompactionHookOptions {
   getEngine: () => CompactionEngine;
+  getTargetContextRatio?: () => number;
   enrichers?: readonly CompactionEnricher[];
 }
 
@@ -455,11 +751,26 @@ export const registerCompactionHook = (pi: ExtensionAPI, options: CompactionHook
     if (event.customInstructions === "__pi_vcc__") return;
     if (options.getEngine() !== "fabric") return;
     const { preparation, branchEntries } = event;
+    const contextWindow = context?.model?.contextWindow;
+    const targetContextRatio = options.getTargetContextRatio?.();
+    const settings = preparation.settings ?? DEFAULT_COMPACTION_SETTINGS;
+    const budget = typeof contextWindow === "number"
+      && Number.isFinite(contextWindow)
+      && typeof targetContextRatio === "number"
+      && Number.isFinite(targetContextRatio)
+      ? {
+          contextWindow,
+          targetContextRatio,
+          reserveTokens: settings.reserveTokens,
+          keepRecentTokens: settings.keepRecentTokens,
+        }
+      : undefined;
     const result = compileFabricSummary(
       branchEntries ?? [],
       preparation.tokensBefore,
       options.enrichers,
       event.customInstructions,
+      budget,
     );
     if ("cancel" in result) {
       if (result.instructionError) {
