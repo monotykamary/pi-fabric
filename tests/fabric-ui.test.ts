@@ -4,6 +4,7 @@ import type { CodePreviewSettings } from "pi-code-previews";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { FabricDashboard } from "../src/ui/dashboard.js";
+import { configureHighlighting } from "../src/ui/highlight.js";
 import { wrapPlainText } from "../src/ui/format.js";
 import type { ModelSource } from "../src/ui/model-picker.js";
 import type { FabricThinking } from "../src/thinking.js";
@@ -818,16 +819,106 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
-  it("renders agent task and result as Markdown and structured values as YAML", () => {
+  it("rerenders dashboard core-tool details with lazy Shiki highlighting", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
     const current = snapshot();
-    current.agents[0]!.task = "## Planned checks\n\n- Inspect **authentication**";
+    current.agents = [];
+    current.actors = [];
+    current.globalActors = [];
+    current.state = [];
+    current.runs[0]!.items = [];
+    const now = current.now;
+    const call = (
+      id: string,
+      ref: string,
+      args: Record<string, unknown>,
+      result: unknown,
+      preview?: unknown,
+    ) => ({
+      id,
+      ref,
+      label: ref,
+      kind: "tool" as const,
+      status: "completed" as const,
+      phaseId: "audit",
+      args,
+      result,
+      ...(preview !== undefined ? { preview } : {}),
+      startedAt: now - 1_000,
+      updatedAt: now,
+      finishedAt: now,
+    });
+    current.runs[0]!.calls = [
+      call("lazy-read", "pi.read", { path: "src/lazy-read.ts" }, "export const lazyRead = true;"),
+      call(
+        "lazy-write",
+        "pi.write",
+        { path: "src/lazy-write.ts", content: "export const lazyWrite = true;" },
+        { ok: true },
+        { writeBeforeCaptured: true },
+      ),
+      call(
+        "lazy-edit",
+        "pi.edit",
+        { path: "src/lazy-edit.ts", edits: [{ oldText: "const value = false;", newText: "const value = true;" }] },
+        { ok: true, details: { diff: "-1 const value = false;\n+1 const value = true;" } },
+      ),
+      call(
+        "lazy-grep",
+        "pi.grep",
+        { path: "src", pattern: "lazyGrep", literal: true },
+        "src/lazy-grep.ts:1: export const lazyGrep = true;",
+      ),
+      call(
+        "lazy-bash",
+        "pi.bash",
+        { command: "printf '%s\n' lazy-bash" },
+        { ok: true, output: "lazy-bash" },
+      ),
+    ];
+    const requestRender = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender, terminal: { rows: 60 } } as unknown as TUI,
+      theme,
+      () => current,
+      vi.fn(),
+      { codePreviewSettings },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput("\r");
+      requestRender.mockClear();
+      expect(dashboard.render(100).join("\n")).not.toContain("\x1b[38;2;");
+      await vi.waitFor(() => expect(requestRender).toHaveBeenCalled(), { timeout: 15_000 });
+      expect(dashboard.render(100).join("\n")).toContain("\x1b[38;2;");
+
+      dashboard.handleInput("\x1b");
+      for (let index = 1; index < current.runs[0]!.calls.length; index++) {
+        dashboard.handleInput("j");
+        dashboard.handleInput("\r");
+        expect(dashboard.render(100).join("\n")).toContain("\x1b[38;2;");
+        dashboard.handleInput("\x1b");
+      }
+    } finally {
+      dashboard.dispose();
+    }
+  }, 20_000);
+
+  it("lazily highlights dashboard Markdown code and structured YAML", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
+    const current = snapshot();
+    current.agents[0]!.task = "## Planned checks\n\n- Inspect **authentication**\n\n```ts\nexport const dashboardTask = true;\n```";
     current.agents[0]!.text = "### Findings\n\n1. Found a **rotation gap**";
     current.agents[0]!.value = {
       findings: [{ severity: "high", path: "src/auth.ts" }],
       approved: false,
     };
+    const requestRender = vi.fn();
     const dashboard = new FabricDashboard(
-      { requestRender: vi.fn(), terminal: { rows: 60 } } as unknown as TUI,
+      { requestRender, terminal: { rows: 60 } } as unknown as TUI,
       theme,
       () => current,
       vi.fn(),
@@ -836,30 +927,37 @@ describe("Fabric dynamic UI", () => {
       dashboard.render(120);
       dashboard.handleInput("l");
       dashboard.handleInput("\r");
+      requestRender.mockClear();
+      const plainPage = dashboard.render(100).join("\n");
+      expect(plainPage).not.toContain("\x1b[38;2;");
+      await vi.waitFor(() => expect(requestRender).toHaveBeenCalled(), { timeout: 15_000 });
       const firstPage = dashboard.render(100).join("\n");
+      expect(firstPage).toContain("\x1b[38;2;");
       for (let index = 0; index < 30; index++) dashboard.handleInput("j");
       const lastPage = dashboard.render(100).join("\n");
       const detail = `${firstPage}\n${lastPage}`;
+      const visibleDetail = detail.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 
-      expect(detail).toContain("Task:");
-      expect(detail).toContain("Planned checks");
-      expect(detail).toContain("Inspect authentication");
-      expect(detail).not.toContain("## Planned checks");
-      expect(detail).not.toContain("**authentication**");
-      expect(detail).toContain("Result:");
-      expect(detail).toContain("Findings");
-      expect(detail).toContain("Found a rotation gap");
-      expect(detail).toContain("Value:");
-      expect(detail).toContain("findings:");
-      expect(detail).toContain("- severity: high");
-      expect(detail).toContain("path: src/auth.ts");
-      expect(detail).toContain("approved: false");
-      expect(detail).not.toContain('{"findings"');
+      expect(visibleDetail).toContain("Task:");
+      expect(visibleDetail).toContain("Planned checks");
+      expect(visibleDetail).toContain("Inspect authentication");
+      expect(visibleDetail).toContain("export const dashboardTask = true;");
+      expect(visibleDetail).not.toContain("## Planned checks");
+      expect(visibleDetail).not.toContain("**authentication**");
+      expect(visibleDetail).toContain("Result:");
+      expect(visibleDetail).toContain("Findings");
+      expect(visibleDetail).toContain("Found a rotation gap");
+      expect(visibleDetail).toContain("Value:");
+      expect(visibleDetail).toContain("findings:");
+      expect(visibleDetail).toContain("- severity: high");
+      expect(visibleDetail).toContain("path: src/auth.ts");
+      expect(visibleDetail).toContain("approved: false");
+      expect(visibleDetail).not.toContain('{"findings"');
       expect(detail.split("\n").every((line) => visibleWidth(line) <= 100)).toBe(true);
     } finally {
       dashboard.dispose();
     }
-  });
+  }, 20_000);
 
   const openActorDetail = (dashboard: FabricDashboard): void => {
     dashboard.handleInput("G");
@@ -1725,6 +1823,47 @@ describe("Fabric dynamic UI", () => {
       dashboard.dispose();
     }
   });
+
+  it("lazily highlights expanded agent transcript tools", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
+    const requestRender = vi.fn();
+    const dashboard = new FabricDashboard(
+      { requestRender, terminal: { rows: 28 } } as unknown as TUI,
+      theme,
+      snapshot,
+      vi.fn(),
+      {
+        codePreviewSettings,
+        agentTranscript: () => ({
+          truncated: false,
+          entries: [{
+            id: "lazy-transcript-read",
+            kind: "tool",
+            label: "read",
+            toolName: "read",
+            status: "completed",
+            args: { path: "src/lazy-transcript.ts" },
+            result: { content: [{ type: "text", text: "export const lazyTranscript = true;" }] },
+          }],
+        }),
+      },
+    );
+    try {
+      dashboard.render(120);
+      dashboard.handleInput("l");
+      dashboard.handleInput(" ");
+      dashboard.handleInput("\x0f");
+      requestRender.mockClear();
+      const plain = dashboard.render(100).join("\n");
+      expect(plain).toContain("lazyTranscript");
+      expect(plain).not.toContain("\x1b[38;2;");
+      await vi.waitFor(() => expect(requestRender).toHaveBeenCalled(), { timeout: 15_000 });
+      expect(dashboard.render(100).join("\n")).toContain("\x1b[38;2;");
+    } finally {
+      dashboard.dispose();
+    }
+  }, 20_000);
 
   it("opens a live transcript preview and toggles back to summary", () => {
     const dashboard = new FabricDashboard(

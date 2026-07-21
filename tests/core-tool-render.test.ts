@@ -1,7 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "pi-code-previews";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { configureHighlighting } from "../src/ui/highlight.js";
 import {
   coreToolPreviewEnabled,
   coreToolRendererEnabled,
@@ -401,6 +402,65 @@ describe("Fabric core tool parity rendering", () => {
 
     expect(rendered!.lines.join("\n")).toContain("previous content unavailable");
   });
+
+  it("lazily invalidates and highlights every syntax-aware core preview", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
+    const invalidate = vi.fn();
+    const previews = [
+      () => renderCoreToolBody(
+        audit("read", {
+          args: { path: "src/lazy-read.ts" },
+          result: "export const lazyRead = true;",
+          success: true,
+        }),
+        theme,
+        options({ invalidate }),
+      )!.lines.join("\n"),
+      () => renderCoreToolBody(
+        audit("write", {
+          args: { path: "src/lazy-write.ts", content: "export const lazyWrite = true;" },
+          preview: { writeBeforeCaptured: true },
+          success: true,
+        }),
+        theme,
+        options({ invalidate }),
+      )!.lines.join("\n"),
+      () => renderCoreToolBody(
+        audit("edit", {
+          args: { path: "src/lazy-edit.ts" },
+          result: { details: { diff: "-1 const lazyEdit = false;\n+1 const lazyEdit = true;" } },
+          success: true,
+        }),
+        theme,
+        options({ invalidate }),
+      )!.lines.join("\n"),
+      () => renderCoreToolBody(
+        audit("grep", {
+          args: { path: "src", pattern: "lazyGrep", literal: true },
+          result: "src/lazy-grep.ts:1: export const lazyGrep = true;",
+          success: true,
+        }),
+        theme,
+        options({ invalidate }),
+      )!.lines.join("\n"),
+      () => {
+        const call = audit("bash", {
+          args: { command: "printf '%s\n' lazy-bash" },
+          result: "lazy-bash",
+          success: true,
+        });
+        return [
+          coreToolTitle(call, theme, { cwd: process.cwd(), settings, invalidate }),
+          ...renderCoreToolBody(call, theme, options({ invalidate }))!.lines,
+        ].join("\n");
+      },
+    ];
+
+    expect(previews.map((render) => render()).every((text) => !text.includes("\x1b[38;2;"))).toBe(true);
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(previews.map((render) => render()).every((text) => text.includes("\x1b[38;2;"))).toBe(true);
+  }, 20_000);
 
   it("does not apply core rendering to another provider with a colliding action name", () => {
     const other = {

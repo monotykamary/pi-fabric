@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  configureHighlighting,
   highlightCode,
   initHighlighting,
   languageFromPath,
@@ -18,6 +19,20 @@ describe("fabric highlight", () => {
   it("returns null before the highlighter is ready", () => {
     expect(highlightCode("const x = 1;", "typescript")).toBeNull();
   });
+
+  it("invalidates through highlighter readiness and on-demand language loading", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
+    const invalidate = vi.fn();
+
+    expect(highlightCode("value = True", "python", invalidate)).toBeNull();
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledTimes(1), { timeout: 15_000 });
+    expect(highlightCode("value = True", "python", invalidate)).toBeNull();
+    await vi.waitFor(() => expect(invalidate.mock.calls.length).toBeGreaterThanOrEqual(2), {
+      timeout: 15_000,
+    });
+    expect(highlightCode("value = True", "python", invalidate)?.join("\n")).toContain("\x1b[38;2;");
+  }, 20_000);
 
   it("highlights code with truecolor ANSI after initialization", async () => {
     await initHighlighting("dark-plus", true);

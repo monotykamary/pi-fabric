@@ -781,9 +781,16 @@ const renderWrite = (
     };
   }
   if (audit.success === true && recordOf(audit.preview)?.writeBeforeCaptured === true && before === undefined) {
+    const rendered = renderContent(content, filePath, theme, options, {
+      emptyLabel: "Empty content",
+      skipLabel: "Syntax highlighting skipped for large content",
+    });
     return {
-      lines: [theme.fg("success", `✓ New file (${countLabel(countContentLines(content), "line")})`)],
-      hidden: 0,
+      lines: [
+        theme.fg("success", `✓ New file (${countLabel(countContentLines(content), "line")})`),
+        ...rendered.lines,
+      ],
+      hidden: rendered.hidden,
     };
   }
   return renderContent(content, filePath, theme, options, {

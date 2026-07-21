@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "pi-code-previews";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
-import { initHighlighting } from "../src/ui/highlight.js";
+import { describe, expect, it, vi } from "vitest";
+import { configureHighlighting, initHighlighting } from "../src/ui/highlight.js";
 import {
   HiddenRowBorrowingComponent,
   observeResultRows,
@@ -168,6 +168,31 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
       lang: "markdown",
     });
   });
+
+  it("upgrades a streaming write from plain text after lazy Shiki initialization", async () => {
+    configureHighlighting("dark-plus", false);
+    configureHighlighting("dark-plus", true);
+    const invalidate = vi.fn();
+    const input = {
+      bindings: [{ path: "src/lazy-stream.ts", stringKey: "preview" }],
+      strings: { preview: "export const lazyStream = true;" },
+      expanded: false,
+      cwd: process.cwd(),
+      settings: {
+        shikiTheme: "dark-plus",
+        syntaxHighlighting: true,
+        writeContentPreview: true,
+        writeCollapsedLines: 10,
+        tools: ["write"],
+      } as CodePreviewSettings,
+    };
+    const render = (): string =>
+      renderFabricWriteArgumentPreview(input, plainTheme, invalidate)!.render(100).join("\n");
+
+    expect(render()).not.toContain("\x1b[38;2;");
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(render()).toContain("\x1b[38;2;");
+  }, 20_000);
 
   it("falls back to plain in-flight write content for unknown file types", () => {
     const audit = {
