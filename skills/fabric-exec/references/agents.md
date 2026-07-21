@@ -118,4 +118,4 @@ Mailbox:
 return rlm.query({ task: "Decompose this repository and produce a compact architecture map.", transport: "process" });
 ```
 
-`council.run({ task, roles, synthesize?, ...agentOptions })` runs several `agents.run` calls concurrently under the subagent semaphore and optionally synthesizes them; load `/skill:fabric-council` for the pattern.
+`council.run({ task, roles, synthesize?, ...agentOptions })` runs several `agents.run` calls concurrently under the subagent semaphore and optionally synthesizes them. The full council pattern is user-invoked; never load `/skill:fabric-council` autonomously.

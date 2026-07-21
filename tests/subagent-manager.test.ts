@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import {
   effectiveSubagentTimeoutMs,
@@ -11,6 +11,26 @@ import type { SubagentRunRecord, SubagentRunResult } from "../src/subagents/type
 
 const managers: SubagentManager[] = [];
 const roots: string[] = [];
+const fabricEnvKeys = [
+  "PI_FABRIC_DEPTH",
+  "PI_FABRIC_BUDGET",
+  "PI_FABRIC_BUDGET_FILE",
+  "PI_FABRIC_BUDGET_ID",
+] as const;
+const inheritedFabricEnv = new Map(
+  fabricEnvKeys.map((key) => [key, process.env[key]]),
+);
+
+beforeAll(() => {
+  for (const key of fabricEnvKeys) delete process.env[key];
+});
+
+afterAll(() => {
+  for (const [key, value] of inheritedFabricEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 describe("effectiveSubagentTimeoutMs", () => {
   it("ignores per-call timeouts below the configured default", () => {

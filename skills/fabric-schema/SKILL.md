@@ -29,14 +29,33 @@ const hypothesis = await schema.hypothesize({
   ],
 });
 const verification = await schema.verify({ hypothesisId: hypothesis.hypothesisId });
-if (!verification.verified || !verification.certificate) return verification;
+const { certificate: _certificate, ...safeVerification } = verification;
+if (!verification.verified || !verification.certificate) {
+  if (verification.certificate) {
+    await schema.abort({
+      hypothesisId: hypothesis.hypothesisId,
+      certificate: verification.certificate,
+    });
+  }
+  return { status: "failed", verification: safeVerification };
+}
 
 const observed = verification.results.find(
   (result) => result.evidence.path === "src/parser.ts",
 )?.observedSha256;
-if (!observed) return { void: true, reason: "missing observed SHA-256" };
+if (!observed) {
+  await schema.abort({
+    hypothesisId: hypothesis.hypothesisId,
+    certificate: verification.certificate,
+  });
+  return {
+    status: "failed",
+    reason: "missing observed SHA-256",
+    verification: safeVerification,
+  };
+}
 
-return schema.commit({
+const commit = await schema.commit({
   hypothesisId: hypothesis.hypothesisId,
   certificate: verification.certificate,
   operations: [{
@@ -51,6 +70,7 @@ return schema.commit({
     { kind: "trusted_command", name: "parser-focused-tests" },
   ],
 });
+return { status: commit.outcome === "committed" ? "success" : "failed", commit };
 ```
 
 Any missing, stale, failed, timed-out, cancelled, or workspace-changing evidence voids the plan. Never invent trusted-command shell text or arguments: names resolve to static host configuration.
@@ -88,7 +108,14 @@ const transition = await state.transition({
   evidence: ["pnpm exec vitest run tests/focused.test.ts"],
 });
 const verification = await state.verify();
-if (!verification.certified) return { void: true, transition, verification };
+if (!verification.certified) {
+  return { status: "failed", transition, verification };
+}
+return { status: "success", transition, verification };
 ```
 
-This is workflow discipline, not enforcement. See `../../docs/schema-enforcement.md` for the guarantee and recovery model, and `../../docs/state-layer.md` for the labeled timeline.
+This is workflow discipline, not enforcement. The linked guarantee and recovery model in `../../docs/schema-enforcement.md` and labeled timeline in `../../docs/state-layer.md` are soft pointers for deeper explanation.
+
+## Completion criterion
+
+In enforce mode, only `status: "success"` with a `committed` outcome establishes the declared postconditions; preserve rollback/quarantine details under `commit`. Audit mode changes no behavior and grants no authorization—summarize `would_block` events only when the audit trace was actually inspected. In off mode, return the explicit certification status.

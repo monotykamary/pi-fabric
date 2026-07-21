@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Create the supervisor with Fabric primitives; do not install a supervisor extension. Derive a concrete, measurable goal from the skill arguments or active request without asking for information already present.
 
-Read `../fabric-ambient/references/setup.md` completely, then use its program with:
+Hard pointer: read `../fabric-ambient/references/setup.md` completely before setup, then use its program with:
 
 - `strings.name`: `supervisor`
 - `strings.events`: `["agent_settled","tool_error"]`
@@ -30,4 +30,8 @@ Return {"action":"silent"} while work is productively advancing. Return {"action
 The goal is complete only when the requested result and relevant validation are evident. Then return {"action":"stop","message":"Goal verified complete."}.
 ```
 
-Idle/error events avoid a model run on every turn. `triggerTurn: true` lets a material steer resume an idle Main session. Report the goal and setup result; do not wait for the actor.
+Idle/error events avoid a model run on every turn. `triggerTurn: true` lets a material steer resume an idle Main session.
+
+## Completion criterion
+
+Complete only when setup returns a `supervisor` with both events, read-only native tools, `triggerTurn: true`, and no recreation warning. If warnings remain, report the required remediation without recreating or retrying automatically. Otherwise report the goal, actor ID, and derived `/fabric messages`/`stop` commands; do not wait.

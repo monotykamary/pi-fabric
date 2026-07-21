@@ -88,18 +88,20 @@ pi -e /absolute/path/to/pi-fabric
 
 ## What you can ask for
 
-Every pattern below is a skill Pi loads on demand. Invoke it with `/skill:<name>`, or just describe the task and let Pi pick it up.
+Advanced patterns are user-invoked and are not advertised for automatic selection. Run `/skill:fabric-guide` when you want one recommendation, or invoke the exact `/skill:<name>` yourself. Describing an ordinary coding task keeps Pi on the core `fabric-exec` path.
 
-| You want | Ask for | Skill |
-| -------- | ------- | ----- |
-| Parallel audits, migrations, or research with phased progress and a final synthesis | “Audit every auth file in parallel and synthesize findings.” | `/skill:fabric-workflow` |
-| Work too big for one context window, decomposed recursively | “Produce a compact architecture map of this repo.” | `/skill:fabric-rlm` |
-| A persistent watcher that steers only when you drift | “Watch this migration until it's complete and tested.” | `/skill:fabric-supervisor` |
-| A quiet decision-point reviewer | “Review my decisions at idle and tool-error points.” | `/skill:fabric-advisor` |
-| Several reviewers reconciled into one verdict | “Run correctness, security, and test reviewers, then merge.” | `/skill:fabric-council` |
-| Multi-model deliberation with a compare-not-merge judge | “Deliberate this design across models.” | `/skill:fabric-fusion` |
-| A durable team coordinating through shared tasks | “Stand up a team that claims tasks atomically and reports progress.” | `/skill:fabric-swarm` |
-| Edits gated behind typed evidence and postconditions | “Make this parser change only if focused tests stay green.” | `/skill:fabric-schema` |
+| You want | Run |
+| -------- | --- |
+| Help choosing the smallest advanced mechanism | `/skill:fabric-guide Choose a mechanism to audit every auth file and verify the findings.` |
+| Parallel audits, migrations, or research with verification | `/skill:fabric-workflow Audit every auth file and synthesize verified findings.` |
+| Work too big for one context window | `/skill:fabric-rlm Produce a compact architecture map of this repo.` |
+| A persistent watcher for one measurable goal | `/skill:fabric-supervisor Watch this migration until it is complete and tested.` |
+| A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
+| Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
+| Multi-model compare-not-merge deliberation | `/skill:fabric-fusion Deliberate this design across models.` |
+| One command that infers advisor versus supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
+| A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
+| Evidence-gated edits with postconditions | `/skill:fabric-schema Make this parser change only if focused tests stay green.` |
 
 The foundation is the `fabric-exec` reference skill: the model loads it before its first `fabric_exec` call and again when a call errors on argument shape.
 
@@ -120,7 +122,7 @@ See the [interface & commands reference](docs/interface.md) for every view, keyb
 - [Agents, actors & mesh](docs/agents.md) — subagents, the Claude runner, transports, steering, persistent actors, global templates, councils, recursive queries, and durable coordination.
 - [External providers](docs/providers.md) — the versioned provider protocol for extensions.
 - [Architecture & security](docs/architecture.md) — the host bridge, sandboxing, tool-call robustness, and limitations.
-- [Skills](skills/) — the model-invoked patterns and the full `fabric_exec` API reference.
+- [Skills](docs/skills.md) — the core-first invocation policy and user-invoked advanced patterns.
 
 ## Development
 

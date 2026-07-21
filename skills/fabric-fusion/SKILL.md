@@ -1,12 +1,12 @@
 ---
 name: fabric-fusion
-description: Multi-model deliberation. Up to 8 distinct models answer in parallel with web-capable tools, then a judge compares consensus, contradictions, coverage gaps, unique insights, and blind spots. Use when the cost of being wrong justifies multiple completions.
+description: Multi-model deliberation. Two to 8 distinct models answer in parallel with web-capable tools, then a judge compares consensus, contradictions, coverage gaps, unique insights, and blind spots. Use when the cost of being wrong justifies multiple completions.
 disable-model-invocation: true
 ---
 
 # Fabric Fusion
 
-Use one `fabric_exec` call for a 1–8 model panel followed by one judge. The judge compares rather than merges responses; return its structured analysis so the caller writes the final answer. Use fusion for model-diverse research or critique, not tactical work or a lookup.
+Use one `fabric_exec` call for a 2–8 model panel and a judge when at least two responses complete. The judge compares rather than merges responses; return a compact status/coverage/analysis envelope so the caller writes the final answer. Use fusion for model-diverse research or critique, not tactical work or a lookup.
 
 Pass every key: `strings.task`; JSON `strings.panel` as `Array<{ model, label? }>`; and optional `strings.judge`, `strings.tools`, and `strings.thinking` as empty strings when unset. Labels are attribution only. Tools default to `read`, `grep`, `find`, `ls`, and `bash`; thinking defaults to configured subagent thinking.
 
@@ -21,8 +21,8 @@ type FusionAnalysis = {
 
 const task = π.task;
 const panel = JSON.parse(π.panel) as Array<{ model: string; label?: string }>;
-if (panel.length < 1 || panel.length > 8) {
-  throw new Error("Fusion panel (analysis_models) must have 1–8 members.");
+if (panel.length < 2 || panel.length > 8) {
+  throw new Error("Fusion panel (analysis_models) must have 2–8 members.");
 }
 const toolset = π.tools ? (JSON.parse(π.tools) as string[]) : ["read", "grep", "find", "ls", "bash"];
 const thinking = π.thinking ? (π.thinking as FabricThinking) : undefined;
@@ -53,83 +53,151 @@ try {
 }
 const resolve = (needle: string): RunnerModel => {
   const n = needle.toLowerCase();
-  const hit = models.find(
+  const exact = models.filter((entry) => entry.key.toLowerCase() === n);
+  if (exact.length === 1) return exact[0];
+  const fuzzy = models.filter(
     (entry) =>
-      entry.key.toLowerCase() === n ||
-      entry.id.toLowerCase().includes(n) ||
-      entry.name.toLowerCase().includes(n),
+      entry.id.toLowerCase().includes(n) || entry.name.toLowerCase().includes(n),
   );
-  if (!hit) {
+  if (fuzzy.length !== 1) {
     throw new Error(
-      `Fusion: model "${needle}" not found. Available: ${models.map((entry) => entry.key).join(", ")}`,
+      fuzzy.length === 0
+        ? `Fusion: model "${needle}" not found. Available: ${models.map((entry) => entry.key).join(", ")}`
+        : `Fusion: model "${needle}" is ambiguous. Matches: ${fuzzy.map((entry) => entry.key).join(", ")}`,
     );
   }
-  return hit;
+  return fuzzy[0];
 };
 const members = panel.map((member) => ({
   ...resolve(member.model),
-  label: member.label || member.model,
+  label: (member.label || member.model).trim(),
 }));
-const judgeModel = π.judge ? resolve(π.judge) : members[0];
+const modelIdentities = members.map((member) =>
+  `${member.runner}:${member.provider}:${member.resolvedModel ?? member.id}`
+);
+if (new Set(modelIdentities).size !== members.length) {
+  throw new Error("Fusion requires distinct resolved models, not aliases of the same model.");
+}
+if (members.some((member) => !member.label) ||
+    new Set(members.map((member) => member.label)).size !== members.length) {
+  throw new Error("Fusion requires distinct non-empty labels.");
+}
+const explicitJudge = π.judge ? resolve(π.judge) : undefined;
 
-// Panel: up to 8 distinct models answer the same task in parallel, each with
-// web access (bash → gsearch/curl is the web_search/web_fetch analog). Members
-// run as plain agents (no recursive:true), so they cannot launch their own
-// fusion panel — one level of deliberation, like x-openrouter-fusion-depth.
+type PanelOutcome =
+  | { label: string; model: string; runner: FabricAgentRunner; status: "completed"; response: string }
+  | { label: string; model: string; runner: FabricAgentRunner; status: "failed"; error: string };
+
+// Plain, non-recursive members preserve one level of deliberation.
 await phase("Panel", { total: members.length });
-const responses = await parallel(
-  members.map((m) => () =>
-    agent<string>(
-      `Independently answer this task. Use web search (run gsearch or curl via bash) when fresh sources help, and cite them inline.\n\nTask:\n${task}`,
-      {
-        label: `panel · ${m.label}`.slice(0, 50),
-        runner: m.runner,
-        model: m.key,
-        tools: toolset,
-        ...(thinking ? { thinking } : {}),
-      },
-    ),
-  ),
+const outcomes = await parallel(
+  members.map((member) => async (): Promise<PanelOutcome> => {
+    try {
+      const response = await agent<string>(
+        `Independently answer this task. Use web search (run gsearch or curl via bash) when fresh sources help, and cite them inline.\n\nTask:\n${task}`,
+        {
+          label: `panel · ${member.label}`.slice(0, 50),
+          runner: member.runner,
+          model: member.key,
+          tools: toolset,
+          ...(thinking ? { thinking } : {}),
+        },
+      );
+      return {
+        label: member.label, model: member.key, runner: member.runner,
+        status: "completed", response,
+      };
+    } catch (error) {
+      return {
+        label: member.label, model: member.key, runner: member.runner,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }),
   { concurrency: members.length },
 );
-
-// Judge: compare, don't merge. Returns the structured analysis shape
-// OpenRouter's fusion judge returns; the caller writes the final answer.
-await phase("Judge", { total: 1 });
-const analysis = await agent<FusionAnalysis>(
-  `You are the fusion judge. Compare these ${members.length} panel responses — do NOT merge them into one answer.\n` +
-    `Return structured analysis: consensus (points all or most agree on, higher-confidence), ` +
-    `contradictions (where they disagreed), partial_coverage (what only some covered), ` +
-    `unique_insights (insights from individual models), blind_spots (gaps none addressed). ` +
-    `You may search the web to verify claims.\n\nTask:\n${task}\n\nPanel responses:\n` +
-    JSON.stringify(members.map((m, i) => ({ model: m.label, response: responses[i] }))),
-  {
-    label: "fusion judge",
-    runner: judgeModel.runner,
-    model: judgeModel.key,
-    tools: toolset,
-    ...(thinking ? { thinking } : {}),
-    schema: {
-      type: "object",
-      properties: {
-        consensus: { type: "array", items: { type: "string" } },
-        contradictions: { type: "array", items: { type: "string" } },
-        partial_coverage: { type: "array", items: { type: "string" } },
-        unique_insights: { type: "array", items: { type: "string" } },
-        blind_spots: { type: "array", items: { type: "string" } },
-      },
-      required: ["consensus", "contradictions", "partial_coverage", "unique_insights", "blind_spots"],
-      additionalProperties: false,
-    },
-  },
+const completed = outcomes.filter(
+  (outcome): outcome is Extract<PanelOutcome, { status: "completed" }> =>
+    outcome.status === "completed",
 );
+const failures = outcomes.filter(
+  (outcome): outcome is Extract<PanelOutcome, { status: "failed" }> =>
+    outcome.status === "failed",
+);
+const coverage = { requested: members.length, completed: completed.length };
+if (completed.length === 0) {
+  return { status: "failed", coverage, failures, analysis: null };
+}
+if (completed.length === 1) {
+  return {
+    status: "partial",
+    coverage,
+    failures,
+    analysis: null,
+    judgeSkipped: "At least two model responses are required for comparison.",
+    fallback: completed,
+  };
+}
 
-await workflow.event({ message: `Fusion complete · ${members.length}-model panel judged`, level: "success" });
-return analysis;
+const judgeModel = explicitJudge ?? {
+  key: completed[0].model,
+  runner: completed[0].runner,
+};
+await phase("Judge", { total: 1 });
+try {
+  const analysis = await agent<FusionAnalysis>(
+    `You are the fusion judge. Compare these ${completed.length} completed panel responses — do NOT merge them into one answer or infer claims from failed models.\n` +
+      `Return structured analysis: consensus (points all or most agree on, higher-confidence), ` +
+      `contradictions (where they disagreed), partial_coverage (what only some covered), ` +
+      `unique_insights (insights from individual models), blind_spots (gaps none addressed). ` +
+      `You may search the web to verify claims.\n\nTask:\n${task}\n\nPanel responses:\n` +
+      JSON.stringify(completed),
+    {
+      label: "fusion judge",
+      runner: judgeModel.runner,
+      model: judgeModel.key,
+      tools: toolset,
+      ...(thinking ? { thinking } : {}),
+      schema: {
+        type: "object",
+        properties: {
+          consensus: { type: "array", items: { type: "string" } },
+          contradictions: { type: "array", items: { type: "string" } },
+          partial_coverage: { type: "array", items: { type: "string" } },
+          unique_insights: { type: "array", items: { type: "string" } },
+          blind_spots: { type: "array", items: { type: "string" } },
+        },
+        required: ["consensus", "contradictions", "partial_coverage", "unique_insights", "blind_spots"],
+        additionalProperties: false,
+      },
+    },
+  );
+  await workflow.event({ message: `Fusion complete · ${completed.length}/${members.length} models judged`, level: "success" });
+  return {
+    status: failures.length === 0 ? "success" : "partial",
+    coverage,
+    failures,
+    analysis,
+  };
+} catch (error) {
+  return {
+    status: "partial",
+    coverage,
+    failures,
+    analysis: null,
+    judgeError: error instanceof Error ? error.message : String(error),
+    fallback: completed,
+  };
+}
 ```
 
-Choose distinct models by intent: strongest available, budget-balanced with a frontier judge, or similar-latency models for faster fan-out. The default panel size is three. Cost is N panel calls plus one judge; set top-level `agentBudget` and `tokenBudget`, while `subagents.budgetUsd` bounds spend.
+Choose distinct models by intent: strongest available, budget-balanced with a frontier judge, or similar-latency models for faster fan-out. The default panel size is three. Cost is N panel calls plus a judge when comparison is possible. Reserve `panel.length + 1` top-level agent calls. Concurrent calls can overshoot observational token/USD checks because usage settles afterward; those settings are not hard concurrent reservations.
 
 Panel members and the judge are plain, non-recursive agents, so deliberation is one level. `bash` enables web access through local search/fetch commands and requires execute approval. Concurrency is capped by `subagents.maxConcurrent`; inner calls otherwise inherit provider limits and use `thinking` for reasoning effort.
 
-Use `/skill:fabric-council` instead for same-model, role-diverse review. Use a plain agent when competing model perspectives do not justify the cost.
+For same-model role diversity, recommend `/skill:fabric-council` for the user to invoke; do not invoke another user-only skill yourself. Use a plain agent when competing model perspectives do not justify the cost.
+
+## Completion criterion
+
+Return `success`, `partial`, or `failed` with explicit panel coverage. Successful judging returns only the structured comparison; raw responses return only when judging fails or fewer than two models complete. A partial result is usable and must not trigger an automatic full-panel rerun. Failures retain label, canonical model key, and runner; retry only failed models or the judge when that missing coverage matters.

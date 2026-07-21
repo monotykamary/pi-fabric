@@ -60,7 +60,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 
 ### Dynamic provider return shapes
 
-- `mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to the server-defined result, commonly `{text:string,content:unknown[],structuredContent:unknown}`; for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`. See `references/mcp.md`.
+- `mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to the server-defined result, commonly `{text:string,content:unknown[],structuredContent:unknown}`; for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`. `references/mcp.md` is a branch pointer for MCP naming and management only when the task needs MCP.
 - `extensions.<tool>(args)` in full code mode resolves to `{content:Array<{type,text?,...}>,text:string,details?,isError:boolean,terminate?,source:{path,source,scope,origin,baseDir?}}`.
 
 The guest TypeScript declarations contain the complete argument and return contracts. For a discovered or dynamic action, use `tools.describe({ref})`; inspect `outputSchema` when supplied, otherwise treat the result as `unknown`.
@@ -72,7 +72,7 @@ Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `sch
 Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); 2 positional args on `read`/`bash`/`ls` (use an options object — positional is supported only for `grep`/`find`/`write`/`edit`).
 
 ## Orchestration surfaces (opt-in)
-Multi-agent orchestration is opt-in: load `/skill:fabric-workflow`, `/skill:fabric-council`, `/skill:fabric-rlm`, or `/skill:fabric-fusion` (API detail in `references/agents.md`, `references/mesh.md`).
+Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `references/agents.md` and `references/mesh.md` are branch pointers for low-level API detail.
 
 `agents.main()` returns the dashboard-owning root Pi session; `agents.peers()` lists other live root sessions in the shared project mesh as `Peer <session-prefix>` targets. Peers support `agents.steer()` and `agents.followUp()` by exact id.
 

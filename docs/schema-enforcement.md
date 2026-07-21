@@ -68,13 +68,32 @@ const hypothesis = await schema.hypothesize({
 const verification = await schema.verify({
   hypothesisId: hypothesis.hypothesisId
 });
-if (!verification.verified || !verification.certificate) return verification;
+const { certificate: _certificate, ...safeVerification } = verification;
+if (!verification.verified || !verification.certificate) {
+  if (verification.certificate) {
+    await schema.abort({
+      hypothesisId: hypothesis.hypothesisId,
+      certificate: verification.certificate
+    });
+  }
+  return { status: "failed", verification: safeVerification };
+}
 const parserEvidence = verification.results.find(
   (result) => result.evidence.path === "src/parser.ts",
 );
-if (!parserEvidence?.observedSha256) return { verified: false, reason: "missing observed SHA-256" };
+if (!parserEvidence?.observedSha256) {
+  await schema.abort({
+    hypothesisId: hypothesis.hypothesisId,
+    certificate: verification.certificate
+  });
+  return {
+    status: "failed",
+    reason: "missing observed SHA-256",
+    verification: safeVerification
+  };
+}
 
-return schema.commit({
+const commit = await schema.commit({
   hypothesisId: hypothesis.hypothesisId,
   certificate: verification.certificate,
   operations: [{
@@ -89,6 +108,7 @@ return schema.commit({
     { kind: "trusted_command", name: "focused-tests" }
   ]
 });
+return { status: commit.outcome === "committed" ? "success" : "failed", commit };
 ```
 
 ## Evidence and preconditions
