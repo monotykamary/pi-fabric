@@ -17,7 +17,7 @@ The first skill argument selects the pattern:
 
 If the pattern is omitted, infer it from the request. If a supervisor goal is omitted, derive a concrete goal from the current user request. Do not ask for details that are already in the conversation.
 
-Pass long instructions through the `strings` parameter and reference them as `π.instructions`. Use one Fabric call shaped like this:
+Pass long instructions through the `strings` parameter and reference them as `π.instructions`. Set `strings.pattern` to exactly `supervisor` or `advisor`; the profile is then explicit and can repair a stale actor on reuse. Use one Fabric call shaped like this:
 
 ```ts
 await workflow.configure({
@@ -25,17 +25,50 @@ await workflow.configure({
   description: "Persistent event-driven actor setup",
 });
 await phase("Start actor", { total: 1 });
+const advisor = π.pattern === "advisor";
+const desiredEvents: FabricActorHostEvent[] = advisor
+  ? ["turn_end"]
+  : ["agent_settled", "tool_error"];
+const desiredTriggerTurn = !advisor;
 const current = await agents.actors();
 const duplicate = current.find((actor) => actor.name === π.name && actor.status !== "stopped");
-if (duplicate) return { reused: true, actor: duplicate };
+if (duplicate) {
+  const migrated: string[] = [];
+  await agents.setInstructions({ id: duplicate.id, instructions: π.instructions });
+  if (
+    duplicate.events.length !== desiredEvents.length ||
+    desiredEvents.some((event) => !duplicate.events.includes(event))
+  ) {
+    await agents.setEvents({ id: duplicate.id, events: desiredEvents });
+    migrated.push("events");
+  }
+  if (duplicate.delivery !== "steer" || duplicate.triggerTurn !== desiredTriggerTurn) {
+    await agents.setDeliveryPolicy({
+      id: duplicate.id,
+      delivery: "steer",
+      triggerTurn: desiredTriggerTurn,
+    });
+    migrated.push("deliveryPolicy");
+  }
+  const warnings = [
+    ...(duplicate.responseMode !== "directive" ? ["responseMode should be directive; recreate the actor"] : []),
+    ...(duplicate.coalesce !== true ? ["coalesce should be true; recreate the actor"] : []),
+  ];
+  return {
+    reused: true,
+    actor: await agents.actorStatus({ id: duplicate.id }),
+    migrated,
+    warnings,
+  };
+}
 
 const actor = await agents.create({
   name: π.name,
   instructions: π.instructions,
-  events: ["agent_settled", "tool_error"],
+  events: desiredEvents,
   responseMode: "directive",
   delivery: "steer",
-  triggerTurn: true,
+  triggerTurn: desiredTriggerTurn,
   coalesce: true,
   tools: ["read", "grep", "find", "ls"],
 });
@@ -47,7 +80,7 @@ return {
 };
 ```
 
-For an advisor, change the event list to `["turn_end"]` and set `triggerTurn: false` so advice does not create an interruption loop.
+The advisor profile uses `["turn_end"]` with `triggerTurn: false` so advice does not create an interruption loop. The supervisor profile uses idle/error decision points with `triggerTurn: true`.
 
 ## Supervisor instructions
 

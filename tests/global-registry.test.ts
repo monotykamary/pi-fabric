@@ -88,6 +88,26 @@ describe("GlobalActorRegistry", () => {
     expect(() => registry.update(created.id, { name: "bad name!" })).toThrow(/Invalid/);
   });
 
+  it("requires explicit active delivery intent and rejects impossible policies", () => {
+    const { registry } = setup();
+    const { triggerTurn: _triggerTurn, ...ambiguous } = baseRequest;
+    expect(() => registry.create(ambiguous)).toThrow(/requires explicit triggerTurn/);
+    expect(() =>
+      registry.create({ ...baseRequest, delivery: "mailbox", triggerTurn: true }),
+    ).toThrow(/never starts Main/);
+  });
+
+  it("updates template delivery policies", () => {
+    const { registry } = setup();
+    const created = registry.create(baseRequest);
+    const active = registry.update(created.id, { delivery: "followUp", triggerTurn: true });
+    expect(active).toMatchObject({ delivery: "followUp", triggerTurn: true });
+    expect(() =>
+      registry.update(created.id, { delivery: "nextTurn", triggerTurn: true }),
+    ).toThrow(/never starts Main/);
+    expect(registry.resolve(created.id)).toMatchObject({ delivery: "followUp", triggerTurn: true });
+  });
+
   it("removes templates", () => {
     const { registry } = setup();
     const created = registry.create(baseRequest);
@@ -130,6 +150,46 @@ describe("GlobalActorRegistry", () => {
 
     const renamed = registry.toRequest(created, "reviewer-2");
     expect(renamed.name).toBe("reviewer-2");
+  });
+
+
+  it("normalizes impossible legacy trigger settings while keeping active modes passive by default", () => {
+    const { agentDir } = setup();
+    const registryPath = path.join(agentDir, "fabric", "actors", "global-actors.json");
+    fs.mkdirSync(path.dirname(registryPath), { recursive: true });
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        format: 1,
+        actors: [
+          {
+            id: "a".repeat(32),
+            name: "legacy-mailbox",
+            instructions: "Legacy.",
+            delivery: "mailbox",
+            triggerTurn: true,
+            createdAt: 1,
+          },
+          {
+            id: "b".repeat(32),
+            name: "legacy-steer",
+            instructions: "Legacy.",
+            delivery: "steer",
+            createdAt: 1,
+          },
+        ],
+      }),
+    );
+
+    const reloaded = new GlobalActorRegistry(agentDir, 64 * 1024);
+    expect(reloaded.resolve("legacy-mailbox")).toMatchObject({
+      delivery: "mailbox",
+      triggerTurn: false,
+    });
+    expect(reloaded.resolve("legacy-steer")).toMatchObject({
+      delivery: "steer",
+      triggerTurn: false,
+    });
   });
 
   it("throws when a query matches multiple templates", () => {

@@ -26,6 +26,7 @@ import {
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { FabricState } from "./fabric-state.js";
+import { piHostCompatibilityWarning } from "./host-compatibility.js";
 import { FABRIC_PROVIDER_REGISTER_EVENT, type FabricMediaBlock, type FabricProviderRegistration } from "./protocol.js";
 import { FabricUiController } from "./ui/controller.js";
 import {
@@ -131,6 +132,7 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const codePreviewSettings = await loadCodePreviewSettings();
+  let compatibilityWarningShown = false;
   configureHighlighting(
     codePreviewSettings.shikiTheme,
     codePreviewSettings.syntaxHighlighting,
@@ -895,6 +897,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("session_start", async (_event, context) => {
     fabricUi.stop();
     suspendToolCapture();
+    if (!compatibilityWarningShown) {
+      compatibilityWarningShown = true;
+      const warning = piHostCompatibilityWarning();
+      if (warning) {
+        console.warn(`[pi-fabric] ${warning}`);
+        if (context.hasUI) context.ui.notify(warning, "warning");
+      }
+    }
     const projectTrusted =
       typeof context.isProjectTrusted === "function" ? context.isProjectTrusted() : true;
     try {

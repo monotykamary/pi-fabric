@@ -3,7 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "pi-code-previews";
 import type { FabricActivityRun } from "../activity/types.js";
-import type { FabricActorHostEvent } from "../actors/types.js";
+import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";
 import type { FabricThinking } from "../thinking.js";
 import type { MeshEvent } from "../mesh/store.js";
@@ -178,6 +178,29 @@ export class FabricUiController {
     const onActorEvents = (actorId: string, events: FabricActorHostEvent[]): void => {
       reportUpdate("Actor event subscriptions updated", this.state.actors.setEvents(actorId, events));
     };
+    const onActorDeliveryPolicy = (
+      actorId: string,
+      delivery: FabricActorDelivery,
+      triggerTurn: boolean,
+    ): void => {
+      reportUpdate(
+        "Actor delivery policy updated",
+        this.state.actors.setDeliveryPolicy(actorId, delivery, triggerTurn),
+      );
+    };
+    const onGlobalDeliveryPolicy = (
+      actorId: string,
+      delivery: FabricActorDelivery,
+      triggerTurn: boolean,
+    ): void => {
+      try {
+        this.state.globalActors.update(actorId, { delivery, triggerTurn });
+        context.ui.notify("Global actor delivery policy updated", "info");
+        this.#refresh();
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    };
     const onActorTools = (actorId: string, tools: string[]): void => {
       reportUpdate("Actor tools updated", this.state.actors.setTools(actorId, tools));
     };
@@ -259,6 +282,8 @@ export class FabricUiController {
             onActorModel,
             onActorThinking,
             onActorEvents,
+            onActorDeliveryPolicy,
+            onGlobalDeliveryPolicy,
             onActorTools,
             actorDefaultTools: this.state.config.subagents?.defaultTools ?? [],
             onClearMessages,

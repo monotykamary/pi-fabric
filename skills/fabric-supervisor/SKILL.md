@@ -21,11 +21,34 @@ await phase("Start actor", { total: 1 });
 const current = await agents.actors();
 const existing = current.find((actor) => actor.name === π.name && actor.status !== "stopped");
 if (existing) {
-  // Re-apply the current goal/persona so re-running the skill updates a stale
-  // supervisor instead of silently reusing it. Events and run settings are
-  // left as the user configured them.
+  const migrated: string[] = [];
   await agents.setInstructions({ id: existing.id, instructions: π.instructions });
-  return { reused: true, actor: existing, migrated: true };
+  if (
+    existing.events.length !== 2 ||
+    !existing.events.includes("agent_settled") ||
+    !existing.events.includes("tool_error")
+  ) {
+    await agents.setEvents({ id: existing.id, events: ["agent_settled", "tool_error"] });
+    migrated.push("events");
+  }
+  if (existing.delivery !== "steer" || existing.triggerTurn !== true) {
+    await agents.setDeliveryPolicy({
+      id: existing.id,
+      delivery: "steer",
+      triggerTurn: true,
+    });
+    migrated.push("deliveryPolicy");
+  }
+  const warnings = [
+    ...(existing.responseMode !== "directive" ? ["responseMode should be directive; recreate the actor"] : []),
+    ...(existing.coalesce !== true ? ["coalesce should be true; recreate the actor"] : []),
+  ];
+  return {
+    reused: true,
+    actor: await agents.actorStatus({ id: existing.id }),
+    migrated,
+    warnings,
+  };
 }
 
 const actor = await agents.create({

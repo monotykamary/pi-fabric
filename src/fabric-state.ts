@@ -5,6 +5,7 @@ import { FabricActivityStore } from "./activity/store.js";
 import { ActorManager } from "./actors/manager.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
+import { actorDeliveryNotice } from "./actors/delivery-policy.js";
 import type { FabricActorHostEvent } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { loadFabricConfig, type FabricConfig } from "./config.js";
@@ -279,12 +280,22 @@ export class FabricState {
           actorText.length > ACTOR_DELIVERY_MAX_CHARS
             ? `${actorText.slice(0, ACTOR_DELIVERY_MAX_CHARS)}\n[actor delivery truncated]`
             : actorText;
+        const deliveryNotice = actorDeliveryNotice(delivery, triggerTurn);
         this.pi.sendMessage(
           {
             customType: "pi-fabric-actor",
-            content: `<fabric-actor name=${JSON.stringify(actor.name)} id=${JSON.stringify(actor.id)}>\n${escapeXmlText(text)}\n</fabric-actor>`,
+            content: [
+              `<fabric-actor name=${JSON.stringify(actor.name)} id=${JSON.stringify(actor.id)}>\n${escapeXmlText(text)}\n</fabric-actor>`,
+              deliveryNotice,
+            ]
+              .filter((line): line is string => Boolean(line))
+              .join("\n"),
             display: true,
-            details: { actor, message },
+            details: {
+              actor,
+              message,
+              delivery: { mode: delivery, triggerTurn, passive: Boolean(deliveryNotice) },
+            },
           },
           { deliverAs: delivery, triggerTurn },
         );

@@ -73,7 +73,7 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 
 `agents.create(args)` returns `FabricActorInfo`. An actor has a fixed `runner`, a serial mailbox, and optional subscriptions to parent events or durable mesh topics. It processes messages one at a time, coalesces repeated host events by default, and restores with the project actor registry. Pi actors resume their Fabric-owned Pi session file. Claude actors persist the session ID emitted by `claude -p` and launch later activations with `--resume <id>` while keeping a Fabric-owned stream transcript.
 
-`args` is a `FabricActorRequest`: `{ name, instructions, runner?, events?, topics?, delivery?, responseMode?, triggerTurn?, coalesce?, model?, thinking?, tools?, transport?, timeoutMs? }`.
+`args` is a `FabricActorRequest`. `delivery` defaults to `mailbox`; `steer`/`followUp` require an explicit `triggerTurn: true | false`, while `mailbox`/`nextTurn` reject `triggerTurn: true`.
 
 - `runner` is fixed at creation. Omitted uses `subagents.runner`. Pi actors are recursively Fabric-equipped; Claude actors retain Claude context and use Claude Code tools, while mailbox/event delivery and coordination remain host-managed (no `fabric_exec` or direct `mesh.*` inside Claude).
 - `model` follows the selected runner's key format. Omitted uses that runner's configured/default model. The dashboard can change an actor model override for its next activation; `tell`/`ask` payloads do not change it.
@@ -81,8 +81,8 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 - `events` is a subset of `input`, `turn_end`, `agent_settled`, `tool_error`, `session_compact` (host events to subscribe to).
 - `topics` lists durable mesh topics to subscribe to (see `mesh.md`).
 - `responseMode` is `text` (every non-empty response becomes an outbox message) or `directive` (validated `{ action, message?, data? }` where `action` is `silent`, `message`, or `stop`; the actor decides whether to intervene).
-- `delivery` is `mailbox`, `steer`, `followUp`, or `nextTurn`; fixed at creation, an actor cannot escalate it.
-- `triggerTurn` fires on the first event of a coalesced burst; `coalesce` is on by default.
+- `delivery` is `mailbox`, `steer`, `followUp`, or `nextTurn`. An actor cannot escalate it in a response; the owner can replace it with `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })`.
+- `triggerTurn` is mandatory for `steer`/`followUp`: `true` starts Main when idle; `false` is passive and the delivered message visibly says it will not start Main. `mailbox`/`nextTurn` never start Main. `coalesce` is on by default.
 - `timeoutMs` follows the same floor as one-shot agents: omit it normally and set it only above `subagents.timeoutMs` when an activation needs longer.
 - `tools` is the actor's persisted allowlist and defaults to `subagents.defaultTools`. Replace it for future activations with `agents.setTools({ id, tools })`; an empty list disables optional tools. Pi actors retain the host-required `fabric_exec` tool unless created with `extensions: false`. Use `scope: "global"` to update a reusable template instead.
 - `extensions` is `true` by default (a Pi actor is recursively Fabric-equipped with the host-required `fabric_exec` tool). Set `extensions: false` to disable Fabric for a Pi actor: the activation runs with `extensions: false` and `recursive: false`, so `fabric_exec` is not injected and the actor cannot call `agents.*` or `mesh.*`; the host still manages its mailbox and delivery (same coordination model as a Claude actor). This does not restrict ordinary tools: also use `tools: ["read", "grep", "find", "ls"]` for a read-only actor or `tools: []` for no tools. Fixed at creation.
@@ -105,6 +105,7 @@ Mailbox:
 - `agents.tell({ id, message, data? })` returns `{ queued, messageId }` (fire and forget).
 - `agents.actorStatus({ id })` and `agents.actors()` return actor info.
 - `agents.setTools({ id, tools, scope? })` replaces the persisted tool allowlist for a project actor (default) or global template.
+- `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })` replaces the explicit project/global continuation policy without recreating the actor. In the dashboard, press `y` on an actor/template for the same control.
 - `agents.messages({ id, limit? })` returns message history.
 - `agents.remove({ id })` returns `{ removed }`.
 - `agents.log({ id, type?, lines?, runId? })` reads the LLM/agent log for an actor or one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.

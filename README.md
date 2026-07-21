@@ -55,7 +55,7 @@ Independent calls run in parallel; only the returned object enters the model con
 
 ## Install
 
-Requires Node.js 24+ and Pi 0.80.6+.
+Requires Node.js 24+ and Pi 0.80.6+. Fabric also checks a detectable Pi host version at startup and warns when an older host may ignore continuation APIs such as actor `triggerTurn`.
 
 ```bash
 pi install npm:pi-fabric

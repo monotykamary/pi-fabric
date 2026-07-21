@@ -112,6 +112,7 @@ describe("ActorManager", () => {
       instructions: "Advise only when useful.",
       responseMode: "directive",
       delivery: "steer",
+      triggerTurn: false,
     });
 
     const reply = await actors.ask(actor.id, "Review this turn");
@@ -122,6 +123,45 @@ describe("ActorManager", () => {
     expect(deliveries).toEqual(["fake actor advice"]);
   });
 
+  it("requires explicit active delivery intent and rejects impossible trigger policies", async () => {
+    const { actors } = setup();
+
+    await expect(
+      actors.create({
+        name: "ambiguous",
+        instructions: "Advise.",
+        delivery: "steer",
+      }),
+    ).rejects.toThrow(/requires explicit triggerTurn/);
+    await expect(
+      actors.create({
+        name: "impossible",
+        instructions: "Advise.",
+        delivery: "nextTurn",
+        triggerTurn: true,
+      }),
+    ).rejects.toThrow(/never starts Main/);
+
+    const actor = await actors.create({ name: "mailbox", instructions: "Advise." });
+    expect(actor).toMatchObject({ delivery: "mailbox", triggerTurn: false });
+  });
+
+  it("updates a live actor delivery policy without recreating its history", async () => {
+    const { actors } = setup();
+    const actor = await actors.create({ name: "advisor", instructions: "Advise." });
+    await actors.tell(actor.id, "remember this");
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    const messages = actors.status(actor.id).messages;
+
+    await expect(actors.setDeliveryPolicy(actor.id, "mailbox", true)).rejects.toThrow(
+      /never starts Main/,
+    );
+    const active = await actors.setDeliveryPolicy(actor.id, "followUp", true);
+    expect(active).toMatchObject({ delivery: "followUp", triggerTurn: true, messages });
+    const passive = await actors.setDeliveryPolicy(actor.id, "steer", false);
+    expect(passive).toMatchObject({ delivery: "steer", triggerTurn: false, messages });
+  });
+
   it("stays ambient and retains the failed run when a directive run fails", async () => {
     const { actors, subagents } = setup();
     const actor = await actors.create({
@@ -129,6 +169,7 @@ describe("ActorManager", () => {
       instructions: "Watch and steer only when needed.",
       responseMode: "directive",
       delivery: "steer",
+      triggerTurn: false,
     });
 
     const reply = await actors.ask(actor.id, "FAIL_DIRECTIVE");
@@ -390,6 +431,7 @@ describe("ActorManager", () => {
       instructions: "Advise only when useful.",
       responseMode: "directive",
       delivery: "steer",
+      triggerTurn: false,
     });
     await actors.ask(actor.id, "FAIL_DIRECTIVE");
     await waitFor(() => actors.status(actor.id).status === "idle");
@@ -775,6 +817,7 @@ describe("ActorManager", () => {
       events: ["agent_settled"],
       responseMode: "directive",
       delivery: "steer",
+      triggerTurn: false,
       coalesce: true,
     });
     // Each turn: the actor is idle when the event fires, so a run starts and
@@ -796,6 +839,7 @@ describe("ActorManager", () => {
       events: ["agent_settled"],
       responseMode: "directive",
       delivery: "steer",
+      triggerTurn: false,
       coalesce: true,
     });
     expect(actors.dispatchHostEvent("agent_settled", { turn: 1 })).toBe(1);
@@ -816,6 +860,7 @@ describe("ActorManager", () => {
       events: ["turn_end"],
       topics: ["team.review"],
       delivery: "steer",
+      triggerTurn: false,
       model: "anthropic/sonnet",
     });
     const def = actors.definition(actor.id);

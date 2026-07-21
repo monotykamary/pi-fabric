@@ -187,14 +187,12 @@ interface PiToolsApi {
 }
 type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
-interface FabricActorRequest {
+interface FabricActorRequestBase {
   name: string;
   instructions: string;
   events?: FabricActorHostEvent[];
   topics?: string[];
-  delivery?: FabricActorDelivery;
   responseMode?: "text" | "directive";
-  triggerTurn?: boolean;
   coalesce?: boolean;
   runner?: FabricAgentRunner;
   model?: string;
@@ -204,6 +202,11 @@ interface FabricActorRequest {
   timeoutMs?: number;
   extensions?: boolean;
 }
+type FabricActorRequest = FabricActorRequestBase & (
+  | { delivery?: "mailbox"; triggerTurn?: false }
+  | { delivery: "nextTurn"; triggerTurn?: false }
+  | { delivery: "steer" | "followUp"; triggerTurn: boolean }
+);
 interface FabricActorInfo {
   id: string;
   name: string;
@@ -255,6 +258,12 @@ interface FabricAgentsApi {
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setTools(args: { id: string; tools: string[]; scope?: "project" | "global" }): Promise<FabricActorInfo>;
   setEvents(args: { id: string; events: FabricActorHostEvent[] }): Promise<FabricActorInfo>;
+  setDeliveryPolicy(args: {
+    id: string;
+    delivery: FabricActorDelivery;
+    triggerTurn: boolean;
+    scope?: "project" | "global";
+  }): Promise<FabricActorInfo>;
   setInstructions(args: {
     id: string;
     instructions: string;

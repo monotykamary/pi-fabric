@@ -1,6 +1,11 @@
 import { ActorManager } from "../actors/manager.js";
 import { GlobalActorRegistry } from "../actors/global-registry.js";
-import type { FabricActorHostEvent, FabricActorMessage, FabricActorRequest } from "../actors/types.js";
+import type {
+  FabricActorDelivery,
+  FabricActorHostEvent,
+  FabricActorMessage,
+  FabricActorRequest,
+} from "../actors/types.js";
 import type {
   FabricAgentMessageResult,
   FabricMainAgentTarget,
@@ -187,6 +192,25 @@ const descriptors: FabricActionDescriptor[] = [
         scope: { type: "string", enum: ["project", "global"] },
       },
       required: ["name", "instructions"],
+      oneOf: [
+        {
+          properties: {
+            delivery: { const: "mailbox" },
+            triggerTurn: { const: false },
+          },
+        },
+        {
+          properties: {
+            delivery: { const: "nextTurn" },
+            triggerTurn: { const: false },
+          },
+          required: ["delivery"],
+        },
+        {
+          properties: { delivery: { enum: ["steer", "followUp"] } },
+          required: ["delivery", "triggerTurn"],
+        },
+      ],
       additionalProperties: false,
     },
     risk: "agent",
@@ -345,6 +369,26 @@ const descriptors: FabricActionDescriptor[] = [
         },
       },
       required: ["id", "events"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "setDeliveryPolicy",
+    description:
+      "Replace a project actor or global template delivery policy. steer/followUp require an explicit triggerTurn choice; mailbox/nextTurn require false.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        delivery: {
+          type: "string",
+          enum: ["mailbox", "steer", "followUp", "nextTurn"],
+        },
+        triggerTurn: { type: "boolean" },
+        scope: { type: "string", enum: ["project", "global"] },
+      },
+      required: ["id", "delivery", "triggerTurn"],
       additionalProperties: false,
     },
     risk: "agent",
@@ -949,6 +993,17 @@ export class AgentsProvider implements FabricProvider {
             )
           : [];
         return this.actorManager.setEvents(String(args.id), events);
+      }
+      case "setDeliveryPolicy": {
+        const delivery = args.delivery as FabricActorDelivery;
+        if (typeof args.triggerTurn !== "boolean") {
+          throw new Error("setDeliveryPolicy requires explicit triggerTurn: true or false");
+        }
+        const triggerTurn = args.triggerTurn;
+        if (args.scope === "global") {
+          return this.globalActors.update(String(args.id), { delivery, triggerTurn });
+        }
+        return this.actorManager.setDeliveryPolicy(String(args.id), delivery, triggerTurn);
       }
       case "clearMessages":
         return this.actorManager.clearMessages(String(args.id));

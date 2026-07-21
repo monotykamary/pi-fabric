@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FabricSubagentTransport } from "../config.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
+import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
 import type {
   FabricActorDelivery,
   FabricActorHostEvent,
@@ -238,13 +239,11 @@ export class GlobalActorRegistry {
     for (const topic of topics) {
       if (!TOPIC_PATTERN.test(topic)) throw new Error(`Invalid global actor topic: ${topic}`);
     }
-    const delivery = def.delivery ?? "mailbox";
-    if (!DELIVERIES.has(delivery)) throw new Error(`Invalid global actor delivery: ${def.delivery}`);
+    const deliveryPolicy = resolveActorDeliveryPolicy(def.delivery, def.triggerTurn);
     const responseMode = def.responseMode ?? "text";
     if (!RESPONSE_MODES.has(responseMode)) {
       throw new Error(`Invalid global actor response mode: ${def.responseMode}`);
     }
-    const triggerTurn = def.triggerTurn ?? false;
     const coalesce = def.coalesce ?? true;
     const runner = def.runner ?? "pi";
     if (runner !== "pi" && runner !== "claude") {
@@ -265,9 +264,9 @@ export class GlobalActorRegistry {
       instructions,
       events,
       topics,
-      delivery,
+      delivery: deliveryPolicy.delivery,
       responseMode,
-      triggerTurn,
+      triggerTurn: deliveryPolicy.triggerTurn,
       coalesce,
       runner,
       ...(model ? { model } : {}),
@@ -318,7 +317,8 @@ export class GlobalActorRegistry {
           : "mailbox";
       const responseMode: FabricActorResponseMode =
         record.responseMode === "directive" ? "directive" : "text";
-      const triggerTurn = record.triggerTurn === true;
+      const triggerTurn =
+        (delivery === "steer" || delivery === "followUp") && record.triggerTurn === true;
       const coalesce = record.coalesce !== false;
       const runner = record.runner === "claude" ? "claude" : "pi";
       const thinking: FabricThinking | undefined = isFabricThinking(record.thinking)

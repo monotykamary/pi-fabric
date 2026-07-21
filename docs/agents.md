@@ -156,6 +156,7 @@ return agents.create({
   events: ["agent_settled", "tool_error"],
   responseMode: "directive",
   delivery: "steer",
+  triggerTurn: false,
   tools: ["read", "grep", "find", "ls"],
 });
 ```
@@ -171,7 +172,19 @@ Two response modes are available:
 - `text`: every non-empty response becomes an actor outbox message.
 - `directive`: validated `{ action: "silent" | "message" | "stop", message?, data? }` output lets the actor decide whether intervention is useful.
 
-Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. The creator fixes delivery policy; an actor cannot escalate it in a response. Use `agents.ask()` for a blocking exchange, `agents.tell()` for fire-and-forget mail, `agents.messages()` for history, and `agents.remove()` for cleanup.
+Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. `steer` and `followUp` require an explicit `triggerTurn: true | false`: `true` starts Main when it is idle, while `false` is passive and is visibly labeled as not starting Main. `mailbox` and `nextTurn` never start Main and reject `triggerTurn: true`. This explicit policy prevents a delivered actor message from looking like a stalled continuation.
+
+The actor cannot escalate delivery in its own response, but the owner can update a live actor or global template without losing history:
+
+```ts
+await agents.setDeliveryPolicy({
+  id: actor.id,
+  delivery: "steer",
+  triggerTurn: true,
+});
+```
+
+Pass `scope: "global"` to update a reusable template. In the dashboard, press `y` on an actor or template to choose among mailbox, passive/active steer, passive/active follow-up, and next-turn delivery. Use `agents.ask()` for a blocking exchange, `agents.tell()` for fire-and-forget mail, `agents.messages()` for history, and `agents.remove()` for cleanup.
 
 ## Paged agent logs
 
@@ -210,11 +223,17 @@ return agents.import({ name: "security-reviewer", as: "security-reviewer-2" }); 
 // Promote a tuned project actor back to the global library (no history).
 return agents.export({ id: actorId, overwrite: true });
 
-// Refine a template's default instruction (the persona / system-prompt body).
-return agents.setInstructions({ id: template.id, instructions: "Be brief.", scope: "global" });
+// Refine a template's default instruction and continuation policy.
+await agents.setInstructions({ id: template.id, instructions: "Be brief.", scope: "global" });
+return agents.setDeliveryPolicy({
+  id: template.id,
+  delivery: "steer",
+  triggerTurn: false,
+  scope: "global",
+});
 ```
 
-`agents.setInstructions` also edits a live project actor (`scope: "project"`, the default); the new instruction takes effect on the actor's next queued message. History never crosses the project⇄global boundary — import and export move only the definition. Slash commands mirror the API: `/fabric global` lists templates, `/fabric import <name> [as <new>]` stamps one into the project, and `/fabric export <id> [--overwrite]` promotes a project actor. The dashboard lists global templates alongside live actors and lets you import, export, delete, and edit instructions without writing code.
+`agents.setInstructions` also edits a live project actor (`scope: "project"`, the default); the new instruction takes effect on the actor's next queued message. History never crosses the project⇄global boundary — import and export move only the definition. Slash commands mirror the API: `/fabric global` lists templates, `/fabric import <name> [as <new>]` stamps one into the project, and `/fabric export <id> [--overwrite]` promotes a project actor. The dashboard lists global templates alongside live actors and lets you import, export, delete, edit instructions, and change delivery policy without writing code. Legacy persisted actors/templates still load as passive, but new active delivery definitions must state `triggerTurn` explicitly.
 
 ## Councils
 

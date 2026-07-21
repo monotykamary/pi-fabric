@@ -21,6 +21,7 @@ import type {
   FabricActorStatus,
 } from "./types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
+import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
 
 interface ActorQueueItem {
   id: string;
@@ -200,6 +201,7 @@ export class ActorManager {
     for (const topic of topics) {
       if (!TOPIC_PATTERN.test(topic)) throw new Error(`Invalid Fabric actor topic: ${topic}`);
     }
+    const deliveryPolicy = resolveActorDeliveryPolicy(request.delivery, request.triggerTurn);
     const runner = request.runner ?? this.subagents.config.runner;
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid Fabric actor runner: ${String(request.runner)}`);
@@ -214,9 +216,9 @@ export class ActorManager {
       status: "idle",
       events,
       topics,
-      delivery: request.delivery ?? "mailbox",
+      delivery: deliveryPolicy.delivery,
       responseMode: request.responseMode ?? "text",
-      triggerTurn: request.triggerTurn ?? false,
+      triggerTurn: deliveryPolicy.triggerTurn,
       coalesce: request.coalesce ?? true,
       runner,
       ...(request.model ? { model: request.model } : {}),
@@ -323,6 +325,25 @@ export class ActorManager {
       if (!HOST_EVENTS.has(event)) throw new Error(`Unsupported Fabric actor event: ${event}`);
     }
     actor.events = next;
+    actor.updatedAt = Date.now();
+    this.#saveActors();
+    await this.#publishPresence(actor);
+    return this.#publicInfo(actor);
+  }
+
+  /**
+   * Replace an actor's host delivery policy. Active delivery modes require an
+   * explicit trigger choice; mailbox and nextTurn reject triggerTurn=true.
+   */
+  async setDeliveryPolicy(
+    id: string,
+    delivery: FabricActorDelivery,
+    triggerTurn: boolean,
+  ): Promise<FabricActorInfo> {
+    const actor = this.#requireActor(id);
+    const policy = resolveActorDeliveryPolicy(delivery, triggerTurn);
+    actor.delivery = policy.delivery;
+    actor.triggerTurn = policy.triggerTurn;
     actor.updatedAt = Date.now();
     this.#saveActors();
     await this.#publishPresence(actor);
@@ -1252,6 +1273,14 @@ export class ActorManager {
         continue;
       }
       const status = record.status === "stopped" ? "stopped" : "idle";
+      const delivery: FabricActorDelivery =
+        record.delivery === "steer" ||
+        record.delivery === "followUp" ||
+        record.delivery === "nextTurn"
+          ? record.delivery
+          : "mailbox";
+      const triggerTurn =
+        (delivery === "steer" || delivery === "followUp") && record.triggerTurn === true;
       const actor: ManagedActor = {
         id: record.id,
         name: record.name,
@@ -1265,14 +1294,9 @@ export class ActorManager {
               (topic): topic is string => typeof topic === "string" && TOPIC_PATTERN.test(topic),
             )
           : [],
-        delivery:
-          record.delivery === "steer" ||
-          record.delivery === "followUp" ||
-          record.delivery === "nextTurn"
-            ? record.delivery
-            : "mailbox",
+        delivery,
         responseMode: record.responseMode === "directive" ? "directive" : "text",
-        triggerTurn: record.triggerTurn === true,
+        triggerTurn,
         coalesce: record.coalesce !== false,
         runner: record.runner === "claude" ? "claude" : "pi",
         ...(typeof record.runnerSessionId === "string" && record.runnerSessionId.trim()

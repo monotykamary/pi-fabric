@@ -18,8 +18,10 @@ export interface FabricActorRequest {
   instructions: string;
   events?: FabricActorHostEvent[];
   topics?: string[];
+  /** Defaults to mailbox. steer/followUp require an explicit triggerTurn choice. */
   delivery?: FabricActorDelivery;
   responseMode?: FabricActorResponseMode;
+  /** Required for steer/followUp; must be false or omitted for mailbox/nextTurn. */
   triggerTurn?: boolean;
   coalesce?: boolean;
   runner?: FabricAgentRunner;

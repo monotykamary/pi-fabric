@@ -110,6 +110,7 @@ const createRequest = {
   events: ["turn_end"],
   delivery: "steer",
   responseMode: "directive",
+  triggerTurn: false,
 };
 
 describe("AgentsProvider runner support", () => {
@@ -347,6 +348,39 @@ describe("AgentsProvider global actors", () => {
       context,
     );
     expect(globalActors.resolve("templar")!.tools).toEqual([]);
+  });
+
+
+  it("validates and updates delivery policies for project actors and global templates", async () => {
+    const { provider, actors, globalActors } = setup();
+    const { triggerTurn: _triggerTurn, ...ambiguous } = createRequest;
+    await expect(provider.invoke("create", ambiguous, context)).rejects.toThrow(
+      /requires explicit triggerTurn/,
+    );
+
+    const actor = (await provider.invoke("create", createRequest, context)) as { id: string };
+    await provider.invoke(
+      "setDeliveryPolicy",
+      { id: actor.id, delivery: "steer", triggerTurn: true },
+      context,
+    );
+    expect(actors.status(actor.id)).toMatchObject({ delivery: "steer", triggerTurn: true });
+
+    await provider.invoke(
+      "create",
+      { ...createRequest, name: "templar", scope: "global" },
+      context,
+    );
+    const templateId = globalActors.resolve("templar")!.id;
+    await provider.invoke(
+      "setDeliveryPolicy",
+      { id: templateId, delivery: "followUp", triggerTurn: true, scope: "global" },
+      context,
+    );
+    expect(globalActors.resolve(templateId)).toMatchObject({
+      delivery: "followUp",
+      triggerTurn: true,
+    });
   });
 
   it("edits instructions for project and global scopes", async () => {

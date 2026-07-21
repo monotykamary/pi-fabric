@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { FabricActivityCall, FabricActivityRun } from "../activity/types.js";
 import type { FabricAgentMessageDelivery } from "../main-agent.js";
-import type { FabricActorHostEvent } from "../actors/types.js";
+import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import {
   entitiesForOverview,
@@ -38,6 +38,7 @@ import {
   renderRunTopologyPanel,
 } from "./dashboard-topology-view.js";
 import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
+import { FabricActorDeliverySelector } from "./fabric-actor-delivery-selector.js";
 import { FabricActorToolSelector } from "./fabric-actor-tool-selector.js";
 import { FabricModelSelector } from "./fabric-model-selector.js";
 import { coreToolTitle, renderCoreToolBody } from "./core-tool-render.js";
@@ -139,6 +140,7 @@ export class FabricDashboard implements Component, Focusable {
     | "detail"
     | "modelPicker"
     | "thinkingPicker"
+    | "deliveryPicker"
     | "eventsPicker"
     | "toolsPicker"
     | "instructionsEditor"
@@ -147,6 +149,7 @@ export class FabricDashboard implements Component, Focusable {
   private picker:
     | FabricModelSelector
     | FabricThinkingSelector
+    | FabricActorDeliverySelector
     | FabricHostEventSelector
     | FabricActorToolSelector
     | undefined;
@@ -185,6 +188,12 @@ export class FabricDashboard implements Component, Focusable {
     | undefined;
   private readonly onActorEvents:
     | ((actorId: string, events: FabricActorHostEvent[]) => void)
+    | undefined;
+  private readonly onActorDeliveryPolicy:
+    | ((actorId: string, delivery: FabricActorDelivery, triggerTurn: boolean) => void)
+    | undefined;
+  private readonly onGlobalDeliveryPolicy:
+    | ((actorId: string, delivery: FabricActorDelivery, triggerTurn: boolean) => void)
     | undefined;
   private readonly onActorTools: ((actorId: string, tools: string[]) => void) | undefined;
   private readonly actorDefaultTools: string[];
@@ -234,6 +243,16 @@ export class FabricDashboard implements Component, Focusable {
       onActorModel?: (actorId: string, model: string | undefined) => void;
       onActorThinking?: (actorId: string, thinking: FabricThinking | undefined) => void;
       onActorEvents?: (actorId: string, events: FabricActorHostEvent[]) => void;
+      onActorDeliveryPolicy?: (
+        actorId: string,
+        delivery: FabricActorDelivery,
+        triggerTurn: boolean,
+      ) => void;
+      onGlobalDeliveryPolicy?: (
+        actorId: string,
+        delivery: FabricActorDelivery,
+        triggerTurn: boolean,
+      ) => void;
       onActorTools?: (actorId: string, tools: string[]) => void;
       actorDefaultTools?: string[];
       onClearMessages?: (actorId: string) => void;
@@ -261,6 +280,8 @@ export class FabricDashboard implements Component, Focusable {
     this.onActorModel = options.onActorModel;
     this.onActorThinking = options.onActorThinking;
     this.onActorEvents = options.onActorEvents;
+    this.onActorDeliveryPolicy = options.onActorDeliveryPolicy;
+    this.onGlobalDeliveryPolicy = options.onGlobalDeliveryPolicy;
     this.onActorTools = options.onActorTools;
     this.actorDefaultTools = options.actorDefaultTools ?? [];
     this.onClearMessages = options.onClearMessages;
@@ -304,6 +325,7 @@ export class FabricDashboard implements Component, Focusable {
     if (
       (this.mode === "modelPicker" ||
         this.mode === "thinkingPicker" ||
+        this.mode === "deliveryPicker" ||
         this.mode === "eventsPicker" ||
         this.mode === "toolsPicker") &&
       this.picker
@@ -411,6 +433,11 @@ export class FabricDashboard implements Component, Focusable {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
         if (detail && detail.kind === "actor" && detail.status !== "stopped") {
           this.openThinkingPicker(detail);
+        }
+      } else if (data === "y") {
+        const detail = allEntities.find((entity) => entity.id === this.detailId);
+        if (detail && (detail.kind === "actor" || detail.kind === "globalActor")) {
+          this.openDeliveryPicker(detail);
         }
       } else if (data === "v") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
@@ -560,7 +587,7 @@ export class FabricDashboard implements Component, Focusable {
         this.entityIndex = Math.min(Math.max(0, entities.length - 1), this.entityIndex + 1);
       }
     } else if (
-      ["m", "e", "v", "o", "i", "c", "s", "u", "x", "p", "d"].includes(data) &&
+      ["m", "e", "y", "v", "o", "i", "c", "s", "u", "x", "p", "d"].includes(data) &&
       this.pane === "entities"
     ) {
       const selected = entities[this.entityIndex];
@@ -586,6 +613,13 @@ export class FabricDashboard implements Component, Focusable {
         } else if (data === "e" && selected.kind === "actor" && selected.status !== "stopped") {
           this.detailId = selected.id;
           this.openThinkingPicker(selected);
+        } else if (
+          data === "y" &&
+          (selected.kind === "globalActor" ||
+            (selected.kind === "actor" && selected.status !== "stopped"))
+        ) {
+          this.detailId = selected.id;
+          this.openDeliveryPicker(selected);
         } else if (data === "v" && selected.kind === "actor" && selected.status !== "stopped") {
           this.detailId = selected.id;
           this.openEventsPicker(selected);
@@ -695,6 +729,7 @@ export class FabricDashboard implements Component, Focusable {
     if (
       (this.mode === "modelPicker" ||
         this.mode === "thinkingPicker" ||
+        this.mode === "deliveryPicker" ||
         this.mode === "eventsPicker" ||
         this.mode === "toolsPicker") &&
       this.picker
@@ -907,6 +942,7 @@ export class FabricDashboard implements Component, Focusable {
       this.onTargetMessage ? "s queue message" : undefined,
       (this.modelSource || this.claudeModelSource) && this.onActorModel ? "m model" : undefined,
       this.onActorThinking ? "e thinking" : undefined,
+      this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
       this.onActorEvents ? "v events" : undefined,
       this.onActorTools ? "o tools" : undefined,
       this.onActorInstructions ? "i instructions" : undefined,
@@ -914,6 +950,7 @@ export class FabricDashboard implements Component, Focusable {
       this.onExportActor ? "x export" : undefined,
     ].filter((value): value is string => Boolean(value));
     const templateActions = [
+      this.onGlobalDeliveryPolicy ? "y delivery policy" : undefined,
       this.onGlobalInstructions ? "i instructions" : undefined,
       this.onImportActor ? "p import" : undefined,
       this.onRemoveGlobalActor ? "d delete" : undefined,
@@ -997,6 +1034,27 @@ export class FabricDashboard implements Component, Focusable {
     });
     this.picker.focused = true;
     this.mode = "thinkingPicker";
+  }
+
+  private openDeliveryPicker(entity: Entity): void {
+    if (entity.kind !== "actor" && entity.kind !== "globalActor") return;
+    const target = entity.value;
+    const callback =
+      entity.kind === "actor" ? this.onActorDeliveryPolicy : this.onGlobalDeliveryPolicy;
+    if (!callback || (entity.kind === "actor" && entity.status === "stopped")) return;
+    this.pickerActorName = target.name;
+    this.picker = new FabricActorDeliverySelector({
+      theme: this.theme,
+      currentValue: { delivery: target.delivery, triggerTurn: target.triggerTurn },
+      headerText: `Delivery policy for ${entity.kind === "actor" ? "actor" : "template"} "${target.name}". Active delivery requires an explicit resume choice.`,
+      onSelect: (policy) => {
+        callback(target.id, policy.delivery, policy.triggerTurn);
+        this.closeModelPicker();
+      },
+      onCancel: () => this.closeModelPicker(),
+    });
+    this.picker.focused = true;
+    this.mode = "deliveryPicker";
   }
 
   private openEventsPicker(entity: Entity): void {
@@ -1093,11 +1151,13 @@ export class FabricDashboard implements Component, Focusable {
     const kind =
       this.mode === "thinkingPicker"
         ? "thinking"
-        : this.mode === "eventsPicker"
-          ? "events"
-          : this.mode === "toolsPicker"
-            ? "tools"
-            : "model";
+        : this.mode === "deliveryPicker"
+          ? "delivery"
+          : this.mode === "eventsPicker"
+            ? "events"
+            : this.mode === "toolsPicker"
+              ? "tools"
+              : "model";
     const lines = [
       this.topBorder(width, `actor · ${this.pickerActorName ?? ""} · ${kind}`),
     ];
@@ -1105,7 +1165,10 @@ export class FabricDashboard implements Component, Focusable {
     for (const line of inner) lines.push(this.row(width, line));
     lines.push(this.middleBorder(width));
     const filterHint =
-      this.mode === "thinkingPicker" || this.mode === "eventsPicker" || this.mode === "toolsPicker"
+      this.mode === "thinkingPicker" ||
+      this.mode === "deliveryPicker" ||
+      this.mode === "eventsPicker" ||
+      this.mode === "toolsPicker"
         ? ""
         : " · type to filter";
     lines.push(
@@ -1394,6 +1457,7 @@ export class FabricDashboard implements Component, Focusable {
         this.canMessage(entity, "steer") ? "s queue message" : undefined,
         this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
         this.onActorThinking ? "e thinking" : undefined,
+        this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
         this.onActorEvents ? "v events" : undefined,
         this.onActorTools ? "o tools" : undefined,
         this.onActorInstructions ? "i instructions" : undefined,
@@ -1405,6 +1469,7 @@ export class FabricDashboard implements Component, Focusable {
     }
     if (entity.kind === "globalActor") {
       const actions = [
+        this.onGlobalDeliveryPolicy ? "y delivery policy" : undefined,
         this.onGlobalInstructions ? "i instructions" : undefined,
         this.onImportActor ? "p import" : undefined,
         this.onRemoveGlobalActor ? "d delete" : undefined,
@@ -1908,6 +1973,7 @@ export class FabricDashboard implements Component, Focusable {
         this.canMessage(entity, "steer") ? "s queue message" : undefined,
         this.modelSourceForActor(entity.value) && this.onActorModel ? "m model" : undefined,
         this.onActorThinking ? "e thinking" : undefined,
+        this.onActorDeliveryPolicy ? "y delivery policy" : undefined,
         this.onActorEvents ? "v events" : undefined,
         this.onActorTools ? "o tools" : undefined,
         this.onClearMessages ? "c clear mailbox" : undefined,
@@ -1929,6 +1995,7 @@ export class FabricDashboard implements Component, Focusable {
     }
     if (entity.kind === "globalActor") {
       const actions = [
+        this.onGlobalDeliveryPolicy ? "y delivery policy" : undefined,
         this.onGlobalInstructions ? "i instructions" : undefined,
         this.onImportActor ? "p import" : undefined,
         this.onRemoveGlobalActor ? "d delete" : undefined,
@@ -2140,6 +2207,7 @@ export class FabricDashboard implements Component, Focusable {
       field("Thinking override", actor.thinking ?? "inherit");
       field("Active worker thinking", actor.worker?.thinking);
       field("Delivery", `${actor.delivery} · ${actor.responseMode}`);
+      field("Trigger turn", actor.triggerTurn ? "yes" : "no");
       field("Activity", actor.worker?.currentTool);
       field("Transport", actor.worker?.transport);
       field(

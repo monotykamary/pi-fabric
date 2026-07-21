@@ -1184,6 +1184,31 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("edits a live actor delivery policy with an explicit resume choice", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const onActorDeliveryPolicy = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      onActorDeliveryPolicy,
+    });
+    try {
+      openActorDetail(dashboard);
+      const detail = dashboard.render(120).join("\n");
+      expect(detail).toContain("Trigger turn: no");
+      expect(detail).toContain("y delivery policy");
+
+      dashboard.handleInput("y");
+      const picker = dashboard.render(120).join("\n");
+      expect(picker).toContain("Mailbox only ✓");
+      expect(picker).toContain("Steer · resume Main");
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput("\r");
+      expect(onActorDeliveryPolicy).toHaveBeenCalledWith("actor-1", "steer", true);
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("offers a per-actor host-event picker from the actor detail view", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
     const onActorEvents = vi.fn();
@@ -2445,6 +2470,25 @@ describe("Fabric dashboard global actors and instructions editor", () => {
       events: [],
     };
   };
+
+  it("edits a global template delivery policy", () => {
+    const tui = { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI;
+    const onGlobalDeliveryPolicy = vi.fn();
+    const dashboard = new FabricDashboard(tui, theme, baseSnapshot, vi.fn(), {
+      onGlobalDeliveryPolicy,
+    });
+    try {
+      dashboard.handleInput("l");
+      dashboard.handleInput("j");
+      dashboard.handleInput("y");
+      expect(dashboard.render(120).join("\n")).toContain("Mailbox only ✓");
+      dashboard.handleInput("\x1b[B");
+      dashboard.handleInput("\r");
+      expect(onGlobalDeliveryPolicy).toHaveBeenCalledWith("g-actor-1", "steer", false);
+    } finally {
+      dashboard.dispose();
+    }
+  });
 
   it("lists global templates and offers import/instructions/delete in their detail", () => {
     const tui = { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI;
