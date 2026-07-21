@@ -39,4 +39,35 @@ describe("fabric-exec skill provider contracts", () => {
     expect(extension).not.toContain("For subagents and actors, omit timeoutMs");
     expect(extension).not.toContain("FABRIC_TEMPLATE_LITERAL_CAVEAT");
   });
+
+  it("centralizes ambient actor setup outside the profile skills", () => {
+    const setup = fs.readFileSync(
+      "skills/fabric-ambient/references/setup.md",
+      "utf8",
+    );
+    expect(setup).toContain("agents.create({");
+    expect(setup).toContain("agents.setDeliveryPolicy({");
+    expect(setup).toContain("pass an empty string when unset");
+
+    const profiles = {
+      "fabric-advisor": "../fabric-ambient/references/setup.md",
+      "fabric-supervisor": "../fabric-ambient/references/setup.md",
+      "fabric-ambient": "references/setup.md",
+    } as const;
+    for (const [name, reference] of Object.entries(profiles)) {
+      const skillPath = `skills/${name}/SKILL.md`;
+      const skill = fs.readFileSync(skillPath, "utf8");
+      const referencePath = new URL(reference, `file://${process.cwd()}/skills/${name}/`);
+      expect(fs.existsSync(referencePath)).toBe(true);
+      expect(skill).toContain(reference);
+      expect(skill).toContain("empty");
+      expect(skill).not.toContain("agents.create({");
+      expect(skill).not.toContain("agents.setDeliveryPolicy({");
+    }
+
+    expect(fs.readFileSync("skills/fabric-supervisor/SKILL.md", "utf8"))
+      .toContain("request credentials");
+    expect(fs.readFileSync("skills/fabric-ambient/SKILL.md", "utf8"))
+      .toContain("request credentials");
+  });
 });

@@ -1,13 +1,10 @@
 ---
 name: fabric-exec
 description: >-
-  Reference for writing `fabric_exec` TypeScript programs in the isolated
-  QuickJS runtime (or the trusted unsafe Node-process escape hatch): the mental model (one program, return only the final value), the
-  core `pi` tools (read/bash/edit/write/grep/find/ls) with exact signatures,
-  `tools` discovery, `π` named strings, first-class Fabric provider and MCP
-  proxies, and the validate, describe, retry error loop. Load before your first
-  `fabric_exec` call and whenever a call errors on argument shape. See
-  `references/mcp.md` for MCP naming and management.
+  Reference for `fabric_exec` TypeScript programs: Pi core tool signatures,
+  discovery, provider and MCP proxies, named strings, return shapes, and
+  schema-driven error recovery. Load before the first Fabric call or after an
+  argument-shape error.
 ---
 
 # fabric_exec — core reference
