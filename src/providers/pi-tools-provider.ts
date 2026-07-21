@@ -77,6 +77,16 @@ const normalizeResult = (
     return text;
   }
   let details = result.details;
+  if (name === "bash" && details && typeof details === "object" && !Array.isArray(details)) {
+    const detailRecord = details as Record<string, unknown>;
+    const truncation = detailRecord.truncation;
+    if (truncation && typeof truncation === "object" && !Array.isArray(truncation)) {
+      const { content, ...truncationMetadata } = truncation as Record<string, unknown>;
+      if (typeof content === "string" && text.includes(content)) {
+        details = { ...detailRecord, truncation: truncationMetadata };
+      }
+    }
+  }
   if (name === "write" && details && typeof details === "object" && !Array.isArray(details)) {
     const { codePreviewBeforeWrite: _before, ...publicDetails } = details as Record<string, unknown>;
     details = Object.keys(publicDetails).length > 0 ? publicDetails : undefined;

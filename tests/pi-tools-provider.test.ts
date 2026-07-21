@@ -107,6 +107,43 @@ describe("PiToolsProvider lifecycle", () => {
     expect((result as string).length).toBeGreaterThan(0);
   });
 
+  it("returns truncated Bash output once while preserving recovery metadata", async () => {
+    const registry = new ActionRegistry();
+    registry.register(new PiToolsProvider(process.cwd(), undefined, undefined));
+    const result = await registry.invoke(
+      "pi.bash",
+      {
+        command:
+          `node -e 'for (let i = 0; i < 5000; i++) console.log(i, "x".repeat(100))'`,
+      },
+      { ...baseContext, maxResultChars: 2_000_000 },
+    );
+    const bashResult = result as {
+      ok: boolean;
+      output: string;
+      details: {
+        fullOutputPath?: string;
+        truncation?: Record<string, unknown>;
+      };
+    };
+
+    try {
+      expect(bashResult).toMatchObject({
+        ok: true,
+        output: expect.any(String),
+        details: {
+          fullOutputPath: expect.any(String),
+          truncation: { truncated: true },
+        },
+      });
+      expect("content" in (bashResult.details.truncation ?? {})).toBe(false);
+    } finally {
+      if (bashResult.details.fullOutputPath) {
+        fs.rmSync(bashResult.details.fullOutputPath, { force: true });
+      }
+    }
+  });
+
   it("captures pre-write content out of band without changing the sandbox result", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-write-preview-"));
     const before = `const value = 1;
