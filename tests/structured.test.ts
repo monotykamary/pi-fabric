@@ -60,8 +60,12 @@ describe("multi-line string fidelity", () => {
     expect(formatted).toEqual({ text: "a: x\nb: 1", language: "yaml" });
   });
 
-  it("drops the yaml language tag when raw sections are appended", () => {
+  it("bounds YAML highlighting to the skeleton when raw sections are appended", () => {
     const formatted = formatFabricValue({ content: file }, "auto");
-    expect(formatted.language).toBeUndefined();
+    expect(formatted.language).toBe("yaml");
+    expect(formatted.highlightedLineCount).toBe(1);
+    expect(formatted.text.split("\n")[formatted.highlightedLineCount! + 1]).toMatch(
+      /^--- content/,
+    );
   });
 });

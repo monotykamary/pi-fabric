@@ -74,7 +74,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
-import { truncateMiddle } from "./util.js";
+import { countNewlines, truncateMiddle } from "./util.js";
 
 const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const MAX_FABRIC_CODE_TRANSFER_LINES = 12;
@@ -458,13 +458,34 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           if (!details.outputFormat || lines.length === 0) {
             return lines.map((line) => theme.fg("toolOutput", line || " "));
           }
-          const highlighted = highlightCode(
-            lines.join(nl),
-            details.outputFormat,
-            context?.invalidate,
+          const highlightedStart = Math.min(
+            lines.length,
+            details.outputFormatStartLine ?? 0,
           );
-          return highlighted?.map((line) => line || " ")
-            ?? lines.map((line) => theme.fg("toolOutput", line || " "));
+          const highlightedCount = Math.min(
+            lines.length - highlightedStart,
+            details.outputFormatLines ?? lines.length,
+          );
+          const highlightedSource = lines.slice(
+            highlightedStart,
+            highlightedStart + highlightedCount,
+          );
+          const highlighted = highlightedSource.length > 0
+            ? highlightCode(
+                highlightedSource.join(nl),
+                details.outputFormat,
+                context?.invalidate,
+              )
+            : [];
+          const styledPrefix = highlighted?.map((line) => line || " ")
+            ?? highlightedSource.map((line) => theme.fg("toolOutput", line || " "));
+          return [
+            ...lines.slice(0, highlightedStart).map((line) => theme.fg("toolOutput", line || " ")),
+            ...styledPrefix,
+            ...lines
+              .slice(highlightedStart + highlightedCount)
+              .map((line) => theme.fg("toolOutput", line || " ")),
+          ];
         };
         const failed = details.success === false;
 
@@ -701,13 +722,31 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         const selectedResultFormat =
           params.resultFormat ?? state.config.executor.resultFormat;
         const formattedValue = formatFabricValue(result.value, selectedResultFormat);
+        const sections = [...result.logs];
+        const logPrefix = result.logs.join("\n\n");
+        if (formattedValue.text) sections.push(formattedValue.text);
+        if (result.error) sections.push(`Runtime error: ${result.error}`);
+        const rawOutput = sections.join("\n\n");
+        const outputWillTruncate = rawOutput.length > state.config.executor.maxOutputChars;
         const outputFormat =
-          formattedValue.language && result.logs.length === 0 && !result.error
+          formattedValue.language &&
+          formattedValue.text &&
+          (result.logs.length === 0 || !outputWillTruncate)
             ? formattedValue.language
             : undefined;
+        const outputFormatStartLine = result.logs.length > 0
+          ? countNewlines(logPrefix) + 2
+          : 0;
         const persistedDetails = createFabricPersistedExecutionDetails({
           ...result,
-          ...(outputFormat ? { outputFormat } : {}),
+          ...(outputFormat ? { outputFormat, outputFormatStartLine } : {}),
+          ...(outputFormat
+            ? {
+                outputFormatLines:
+                  formattedValue.highlightedLineCount
+                  ?? countNewlines(formattedValue.text) + 1,
+              }
+            : {}),
         });
 
         if (result.typeErrors) {
@@ -725,11 +764,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           };
         }
 
-        const sections = [...result.logs];
-        if (formattedValue.text) sections.push(formattedValue.text);
-        if (result.error) sections.push(`Runtime error: ${result.error}`);
         const output = truncateMiddle(
-          sections.join("\n\n") || "(no output)",
+          rawOutput || "(no output)",
           state.config.executor.maxOutputChars,
         );
         const terminate =

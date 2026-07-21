@@ -10,6 +10,8 @@ export interface FabricPersistedExecutionDetailsV1 {
   success: boolean;
   trace: FabricExecutionTraceV1;
   outputFormat?: "yaml" | "json";
+  outputFormatStartLine?: number;
+  outputFormatLines?: number;
 }
 
 export interface FabricLegacyRenderAudit {
@@ -31,6 +33,8 @@ export interface FabricExecutionRenderDetails {
   error?: string;
   progress?: string;
   outputFormat?: "yaml" | "json";
+  outputFormatStartLine?: number;
+  outputFormatLines?: number;
   phases: string[];
   audits: FabricLegacyRenderAudit[];
 }
@@ -50,11 +54,19 @@ export const createFabricPersistedExecutionDetails = (input: {
   success: boolean;
   trace: FabricExecutionTraceV1;
   outputFormat?: "yaml" | "json";
+  outputFormatStartLine?: number;
+  outputFormatLines?: number;
 }): FabricPersistedExecutionDetailsV1 => {
   const details: FabricPersistedExecutionDetailsV1 = {
     success: input.success,
     trace: cloneTrace(input.trace),
     ...(input.outputFormat ? { outputFormat: input.outputFormat } : {}),
+    ...(input.outputFormatStartLine !== undefined
+      ? { outputFormatStartLine: Math.max(0, Math.floor(input.outputFormatStartLine)) }
+      : {}),
+    ...(input.outputFormatLines !== undefined
+      ? { outputFormatLines: Math.max(0, Math.floor(input.outputFormatLines)) }
+      : {}),
   };
   while (
     serializedBytes(details) > FABRIC_EXECUTION_DETAILS_MAX_BYTES &&
@@ -141,6 +153,16 @@ export const readFabricExecutionRenderDetails = (
     ...(typeof value.progress === "string" ? { progress: value.progress } : {}),
     ...(value.outputFormat === "yaml" || value.outputFormat === "json"
       ? { outputFormat: value.outputFormat }
+      : {}),
+    ...(typeof value.outputFormatStartLine === "number" &&
+      Number.isFinite(value.outputFormatStartLine) &&
+      value.outputFormatStartLine >= 0
+      ? { outputFormatStartLine: Math.floor(value.outputFormatStartLine) }
+      : {}),
+    ...(typeof value.outputFormatLines === "number" &&
+      Number.isFinite(value.outputFormatLines) &&
+      value.outputFormatLines >= 0
+      ? { outputFormatLines: Math.floor(value.outputFormatLines) }
       : {}),
     phases: oldPhases ?? trace?.phases ?? [],
     audits: oldAudits ?? trace?.operations.map(auditFromOperation) ?? [],

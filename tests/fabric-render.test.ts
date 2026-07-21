@@ -1013,6 +1013,47 @@ b`, theme)).toBe("");
     );
   });
 
+  it("keeps safe provider details when final traces omit results and payloads", () => {
+    const live = [
+      { ref: "agents.list", provider: "agents", tool: "list", args: {}, result: Array(13).fill({}) },
+      { ref: "agents.log", provider: "agents", tool: "log", args: { id: "agent-reviewer-1234", lines: 2000 } },
+      { ref: "agents.ask", provider: "agents", tool: "ask", args: { id: "agent-reviewer-1234", message: "Audit web search" } },
+      { ref: "mcp.$call", provider: "mcp", tool: "$call", args: { server: "github", tool: "search_code", args: { q: "private" } } },
+      { ref: "fabric.discovery.list", provider: "fabric", tool: "discovery.list", args: {}, result: Array(83).fill({}) },
+    ];
+    const previews = captureFabricCallHeadlinePreviews(live);
+    const restored = restoreFabricCallHeadlinePreviews(
+      [
+        { ref: "agents.list", provider: "agents", tool: "list", args: {}, success: true },
+        { ref: "agents.log", provider: "agents", tool: "log", args: { id: "agent-reviewer-1234" }, success: true },
+        { ref: "agents.ask", provider: "agents", tool: "ask", args: { id: "agent-reviewer-1234" }, success: true },
+        { ref: "mcp.$call", provider: "mcp", tool: "$call", args: {}, success: true },
+        { ref: "fabric.discovery.list", provider: "fabric", tool: "discovery.list", args: {}, success: true },
+      ],
+      previews,
+    );
+
+    expect(restored.map((audit) => nestedCallTitle(audit, plainTheme))).toEqual([
+      "list 13",
+      "log agent-re",
+      "ask agent-re Audit web search",
+      "$call github.search_code",
+      "discovery.list 83",
+    ]);
+    expect(JSON.stringify(previews)).not.toContain("private");
+  });
+
+  it("renders structural details from durable workflow and discovery projections", () => {
+    expect(nestedCallTitle(
+      { ref: "fabric.discovery.describe", provider: "fabric", tool: "discovery.describe", args: { ref: "agents.log" } },
+      plainTheme,
+    )).toBe("discovery.describe agents.log");
+    expect(nestedCallTitle(
+      { ref: "fabric.workflow.pipeline", provider: "fabric", tool: "workflow.pipeline", args: { itemCount: 4, stageCount: 2 } },
+      plainTheme,
+    )).toBe("workflow.pipeline 4 items · 2 stages");
+  });
+
   it("keeps restored headline occurrences aligned when final args already have a preview", () => {
     const restored = restoreFabricCallHeadlinePreviews(
       [

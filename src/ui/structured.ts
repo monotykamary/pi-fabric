@@ -1,5 +1,6 @@
 import { stringify } from "yaml";
 import type { FabricResultFormat } from "../config.js";
+import { countNewlines } from "../util.js";
 
 const normalizeJsonValue = (value: unknown): unknown | undefined => {
   try {
@@ -19,6 +20,7 @@ export const formatJsonAsYaml = (value: unknown): string | undefined => {
 export interface FormattedFabricValue {
   text: string;
   language?: "yaml" | "json";
+  highlightedLineCount?: number;
 }
 
 interface HoistedSection {
@@ -95,8 +97,13 @@ export const formatFabricValue = (
             `--- ${section.path} (${section.text.length} chars) ---\n${section.text}`,
         )
         .join("\n\n");
-      // No language tag: the skeleton is YAML but the raw sections are not.
-      return { text: `${yaml}\n\n${raw}` };
+      // Highlight only the YAML skeleton. Raw sections preserve exact bytes and
+      // must remain plain text; the renderer bounds highlighting to visible rows.
+      return {
+        text: `${yaml}\n\n${raw}`,
+        language: "yaml",
+        highlightedLineCount: countNewlines(yaml) + 1,
+      };
     }
   }
   try {

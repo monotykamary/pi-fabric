@@ -415,8 +415,10 @@ const providerCallDetail = (
   args: Record<string, unknown>,
   result: unknown,
   preview: unknown,
+  previewHeadline?: string,
 ): string => {
   if (provider === "agents") {
+    if (previewHeadline) return previewHeadline;
     const name = argString(args, "name");
     const previewName = isFabricNestedToolPreview(preview) ? preview.name : undefined;
     const id = shortIdOf(args.id);
@@ -443,22 +445,26 @@ const providerCallDetail = (
         return name ?? (task ? truncateOneLine(task, 64) : previewName ?? "");
       case "actors":
       case "list":
+      case "models":
+      case "peers":
         return countOf(result);
       default:
-        return "";
+        return previewName ?? id ?? "";
     }
   }
   if (provider === "mesh") {
+    if (previewHeadline) return previewHeadline;
     switch (tool) {
       case "publish":
-      case "read":
         return argString(args, "topic") ?? "";
+      case "read":
+        return [argString(args, "topic"), countOf(result)].filter(Boolean).join(" · ");
       case "get":
       case "put":
       case "delete":
         return argString(args, "key") ?? "";
       case "list":
-        return argString(args, "prefix") ?? "";
+        return [argString(args, "prefix"), countOf(result)].filter(Boolean).join(" · ");
       case "members":
         return countOf(result);
       default:
@@ -466,6 +472,7 @@ const providerCallDetail = (
     }
   }
   if (provider === "mcp") {
+    if (previewHeadline) return previewHeadline;
     switch (tool) {
       case "$call":
         return [argString(args, "server"), argString(args, "tool")].filter(Boolean).join(".");
@@ -478,6 +485,49 @@ const providerCallDetail = (
     }
   }
   return "";
+};
+
+const structuralCallDetail = (
+  provider: string,
+  tool: string,
+  args: Record<string, unknown>,
+  result: unknown,
+): string => {
+  if (provider !== "fabric") return "";
+  const count = countOf(result);
+  switch (tool) {
+    case "discovery.providers":
+    case "discovery.models":
+    case "discovery.search":
+      return count;
+    case "discovery.list":
+      return [argString(args, "provider"), argString(args, "namespace"), count]
+        .filter(Boolean)
+        .join(" · ");
+    case "discovery.describe":
+      return argString(args, "ref") ?? "";
+    case "workflow.parallel":
+    case "workflow.pipeline": {
+      const itemCount = typeof args.itemCount === "number" ? args.itemCount : undefined;
+      const stageCount = typeof args.stageCount === "number" ? args.stageCount : undefined;
+      return [
+        itemCount !== undefined ? `${itemCount} ${itemCount === 1 ? "item" : "items"}` : "",
+        stageCount !== undefined ? `${stageCount} ${stageCount === 1 ? "stage" : "stages"}` : "",
+      ].filter(Boolean).join(" · ");
+    }
+    default:
+      return "";
+  }
+};
+
+const callHeadlinePreview = (audit: FabricRenderAudit): string | undefined => {
+  const ref = audit.ref;
+  const provider = audit.provider ?? ref.split(".")[0] ?? ref;
+  const tool = audit.tool ?? ref.split(".")[1] ?? ref;
+  const args = audit.args ?? {};
+  return providerCallDetail(provider, tool, args, audit.result, audit.preview)
+    || headlineArg(args)
+    || structuralCallDetail(provider, tool, args, audit.result);
 };
 
 /** Compact one-line title for a nested Fabric call, e.g. `read src/index.ts` or `$ ls -la`. */
@@ -496,7 +546,14 @@ export function nestedCallTitle(
   const tool = audit.tool ?? ref.split(".")[1] ?? ref;
   const title = theme.fg("toolTitle", theme.bold(tool));
   const args = audit.args ?? {};
-  const providerDetail = providerCallDetail(provider, tool, args, audit.result, audit.preview);
+  const providerDetail = providerCallDetail(
+    provider,
+    tool,
+    args,
+    audit.result,
+    audit.preview,
+    audit.previewHeadline,
+  );
   if (providerDetail) return `${title} ${theme.fg("accent", providerDetail)}`;
   const command = argString(args, "command");
   if (command) {
@@ -514,7 +571,12 @@ export function nestedCallTitle(
   if (path) detail = path;
   else if (pattern) detail = `/${pattern}/${path ? ` ${path}` : ""}`;
   else if (task) detail = truncateOneLine(task, 64);
-  else detail = headlineArg(args) ?? audit.previewHeadline ?? "";
+  else {
+    detail = headlineArg(args)
+      || structuralCallDetail(provider, tool, args, audit.result)
+      || audit.previewHeadline
+      || "";
+  }
   return detail ? `${title} ${theme.fg("accent", detail)}` : title;
 }
 
@@ -913,7 +975,7 @@ export const captureFabricCallHeadlinePreviews = (
   audits: FabricRenderAudit[],
 ): FabricCallHeadlinePreview[] =>
   audits.flatMap((audit) => {
-    const headline = headlineArg(audit.args);
+    const headline = callHeadlinePreview(audit);
     return headline ? [{ ref: audit.ref, headline }] : [];
   });
 

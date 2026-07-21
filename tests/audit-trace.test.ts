@@ -877,6 +877,44 @@ return true;
     expect(trace.counts.droppedValues).toBeGreaterThan(0);
   });
 
+  it("retains identifiers for every actor-targeting management action", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    for (const ref of [
+      "agents.compact",
+      "agents.setTools",
+      "agents.setDeliveryPolicy",
+      "agents.clearMessages",
+      "agents.import",
+      "agents.export",
+    ]) {
+      recorder.issueCall(ref, { id: "actor-reviewer", payload: "secret" }).succeed(undefined);
+    }
+
+    const trace = recorder.seal("succeeded", []);
+    expect(trace.operations.map((operation) => operation.args)).toEqual(
+      Array(6).fill({ id: "actor-reviewer" }),
+    );
+    expect(JSON.stringify(trace)).not.toContain("secret");
+  });
+
+  it("persists bounded mixed-output highlighting metadata", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    const details = createFabricPersistedExecutionDetails({
+      success: true,
+      trace: recorder.seal("succeeded", []),
+      outputFormat: "yaml",
+      outputFormatStartLine: 3.9,
+      outputFormatLines: 17.9,
+    });
+
+    expect(details.outputFormatStartLine).toBe(3);
+    expect(details.outputFormatLines).toBe(17);
+    expect(readFabricExecutionRenderDetails(details)).toMatchObject({
+      outputFormatStartLine: 3,
+      outputFormatLines: 17,
+    });
+  });
+
   it("bounds large call traces while preserving operation order", () => {
     const recorder = new FabricExecutionTraceRecorder();
     for (let index = 0; index < 500; index++) {

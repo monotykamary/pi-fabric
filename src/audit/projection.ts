@@ -139,11 +139,17 @@ const idOnlyAgentActions = new Set([
   "agents.followUp",
   "agents.setSteeringMode",
   "agents.setFollowUpMode",
+  "agents.compact",
   "agents.actorStatus",
+  "agents.setTools",
   "agents.setEvents",
+  "agents.setDeliveryPolicy",
+  "agents.clearMessages",
   "agents.setInstructions",
   "agents.messages",
   "agents.remove",
+  "agents.import",
+  "agents.export",
   "agents.log",
 ]);
 
