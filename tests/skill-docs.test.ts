@@ -50,7 +50,7 @@ describe("fabric-exec skill provider contracts", () => {
     );
     expect(setup).toContain("agents.create({");
     expect(setup).toContain("agents.setDeliveryPolicy({");
-    expect(setup).toContain("empty string when unset");
+    expect(setup).toContain("empty when unset");
 
     const profiles = {
       "fabric-advisor": "../fabric-ambient/references/setup.md",
