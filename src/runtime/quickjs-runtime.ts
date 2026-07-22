@@ -102,12 +102,13 @@ globalThis.tools = new Proxy(__toolsBase, {
 });
 const __piStringFields = { bash: "command", read: "path", ls: "path", grep: "pattern", find: "pattern" };
 // Per-tool key aliases. The runtime normalizes them to the canonical form
-// before the host validates args, so a model that writes { query, regex, ... }
+// before the host validates args; unit-converting aliases are handled separately
+// in __normalizePiArgs. This lets a model that writes { query, regex, ... }
 // or { file } instead of { pattern } / { path } still succeeds on the first
 // call. Keep these in sync with the PiToolsApi overloads in guest-types.ts so
 // the type-checker accepts the same spellings it coercion-handles at runtime.
 const __piArgAliases = {
-  bash: { cmd: "command", shell: "command", cmdline: "command", timeoutMs: "timeout" },
+  bash: { cmd: "command", shell: "command", cmdline: "command" },
   find: { query: "pattern", regex: "pattern", search: "pattern", max: "limit" },
   grep: {
     query: "pattern", regex: "pattern", search: "pattern",
@@ -147,6 +148,14 @@ const __normalizePiArgs = (name, args) => {
   if (args === null || typeof args !== "object" || Array.isArray(args)) return args;
   const aliases = __piArgAliases[name];
   let out = args;
+  if (name === "bash" && "timeoutMs" in out) {
+    out = Object.assign({}, args);
+    if (!("timeout" in out)) {
+      const timeoutMs = out.timeoutMs;
+      out.timeout = typeof timeoutMs === "number" ? timeoutMs / 1000 : timeoutMs;
+    }
+    delete out.timeoutMs;
+  }
   if (aliases) {
     for (const alias in aliases) {
       const canonical = aliases[alias];
