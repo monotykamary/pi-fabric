@@ -165,6 +165,22 @@ describe("pi expanded argument aliases", () => {
     expect(result.errors).toEqual([]);
   });
 
+  it("converts bash timeoutMs to timeout seconds", async () => {
+    const hostCall = vi.fn(async (_ref: string, _args: Record<string, unknown>) => ({
+      ok: true,
+      output: "",
+      details: null,
+    }));
+    const result = await new QuickJsRuntime().execute(
+      'return await pi.bash({ command: "sleep 1", timeoutMs: 1000 });',
+      hostCall,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ command: "sleep 1", timeout: 1 });
+  });
+
   it("normalizes expanded alias keys at runtime", async () => {
     const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => {
       if (ref === "pi.bash") return { ok: true, output: String(args.command), details: null };
@@ -177,7 +193,7 @@ describe("pi expanded argument aliases", () => {
       throw new Error("Unexpected call: " + ref);
     });
     const result = await new QuickJsRuntime().execute(
-      'const a = await pi.bash({ shell: "ls", timeoutMs: 5 });' +
+      'const a = await pi.bash({ shell: "ls", timeoutMs: 5000 });' +
         'const b = await pi.grep({ regex: "TODO", ic: true, ctx: 2, max: 5, globPattern: "*.ts" });' +
         'const c = await pi.find({ search: "*.ts", max: 3 });' +
         'const d = await pi.read({ path: "/x", start: 0, max: 10 });' +

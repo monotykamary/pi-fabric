@@ -198,6 +198,7 @@ type FabricExtensionsApi = Record<string, FabricCapturedTool>;
 // Common alias keys (cmd→command, query→pattern, file→path, dir→path) and a
 // flat edit shape ({ path, oldText, newText }) are also accepted; the runtime
 // proxy normalizes them to the canonical form before the host validates args.
+// Bash timeout is measured in seconds; timeoutMs is converted from milliseconds.
 interface PiToolsApi {
   read(args: string | { path: string; offset?: number; limit?: number; start?: number; max?: number } | { file: string; offset?: number; limit?: number; start?: number; max?: number }): Promise<string>;
   bash(args: string | { command: string; timeout?: number; timeoutMs?: number } | { cmd: string; timeout?: number; timeoutMs?: number } | { shell: string; timeout?: number; timeoutMs?: number }): Promise<{ ok: true; output: string; details: unknown }>;
