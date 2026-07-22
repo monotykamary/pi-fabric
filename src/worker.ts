@@ -9,8 +9,6 @@ import { Value } from "typebox/value";
 import type {
   SubagentRunRecord,
   SubagentRunStatus,
-  SubagentUsage,
-  SubagentWorkerOptions,
 } from "./subagents/types.js";
 
 const NODE_SCRIPT_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"]);
@@ -25,6 +23,20 @@ const spawnCli = (
 
 type ClaudeCliModule = typeof import("./subagents/claude-cli.js");
 type CompactControlModule = typeof import("./subagents/compact-control.js");
+type WorkerOptionsModule = typeof import("./worker/options.js");
+type WorkerRunRecordModule = typeof import("./worker/run-record.js");
+
+const loadWorkerOptions = async (): Promise<WorkerOptionsModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/options.js");
+  const sourceModulePath = "./worker/options.ts";
+  return import(sourceModulePath) as Promise<WorkerOptionsModule>;
+};
+
+const loadWorkerRunRecord = async (): Promise<WorkerRunRecordModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/run-record.js");
+  const sourceModulePath = "./worker/run-record.ts";
+  return import(sourceModulePath) as Promise<WorkerRunRecordModule>;
+};
 
 const loadCompactControl = async (): Promise<CompactControlModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./subagents/compact-control.js");
@@ -39,7 +51,6 @@ const loadClaudeCli = async (): Promise<ClaudeCliModule> => {
 };
 
 const MAX_STDERR_CHARS = 20_000;
-const MAX_TEXT_CHARS = 100_000;
 const MAX_EVENT_LINE_CHARS = 4 * 1024 * 1024;
 const STEER_READ_CHUNK_BYTES = 256 * 1024;
 const MAX_STEER_LINE_BYTES = 64 * 1024;
@@ -47,110 +58,6 @@ const MAX_STEER_COMMANDS_PER_POLL = 256;
 const MAX_CLAUDE_PENDING_INPUTS = 256;
 const MAX_CLAUDE_PENDING_TOOLS = 1_000;
 const KILL_GRACE_MS = 5_000;
-
-const argumentMap = (): Map<string, string> => {
-  const result = new Map<string, string>();
-  for (let index = 2; index < process.argv.length; index += 2) {
-    const key = process.argv[index];
-    const value = process.argv[index + 1];
-    if (!key?.startsWith("--") || value === undefined) {
-      throw new Error(`Invalid worker argument near ${key ?? "<end>"}`);
-    }
-    result.set(key.slice(2), value);
-  }
-  return result;
-};
-
-const required = (args: Map<string, string>, name: string): string => {
-  const value = args.get(name);
-  if (!value) throw new Error(`Missing worker argument: --${name}`);
-  return value;
-};
-
-const optional = (args: Map<string, string>, name: string): string | undefined =>
-  args.get(name) || undefined;
-
-const parseOptions = (): SubagentWorkerOptions => {
-  const args = argumentMap();
-  const model = optional(args, "model");
-  const thinking = optional(args, "thinking");
-  const fabricExtensionPath = optional(args, "fabric-extension");
-  const schemaFile = optional(args, "schema-file");
-  const systemPrompt = optional(args, "system-prompt");
-  const sessionFile = optional(args, "session-file");
-  const actorId = optional(args, "actor-id");
-  const actorName = optional(args, "actor-name");
-  const meshRoot = optional(args, "mesh-root");
-  const projectRoot = optional(args, "project-root");
-  const ownerHostId = optional(args, "owner-host-id");
-  const ownerIdentityId = optional(args, "owner-identity-id");
-  const runRoot = optional(args, "run-root");
-  const steerFile = optional(args, "steer-file");
-  const branch = optional(args, "branch");
-  const worktree = optional(args, "worktree");
-  const maxTokens = optional(args, "max-tokens");
-  const runnerSessionId = optional(args, "runner-session-id");
-  const mainAgentId = optional(args, "main-agent-id");
-  const runner = required(args, "runner");
-  if (runner !== "pi" && runner !== "claude") {
-    throw new Error(`Unsupported Fabric agent runner: ${runner}`);
-  }
-  return {
-    id: required(args, "id"),
-    runner,
-    name: required(args, "name"),
-    taskFile: required(args, "task-file"),
-    statusFile: required(args, "status-file"),
-    logFile: required(args, "log-file"),
-    ...(schemaFile ? { schemaFile } : {}),
-    cwd: required(args, "cwd"),
-    piBinary: required(args, "pi-binary"),
-    claudeBinary: required(args, "claude-binary"),
-    timeoutMs: Number(required(args, "timeout-ms")),
-    depth: Number(required(args, "depth")),
-    fullCodeMode: required(args, "full-code-mode") === "true",
-    ...(mainAgentId ? { mainAgentId } : {}),
-    extensions: required(args, "extensions") === "true",
-    tools: JSON.parse(required(args, "tools")) as string[],
-    grantedRisks: JSON.parse(required(args, "granted-risks")) as string[],
-    transport: required(args, "transport") as SubagentWorkerOptions["transport"],
-    ...(fabricExtensionPath ? { fabricExtensionPath } : {}),
-    ...(model ? { model } : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(systemPrompt ? { systemPrompt } : {}),
-    ...(sessionFile ? { sessionFile } : {}),
-    ...(actorId ? { actorId } : {}),
-    ...(actorName ? { actorName } : {}),
-    ...(meshRoot ? { meshRoot } : {}),
-    ...(projectRoot ? { projectRoot } : {}),
-    ...(ownerHostId ? { ownerHostId } : {}),
-    ...(ownerIdentityId ? { ownerIdentityId } : {}),
-    ...(runnerSessionId ? { runnerSessionId } : {}),
-    ...(runRoot ? { runRoot } : {}),
-    ...(steerFile ? { steerFile } : {}),
-    ...(branch ? { branch } : {}),
-    ...(worktree ? { worktree } : {}),
-    ...(maxTokens ? { maxTokens: Number(maxTokens) } : {}),
-  };
-};
-
-const emptyUsage = (): SubagentUsage => ({
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  cost: 0,
-});
-
-const atomicWrite = (filePath: string, value: unknown): void => {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  fs.renameSync(temporaryPath, filePath);
-};
 
 const extractText = (message: Record<string, unknown>): string => {
   const content = message.content;
@@ -169,21 +76,6 @@ const extractText = (message: Record<string, unknown>): string => {
 };
 
 const numberField = (value: unknown): number => (typeof value === "number" ? value : 0);
-
-const applyUsage = (record: SubagentRunRecord, message: Record<string, unknown>): void => {
-  const usage = message.usage;
-  if (typeof usage !== "object" || usage === null) return;
-  const values = usage as Record<string, unknown>;
-  record.usage.input += numberField(values.input);
-  record.usage.output += numberField(values.output);
-  record.usage.cacheRead += numberField(values.cacheRead);
-  record.usage.cacheWrite += numberField(values.cacheWrite);
-  const cost = values.cost;
-  if (typeof cost === "number") record.usage.cost += cost;
-  if (typeof cost === "object" && cost !== null) {
-    record.usage.cost += numberField((cost as Record<string, unknown>).total);
-  }
-};
 
 const stringField = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -268,20 +160,12 @@ const parseStructuredValue = (text: string): unknown => {
 };
 
 let crashContext: { statusFile: string; record: SubagentRunRecord } | undefined;
+let runRecordHelpers: WorkerRunRecordModule | undefined;
 let terminalWritten = false;
 const writeCrashStatus = (error: unknown): void => {
-  if (!crashContext || terminalWritten) return;
-  const reason = error instanceof Error ? error.message : String(error);
-  const crashed: SubagentRunRecord = {
-    ...crashContext.record,
-    status: "failed",
-    error: `Worker crashed before reporting a result: ${reason}`.slice(0, MAX_STDERR_CHARS),
-    finishedAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-  delete crashed.currentTool;
+  if (!crashContext || !runRecordHelpers || terminalWritten) return;
   try {
-    atomicWrite(crashContext.statusFile, crashed);
+    runRecordHelpers.writeCrashRunRecord(crashContext.statusFile, crashContext.record, error);
   } catch {
     // Best effort: if the crash-status write itself fails, #monitor falls back
     // to "Subagent transport exited without a result".
@@ -299,7 +183,20 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const options = parseOptions();
+  const [optionHelpers, loadedRunRecordHelpers] = await Promise.all([
+    loadWorkerOptions(),
+    loadWorkerRunRecord(),
+  ]);
+  runRecordHelpers = loadedRunRecordHelpers;
+  const {
+    applyUsage,
+    createRunningRecord,
+    emptyUsage,
+    latestRunText,
+    updateRunRecord,
+    writeRunRecord,
+  } = loadedRunRecordHelpers;
+  const options = optionHelpers.parseWorkerOptions();
   const thinking =
     options.thinking === "off" ||
     options.thinking === "minimal" ||
@@ -311,30 +208,8 @@ const main = async (): Promise<void> => {
       ? options.thinking
       : undefined;
   const task = fs.readFileSync(options.taskFile, "utf8");
-  const startedAt = Date.now();
-  const record: SubagentRunRecord = {
-    id: options.id,
-    name: options.name,
-    task,
-    status: "running",
-    runner: options.runner,
-    transport: options.transport,
-    cwd: options.cwd,
-    ...(options.model ? { model: options.model } : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(options.actorId ? { actorId: options.actorId } : {}),
-    ...(options.actorName ? { actorName: options.actorName } : {}),
-    startedAt,
-    updatedAt: startedAt,
-    turns: 0,
-    toolCalls: 0,
-    text: "",
-    usage: emptyUsage(),
-    logFile: options.logFile,
-    ...(options.branch ? { branch: options.branch } : {}),
-    ...(options.worktree ? { worktree: options.worktree } : {}),
-  };
-  atomicWrite(options.statusFile, record);
+  const record = createRunningRecord(options, task, thinking, Date.now());
+  writeRunRecord(options.statusFile, record);
   crashContext = { statusFile: options.statusFile, record };
   process.stdout.write(`[pi-fabric] ${options.name}\n${task}\n\n`);
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
@@ -414,10 +289,7 @@ const main = async (): Promise<void> => {
   let sawAgentError = false;
   let retryPending = false;
 
-  const update = (): void => {
-    record.updatedAt = Date.now();
-    atomicWrite(options.statusFile, record);
-  };
+  const update = (): void => updateRunRecord(options.statusFile, record);
 
   const { ChildCompactControl } = await loadCompactControl();
   const compactControl = new ChildCompactControl(options.id, {
@@ -559,7 +431,7 @@ const main = async (): Promise<void> => {
       const assistant = message as Record<string, unknown>;
       const text = extractText(assistant);
       if (text) {
-        record.text = Array.from(text).slice(-MAX_TEXT_CHARS).join("");
+        record.text = latestRunText(text);
         process.stdout.write(`\n${text}\n`);
       }
       const content = assistant.content;
@@ -637,7 +509,7 @@ const main = async (): Promise<void> => {
     const sessionId = stringField(event.session_id);
     if (sessionId) record.runnerSessionId = sessionId;
     const resultText = typeof event.result === "string" ? event.result : "";
-    if (resultText) record.text = Array.from(resultText).slice(-MAX_TEXT_CHARS).join("");
+    if (resultText) record.text = latestRunText(resultText);
     if (event.structured_output !== undefined) record.value = event.structured_output;
     record.turns += Math.max(0, Math.floor(numberField(event.num_turns)));
     const resultUsage =
@@ -777,7 +649,7 @@ const main = async (): Promise<void> => {
       if (messageRecord.role !== "assistant") return;
       const text = extractText(messageRecord);
       if (text) {
-        record.text = Array.from(text).slice(-MAX_TEXT_CHARS).join("");
+        record.text = latestRunText(text);
         process.stdout.write(`\n${text}\n`);
       }
       applyUsage(record, messageRecord);
@@ -1066,7 +938,7 @@ const main = async (): Promise<void> => {
     }
   }
   delete record.currentTool;
-  atomicWrite(options.statusFile, record);
+  writeRunRecord(options.statusFile, record);
   terminalWritten = true;
   process.stdout.write(`\n[pi-fabric] ${record.status}\n`);
   await Promise.all([
