@@ -114,7 +114,7 @@ if (!verification.certified) {
 return { status: "success", transition, verification };
 ```
 
-This is workflow discipline, not enforcement. The linked guarantee and recovery model in `../../docs/schema-enforcement.md` and labeled timeline in `../../docs/state-layer.md` are soft pointers for deeper explanation.
+This is workflow discipline, not enforcement. The linked guarantee and recovery model in `<skill-dir>/../../docs/schema-enforcement.md` and labeled timeline in `<skill-dir>/../../docs/state-layer.md` are soft pointers for deeper explanation.
 
 ## Completion criterion
 

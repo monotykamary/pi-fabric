@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Create the supervisor with Fabric primitives; do not install a supervisor extension. Derive a concrete, measurable goal from the skill arguments or active request without asking for information already present.
 
-Hard pointer: read `../fabric-ambient/references/setup.md` completely before setup, then use its program with:
+Hard pointer: read `<skill-dir>/../fabric-ambient/references/setup.md` completely before setup, then use its program with:
 
 - `strings.name`: `supervisor`
 - `strings.events`: `["agent_settled","tool_error"]`

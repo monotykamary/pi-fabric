@@ -146,7 +146,7 @@ return {
 
 Fabric remembers which native core tools were active before taking ownership. Switching to orchestration-only mode or unloading Fabric restores that selection. Full-mode ownership is applied only when the session initializes or the mode changes. Fabric does not reset an explicitly selected active tool set from input, agent-start, turn-end, or settled lifecycle hooks; the system prompt carries the full-mode execution rule.
 
-Pi core normally includes its model-visible skill catalog only while the native `read` tool is active. Full code mode restores the same catalog from Pi's structured skill registry and adapts only its loader instruction to use `pi.read` inside `fabric_exec`; native core tools remain hidden. When an expanded skill invokes another installed skill, Fabric also adds an exact name-to-path resolution hint for that turn so the delegated `SKILL.md` is loaded before task work.
+Pi core normally includes its model-visible skill catalog only while the native `read` tool is active. Full code mode restores the same catalog from Pi's structured skill registry and adapts only its loader instruction to use `pi.read` inside `fabric_exec`; native core tools remain hidden. Packaged skills mark cross-document paths with `<skill-dir>`; Fabric replaces that marker inline from Pi's expanded skill `location` or the actual `SKILL.md` read path, without matching skill names or enumerating directories. Ordinary document reads are unchanged. When an expanded skill invokes another installed skill, Fabric also adds an exact name-to-path resolution hint for that turn so the delegated `SKILL.md` is loaded before task work.
 
 ### Orchestration-only mode
 
