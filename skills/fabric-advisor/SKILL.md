@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Create the advisor with Fabric primitives; do not install an advisor extension. Treat skill arguments as an optional focus.
 
-Hard pointer: read `../fabric-ambient/references/setup.md` completely before setup, then use its program with:
+Hard pointer: read `<skill-dir>/../fabric-ambient/references/setup.md` completely before setup, then use its program with:
 
 - `strings.name`: `advisor`
 - `strings.events`: `["agent_settled","tool_error"]`

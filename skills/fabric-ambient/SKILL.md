@@ -13,7 +13,7 @@ Choose from the first argument or infer from the request:
 - `supervisor <goal>`: verify progress toward a concrete goal and steer only on missing work, drift, failure, or completion.
 - `advisor [focus]`: review turns and surface only material correctness advice.
 
-Hard pointer: read `references/setup.md` completely before setup and use its shared program. Always pass every named string, using an empty `model` when unset. Do not ask for details already present.
+Hard pointer: read `<skill-dir>/references/setup.md` completely before setup and use its shared program. Always pass every named string, using an empty `model` when unset. Do not ask for details already present.
 
 ## Supervisor profile
 

@@ -24,6 +24,10 @@ import {
   FabricToolOwnership,
   ownsFabricToolSource,
 } from "./core/tool-ownership.js";
+import {
+  expandSkillDirMarkersForRead,
+  expandSkillDirMarkersInSkillBlock,
+} from "./core/skill-dir.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
 import { buildSkillReferenceGuidance } from "./core/skill-references.js";
 import { FabricState } from "./fabric-state.js";
@@ -1023,6 +1027,23 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   // execute(). Repair the finalized outer result through official middleware.
   pi.on("tool_result", (event) => fabricToolLifecycle.toolResult(event));
 
+  pi.on("tool_result", (event, context) => {
+    if (event.toolName !== "read" || event.isError) return undefined;
+    let changed = false;
+    const content = event.content.map((part) => {
+      if (part.type !== "text") return part;
+      const text = expandSkillDirMarkersForRead(
+        part.text,
+        event.input,
+        context.cwd,
+      );
+      if (text === part.text) return part;
+      changed = true;
+      return { ...part, text };
+    });
+    return changed ? { content } : undefined;
+  });
+
   // message_end runs after all tool-result middleware and tool_execution_end but
   // before Pi persists the native toolResult or starts another model turn. That
   // is the complete outer fabric_exec boundary: fork the exact message, wait for
@@ -1083,6 +1104,30 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       state.initialized
         ? state.config.compaction.targetContextRatio
         : DEFAULT_FABRIC_CONFIG.compaction.targetContextRatio,
+  });
+
+  pi.on("context", (event) => {
+    let changed = false;
+    const messages = event.messages.map((message) => {
+      if (message.role !== "user") return message;
+      if (typeof message.content === "string") {
+        const content = expandSkillDirMarkersInSkillBlock(message.content);
+        if (content === message.content) return message;
+        changed = true;
+        return { ...message, content };
+      }
+      let messageChanged = false;
+      const content = message.content.map((part) => {
+        if (part.type !== "text") return part;
+        const text = expandSkillDirMarkersInSkillBlock(part.text);
+        if (text === part.text) return part;
+        changed = true;
+        messageChanged = true;
+        return { ...part, text };
+      });
+      return messageChanged ? { ...message, content } : message;
+    });
+    return changed ? { messages } : undefined;
   });
 
   pi.on("before_agent_start", async (event) => {

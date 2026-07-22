@@ -107,6 +107,35 @@ describe("PiToolsProvider lifecycle", () => {
     expect((result as string).length).toBeGreaterThan(0);
   });
 
+  it("expands explicit skill-dir markers only for SKILL.md reads", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-skill-dir-"));
+    const skillDir = path.join(cwd, "installed", "duplicate-name");
+    const skillPath = path.join(skillDir, "SKILL.md");
+    const referencePath = path.join(skillDir, "reference.md");
+    const source = "Read `<skill-dir>/reference.md`.\n";
+    try {
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(skillPath, source);
+      fs.writeFileSync(referencePath, source);
+      const registry = new ActionRegistry();
+      registry.register(new PiToolsProvider(cwd, undefined, undefined));
+      const context = {
+        ...baseContext,
+        cwd,
+        extensionContext: { cwd } as ExtensionContext,
+      };
+
+      await expect(
+        registry.invoke("pi.read", { path: skillPath }, context),
+      ).resolves.toBe(`Read \`${skillDir}/reference.md\`.\n`);
+      await expect(
+        registry.invoke("pi.read", { path: referencePath }, context),
+      ).resolves.toBe(source);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns truncated Bash output once while preserving recovery metadata", async () => {
     const registry = new ActionRegistry();
     registry.register(new PiToolsProvider(process.cwd(), undefined, undefined));

@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CapturedToolCatalog } from "../capture/catalog.js";
 import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
+import { expandSkillDirMarkersForRead } from "../core/skill-dir.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
@@ -113,12 +114,14 @@ export class PiToolsProvider implements FabricProvider {
   readonly #tools: Record<PiCoreToolName, ToolDefinition<any, any, any>>;
   readonly #catalog: CapturedToolCatalog | undefined;
   readonly #capturedTools: CapturedToolsProvider | undefined;
+  readonly #cwd: string;
 
   constructor(
     cwd: string,
     catalog?: CapturedToolCatalog,
     capturedTools?: CapturedToolsProvider,
   ) {
+    this.#cwd = cwd;
     this.#tools = {
       read: createReadToolDefinition(cwd),
       bash: createBashToolDefinition(cwd),
@@ -188,7 +191,7 @@ export class PiToolsProvider implements FabricProvider {
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
       this.#attachPreview(name, result, args, context);
-      return normalizeResult(name, result);
+      return this.#normalizeResult(name, result, args);
     }
     const tool = this.#tools[name];
     const runner = this.#catalog?.runner;
@@ -206,7 +209,7 @@ export class PiToolsProvider implements FabricProvider {
       this.#attachReadMedia(name, result, context);
       this.#attachReadNote(name, result, context);
       this.#attachPreview(name, result, args, context);
-      return normalizeResult(name, result);
+      return this.#normalizeResult(name, result, args);
     }
     return this.#invokeWithEvents(name, tool, args, context, runner);
   }
@@ -324,7 +327,20 @@ export class PiToolsProvider implements FabricProvider {
       throw new Error(text || (thrown instanceof Error ? thrown.message : `Pi tool ${name} failed`));
     }
     this.#attachPreview(name, result, args, context);
-    return normalizeResult(name, result);
+    return this.#normalizeResult(name, result, args);
+  }
+
+  // Schema-enforce and early-startup calls may have no ExtensionRunner, so the
+  // top-level tool_result marker middleware cannot run. Expand again at the
+  // provider boundary; replacement is idempotent when middleware already ran.
+  #normalizeResult(
+    name: PiCoreToolName,
+    result: { content: ToolContent; details?: unknown; isError?: boolean },
+    args: Record<string, unknown>,
+  ): unknown {
+    const normalized = normalizeResult(name, result);
+    if (name !== "read" || typeof normalized !== "string") return normalized;
+    return expandSkillDirMarkersForRead(normalized, args, this.#cwd);
   }
 
   #attachPreview(

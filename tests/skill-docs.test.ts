@@ -107,13 +107,17 @@ describe("fabric-exec skill provider contracts", () => {
     }
   });
 
-  it("resolves every relative Markdown reference in a skill", () => {
+  it("marks and resolves every relative Markdown reference in a skill", () => {
     for (const entry of fs.readdirSync("skills", { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const file = path.join("skills", entry.name, "SKILL.md");
       if (!fs.existsSync(file)) continue;
       const markdown = fs.readFileSync(file, "utf8");
-      for (const match of markdown.matchAll(/`((?:\.\.?\/)+[^`]+\.md)`/g)) {
+      expect(
+        [...markdown.matchAll(/`((?:\.\.?\/|references\/)[^`]+\.md)`/g)],
+        `${file} has an unmarked relative document reference`,
+      ).toEqual([]);
+      for (const match of markdown.matchAll(/`<skill-dir>\/([^`]+\.md)`/g)) {
         const resolved = path.resolve(path.dirname(file), match[1]!);
         expect(fs.existsSync(resolved), `${file} -> ${match[1]}`).toBe(true);
       }

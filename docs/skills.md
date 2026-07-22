@@ -19,6 +19,8 @@ This keeps the parent agent behaving like regular Pi until the user explicitly o
 4. Use a **soft pointer** for optional depth that improves quality but is not required for correctness.
 5. Skill-owned references live beside their owning skill. Package-level profiles may point to that single source of truth.
 
+Write every cross-document path in a packaged `SKILL.md` with the `<skill-dir>` marker, for example `<skill-dir>/references/setup.md` or `<skill-dir>/../shared/references/setup.md`. Fabric replaces the marker inline with the directory containing the loaded `SKILL.md`, using Pi's expanded `<skill location="...">` for slash-invoked skills and the actual read path for `SKILL.md` reads. The marker is explicit author opt-in: Fabric does not match skill names, enumerate directories, or alter ordinary document reads.
+
 A mandatory pointer is disclosure for legibility and single-source maintenance, not a per-run token saving. Do not split always-required executable code merely to shorten a skill.
 
 ## Authoring rules
