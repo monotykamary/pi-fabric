@@ -26,7 +26,6 @@ export interface CoreToolRenderOptions {
   settings: CodePreviewSettings;
   expanded: boolean;
   maxLines: number;
-  toolCallBackground?: boolean;
   invalidate?: () => void;
 }
 
@@ -407,23 +406,6 @@ const bashWarnings = (command: string): string[] => {
     ["writes to a system path", />{1,2}\s*\/?(?:etc|bin|sbin|usr|var|System|Library)\b/],
   ];
   return warnings.filter(([, pattern]) => pattern.test(compact)).map(([label]) => label);
-};
-
-const getBgAnsi = (theme: Theme, key: string): string => {
-  try {
-    return (theme as Theme & { getBgAnsi?: (name: string) => string }).getBgAnsi?.(key) ?? "";
-  } catch {
-    return "";
-  }
-};
-
-const withToolBackground = (line: string, background: string): string => {
-  if (!background || line.startsWith(background)) return line;
-  const injected = line
-    .replace(/\x1b\[0m/g, `\x1b[0m${background}`)
-    .replace(/\x1b\[39m/g, `\x1b[39m${background}`)
-    .replace(/\x1b\[49m/g, `\x1b[49m${background}`);
-  return background + injected;
 };
 
 const injectVisibleRanges = (
@@ -966,13 +948,7 @@ const renderGrep = (
   if (skipHighlight) {
     lines.push(theme.fg("muted", "╰─ Syntax highlighting skipped for large grep output"));
   }
-  const background = options.toolCallBackground === false
-    ? ""
-    : getBgAnsi(theme, "toolSuccessBg");
-  return {
-    lines: background ? lines.map((line) => withToolBackground(line, background)) : lines,
-    hidden: selected.hidden,
-  };
+  return { lines, hidden: selected.hidden };
 };
 
 const NERD_BY_NAME: Record<string, string> = {
@@ -1126,9 +1102,6 @@ const renderBash = (
   }
   const raw = output.split("\n");
   const selected = previewEntries(raw, toolLimit(audit, options));
-  const background = options.toolCallBackground === false
-    ? ""
-    : getBgAnsi(theme, audit.success === false ? "toolErrorBg" : "toolSuccessBg");
   const warning = warningLine(output, options, theme);
   if (warning) lines.push(warning);
   for (const entry of selected.entries) {
@@ -1137,7 +1110,7 @@ const renderBash = (
       continue;
     }
     const text = theme.fg(audit.success === false ? "error" : "muted", escapeControlChars(entry.line) || " ");
-    lines.push(background ? withToolBackground(text, background) : text);
+    lines.push(text);
   }
   if (nativeTruncated(audit)) lines.push(theme.fg("muted", "╰─ Output truncated by bash"));
   const fullOutputPath = stringOf(resultDetails(audit)?.fullOutputPath);

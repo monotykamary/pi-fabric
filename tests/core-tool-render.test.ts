@@ -245,7 +245,7 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines).toEqual(["(no output)"]);
   });
 
-  it("can omit the enclosing tool-call background for standalone renderers", () => {
+  it("leaves nested bash output background ownership to the enclosing tool", () => {
     const rendered = renderCoreToolBody(
       audit("bash", {
         args: { command: "printf output" },
@@ -253,7 +253,7 @@ describe("Fabric core tool parity rendering", () => {
         success: true,
       }),
       theme,
-      options({ toolCallBackground: false }),
+      options(),
     );
 
     expect(rendered!.lines.join("\n")).not.toContain("\x1b[48;2;0;0;0m");

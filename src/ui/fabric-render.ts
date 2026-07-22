@@ -54,6 +54,58 @@ const EXPANDED_AGENT_TOOL_BODY_COUNT = 2;
 const EXPANDED_AGENT_TOOL_BODY_LINES = 12;
 const FULL_SGR_RESET = "\x1b[0m";
 const TEXT_SGR_RESET = "\x1b[22;23;24;27;29;39m";
+const INHERITED_TEXT_RESET_PARAMETERS = [
+  "22", "23", "24", "25", "27", "28", "29", "39", "54", "55",
+];
+const SGR_SEQUENCE = /\x1b\[([0-9:;]*)m/g;
+
+export const inheritEnclosingBackground = (text: string): string =>
+  text.replace(SGR_SEQUENCE, (_sequence, rawParameters: string) => {
+    const parameters = rawParameters === "" ? ["0"] : rawParameters.split(";");
+    const kept: string[] = [];
+    for (let index = 0; index < parameters.length; index++) {
+      const parameter = parameters[index]!;
+      const code = Number.parseInt(parameter, 10);
+      if (parameter === "0") {
+        kept.push(...INHERITED_TEXT_RESET_PARAMETERS);
+      } else if (parameter.startsWith("48:")) {
+        continue;
+      } else if (code === 38 || code === 58) {
+        const mode = parameters[index + 1];
+        const end = index + (mode === "2" ? 4 : mode === "5" ? 2 : 0);
+        kept.push(...parameters.slice(index, end + 1));
+        index = end;
+      } else if (code === 48) {
+        const mode = parameters[index + 1];
+        index += mode === "2" ? 4 : mode === "5" ? 2 : 0;
+      } else if (
+        code === 49
+        || code === 7
+        || (code >= 40 && code <= 47)
+        || (code >= 100 && code <= 107)
+      ) {
+        continue;
+      } else {
+        kept.push(parameter);
+      }
+    }
+    return kept.length > 0 ? `\x1b[${kept.join(";")}m` : "";
+  });
+
+class InheritedBackgroundComponent implements Component {
+  constructor(private readonly child: Component) {}
+
+  render(width: number): string[] {
+    return this.child.render(width).map(inheritEnclosingBackground);
+  }
+
+  invalidate(): void {
+    this.child.invalidate?.();
+  }
+}
+
+export const inheritComponentBackground = (component: Component): Component =>
+  new InheritedBackgroundComponent(component);
 
 export const safeTerminalText = (value: string): string =>
   value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (character) => {
@@ -688,7 +740,6 @@ export const renderNestedAgentToolLines = (
       settings: options.core.settings,
       expanded: true,
       maxLines: EXPANDED_AGENT_TOOL_BODY_LINES,
-      toolCallBackground: false,
       ...(options.invalidate ? { invalidate: options.invalidate } : {}),
     });
     if (!body) continue;

@@ -17,6 +17,8 @@ import {
   captureFabricWritePreviews,
   compactProgressPreview,
   fabricWriteBindings,
+  inheritComponentBackground,
+  inheritEnclosingBackground,
   modelReadHint,
   nestedCallBody,
   nestedCallCode,
@@ -44,6 +46,29 @@ const plainTheme = {
 } as unknown as Theme;
 
 describe("fabric nested rendering", () => {
+  it("removes nested backgrounds while preserving foreground styling", () => {
+    const styled = [
+      "\x1b[38;2;9;8;7;48;2;1;2;3mtruecolor",
+      "\x1b[44mstandard",
+      "\x1b[48;5;22mindexed",
+      "\x1b[48:2::4:5:6mcolon",
+      "\x1b[7mreverse",
+      "\x1b[0mreset",
+    ].join(" ");
+
+    const inherited = inheritEnclosingBackground(styled);
+
+    expect(inherited).toContain("\x1b[38;2;9;8;7mtruecolor");
+    expect(inherited).not.toMatch(/\x1b\[(?:4[0-9]|10[0-7]|48[:;]|7m|0m)/);
+    expect(inherited).toContain("\x1b[22;23;24;25;27;28;29;39;54;55mreset");
+  });
+
+  it("normalizes backgrounds introduced during component rendering", () => {
+    const component = renderBoundedLines(["\x1b[48;2;1;2;3moutput\x1b[49m"]);
+
+    expect(inheritComponentBackground(component).render(20)).toEqual(["output"]);
+  });
+
   it("renders a bash title with a $ prompt and a highlighted command", async () => {
     await initHighlighting("dark-plus", true);
     const title = nestedCallTitle(

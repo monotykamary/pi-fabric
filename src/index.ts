@@ -39,6 +39,7 @@ import {
   expandHint,
   fabricMulticallCallLimit,
   fabricWriteBindings,
+  inheritComponentBackground,
   modelReadHint,
   nestedCallBody,
   nestedCallTitle,
@@ -282,7 +283,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         const rendererState = context.state as FabricRendererState;
         const rowBalance = rendererState.fabricResultRowBalance ??= {};
         const trackRows = (component: Component): Component =>
-          observeResultRows(component, rowBalance, { expanded, isPartial });
+          observeResultRows(
+            inheritComponentBackground(component),
+            rowBalance,
+            { expanded, isPartial },
+          );
         if (isPartial) {
           rendererState.fabricCoreToolPreviews = captureFabricCoreToolPreviews(
             audits,
