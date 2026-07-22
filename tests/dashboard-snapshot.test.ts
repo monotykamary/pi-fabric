@@ -210,8 +210,14 @@ describe("dashboard snapshot agent ownership", () => {
     const launch = run("launch-run", "agents.spawn", parent.id, 100, "investigate");
 
     const snapshot = createDashboardSnapshot(fakeState([launch], [parent]), []);
+    expect(snapshot.agents.find((agent) => agent.id === parent.id)).not.toHaveProperty("nestingDepth");
+    expect(snapshot.agents.find((agent) => agent.id === child.id)).toMatchObject({
+      parentId: parent.id,
+      nestingDepth: 1,
+    });
     expect(snapshot.agents.find((agent) => agent.id === grandchild.id)).toMatchObject({
       parentId: child.id,
+      nestingDepth: 2,
       runId: "launch-run",
       phaseId: "investigate",
       logFile: "/tmp/agent-grandchild/events.jsonl",

@@ -80,7 +80,7 @@ const agentLines = (
       ? formatDuration((agent.finishedAt ?? now) - agent.startedAt)
       : undefined,
   ].filter((value): value is string => Boolean(value));
-  const indent = agent.parentId ? "    " : "  ";
+  const indent = "  ".repeat(1 + Math.max(0, agent.nestingDepth ?? 0));
   return [
     `${indent}${status} ${safeText(agent.name)}  ${theme.fg("muted", safeText(activity))}${
       metrics.length > 0 ? theme.fg("dim", ` · ${metrics.join(" · ")}`) : ""

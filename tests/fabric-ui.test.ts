@@ -231,6 +231,27 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("indents agents by recursive depth instead of topology parentage", () => {
+    const current = snapshot();
+    current.actors = [];
+    current.runs[0]!.calls = [];
+    const base = current.agents[0]!;
+    current.agents = [
+      { ...base, id: "top", name: "top-level", parentId: "session:main" },
+      { ...base, id: "child", name: "recursive-child", parentId: "top", nestingDepth: 1 },
+      { ...base, id: "grandchild", name: "recursive-grandchild", parentId: "child", nestingDepth: 2 },
+    ];
+
+    const lines = new FabricWidget(theme, () => current, 8).render(120);
+    const top = lines.find((line) => line.includes("top-level"));
+    const child = lines.find((line) => line.includes("recursive-child"));
+    const grandchild = lines.find((line) => line.includes("recursive-grandchild"));
+
+    expect(top).toMatch(/^ {2}\S/);
+    expect(child).toMatch(/^ {4}\S/);
+    expect(grandchild).toMatch(/^ {6}\S/);
+  });
+
   it("leases actor rows through settle and resets them for the next activation", () => {
     const current = snapshot();
     current.runs = [];

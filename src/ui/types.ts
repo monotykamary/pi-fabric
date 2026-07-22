@@ -42,6 +42,7 @@ export interface FabricUiAgent {
   runId?: string;
   phaseId?: string;
   parentId?: string;
+  nestingDepth?: number;
   rootId?: string;
   ownerHostId?: string;
   local?: boolean;

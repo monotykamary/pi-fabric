@@ -90,6 +90,7 @@ export const createDashboardSnapshot = (
   });
   const agentFromRecord = (
     record: SubagentRunRecord | SubagentHandleInfo,
+    nestingDepth: number,
     parentId?: string,
     parent?: FabricUiAgent,
   ): FabricUiAgent => {
@@ -117,6 +118,7 @@ export const createDashboardSnapshot = (
       ...(record.actorId ? { actorId: record.actorId } : {}),
       ...(record.actorName ? { actorName: record.actorName } : {}),
       ...(parentId ? { parentId } : {}),
+      ...(nestingDepth > 0 ? { nestingDepth } : {}),
       ...(linked ? { runId: linked.runId } : parent?.runId ? { runId: parent.runId } : {}),
       ...(linked?.call.phaseId
         ? { phaseId: linked.call.phaseId }
@@ -143,15 +145,18 @@ export const createDashboardSnapshot = (
   const allAgents: FabricUiAgent[] = [];
   const appendAgent = (
     record: SubagentRunRecord | SubagentHandleInfo,
+    nestingDepth: number,
     parentId?: string,
     parent?: FabricUiAgent,
   ): void => {
-    const agent = agentFromRecord(record, parentId, parent);
+    const agent = agentFromRecord(record, nestingDepth, parentId, parent);
     allAgents.push(agent);
     if (!isRunRecord(record)) return;
-    for (const nested of record.nestedAgents ?? []) appendAgent(nested, record.id, agent);
+    for (const nested of record.nestedAgents ?? []) {
+      appendAgent(nested, nestingDepth + 1, record.id, agent);
+    }
   };
-  for (const record of agentRecords) appendAgent(record);
+  for (const record of agentRecords) appendAgent(record, 0);
 
   const participants =
     typeof state.participantInfos === "function"
