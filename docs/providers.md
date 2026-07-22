@@ -48,3 +48,52 @@ async invoke(actionName, args, context) {
   return job.result;
 }
 ```
+
+## Nested `tool_result` proxy
+
+Results from MCP, agent, memory, state, schema, mesh, compact, and external providers pass through Pi's `tool_result` middleware before `maxNestedResultChars` is enforced. This lets a user extension externalize or replace an oversized provider result before it crosses into QuickJS.
+
+A proxied event has:
+
+- `toolName` set to the fully qualified Fabric ref, such as `mcp.github.search`;
+- a `toolCallId` beginning with `FABRIC_NESTED_TOOL_CALL_ID_PREFIX`;
+- text `content` containing the raw string result or a JSON projection;
+- `details` matching `FabricToolResultProxyDetailsV1`, whose `result` is the exact host-side structured value.
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  FABRIC_NESTED_TOOL_CALL_ID_PREFIX,
+  readFabricToolResultProxyDetailsV1,
+} from "pi-fabric/protocol";
+
+export default function resultGuard(pi: ExtensionAPI) {
+  pi.on("tool_result", async (event) => {
+    if (!event.toolCallId.startsWith(FABRIC_NESTED_TOOL_CALL_ID_PREFIX)) return;
+    const proxy = readFabricToolResultProxyDetailsV1(event.details);
+    if (!proxy || proxy.ref !== event.toolName) return;
+
+    const serialized =
+      typeof proxy.result === "string"
+        ? proxy.result
+        : (JSON.stringify(proxy.result) ?? String(proxy.result));
+    if (serialized.length <= 6_144) return;
+
+    const artifact = await persistPrivately(serialized);
+    const replacement = {
+      fabricTruncated: true,
+      originalChars: serialized.length,
+      preview: `${serialized.slice(0, 3_000)}\n…`,
+      artifact,
+    };
+    return {
+      content: [{ type: "text", text: replacement.preview }],
+      details: { ...proxy, result: replacement },
+    };
+  });
+}
+```
+
+Changing only `content` replaces the nested sandbox value with the patched text. To preserve a structured replacement, return the proxy envelope in `details` with a changed `result`, as above. A valid changed `details.result` takes precedence when both fields are patched. Returning `isError: true` fails the nested provider invocation.
+
+Pi core tools and captured extension tools are not sent through this generic proxy because they already replay their native `tool_call`, `tool_result`, and `tool_execution_*` lifecycle. For example, a nested `pi.bash()` still emits `toolName: "bash"` with native `BashToolDetails`; it can be handled with `isBashToolResult()`. Proxied events are middleware only and do not create separate persisted tool-result messages.

@@ -3,6 +3,38 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 export const FABRIC_PROVIDER_REGISTER_EVENT = "pi-fabric:provider:register:v1";
 export const FABRIC_PROVIDER_DISCOVER_EVENT = "pi-fabric:provider:discover:v1";
 
+/** Identifies host-side tool lifecycle events replayed for a nested Fabric call. */
+export const FABRIC_NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
+
+/** Discriminant for the transient details envelope on a proxied provider result. */
+export const FABRIC_TOOL_RESULT_PROXY_KIND = "pi-fabric.tool-result-proxy.v1";
+
+/**
+ * Host-only middleware details for non-Pi Fabric providers. `result` is the
+ * exact value before maxNestedResultChars is enforced and is not persisted as
+ * a separate Pi tool-result message.
+ */
+export interface FabricToolResultProxyDetailsV1 {
+  kind: typeof FABRIC_TOOL_RESULT_PROXY_KIND;
+  ref: string;
+  result: unknown;
+}
+
+export const readFabricToolResultProxyDetailsV1 = (
+  value: unknown,
+): FabricToolResultProxyDetailsV1 | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.kind !== FABRIC_TOOL_RESULT_PROXY_KIND ||
+    typeof record.ref !== "string" ||
+    !Object.prototype.hasOwnProperty.call(record, "result")
+  ) {
+    return undefined;
+  }
+  return record as unknown as FabricToolResultProxyDetailsV1;
+};
+
 export type FabricRisk = "read" | "write" | "execute" | "network" | "agent";
 export type FabricActivityEntityKind =
   | "agent"

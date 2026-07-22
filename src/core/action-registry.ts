@@ -5,14 +5,16 @@ import {
   type FabricExecutionTraceOperationHandle,
   type FabricExecutionTraceRecorder,
 } from "../audit/trace.js";
-import type {
-  FabricActionDescriptor,
-  FabricInvocationActivityUpdate,
-  FabricInvocationContext,
-  FabricMediaBlock,
-  FabricProvider,
-  FabricProviderListRequest,
+import {
+  FABRIC_NESTED_TOOL_CALL_ID_PREFIX,
+  type FabricActionDescriptor,
+  type FabricInvocationActivityUpdate,
+  type FabricInvocationContext,
+  type FabricMediaBlock,
+  type FabricProvider,
+  type FabricProviderListRequest,
 } from "../protocol.js";
+import type { FabricNestedToolResultProxy } from "./tool-result-proxy.js";
 
 export interface ResolvedFabricAction extends FabricActionDescriptor {
   ref: string;
@@ -77,7 +79,7 @@ export interface FabricRegistryInvocationContext extends FabricInvocationContext
  * tool-call ids (e.g. openai "call_…", anthropic "toolu_…") never use this
  * prefix, so the signal is unambiguous.
  */
-export const NESTED_TOOL_CALL_ID_PREFIX = "fabric_";
+export const NESTED_TOOL_CALL_ID_PREFIX = FABRIC_NESTED_TOOL_CALL_ID_PREFIX;
 
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
 
@@ -213,6 +215,8 @@ const validationMessage = (
 
 export class ActionRegistry {
   readonly #providers = new Map<string, FabricProvider>();
+
+  constructor(readonly toolResultProxy?: FabricNestedToolResultProxy) {}
 
   register(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
     if (!providerNamePattern.test(provider.name)) {
@@ -354,7 +358,7 @@ export class ActionRegistry {
         args: argsPreview,
       });
       context.update(`Calling ${ref}`);
-      const value = await provider.invoke(actionName, preparedArgs, {
+      const providerValue = await provider.invoke(actionName, preparedArgs, {
         ...context,
         nestedToolCallId,
         update(message) {
@@ -382,6 +386,14 @@ export class ActionRegistry {
           activeAudit.preview = preview;
         },
       });
+      const value = this.toolResultProxy
+        ? await this.toolResultProxy.proxy({
+            action,
+            args: preparedArgs,
+            toolCallId: nestedToolCallId,
+            value: providerValue,
+          })
+        : providerValue;
       const bounded = boundedResult(value, context.maxResultChars);
       const resultError = failedResultError(value);
       activeAudit.success = resultError === undefined;

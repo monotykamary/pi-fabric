@@ -11,6 +11,7 @@ import { CapturedToolCatalog } from "./capture/catalog.js";
 import { loadFabricConfig, type FabricConfig } from "./config.js";
 import { ActionRegistry } from "./core/action-registry.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
+import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService } from "./execution-service.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { PeerSessionRegistry, type FabricPeerInfo } from "./peer-session.js";
@@ -158,7 +159,9 @@ export class FabricState {
       agentDir: getAgentDir(),
       projectTrusted,
     });
-    this.#registry = new ActionRegistry();
+    this.#registry = new ActionRegistry(
+      new FabricToolResultProxy(() => this.capturedTools.runner),
+    );
     const enforceSchema = this.#config.schema.mode === "enforce";
     const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
     const capturedToolsProvider =

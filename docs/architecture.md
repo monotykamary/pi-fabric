@@ -56,7 +56,8 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 
 ## Security and limitations
 
-- Pi Fabric invokes separately constructed Pi built-in definitions when no captured override exists. Those unoverridden built-in calls do not pass through Pi's top-level `tool_call` and `tool_result` hooks. Captured overrides and other extension calls do run those hooks; Fabric's approval and audit layer remains authoritative around every nested call.
+- Pi Fabric invokes separately constructed Pi built-in definitions when no captured override exists. When Pi's extension runner is available, Fabric replays their native `tool_call`, `tool_result`, and `tool_execution_*` lifecycle; captured overrides and extension tools use the same lifecycle. Fabric's approval and audit layer remains authoritative around every nested call.
+- Non-Pi provider results emit a transient namespaced `tool_result` proxy before the QuickJS result bound. Its details envelope exposes the exact host-side result to trusted user extensions, so those extensions can inspect or externalize sensitive provider data; it does not create a separate persisted tool-result message.
 - Captured tools execute with the full privileges of their owning extension. Hiding a tool schema is context optimization, not sandboxing. Captured tools retain their definitions and native renderers, but nested calls render as part of the enclosing Fabric execution rather than as separate native tool rows.
 - Registry interception composes through the public `ExtensionRunner.getAllRegisteredTools()` method. An extension that replaces that method without delegating to the previous implementation can prevent capture.
 - MCP servers and external providers execute with their own host privileges. Review their configuration and code.
