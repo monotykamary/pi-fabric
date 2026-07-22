@@ -166,6 +166,11 @@ export class GlobalActorRegistry {
         : typeof existing.extensions === "boolean"
           ? { extensions: existing.extensions }
           : {}),
+      ...(patch.validWhile !== undefined
+        ? { validWhile: patch.validWhile }
+        : existing.validWhile
+          ? { validWhile: existing.validWhile }
+          : {}),
     };
     const validated = this.#validate(merged);
     if (validated.name !== existing.name) {
@@ -219,6 +224,7 @@ export class GlobalActorRegistry {
       ...(def.transport ? { transport: def.transport } : {}),
       ...(def.timeoutMs ? { timeoutMs: def.timeoutMs } : {}),
       ...(typeof def.extensions === "boolean" ? { extensions: def.extensions } : {}),
+      ...(def.validWhile ? { validWhile: clone(def.validWhile) } : {}),
     };
     return request;
   }
@@ -259,6 +265,13 @@ export class GlobalActorRegistry {
       def.transport !== undefined && TRANSPORTS.has(def.transport) ? def.transport : undefined;
     const timeoutMs = typeof def.timeoutMs === "number" ? def.timeoutMs : undefined;
     const extensions = typeof def.extensions === "boolean" ? def.extensions : undefined;
+    const validWhile = def.validWhile?.version === 1 &&
+      typeof def.validWhile.source === "string" &&
+      def.validWhile.source.trim() &&
+      def.validWhile.source.length <= 16_000
+      ? clone(def.validWhile)
+      : undefined;
+    if (def.validWhile && !validWhile) throw new Error("Invalid global actor validWhile predicate");
     return {
       name,
       instructions,
@@ -275,6 +288,7 @@ export class GlobalActorRegistry {
       ...(transport ? { transport } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
       ...(extensions !== undefined ? { extensions } : {}),
+      ...(validWhile ? { validWhile } : {}),
     };
   }
 
@@ -331,6 +345,11 @@ export class GlobalActorRegistry {
         record.transport !== undefined && TRANSPORTS.has(record.transport) ? record.transport : undefined;
       const timeoutMs = typeof record.timeoutMs === "number" ? record.timeoutMs : undefined;
       const extensions = typeof record.extensions === "boolean" ? record.extensions : undefined;
+      const validWhile = record.validWhile?.version === 1 &&
+        typeof record.validWhile.source === "string" &&
+        record.validWhile.source.length <= 16_000
+        ? clone(record.validWhile)
+        : undefined;
       const def: GlobalActorDefinition = {
         id: record.id,
         name: record.name,
@@ -350,6 +369,7 @@ export class GlobalActorRegistry {
         ...(transport ? { transport } : {}),
         ...(timeoutMs ? { timeoutMs } : {}),
         ...(extensions !== undefined ? { extensions } : {}),
+        ...(validWhile ? { validWhile } : {}),
       };
       this.#actors.set(def.id, def);
     }

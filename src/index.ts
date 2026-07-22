@@ -1088,9 +1088,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("tool_execution_end", async (event, context) => {
-    if (state.initialized && event.isError) {
-      state.dispatchHostEvent("tool_error", event, context);
-    }
+    if (!state.initialized) return;
+    state.noteMainActivity(context);
+    if (event.isError) state.dispatchHostEvent("tool_error", event, context);
   });
 
   pi.on("session_compact", async (event, context) => {

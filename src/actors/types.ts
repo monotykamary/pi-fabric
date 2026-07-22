@@ -13,6 +13,55 @@ export type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
 export type FabricActorResponseMode = "text" | "directive";
 export type FabricActorStatus = "idle" | "queued" | "running" | "stopped";
 
+export interface FabricActorValidWhileSource {
+  version: 1;
+  source: string;
+}
+
+export interface FabricActorValidityDecision {
+  valid: boolean;
+  reason?: string;
+}
+
+export type FabricActorActivation =
+  | {
+      kind: "hostEvent";
+      id: string;
+      source: string;
+      sequence: number;
+      createdAt: number;
+      event: FabricActorHostEvent;
+      mainRevision: number;
+      taskRevision: number;
+      signal?: unknown;
+    }
+  | {
+      kind: "direct";
+      id: string;
+      source: string;
+      sequence: number;
+      createdAt: number;
+    }
+  | {
+      kind: "mesh";
+      id: string;
+      source: string;
+      sequence: number;
+      createdAt: number;
+      topic: string;
+    };
+
+export interface FabricActorValidityFacts {
+  activation: FabricActorActivation;
+  current: {
+    latestActivationSequence: number;
+    mainRevision: number;
+    taskRevision: number;
+    idle: boolean;
+    now: number;
+  };
+}
+
 export interface FabricActorRequest {
   name: string;
   instructions: string;
@@ -40,6 +89,8 @@ export interface FabricActorRequest {
    * actor's ordinary tool allowlist. Fixed at creation.
    */
   extensions?: boolean;
+  /** Serialized guest predicate evaluated before work and before delivery. */
+  validWhile?: FabricActorValidWhileSource;
 }
 
 export interface FabricActorInfo {
@@ -57,6 +108,7 @@ export interface FabricActorInfo {
   thinking?: FabricThinking;
   tools?: string[];
   extensions?: boolean;
+  validWhile?: FabricActorValidWhileSource;
   queued: number;
   messages: number;
   createdAt: number;
@@ -99,6 +151,8 @@ export interface FabricActorMessage {
   runId?: string;
   usage?: SubagentUsage;
   error?: string;
+  stale?: boolean;
+  reason?: string;
 }
 
 export interface FabricActorDirective {

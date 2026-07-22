@@ -211,7 +211,34 @@ return agents.create({
 
 Claude actors can retain context, inspect/edit with mapped Claude Code tools, consume host events and mesh messages delivered by Fabric, and return text or directives. They cannot themselves call `fabric_exec`, `agents.*`, or `mesh.*`; use a Pi actor when the actor must recursively coordinate through Fabric. If Claude's private session has been removed, the next activation fails clearly rather than silently discarding actor context. Recreate the actor to start a fresh Claude session.
 
-This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, and restore with the trusted project actor registry. Pi actors keep model context in their Fabric-owned Pi session file. Claude actors persist the session ID emitted by the official CLI, reapply tools/permissions/schema/system-prompt flags on every activation, and use `--resume <id>` after the first message; Fabric also keeps a runner-neutral stream transcript instead of reading Claude's private JSONL format. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `subagents.thinking` (`medium`); set it at creation or change it later with `e` from the dashboard. Its `tools` array is a persisted allowlist: set it at creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty list disables optional tools; Pi actors retain the host-required `fabric_exec` capability for mailbox and mesh coordination unless created with `extensions: false`. Set `extensions: false` at creation to opt a Pi actor out of Fabric entirely — the activation runs without `fabric_exec`, `agents.*`, or `mesh.*`, while the host still manages its mailbox and delivery. This does not make the actor read-only by itself: `tools` still defaults to `subagents.defaultTools`. For a read-only persistent actor, also set `tools: ["read", "grep", "find", "ls"]`; use `tools: []` for an actor with no tools.
+This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, and restore with the trusted project actor registry.
+
+`validWhile` adds a programmatic freshness guard for persistent actors. Fabric serializes its pure synchronous function source, checks it before starting queued work and before delivering completed work, and persists it with project actors and global templates. The immutable `activation` fact is a `hostEvent`, `direct`, or `mesh` activation; `current` contains `latestActivationSequence`, `mainRevision`, `taskRevision`, `idle`, and `now`. Main revisions advance on completed tools and lifecycle events, so a tool-error review can become stale after Main recovers. Return `false` or `{ valid: false, reason? }` to suppress stale work. Invalidated fire-and-forget work is recorded as a silent stale outbox entry; an invalidated `agents.ask()` rejects. Predicates cannot be async, call tools, or depend on closures because their source must execute after restoration.
+
+```ts
+return agents.create({
+  name: "fresh-reviewer",
+  instructions: "Review only the latest useful parent-session event.",
+  events: ["tool_error", "agent_settled"],
+  responseMode: "directive",
+  delivery: "steer",
+  triggerTurn: false,
+  validWhile: ({ activation, current }) => {
+    if (activation.kind !== "hostEvent") return true;
+    if (activation.sequence !== current.latestActivationSequence) {
+      return { valid: false, reason: "a newer activation exists" };
+    }
+    if (activation.event === "tool_error") {
+      const signal = JSON.stringify(activation.signal ?? {});
+      const incidental = /ENOENT|no matches found|exit code 1/i.test(signal);
+      if (incidental && activation.mainRevision !== current.mainRevision) return false;
+    }
+    return activation.taskRevision === current.taskRevision;
+  },
+});
+```
+
+Pi actors keep model context in their Fabric-owned Pi session file. Claude actors persist the session ID emitted by the official CLI, reapply tools/permissions/schema/system-prompt flags on every activation, and use `--resume <id>` after the first message; Fabric also keeps a runner-neutral stream transcript instead of reading Claude's private JSONL format. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `subagents.thinking` (`medium`); set it at creation or change it later with `e` from the dashboard. Its `tools` array is a persisted allowlist: set it at creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty list disables optional tools; Pi actors retain the host-required `fabric_exec` capability for mailbox and mesh coordination unless created with `extensions: false`. Set `extensions: false` at creation to opt a Pi actor out of Fabric entirely — the activation runs without `fabric_exec`, `agents.*`, or `mesh.*`, while the host still manages its mailbox and delivery. This does not make the actor read-only by itself: `tools` still defaults to `subagents.defaultTools`. For a read-only persistent actor, also set `tools: ["read", "grep", "find", "ls"]`; use `tools: []` for an actor with no tools.
 
 ### Response modes and delivery
 

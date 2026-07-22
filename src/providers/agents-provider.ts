@@ -224,6 +224,12 @@ const descriptors: FabricActionDescriptor[] = [
         transport: runProperties.transport,
         timeoutMs: runProperties.timeoutMs,
         extensions: runProperties.extensions,
+        validWhile: {
+          type: "object",
+          properties: { version: { const: 1 }, source: { type: "string" } },
+          required: ["version", "source"],
+          additionalProperties: false,
+        },
         scope: { type: "string", enum: ["project", "global"] },
       },
       required: ["name", "instructions"],
@@ -658,6 +664,12 @@ const actorRequest = (
   const topics = stringArray(args.topics);
   const tools = stringArray(args.tools);
   const timeoutMs = longerTimeoutOverride(args.timeoutMs, manager);
+  const validWhile = typeof args.validWhile === "object" && args.validWhile !== null &&
+    !Array.isArray(args.validWhile) &&
+    (args.validWhile as { version?: unknown }).version === 1 &&
+    typeof (args.validWhile as { source?: unknown }).source === "string"
+    ? { version: 1 as const, source: (args.validWhile as { source: string }).source }
+    : undefined;
   const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
   const inheritedModel =
     inheritModel && runner === "pi" && !manager.config.model && context.extensionContext.model
@@ -697,6 +709,7 @@ const actorRequest = (
       : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
+    ...(validWhile ? { validWhile } : {}),
   };
 };
 

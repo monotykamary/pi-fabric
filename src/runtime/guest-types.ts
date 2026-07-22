@@ -213,6 +213,21 @@ interface PiToolsApi {
 }
 type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
+interface FabricActorHostSignal {
+  readonly payload: unknown;
+  readonly idle: boolean;
+  readonly observedAt: number;
+}
+type FabricActorActivation =
+  | { readonly kind: "hostEvent"; readonly id: string; readonly source: string; readonly sequence: number; readonly createdAt: number; readonly event: FabricActorHostEvent; readonly mainRevision: number; readonly taskRevision: number; readonly signal?: FabricActorHostSignal }
+  | { readonly kind: "direct"; readonly id: string; readonly source: string; readonly sequence: number; readonly createdAt: number }
+  | { readonly kind: "mesh"; readonly id: string; readonly source: string; readonly sequence: number; readonly createdAt: number; readonly topic: string };
+interface FabricActorValidityFacts {
+  readonly activation: Readonly<FabricActorActivation>;
+  readonly current: Readonly<{ latestActivationSequence: number; mainRevision: number; taskRevision: number; idle: boolean; now: number }>;
+}
+type FabricActorValidityDecision = boolean | { valid: boolean; reason?: string };
+type FabricActorValidWhile = (facts: Readonly<FabricActorValidityFacts>) => FabricActorValidityDecision;
 interface FabricActorRequestBase {
   name: string;
   instructions: string;
@@ -227,6 +242,7 @@ interface FabricActorRequestBase {
   transport?: FabricTransport;
   timeoutMs?: number;
   extensions?: boolean;
+  validWhile?: FabricActorValidWhile;
 }
 type FabricActorRequest = FabricActorRequestBase & (
   | { delivery?: "mailbox"; triggerTurn?: false }
@@ -248,6 +264,7 @@ interface FabricActorInfo {
   thinking?: FabricThinking;
   tools?: string[];
   extensions?: boolean;
+  validWhile?: { version: 1; source: string };
   queued: number;
   messages: number;
   createdAt: number;
@@ -269,6 +286,8 @@ interface FabricActorMessage {
   action?: "silent" | "message" | "stop";
   runId?: string;
   error?: string;
+  stale?: boolean;
+  reason?: string;
 }
 interface FabricAgentsApi {
   run(args: FabricAgentRequest): Promise<FabricAgentResult>;

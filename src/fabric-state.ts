@@ -407,6 +407,10 @@ export class FabricState {
     );
   }
 
+  noteMainActivity(context: ExtensionContext): void {
+    this.#actors?.noteMainActivity(context.isIdle());
+  }
+
   dispatchHostEvent(
     event: FabricActorHostEvent,
     payload: unknown,

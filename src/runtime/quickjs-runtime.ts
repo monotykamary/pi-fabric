@@ -222,6 +222,24 @@ globalThis.memory = __providerProxy("memory");
 globalThis.state = __providerProxy("state");
 globalThis.schema = __providerProxy("schema");
 globalThis.compact = __providerProxy("compact");
+const __createActor = async (args = {}) => {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new TypeError("agents.create expects an options object");
+  }
+  const request = { ...args };
+  const validWhile = request.validWhile;
+  if (validWhile !== undefined) {
+    if (typeof validWhile !== "function") {
+      throw new TypeError("agents.create validWhile must be a pure predicate function");
+    }
+    const source = Function.prototype.toString.call(validWhile);
+    if (source.trimStart().startsWith("async")) {
+      throw new TypeError("agents.create validWhile must be synchronous");
+    }
+    request.validWhile = { version: 1, source };
+  }
+  return __call("agents.create", request);
+};
 const __handoff = async (args = {}) => {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new TypeError("agents.handoff expects an options object");
@@ -255,7 +273,7 @@ globalThis.agents = Object.freeze({
   models: (args = {}) => __call("agents.models", args),
   stop: (args) => __call("agents.stop", args),
   cleanup: (args) => __call("agents.cleanup", args),
-  create: (args) => __call("agents.create", args),
+  create: __createActor,
   ask: (args) => __call("agents.ask", args),
   tell: (args) => __call("agents.tell", args),
   steer: (args) => __call("agents.steer", args),

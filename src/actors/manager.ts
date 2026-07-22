@@ -10,6 +10,7 @@ import type { SubagentRunRecord, SubagentRunRequest, SubagentRunResult } from ".
 import { readJsonlPage } from "../log-tail.js";
 import type {
   FabricActorDelivery,
+  FabricActorActivation,
   FabricActorDeliveryRequest,
   FabricActorDirective,
   FabricActorHostEvent,
@@ -19,9 +20,11 @@ import type {
   FabricActorRequest,
   FabricActorResponseMode,
   FabricActorStatus,
+  FabricActorValidWhileSource,
 } from "./types.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
+import { evaluateActorValidWhile, validateActorValidWhile } from "./predicate.js";
 
 interface ActorQueueItem {
   id: string;
@@ -29,6 +32,7 @@ interface ActorQueueItem {
   payload: unknown;
   createdAt: number;
   coalesceKey?: string;
+  activation: FabricActorActivation;
   resolve?: (message: FabricActorMessage) => void;
   reject?: (error: Error) => void;
 }
@@ -52,6 +56,8 @@ interface ManagedActor {
   transport?: FabricSubagentTransport;
   timeoutMs?: number;
   extensions?: boolean;
+  validWhile?: FabricActorValidWhileSource;
+  latestActivationSequence: number;
   sessionFile: string;
   queue: ActorQueueItem[];
   messages: FabricActorMessage[];
@@ -151,6 +157,9 @@ export class ActorManager {
   // interrupt's own turn_end / agent_settled events. Lifted when the user
   // resumes by sending a new message (the "input" host event).
   #halted = false;
+  #mainRevision = 0;
+  #taskRevision = 0;
+  #mainIdle = true;
 
   constructor(
     readonly sessionId: string,
@@ -202,6 +211,7 @@ export class ActorManager {
       if (!TOPIC_PATTERN.test(topic)) throw new Error(`Invalid Fabric actor topic: ${topic}`);
     }
     const deliveryPolicy = resolveActorDeliveryPolicy(request.delivery, request.triggerTurn);
+    await validateActorValidWhile(request.validWhile);
     const runner = request.runner ?? this.subagents.config.runner;
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid Fabric actor runner: ${String(request.runner)}`);
@@ -227,6 +237,8 @@ export class ActorManager {
       ...(request.transport ? { transport: request.transport } : {}),
       ...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
       ...(typeof request.extensions === "boolean" ? { extensions: request.extensions } : {}),
+      ...(request.validWhile ? { validWhile: structuredClone(request.validWhile) } : {}),
+      latestActivationSequence: 0,
       sessionFile: path.join(actorDirectory, "session.jsonl"),
       queue: [],
       draining: false,
@@ -520,6 +532,7 @@ export class ActorManager {
       ...(actor.transport ? { transport: actor.transport } : {}),
       ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
       ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
+      ...(actor.validWhile ? { validWhile: structuredClone(actor.validWhile) } : {}),
     };
   }
 
@@ -569,6 +582,11 @@ export class ActorManager {
     };
   }
 
+  noteMainActivity(idle = false): void {
+    this.#mainRevision++;
+    this.#mainIdle = idle;
+  }
+
   dispatchHostEvent(event: FabricActorHostEvent, payload: unknown): number {
     if (this.#closing || !this.meshConfig.enabled) return 0;
     // The user sending a new message ends a stop-the-world halt: lift the gate
@@ -578,6 +596,13 @@ export class ActorManager {
       this.#scheduleMeshPoll();
     }
     if (this.#halted) return 0;
+    this.#mainRevision++;
+    if (event === "input") this.#taskRevision++;
+    const payloadIdle = typeof payload === "object" && payload !== null &&
+      typeof (payload as { signal?: { idle?: unknown } }).signal?.idle === "boolean"
+      ? (payload as { signal: { idle: boolean } }).signal.idle
+      : undefined;
+    this.#mainIdle = payloadIdle ?? event === "agent_settled";
     let delivered = 0;
     for (const actor of this.#actors.values()) {
       if (actor.status === "stopped" || !actor.events.includes(event)) continue;
@@ -723,11 +748,14 @@ export class ActorManager {
     } = {},
   ): ActorQueueItem {
     if (actor.status === "stopped") throw new Error(`Fabric actor is stopped: ${actor.id}`);
+    const createdAt = Date.now();
+    const sequence = ++actor.latestActivationSequence;
     if (options.coalesceKey) {
       const existing = actor.queue.find((item) => item.coalesceKey === options.coalesceKey);
       if (existing) {
-        existing.payload = payload;
-        existing.createdAt = Date.now();
+        existing.payload = structuredClone(payload);
+        existing.createdAt = createdAt;
+        existing.activation = this.#activation(existing.id, source, payload, sequence, createdAt);
         this.#ensureDrain(actor);
         return existing;
       }
@@ -737,11 +765,13 @@ export class ActorManager {
         `Fabric actor queue limit reached for ${actor.name} (${this.meshConfig.actorQueueLimit})`,
       );
     }
+    const itemId = randomUUID();
     const item: ActorQueueItem = {
-      id: randomUUID(),
+      id: itemId,
       source,
       payload: structuredClone(payload),
-      createdAt: Date.now(),
+      createdAt,
+      activation: this.#activation(itemId, source, payload, sequence, createdAt),
       ...(options.resolve ? { resolve: options.resolve } : {}),
       ...(options.reject ? { reject: options.reject } : {}),
       ...(options.coalesceKey ? { coalesceKey: options.coalesceKey } : {}),
@@ -793,6 +823,15 @@ export class ActorManager {
         const abortController = new AbortController();
         actor.abortController = abortController;
         await this.#publishPresence(actor);
+        const beforeRun = await this.#validity(actor, item);
+        if (!beforeRun.valid) {
+          this.#recordStale(actor, item, beforeRun.reason);
+          delete actor.abortController;
+          actor.status = actor.queue.length > 0 ? "queued" : "idle";
+          actor.updatedAt = Date.now();
+          await this.#publishPresence(actor);
+          continue;
+        }
         let runId: string | undefined;
         const previousRunId = actor.lastRunId;
         let runCompleted = false;
@@ -835,6 +874,11 @@ export class ActorManager {
             throw new Error(result.error || `Actor run ${result.status}`);
           }
           const message = this.#outgoingMessage(actor, item, result);
+          const beforeDelivery = await this.#validity(actor, item);
+          if (!beforeDelivery.valid) {
+            this.#recordStale(actor, item, beforeDelivery.reason, result.id, result.usage);
+            continue;
+          }
           this.#recordMessage(actor, message);
           await this.mesh
             .publish({
@@ -995,6 +1039,83 @@ export class ActorManager {
       runId: result.id,
       usage: result.usage,
     };
+  }
+
+  #activation(
+    id: string,
+    source: string,
+    payload: unknown,
+    sequence: number,
+    createdAt: number,
+  ): FabricActorActivation {
+    if (source.startsWith("host:")) {
+      const event = source.slice(5) as FabricActorHostEvent;
+      const signal = typeof payload === "object" && payload !== null
+        ? (payload as { signal?: unknown }).signal
+        : undefined;
+      return {
+        kind: "hostEvent",
+        id,
+        source,
+        sequence,
+        createdAt,
+        event,
+        mainRevision: this.#mainRevision,
+        taskRevision: this.#taskRevision,
+        ...(signal !== undefined ? { signal: structuredClone(signal) } : {}),
+      };
+    }
+    if (source.startsWith("mesh:")) {
+      return { kind: "mesh", id, source, sequence, createdAt, topic: source.slice(5) };
+    }
+    return { kind: "direct", id, source, sequence, createdAt };
+  }
+
+  async #validity(
+    actor: ManagedActor,
+    item: ActorQueueItem,
+  ): Promise<{ valid: boolean; reason?: string }> {
+    if (!actor.validWhile) return { valid: true };
+    try {
+      return await evaluateActorValidWhile(actor.validWhile, {
+        activation: structuredClone(item.activation),
+        current: {
+          latestActivationSequence: actor.latestActivationSequence,
+          mainRevision: this.#mainRevision,
+          taskRevision: this.#taskRevision,
+          idle: this.#mainIdle,
+          now: Date.now(),
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      actor.lastError = `validWhile: ${message}`;
+      return { valid: false, reason: actor.lastError };
+    }
+  }
+
+  #recordStale(
+    actor: ManagedActor,
+    item: ActorQueueItem,
+    reason = "validWhile returned false",
+    runId?: string,
+    usage?: SubagentRunResult["usage"],
+  ): void {
+    const message: FabricActorMessage = {
+      id: randomUUID(),
+      actorId: actor.id,
+      actorName: actor.name,
+      direction: "out",
+      source: item.source,
+      createdAt: Date.now(),
+      action: "silent",
+      stale: true,
+      reason,
+      ...(runId ? { runId } : {}),
+      ...(usage ? { usage } : {}),
+    };
+    this.#recordMessage(actor, message);
+    item.reject?.(new Error(`Fabric actor activation invalidated: ${reason}`));
   }
 
   #startMeshMonitor(): void {
@@ -1243,6 +1364,7 @@ export class ActorManager {
       ...(actor.transport ? { transport: actor.transport } : {}),
       ...(actor.timeoutMs ? { timeoutMs: actor.timeoutMs } : {}),
       ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
+      ...(actor.validWhile ? { validWhile: actor.validWhile } : {}),
       sessionFile: actor.sessionFile,
       messages: actor.messages,
       createdAt: actor.createdAt,
@@ -1322,6 +1444,10 @@ export class ActorManager {
           : {}),
         ...(typeof record.timeoutMs === "number" ? { timeoutMs: record.timeoutMs } : {}),
         ...(typeof record.extensions === "boolean" ? { extensions: record.extensions } : {}),
+        ...(record.validWhile?.version === 1 && typeof record.validWhile.source === "string"
+          ? { validWhile: record.validWhile }
+          : {}),
+        latestActivationSequence: 0,
         sessionFile: path.join(this.#actorRoot, record.id, "session.jsonl"),
         queue: [],
         draining: false,
@@ -1365,6 +1491,7 @@ export class ActorManager {
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
       ...(typeof actor.extensions === "boolean" ? { extensions: actor.extensions } : {}),
+      ...(actor.validWhile ? { validWhile: structuredClone(actor.validWhile) } : {}),
       queued: actor.queue.length,
       messages: actor.messages.length,
       createdAt: actor.createdAt,
