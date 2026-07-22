@@ -8,6 +8,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
 const statusFile = args.get("status-file");
 const taskFile = args.get("task-file");
 const logFile = args.get("log-file");
+const lifecycleFile = args.get("lifecycle-file");
 const sessionFile = args.get("session-file");
 const schemaFile = args.get("schema-file");
 const schema = schemaFile ? JSON.parse(fs.readFileSync(schemaFile, "utf8")) : undefined;
@@ -78,6 +79,18 @@ if (task.includes("HANG")) {
     ...(args.has("thinking") ? { thinking: args.get("thinking") } : {}),
   };
   fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+  if (lifecycleFile) {
+    const lifecycleEvents = [
+      { version: 1, event: "pi.agent_start", occurredAt: now },
+      { version: 1, event: "pi.turn_end", occurredAt: now, data: { turnIndex: 0 } },
+      { version: 1, event: "pi.agent_end", occurredAt: now, data: { willRetry: false } },
+      { version: 1, event: "pi.agent_settled", occurredAt: now },
+    ];
+    fs.writeFileSync(
+      lifecycleFile,
+      lifecycleEvents.map((event) => JSON.stringify(event)).join("\n") + "\n",
+    );
+  }
   fs.writeFileSync(statusFile, JSON.stringify(record));
 
   // Emit a per-run event stream so agents.log / readLog can inspect the run.

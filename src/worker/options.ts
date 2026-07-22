@@ -55,6 +55,7 @@ export const parseWorkerOptions = (
     name: required(args, "name"),
     taskFile: required(args, "task-file"),
     statusFile: required(args, "status-file"),
+    lifecycleFile: required(args, "lifecycle-file"),
     logFile: required(args, "log-file"),
     ...(schemaFile ? { schemaFile } : {}),
     cwd: required(args, "cwd"),

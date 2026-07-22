@@ -175,6 +175,30 @@ For Main and one-shot agents, `steer` is delivered after the current turn's tool
 
 Local routing returns `"main"` or `"local"`. Cross-process `steer`, `followUp`, and `stop` resolve the target's exact owner, send an owner-addressed control command, and wait for a version/target/owner-identity-matched acknowledgement. Success returns `routed: "mesh", acknowledged: true`; unknown ids, stale owners, rejection, and timeout throw rather than reporting an unverified queue. The dashboard's `s`, `u`, and `x` actions use this same path. Cross-process control requires `mesh.enabled`. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
 
+### Participant lifecycle subscriptions
+
+Use durable source-qualified subscriptions when one participant must react to another participant's Pi or run lifecycle. Unlike `agents.status()`, subscriptions are host-managed and survive turns without asking a model to poll.
+
+```ts
+const [peer] = await agents.peers();
+if (peer) {
+  await agents.subscribe({
+    from: peer.id,
+    events: ["pi.agent_settled"],
+    to: "main",
+    delivery: "followUp",
+    triggerTurn: true,
+    once: true,
+  });
+}
+```
+
+`agents.subscribe` takes an exact source participant id (or `"main"` for the caller's root), one or more lifecycle events, an optional target (default Main), a `steer`/`followUp` delivery mode, an explicit `triggerTurn` policy, and optional `once`. Use `agents.subscriptions()` and `agents.unsubscribe({ id })` to inspect and remove routes. Subscriptions begin at the current mesh sequence rather than replaying old events, and their delivery cursor is durable across host restarts. Delivery is at-least-once if a host crashes after inserting the target message but before persisting its cursor; consumers can deduplicate side effects with the lifecycle event `id`.
+
+Pi-specific events are namespaced as `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.turn_end`, `pi.agent_settled`, `pi.tool_error`, and `pi.session_compact`. Runner-neutral terminal events are `run.completed`, `run.failed`, `run.stopped`, and `run.timed_out`. Lifecycle envelopes intentionally contain source identity and bounded operational metadata rather than session transcripts.
+
+A detached local `agents.spawn()` also has a narrower convenience path: when `subagents.notifyOnComplete` is enabled, terminal completion sends Main a triggered follow-up automatically. Calling `agents.wait()` makes it foreground work and suppresses that detached notification.
+
 ## Persistent actors
 
 `agents.create()` creates a named actor with a fixed runner, a persistent runner session, a serial mailbox, and optional subscriptions to parent-session events or durable mesh topics:

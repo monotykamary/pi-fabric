@@ -12,6 +12,14 @@ import type {
   FabricMainAgentTarget,
 } from "../main-agent.js";
 import type { MeshIdentity } from "../mesh/store.js";
+import { LifecycleBroker } from "../lifecycle/broker.js";
+import {
+  FABRIC_LIFECYCLE_EVENTS,
+  isFabricLifecycleEventType,
+  lifecycleSourceIdentity,
+  type FabricLifecycleEvent,
+  type FabricLifecycleSubscription,
+} from "../lifecycle/types.js";
 import {
   FabricControlPlane,
   type FabricControlCommand,
@@ -111,6 +119,11 @@ const idSchema = {
   additionalProperties: false,
 };
 
+const lifecycleEventSchema = {
+  type: "string",
+  enum: [...FABRIC_LIFECYCLE_EVENTS],
+};
+
 const AGENT_PROGRESS_INTERVAL_MS = 1_000;
 const AGENT_PREVIEW_TEXT_CODE_POINTS = 2_000;
 const AGENT_PREVIEW_TOOL_LIMIT = 8;
@@ -136,7 +149,8 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "spawn",
-    description: "Start a child agent through Pi or Claude Code and return a handle immediately",
+    description:
+      "Start a child agent through Pi or Claude Code and return a handle immediately. Detached runs send Main a follow-up on terminal completion when subagents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
     inputSchema: runSchema,
     risk: "agent",
   },
@@ -197,6 +211,41 @@ const descriptors: FabricActionDescriptor[] = [
     description: "List other live root Pi sessions sharing this project mesh. The dashboard-owning session remains Main; these targets are named peers.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     risk: "read",
+  },
+  {
+    name: "subscribe",
+    description:
+      "Create a durable source-qualified participant lifecycle subscription. Events are delivered to Main by default or to another participant through steer/follow-up routing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Exact source participant id; main means this lineage root" },
+        events: { type: "array", minItems: 1, items: lifecycleEventSchema },
+        to: { type: "string", description: "Target participant id; defaults to main" },
+        delivery: { type: "string", enum: ["steer", "followUp"] },
+        triggerTurn: { type: "boolean" },
+        once: { type: "boolean" },
+      },
+      required: ["from", "events", "delivery", "triggerTurn"],
+      additionalProperties: false,
+    },
+    risk: "agent",
+  },
+  {
+    name: "subscriptions",
+    description: "List durable participant lifecycle subscriptions, optionally filtered by source or target",
+    inputSchema: {
+      type: "object",
+      properties: { from: { type: "string" }, to: { type: "string" } },
+      additionalProperties: false,
+    },
+    risk: "read",
+  },
+  {
+    name: "unsubscribe",
+    description: "Remove a participant lifecycle subscription",
+    inputSchema: idSchema,
+    risk: "agent",
   },
   {
     name: "models",
@@ -929,6 +978,7 @@ export class AgentsProvider implements FabricProvider {
     readonly mainAgent: FabricMainAgentTarget,
     readonly participants: FabricParticipantSource,
     readonly control: FabricControlPlane | undefined,
+    readonly lifecycle: LifecycleBroker,
     readonly nestedToolsEnabled: () => boolean = () => true,
   ) {}
 
@@ -1119,6 +1169,41 @@ export class AgentsProvider implements FabricProvider {
         return this.mainAgent.info(context.extensionContext);
       case "peers":
         return this.participants.peers();
+      case "subscribe": {
+        const events = Array.isArray(args.events)
+          ? args.events.filter(isFabricLifecycleEventType)
+          : [];
+        if (typeof args.triggerTurn !== "boolean") {
+          throw new Error("Lifecycle subscriptions require explicit triggerTurn: true or false");
+        }
+        const delivery = args.delivery === "steer" || args.delivery === "followUp"
+          ? args.delivery
+          : undefined;
+        if (!delivery) throw new Error("Invalid lifecycle subscription delivery");
+        const subscription = await this.lifecycle.subscribe({
+          from: this.#participantAlias(String(args.from)),
+          events,
+          to: this.#participantAlias(typeof args.to === "string" ? args.to : "main"),
+          delivery,
+          triggerTurn: args.triggerTurn,
+          ...(args.once === true ? { once: true } : {}),
+        });
+        context.update(
+          `Subscribed ${subscription.to.slice(0, 8)} to ${subscription.events.join(", ")} from ${subscription.from.slice(0, 8)}`,
+        );
+        return subscription;
+      }
+      case "subscriptions":
+        return this.lifecycle.list({
+          ...(typeof args.from === "string"
+            ? { from: this.#participantAlias(args.from) }
+            : {}),
+          ...(typeof args.to === "string"
+            ? { to: this.#participantAlias(args.to) }
+            : {}),
+        });
+      case "unsubscribe":
+        return this.lifecycle.unsubscribe(String(args.id));
       case "models": {
         const runner =
           args.runner === "pi" || args.runner === "claude"
@@ -1334,6 +1419,7 @@ export class AgentsProvider implements FabricProvider {
     data: unknown,
     kind: "steer" | "followUp",
     context?: FabricInvocationContext,
+    options: { from?: MeshIdentity; triggerTurn?: boolean } = {},
   ): Promise<FabricAgentMessageResult> {
     if (this.mainAgent.matches(id)) {
       if (this.mainAgent.local) {
@@ -1344,9 +1430,12 @@ export class AgentsProvider implements FabricProvider {
           name: "Main",
         });
         return this.mainAgent.deliverAgent({
-          from: this.actorManager.identity,
+          from: options.from ?? this.actorManager.identity,
           message,
           delivery: kind,
+          ...(typeof options.triggerTurn === "boolean"
+            ? { triggerTurn: options.triggerTurn }
+            : {}),
           ...(data === undefined ? {} : { data }),
         });
       }
@@ -1408,6 +1497,27 @@ export class AgentsProvider implements FabricProvider {
       kind,
       { message, data },
       participant.ownerIdentityId,
+    );
+  }
+
+  async deliverLifecycle(
+    subscription: FabricLifecycleSubscription,
+    event: FabricLifecycleEvent,
+  ): Promise<void> {
+    const status = event.status ? ` with status ${event.status}` : "";
+    const run = event.runId ? ` (run ${event.runId.slice(0, 8)})` : "";
+    const message =
+      `Fabric lifecycle ${event.event} from ${event.source.name} (${event.source.id})${run}${status}.`;
+    await this.routeMessage(
+      subscription.to,
+      message,
+      event,
+      subscription.delivery,
+      undefined,
+      {
+        from: lifecycleSourceIdentity(event.source),
+        triggerTurn: subscription.triggerTurn,
+      },
     );
   }
 
@@ -1511,6 +1621,11 @@ export class AgentsProvider implements FabricProvider {
       .map((participant) => local.get(participant.id) ?? participant);
   }
 
+  #participantAlias(value: string): string {
+    const id = value.trim();
+    return id === "main" ? this.mainAgent.id : id;
+  }
+
   #participantScope(
     value: unknown,
     fallback: FabricParticipantScope,
@@ -1561,6 +1676,7 @@ export class AgentsProvider implements FabricProvider {
 
   async close(): Promise<void> {
     this.#transcripts.clear();
+    await this.lifecycle.close();
     try {
       await this.actorManager.close();
     } finally {

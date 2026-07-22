@@ -18,6 +18,8 @@ import { CompactController, type CompactLastCommit, type CompactPendingIntent } 
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
+import { LifecycleBroker } from "./lifecycle/broker.js";
+import type { FabricLifecycleEventType } from "./lifecycle/types.js";
 import { FabricControlPlane } from "./topology/control-plane.js";
 import { ParticipantDirectory } from "./topology/participant-directory.js";
 import type {
@@ -168,6 +170,7 @@ export class FabricState {
   #mainAgent: MainAgentController | undefined;
   #participants: ParticipantDirectory | undefined;
   #control: FabricControlPlane | undefined;
+  #lifecycle: LifecycleBroker | undefined;
   #agentsProvider: AgentsProvider | undefined;
   #compact: CompactController | undefined;
   #schema: SchemaController | undefined;
@@ -386,6 +389,10 @@ export class FabricState {
         const auth = await context.modelRegistry.getApiKeyAndHeaders(model);
         if (!auth.ok) throw new Error(auth.error);
       },
+      onLifecycle: (event) => {
+        const lifecycle = this.#lifecycle;
+        if (lifecycle) void lifecycle.publish(event).catch(() => undefined);
+      },
       onBackgroundComplete: (result) => {
         const durationMs = Math.max(0, (result.finishedAt ?? Date.now()) - result.startedAt);
         const duration =
@@ -457,6 +464,20 @@ export class FabricState {
           }
         : { persistent: false, mainAgent, canManageActor },
     );
+    this.#lifecycle = new LifecycleBroker(
+      this.#mesh,
+      identity,
+      this.#participants,
+      {
+        enabled: this.#config.mesh.enabled && !enforceSchema,
+        pollMs: this.#config.mesh.actorPollMs,
+        maxReadEvents: this.#config.mesh.maxReadEvents,
+      },
+      async (subscription, event) => {
+        if (!this.#agentsProvider) throw new Error("Fabric agents provider is unavailable");
+        await this.#agentsProvider.deliverLifecycle(subscription, event);
+      },
+    );
     this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
     const firstSeenAgents = new Map<string, number>();
     if (mainAgent.local) {
@@ -488,10 +509,12 @@ export class FabricState {
       mainAgent,
       this.#participants,
       this.#control,
+      this.#lifecycle,
       () => this.#config?.ui.showNestedToolCalls ?? true,
     );
     this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
     await this.#participants.start();
+    this.#lifecycle.start();
     this.#registry.register(this.#agentsProvider);
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
@@ -621,6 +644,34 @@ export class FabricState {
     });
   }
 
+  async publishHostLifecycle(
+    event: FabricLifecycleEventType,
+    payload: unknown,
+  ): Promise<void> {
+    if (
+      !this.#lifecycle ||
+      !this.#identity ||
+      this.#identity.kind !== "main" ||
+      !this.#participants
+    ) return;
+    const self = this.#participants.self();
+    const metadata = lifecycleMetadata(event, payload);
+    await this.#lifecycle.publish({
+      source: {
+        id: self.id,
+        name: self.name,
+        kind: self.kind,
+        rootId: self.rootId,
+        runner: self.runner,
+        ownerHostId: self.ownerHostId,
+        ownerIdentityId: self.ownerIdentityId,
+      },
+      event,
+      occurredAt: lifecycleObservedAt(payload),
+      ...(metadata !== undefined ? { data: metadata } : {}),
+    });
+  }
+
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
     if (
       [
@@ -647,6 +698,7 @@ export class FabricState {
 
   async shutdown(): Promise<void> {
     await this.#participants?.quiesce().catch(() => undefined);
+    await this.#lifecycle?.close();
     await this.#control?.close();
     try {
       await this.#registry?.close();
@@ -664,6 +716,7 @@ export class FabricState {
     this.#mainAgent = undefined;
     this.#participants = undefined;
     this.#control = undefined;
+    this.#lifecycle = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
@@ -695,6 +748,7 @@ export class FabricState {
   async #closeInternal(): Promise<void> {
     if (!this.#registry) return;
     await this.#participants?.quiesce().catch(() => undefined);
+    await this.#lifecycle?.close();
     await this.#control?.close();
     const externalNames = new Set(this.#externalProviders.keys());
     try {
@@ -711,11 +765,57 @@ export class FabricState {
     this.#mainAgent = undefined;
     this.#participants = undefined;
     this.#control = undefined;
+    this.#lifecycle = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
   }
 }
+
+const scalarMetadata = (
+  value: unknown,
+  keys: readonly string[],
+): Record<string, string | number | boolean | null> | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const metadata: Record<string, string | number | boolean | null> = {};
+  for (const key of keys) {
+    const nested = source[key];
+    if (
+      typeof nested === "string" ||
+      typeof nested === "number" ||
+      typeof nested === "boolean" ||
+      nested === null
+    ) metadata[key] = nested;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+};
+
+const lifecycleMetadata = (
+  event: FabricLifecycleEventType,
+  payload: unknown,
+): Record<string, string | number | boolean | null> | undefined => {
+  switch (event) {
+    case "pi.input":
+      return scalarMetadata(payload, ["source", "streamingBehavior"]);
+    case "pi.agent_end":
+      return scalarMetadata(payload, ["willRetry"]);
+    case "pi.turn_end":
+      return scalarMetadata(payload, ["turnIndex", "timestamp"]);
+    case "pi.tool_error":
+      return scalarMetadata(payload, ["toolCallId", "toolName"]);
+    case "pi.session_compact":
+      return scalarMetadata(payload, ["reason", "willRetry"]);
+    default:
+      return undefined;
+  }
+};
+
+const lifecycleObservedAt = (payload: unknown): number => {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return Date.now();
+  const timestamp = (payload as Record<string, unknown>).timestamp;
+  return typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : Date.now();
+};
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

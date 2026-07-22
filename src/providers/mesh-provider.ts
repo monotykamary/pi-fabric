@@ -6,6 +6,7 @@ import type {
 } from "../protocol.js";
 import { MeshStore, type MeshIdentity } from "../mesh/store.js";
 import type { FabricParticipantSource } from "../topology/types.js";
+import { FABRIC_PARTICIPANT_LIFECYCLE_TOPIC } from "../lifecycle/types.js";
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
 const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/"];
@@ -177,8 +178,11 @@ export class MeshProvider implements FabricProvider {
         return this.identity;
       case "publish": {
         const topic = String(args.topic);
-        if (topic.startsWith(INTERNAL_CONTROL_PREFIX)) {
-          throw new Error(`Fabric mesh topic is reserved for host control: ${topic}`);
+        if (
+          topic.startsWith(INTERNAL_CONTROL_PREFIX) ||
+          topic === FABRIC_PARTICIPANT_LIFECYCLE_TOPIC
+        ) {
+          throw new Error(`Fabric mesh topic is reserved for host coordination: ${topic}`);
         }
         return this.store.publish({
           topic,

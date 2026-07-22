@@ -43,7 +43,7 @@ return claimed;
 
 Use `agents.steer`, `agents.followUp`, or `agents.stop` rather than publishing a control topic yourself. Fabric resolves the target in the participant directory, addresses `fabric.control.command` to its `ownerHostId`, and waits for a version/target/owner-identity-matched `fabric.control.ack`. Unknown targets, stale owners, rejection, and acknowledgement timeout fail explicitly. The stable `"main"` alias is resolved locally to the caller's exact root id before routing.
 
-The entire `fabric.control.*` namespace is reserved for internal protocol topics, not application channels. `fabric.steer` remains a mixed-version compatibility path for older Fabric participants; direct publication on it has legacy best-effort semantics and no acknowledgement.
+The entire `fabric.control.*` namespace is reserved for internal protocol topics, not application channels. `fabric.participant.lifecycle` is also host-reserved so guest publication cannot spoof source-qualified lifecycle events. `fabric.steer` remains a mixed-version compatibility path for older Fabric participants; direct publication on it has legacy best-effort semantics and no acknowledgement.
 
 ## Notes
 

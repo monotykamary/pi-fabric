@@ -482,6 +482,7 @@ const SYSTEM_TOPICS = new Set([
   "fabric.actor.output",
   "fabric.actor.lifecycle",
   "fabric.compact",
+  "fabric.participant.lifecycle",
   "fabric.steer",
   "fabric.control.command",
   "fabric.control.ack",

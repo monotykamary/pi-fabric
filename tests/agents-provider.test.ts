@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import type { FabricActorRequest } from "../src/actors/types.js";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
+import { LifecycleBroker } from "../src/lifecycle/broker.js";
+import type {
+  FabricLifecycleEvent,
+  FabricLifecycleSubscription,
+} from "../src/lifecycle/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
@@ -131,13 +136,22 @@ const setup = (
     async refresh() {},
     scheduleRefresh() {},
   };
-  const provider = new AgentsProvider(
+  let provider: AgentsProvider;
+  const lifecycle = new LifecycleBroker(
+    mesh,
+    identity,
+    participants,
+    { enabled: true, pollMs: 20, maxReadEvents: 100 },
+    async (subscription, event) => provider.deliverLifecycle(subscription, event),
+  );
+  provider = new AgentsProvider(
     subagents,
     actors,
     globalActors,
     mainAgent,
     participants,
     undefined,
+    lifecycle,
   );
   return { root, actors, globalActors, provider, mainDeliveries };
 };
@@ -185,6 +199,111 @@ describe("AgentsProvider runner support", () => {
 
     await expect(provider.invoke("peers", {}, context)).resolves.toEqual([peer]);
     expect((await provider.describe("peers", context))?.risk).toBe("read");
+  });
+
+  it("creates, lists, and removes source-qualified lifecycle subscriptions", async () => {
+    const target: FabricParticipantInfo = {
+      format: 1,
+      id: "session:test",
+      kind: "root",
+      rootId: "session:test",
+      ownerHostId: "session:test",
+      ownerIdentityId: "session:test",
+      name: "main",
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "fabric"],
+      cwd: process.cwd(),
+      sessionId: "test",
+      startedAt: 1,
+      updatedAt: 1,
+      controlProtocol: "v1",
+      local: true,
+      stale: false,
+    };
+    const source: FabricParticipantInfo = {
+      ...target,
+      id: "session:peer",
+      rootId: "session:peer",
+      ownerHostId: "session:peer",
+      ownerIdentityId: "session:peer",
+      name: "Peer peer",
+      sessionId: "peer",
+      local: false,
+    };
+    const { provider } = setup([], [target, source]);
+
+    const subscription = await provider.invoke(
+      "subscribe",
+      {
+        from: source.id,
+        events: ["pi.agent_settled"],
+        delivery: "followUp",
+        triggerTurn: false,
+        once: true,
+      },
+      context,
+    ) as { id: string };
+
+    await expect(provider.invoke("subscriptions", { to: "main" }, context)).resolves.toEqual([
+      expect.objectContaining({
+        id: subscription.id,
+        from: source.id,
+        to: target.id,
+        events: ["pi.agent_settled"],
+        triggerTurn: false,
+        once: true,
+      }),
+    ]);
+    await expect(
+      provider.invoke("unsubscribe", { id: subscription.id }, context),
+    ).resolves.toEqual({ removed: true });
+    expect((await provider.describe("subscribe", context))?.risk).toBe("agent");
+  });
+
+  it("delivers lifecycle envelopes to Main with source identity and passive policy", async () => {
+    const { provider, mainDeliveries } = setup();
+    const subscription: FabricLifecycleSubscription = {
+      format: 1,
+      id: "subscription-1",
+      from: "session:peer",
+      events: ["pi.agent_settled"],
+      to: "session:test",
+      delivery: "followUp",
+      triggerTurn: false,
+      once: false,
+      afterSequence: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: { id: "session:test", name: "main", kind: "main" },
+    };
+    const event: FabricLifecycleEvent = {
+      version: 1,
+      id: "event-1",
+      sequence: 1,
+      event: "pi.agent_settled",
+      source: {
+        id: "session:peer",
+        name: "Peer peer",
+        kind: "root",
+        rootId: "session:peer",
+        runner: "pi",
+      },
+      occurredAt: 2,
+      publishedAt: 3,
+    };
+
+    await provider.deliverLifecycle(subscription, event);
+
+    expect(mainDeliveries).toEqual([
+      expect.objectContaining({
+        from: { id: "session:peer", name: "Peer peer", kind: "main" },
+        delivery: "followUp",
+        triggerTurn: false,
+        data: event,
+      }),
+    ]);
   });
 
   it("rejects remote Main delivery after its capabilities are withdrawn", async () => {

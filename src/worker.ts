@@ -210,6 +210,21 @@ const main = async (): Promise<void> => {
   const task = fs.readFileSync(options.taskFile, "utf8");
   const record = createRunningRecord(options, task, thinking, Date.now());
   writeRunRecord(options.statusFile, record);
+  const emitLifecycle = (
+    event: string,
+    data?: Record<string, unknown>,
+  ): void => {
+    try {
+      fs.mkdirSync(path.dirname(options.lifecycleFile), { recursive: true });
+      fs.appendFileSync(
+        options.lifecycleFile,
+        JSON.stringify({ version: 1, event, occurredAt: Date.now(), ...(data ? { data } : {}) }) + "\n",
+        { encoding: "utf8", mode: 0o600 },
+      );
+    } catch {
+      // Lifecycle telemetry is best-effort and must not fail the child run.
+    }
+  };
   crashContext = { statusFile: options.statusFile, record };
   process.stdout.write(`[pi-fabric] ${options.name}\n${task}\n\n`);
   fs.mkdirSync(path.dirname(options.logFile), { recursive: true });
@@ -589,6 +604,7 @@ const main = async (): Promise<void> => {
     }
     compactControl.observe(event);
     if (event.type === "agent_start") {
+      emitLifecycle("pi.agent_start");
       retryPending = false;
       sawAgentError = false;
       terminalError = undefined;
@@ -622,11 +638,20 @@ const main = async (): Promise<void> => {
       return;
     }
     if (event.type === "tool_execution_end") {
+      if (event.isError === true) {
+        emitLifecycle("pi.tool_error", {
+          ...(typeof event.toolCallId === "string" ? { toolCallId: event.toolCallId } : {}),
+          ...(typeof event.toolName === "string" ? { toolName: event.toolName } : {}),
+        });
+      }
       delete record.currentTool;
       update();
       return;
     }
     if (event.type === "turn_end") {
+      emitLifecycle("pi.turn_end", {
+        ...(typeof event.turnIndex === "number" ? { turnIndex: event.turnIndex } : {}),
+      });
       record.turns++;
       update();
       return;
@@ -668,10 +693,12 @@ const main = async (): Promise<void> => {
       return;
     }
     if (event.type === "agent_end") {
+      emitLifecycle("pi.agent_end", { willRetry: event.willRetry === true });
       retryPending = event.willRetry === true;
       return;
     }
     if (event.type === "agent_settled") {
+      emitLifecycle("pi.agent_settled");
       if (!retryPending) {
         // Pull controls that landed with the final stream events before deciding
         // whether this one-shot child can close. A queued compact keeps stdin
@@ -679,6 +706,13 @@ const main = async (): Promise<void> => {
         pollSteer();
         compactControl.childSettled();
       }
+      return;
+    }
+    if (event.type === "compaction_end") {
+      emitLifecycle("pi.session_compact", {
+        ...(typeof event.reason === "string" ? { reason: event.reason } : {}),
+        ...(typeof event.willRetry === "boolean" ? { willRetry: event.willRetry } : {}),
+      });
       return;
     }
     if (event.type === "extension_error") {

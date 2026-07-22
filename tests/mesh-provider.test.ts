@@ -61,10 +61,13 @@ describe("MeshProvider membership", () => {
 
     await expect(
       provider.invoke("publish", { topic: "fabric.control.ack", data: {} }, context),
-    ).rejects.toThrow("reserved for host control");
+    ).rejects.toThrow("reserved for host coordination");
     await expect(
       provider.invoke("publish", { topic: "fabric.control.command.v2", data: {} }, context),
-    ).rejects.toThrow("reserved for host control");
+    ).rejects.toThrow("reserved for host coordination");
+    await expect(
+      provider.invoke("publish", { topic: "fabric.participant.lifecycle", data: {} }, context),
+    ).rejects.toThrow("reserved for host coordination");
     await expect(
       provider.invoke("put", { key: "topology/hosts/forged", value: {} }, context),
     ).rejects.toThrow("reserved for host coordination");

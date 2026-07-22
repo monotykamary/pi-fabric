@@ -256,10 +256,21 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       event.text,
     );
     state.dispatchHostEvent("input", event, context);
+    await state.publishHostLifecycle("pi.input", event);
+  });
+
+  pi.on("agent_start", async (event) => {
+    if (state.initialized) await state.publishHostLifecycle("pi.agent_start", event);
+  });
+
+  pi.on("agent_end", async (event) => {
+    if (state.initialized) await state.publishHostLifecycle("pi.agent_end", event);
   });
 
   pi.on("turn_end", async (event, context) => {
-    if (state.initialized) state.dispatchHostEvent("turn_end", event, context);
+    if (!state.initialized) return;
+    state.dispatchHostEvent("turn_end", event, context);
+    await state.publishHostLifecycle("pi.turn_end", event);
   });
 
   pi.on("agent_settled", async (event, context) => {
@@ -274,6 +285,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // so ExtensionRunner does not finish this handler (and Pi does not publish
     // its public agent_settled event) before compaction settles.
     await state.compact.maybeCommit(context);
+    await state.publishHostLifecycle("pi.agent_settled", event);
   });
 
   pi.on("tool_call", (event) => fabricToolLifecycle.toolCall(event));
@@ -340,11 +352,16 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("tool_execution_end", async (event, context) => {
     if (!state.initialized) return;
     state.noteMainActivity(context);
-    if (event.isError) state.dispatchHostEvent("tool_error", event, context);
+    if (event.isError) {
+      state.dispatchHostEvent("tool_error", event, context);
+      await state.publishHostLifecycle("pi.tool_error", event);
+    }
   });
 
   pi.on("session_compact", async (event, context) => {
-    if (state.initialized) state.dispatchHostEvent("session_compact", event, context);
+    if (!state.initialized) return;
+    state.dispatchHostEvent("session_compact", event, context);
+    await state.publishHostLifecycle("pi.session_compact", event);
   });
 
   // Deterministic, LLM-free compaction is registered unconditionally and is

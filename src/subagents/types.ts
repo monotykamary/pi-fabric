@@ -145,6 +145,7 @@ export interface SubagentWorkerOptions {
   name: string;
   taskFile: string;
   statusFile: string;
+  lifecycleFile: string;
   logFile: string;
   schemaFile?: string;
   cwd: string;

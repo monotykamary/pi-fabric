@@ -120,6 +120,57 @@ interface FabricParticipantInfo {
   local: boolean;
   stale: boolean;
 }
+type FabricLifecycleEventType =
+  | "pi.input"
+  | "pi.agent_start"
+  | "pi.agent_end"
+  | "pi.turn_end"
+  | "pi.agent_settled"
+  | "pi.tool_error"
+  | "pi.session_compact"
+  | "run.completed"
+  | "run.failed"
+  | "run.stopped"
+  | "run.timed_out";
+type FabricLifecycleDelivery = "steer" | "followUp";
+interface FabricLifecycleSource {
+  id: string;
+  name: string;
+  kind: FabricParticipantKind;
+  rootId: string;
+  runner: FabricAgentRunner;
+  ownerHostId?: string;
+  ownerIdentityId?: string;
+}
+interface FabricLifecycleEvent {
+  version: 1;
+  id: string;
+  sequence: number;
+  event: FabricLifecycleEventType;
+  source: FabricLifecycleSource;
+  occurredAt: number;
+  publishedAt: number;
+  runId?: string;
+  status?: string;
+  data?: unknown;
+}
+interface FabricLifecycleSubscription {
+  format: 1;
+  id: string;
+  from: string;
+  events: FabricLifecycleEventType[];
+  to: string;
+  delivery: FabricLifecycleDelivery;
+  triggerTurn: boolean;
+  once: boolean;
+  afterSequence: number;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: { id: string; name: string; kind: "main" | "agent" | "actor"; sessionId?: string };
+  lastDeliveredAt?: number;
+  lastEventId?: string;
+  lastError?: string;
+}
 interface FabricAgentHandle {
   id: string;
   name: string;
@@ -375,6 +426,16 @@ interface FabricAgentsApi {
   self(): Promise<FabricParticipantInfo>;
   main(): Promise<FabricMainAgentInfo>;
   peers(): Promise<FabricPeerInfo[]>;
+  subscribe(args: {
+    from: string;
+    events: FabricLifecycleEventType[];
+    to?: string;
+    delivery: FabricLifecycleDelivery;
+    triggerTurn: boolean;
+    once?: boolean;
+  }): Promise<FabricLifecycleSubscription>;
+  subscriptions(args?: { from?: string; to?: string }): Promise<FabricLifecycleSubscription[]>;
+  unsubscribe(args: { id: string }): Promise<{ removed: boolean }>;
   models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
   stop(args: { id: string }): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: { id: string; deleteBranch?: boolean }): Promise<{ cleaned: boolean }>;

@@ -123,6 +123,17 @@ describe("MainAgentController", () => {
         data: { fabricTruncated: true, originalChars: expect.any(Number) },
       },
     });
+
+    controller.deliverAgent({
+      from: { id: "session:peer", name: "Peer", kind: "main" },
+      message: "peer settled",
+      delivery: "followUp",
+      triggerTurn: false,
+    });
+    expect(sendMessage.mock.calls.at(-1)?.[1]).toEqual({
+      deliverAs: "followUp",
+      triggerTurn: false,
+    });
   });
 
   it("rejects direct delivery from a process that does not own Main", () => {

@@ -28,6 +28,7 @@ export interface FabricMainAgentDeliveryRequest {
   from: MeshIdentity;
   message: string;
   delivery: FabricAgentMessageDelivery;
+  triggerTurn?: boolean;
   data?: unknown;
 }
 
@@ -175,10 +176,11 @@ export class MainAgentController implements FabricMainAgentTarget {
           id: messageId,
           from: structuredClone(request.from),
           delivery: request.delivery,
+          triggerTurn: request.triggerTurn ?? true,
           ...(data === undefined ? {} : { data }),
         },
       },
-      { deliverAs: request.delivery, triggerTurn: true },
+      { deliverAs: request.delivery, triggerTurn: request.triggerTurn ?? true },
     );
     return { queued: true, messageId, routed: "main" };
   }

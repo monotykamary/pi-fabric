@@ -49,6 +49,11 @@ import {
 import type { BudgetLedgerState } from "./budget-ledger.js";
 import { readJsonlPage } from "../log-tail.js";
 import {
+  isFabricLifecycleEventType,
+  type FabricLifecycleEventType,
+  type FabricLifecyclePublishRequest,
+} from "../lifecycle/types.js";
+import {
   SUBAGENT_STARTUP_MAX_ATTEMPTS,
   SUBAGENT_STARTUP_RETRY_BASE_DELAY_MS,
   SUBAGENT_STATUS_POLL_INTERVAL_MS,
@@ -89,6 +94,9 @@ interface ManagedSubagent {
   recursive: boolean;
   cwd: string;
   statusFile: string;
+  lifecycleFile: string;
+  lifecycleOffset: number;
+  lifecycleRemainder: Buffer;
   runDirectory: string;
   transport: SubagentTransportHandle;
   adapter: SubagentTransportAdapter;
@@ -300,6 +308,7 @@ export class SubagentManager {
   readonly #identityId: string | undefined;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
+  readonly #onLifecycle: ((event: FabricLifecyclePublishRequest) => void) | undefined;
   readonly #preparePiModel: ((model: string) => Promise<void>) | undefined;
   readonly #piModelPreparations = new Map<string, Promise<void>>();
   readonly #budget: BudgetLedgerState | undefined;
@@ -329,6 +338,7 @@ export class SubagentManager {
       hostId?: string;
       identityId?: string;
       onBackgroundComplete?: (result: SubagentRunResult) => void;
+      onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string) => Promise<void>;
     } = {},
   ) {
@@ -343,6 +353,7 @@ export class SubagentManager {
     this.#claudeBinary =
       options.claudeBinary ?? process.env.PI_FABRIC_CLAUDE_BINARY ?? config.claude.binary;
     this.#onBackgroundComplete = options.onBackgroundComplete;
+    this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
@@ -438,6 +449,7 @@ export class SubagentManager {
     fs.mkdirSync(runDirectory, { recursive: true });
     const taskFile = path.join(runDirectory, "task.txt");
     const statusFile = path.join(runDirectory, "status.json");
+    const lifecycleFile = path.join(runDirectory, "lifecycle.jsonl");
     const logFile = path.join(runDirectory, "events.jsonl");
     const steerFile = path.join(runDirectory, "steer.jsonl");
     const schemaFile = request.schema ? path.join(runDirectory, "schema.json") : undefined;
@@ -491,6 +503,8 @@ export class SubagentManager {
         taskFile,
         "--status-file",
         statusFile,
+        "--lifecycle-file",
+        lifecycleFile,
         "--log-file",
         logFile,
         "--cwd",
@@ -567,6 +581,9 @@ export class SubagentManager {
         recursive,
         cwd: agentCwd,
         statusFile,
+        lifecycleFile,
+        lifecycleOffset: 0,
+        lifecycleRemainder: Buffer.alloc(0),
         runDirectory,
         transport,
         adapter,
@@ -858,6 +875,9 @@ export class SubagentManager {
       delete managed.latestRecord;
       delete managed.latestUiRecord;
       managed.lastLivenessCheckAt = 0;
+      managed.lifecycleOffset = 0;
+      managed.lifecycleRemainder = Buffer.alloc(0);
+      fs.rmSync(managed.lifecycleFile, { force: true });
       this.#invalidateUiList();
       return true;
     } catch (error) {
@@ -876,6 +896,7 @@ export class SubagentManager {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
+      this.#drainLifecycle(managed);
       const record = readRecord(managed.statusFile);
       if (record) {
         const previous = managed.latestRecord;
@@ -954,7 +975,11 @@ export class SubagentManager {
 
   #settle(managed: ManagedSubagent, result: SubagentRunResult): void {
     if (managed.settled) return;
+    this.#drainLifecycle(managed);
     managed.settled = true;
+    this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
+      status: result.status,
+    });
     if (managed.abortSignal && managed.abortHandler) {
       managed.abortSignal.removeEventListener("abort", managed.abortHandler);
     }
@@ -1001,6 +1026,79 @@ export class SubagentManager {
       try {
         this.#onBackgroundComplete(result);
       } catch { /* completion callback must not break the manager */ }
+    }
+  }
+
+  #drainLifecycle(managed: ManagedSubagent): void {
+    let content: Buffer;
+    try {
+      content = fs.readFileSync(managed.lifecycleFile);
+    } catch {
+      return;
+    }
+    if (content.length < managed.lifecycleOffset) {
+      managed.lifecycleOffset = 0;
+      managed.lifecycleRemainder = Buffer.alloc(0);
+    }
+    if (content.length === managed.lifecycleOffset) return;
+    const appended = content.subarray(managed.lifecycleOffset);
+    managed.lifecycleOffset = content.length;
+    const combined = Buffer.concat([managed.lifecycleRemainder, appended]);
+    const finalNewline = combined.lastIndexOf(0x0a);
+    if (finalNewline < 0) {
+      managed.lifecycleRemainder = combined.length <= 64 * 1024 ? combined : Buffer.alloc(0);
+      return;
+    }
+    managed.lifecycleRemainder = combined.subarray(finalNewline + 1);
+    const complete = combined.subarray(0, finalNewline).toString("utf8");
+    for (const line of complete.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if (
+          parsed.version !== 1 ||
+          !isFabricLifecycleEventType(parsed.event) ||
+          !parsed.event.startsWith("pi.") ||
+          typeof parsed.occurredAt !== "number"
+        ) continue;
+        this.#emitLifecycle(
+          managed,
+          parsed.event,
+          parsed.occurredAt,
+          Object.prototype.hasOwnProperty.call(parsed, "data") ? { data: parsed.data } : {},
+        );
+      } catch {
+        // Ignore malformed worker lifecycle records; status monitoring remains authoritative.
+      }
+    }
+  }
+
+  #emitLifecycle(
+    managed: ManagedSubagent,
+    event: FabricLifecycleEventType,
+    occurredAt: number,
+    options: { status?: string; data?: unknown } = {},
+  ): void {
+    if (!this.#onLifecycle) return;
+    try {
+      this.#onLifecycle({
+        source: {
+          id: managed.actorId ?? managed.id,
+          name: managed.actorName ?? managed.name,
+          kind: managed.actorId ? "actor" : "agent",
+          rootId: this.#mainAgentId ?? managed.id,
+          runner: managed.runner,
+          ...(this.#hostId ? { ownerHostId: this.#hostId } : {}),
+          ...(this.#identityId ? { ownerIdentityId: this.#identityId } : {}),
+        },
+        event,
+        occurredAt,
+        runId: managed.id,
+        ...(options.status ? { status: options.status } : {}),
+        ...(options.data === undefined ? {} : { data: options.data }),
+      });
+    } catch {
+      // Lifecycle observers must not interrupt child execution or settlement.
     }
   }
 

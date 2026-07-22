@@ -4,6 +4,7 @@ import path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
 import { snapshotHandoffSession } from "../src/subagents/handoff.js";
 import {
   effectiveSubagentTimeoutMs,
@@ -137,6 +138,45 @@ describe("SubagentManager", () => {
     expect(manager.list()).toHaveLength(1);
     fs.rmSync(path.join(manager.runDirectory(result.id)!, "status.json"));
     expect(manager.status(result.id).status).toBe("completed");
+  });
+
+  it("relays child Pi lifecycle records and a normalized terminal event", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const lifecycle: FabricLifecyclePublishRequest[] = [];
+    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      mainAgentId: "session:root",
+      hostId: "host:root",
+      identityId: "session:root",
+      onLifecycle: (event) => lifecycle.push(event),
+    });
+    managers.push(manager);
+
+    const result = await manager.run({ task: "Observe lifecycle", transport: "process" });
+
+    expect(lifecycle.map((event) => event.event)).toEqual([
+      "pi.agent_start",
+      "pi.turn_end",
+      "pi.agent_end",
+      "pi.agent_settled",
+      "run.completed",
+    ]);
+    expect(lifecycle.at(-1)).toMatchObject({
+      source: {
+        id: result.id,
+        kind: "agent",
+        rootId: "session:root",
+        ownerHostId: "host:root",
+        ownerIdentityId: "session:root",
+      },
+      runId: result.id,
+      status: "completed",
+    });
+    expect(lifecycle.find((event) => event.event === "pi.turn_end")?.data).toEqual({
+      turnIndex: 0,
+    });
   });
 
   it("materializes a private Pi session for a trajectory handoff seed", async () => {

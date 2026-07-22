@@ -37,6 +37,36 @@ const handle = await agents.spawn({ task: "Map the persistence layer.", transpor
 return await agents.wait({ id: handle.id });
 ```
 
+Detached `agents.spawn()` runs already notify Main on terminal completion when `subagents.notifyOnComplete` is enabled (the default). The notification is a triggered follow-up. Use `agents.wait()` when the current Fabric program needs the result, `agents.status()` only for a point-in-time progress inspection, and lifecycle subscriptions when another participant's Pi boundary matters. Calling `wait()` makes that run foreground work and suppresses the detached completion notification.
+
+## Participant lifecycle subscriptions
+
+Lifecycle subscriptions are durable, source-qualified mesh routes. They let Main, an actor, or an active agent react to another root/agent/actor without model-authored polling.
+
+- `agents.subscribe({ from, events, to?, delivery, triggerTurn, once? })` creates a subscription. `from` is an exact participant id; `"main"` means the caller's lineage root. `to` defaults to that Main id.
+- `agents.subscriptions({ from?, to? })` lists project subscriptions.
+- `agents.unsubscribe({ id })` removes one.
+- `delivery` is `steer` or `followUp`. State `triggerTurn: true | false` explicitly; it controls whether delivery to an idle Main starts a turn.
+- `once: true` removes the subscription after its first successful matching delivery. Omitted keeps it active.
+- Creation starts at the current mesh sequence, so old lifecycle events are not replayed. Delivery cursors persist across owner restarts. Delivery is at-least-once across a crash between message insertion and cursor persistence; use the lifecycle event `id` to deduplicate side effects.
+
+Exact Pi events are `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.turn_end`, `pi.agent_settled`, `pi.tool_error`, and `pi.session_compact`. Runner-neutral terminal events are `run.completed`, `run.failed`, `run.stopped`, and `run.timed_out`. Pi events are observed from Pi's host/RPC lifecycle; run events also cover Claude-backed children and actor activations. Envelopes contain bounded operational metadata, source identity, timestamps, and a run id when applicable, never a transcript snapshot.
+
+`pi.agent_settled` means Pi has no automatic retry, compaction retry, or queued continuation left at that boundary. It does not mean a persistent root or actor can never receive future work. Use a `run.*` event when terminal process/run status is what matters.
+
+```ts
+const peer = (await agents.peers())[0];
+if (!peer) return { subscribed: false };
+return agents.subscribe({
+  from: peer.id,
+  events: ["pi.agent_settled"],
+  to: "main",
+  delivery: "followUp",
+  triggerTurn: true,
+  once: true,
+});
+```
+
 ## Trajectory handoff
 
 `agents.handoff({ model, task?, when?, ... })` schedules a blocking Pi-to-Pi trajectory handoff at the end of the current outer `fabric_exec`. Inside the guest it returns a deferred marker immediately, so calls after it still run. Once the complete program and all outer result middleware finish, Fabric forks the native assistant `fabric_exec` call plus its exact native `toolResult`, starts the explicit `provider/id` target in the same workspace, and waits before Main can infer again. Do not expect child output inside the same guest program; Main receives it as the final outer tool result.
