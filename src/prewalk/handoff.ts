@@ -37,7 +37,7 @@ export const claimFabricHandoff = (
   resultFormat: FabricResultFormat,
 ): PendingFabricHandoff | undefined => {
   if (execution.handoffRequest) {
-    controller.cancel();
+    controller.completeTask();
     let audit: FabricCallAudit | undefined;
     for (let index = execution.audits.length - 1; index >= 0; index--) {
       const candidate = execution.audits[index];
@@ -143,6 +143,9 @@ export const runFabricHandoffAtBoundary = async (
       error: message,
     };
   } finally {
-    controller.cancel();
+    const status = controller.completeTask();
+    if (status.state === "armed") {
+      context.ui.setStatus("fabric-prewalk", `armed → ${status.model}`);
+    }
   }
 };

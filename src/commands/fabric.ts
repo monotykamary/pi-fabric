@@ -261,12 +261,13 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           model,
           sessionId: context.sessionManager.getSessionId(),
           ...(task ? { task } : {}),
+          alwaysRearm: state.config.prewalk.alwaysRearm,
         });
         context.ui.setStatus("fabric-prewalk", `armed → ${model}`);
         context.ui.notify(
           task
-            ? `Fabric prewalk armed for the next matching Fabric boundary; starting task with executor ${model}`
-            : `Fabric prewalk armed for the next task; executor ${model}`,
+            ? `Fabric prewalk armed for the next matching Fabric boundary; starting task with executor ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`
+            : `Fabric prewalk armed for the next task; executor ${model}${state.config.prewalk.alwaysRearm ? "; always re-arm enabled" : ""}`,
           "info",
         );
         if (task) pi.sendUserMessage(task);
@@ -644,8 +645,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           (() => {
             const prewalk = state.prewalk.status();
             return prewalk.state === "idle"
-              ? `prewalk: idle · model ${config.prewalk.model || "Ask each time"}`
-              : `prewalk: ${prewalk.state} → ${prewalk.model}`;
+              ? `prewalk: idle · model ${config.prewalk.model || "Ask each time"} · always re-arm ${config.prewalk.alwaysRearm ? "on" : "off"}`
+              : `prewalk: ${prewalk.state} → ${prewalk.model}${prewalk.alwaysRearm ? " · always re-arm" : ""}`;
           })(),
           config.fullCodeMode && config.capture.enabled
             ? `captured tools: ${capturedTools.size} · model visibility: ${config.capture.hideFromModel ? "hidden" : "visible"}`

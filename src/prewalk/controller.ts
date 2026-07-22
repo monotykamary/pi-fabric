@@ -10,6 +10,7 @@ interface FabricPrewalkArm {
   model: string;
   sessionId: string;
   armedAt: number;
+  alwaysRearm: boolean;
   task?: string;
 }
 
@@ -34,7 +35,12 @@ export class PrewalkController {
     return structuredClone(this.#status);
   }
 
-  arm(input: { model: string; sessionId: string; task?: string }): FabricPrewalkStatus {
+  arm(input: {
+    model: string;
+    sessionId: string;
+    task?: string;
+    alwaysRearm?: boolean;
+  }): FabricPrewalkStatus {
     const model = input.model.trim();
     if (!model.includes("/")) throw new Error("Prewalk requires a provider/model executor target");
     const task = normalizedTask(input.task);
@@ -43,6 +49,7 @@ export class PrewalkController {
       model,
       sessionId: input.sessionId,
       armedAt: Date.now(),
+      alwaysRearm: input.alwaysRearm === true,
       ...(task ? { task } : {}),
     };
     return this.status();
@@ -76,14 +83,30 @@ export class PrewalkController {
     ) {
       return false;
     }
-    this.cancel();
+    this.completeTask();
     return true;
+  }
+
+  completeTask(): FabricPrewalkStatus {
+    if (this.#status.state === "idle") return this.status();
+    if (!this.#status.alwaysRearm) {
+      this.cancel();
+      return this.status();
+    }
+    this.#status = {
+      state: "armed",
+      model: this.#status.model,
+      sessionId: this.#status.sessionId,
+      armedAt: Date.now(),
+      alwaysRearm: true,
+    };
+    return this.status();
   }
 
   claim(audits: FabricCallAudit[], sessionId: string): FabricPrewalkClaim | undefined {
     if (!this.isArmed(sessionId) || this.#status.state !== "armed") return undefined;
     if (audits.some((audit) => audit.ref === "agents.handoff" && audit.success === true)) {
-      this.cancel();
+      this.completeTask();
       return undefined;
     }
     const mutation = audits.find(
@@ -94,6 +117,7 @@ export class PrewalkController {
       model: this.#status.model,
       sessionId: this.#status.sessionId,
       armedAt: this.#status.armedAt,
+      alwaysRearm: this.#status.alwaysRearm,
       ...(this.#status.task ? { task: this.#status.task } : {}),
     };
     this.#status = { state: "handing_off", ...arm };

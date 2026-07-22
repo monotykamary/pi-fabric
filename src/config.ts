@@ -52,6 +52,7 @@ interface FabricClaudeRunnerConfig {
 
 interface FabricPrewalkConfig {
   model?: string;
+  alwaysRearm: boolean;
 }
 
 export interface FabricSubagentConfig {
@@ -198,7 +199,9 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     allowDynamicServers: true,
     callTimeoutMs: 120_000,
   },
-  prewalk: {},
+  prewalk: {
+    alwaysRearm: false,
+  },
   subagents: {
     enabled: true,
     runner: "pi",
@@ -525,6 +528,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     },
     prewalk: {
       ...(prewalkModel ? { model: prewalkModel } : {}),
+      alwaysRearm: booleanValue(
+        prewalk.alwaysRearm,
+        DEFAULT_FABRIC_CONFIG.prewalk.alwaysRearm,
+      ),
     },
     subagents: {
       enabled: booleanValue(subagents.enabled, DEFAULT_FABRIC_CONFIG.subagents.enabled),

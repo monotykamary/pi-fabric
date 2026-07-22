@@ -245,7 +245,7 @@ const summaryFor = (id: string, config: FabricConfig): string => {
     case "mcp":
       return config.mcp.enabled ? "enabled" : "disabled";
     case "prewalk":
-      return config.prewalk.model || PREWALK_MODEL_UNSET_LABEL;
+      return `${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
     case "subagents":
       return `${config.subagents.runner}/${config.subagents.transport}`;
     case "capture":
@@ -712,6 +712,16 @@ export const buildFabricSettingsItems = (
         "Prewalk",
         "Automatic handoff at the completed outer fabric_exec boundary.",
         [
+          setting(
+            "prewalk.alwaysRearm",
+            "Always re-arm",
+            config.prewalk.alwaysRearm ? "true" : "false",
+            {
+              description:
+                "After a task settles or hands off, arm prewalk again for the next user task until explicitly cancelled.",
+              values: BOOLEANS,
+            },
+          ),
           setting(
             "prewalk.model",
             "Executor model",

@@ -349,7 +349,7 @@ describe("FabricSettingsComponent", () => {
   it("exposes a dedicated prewalk executor model picker", () => {
     const config = {
       ...DEFAULT_FABRIC_CONFIG,
-      prewalk: { model: "anthropic/claude-sonnet-4-5" },
+      prewalk: { model: "anthropic/claude-sonnet-4-5", alwaysRearm: false },
     };
     const items = buildFabricSettingsItems(theme, config, () => {}, {
       keepVisibleCandidates: ["fabric_exec"],
@@ -358,6 +358,7 @@ describe("FabricSettingsComponent", () => {
     const prewalk = items.find((item) => item.id === "prewalk")!;
     const lines = prewalk.submenu!("", () => {}).render(100).join("\n");
 
+    expect(lines).toContain("Always re-arm");
     expect(lines).toContain("Executor model ›");
     expect(lines).toContain("anthropic/claude-sonnet-4-5");
   });
@@ -462,10 +463,11 @@ describe("FabricSettingsComponent", () => {
         reloadConfig: vi.fn(() => {
           const saved = JSON.parse(
             fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"),
-          ) as { prewalk?: { model?: string } };
-          config.prewalk = saved.prewalk?.model
-            ? { model: saved.prewalk.model }
-            : {};
+          ) as { prewalk?: { model?: string; alwaysRearm?: boolean } };
+          config.prewalk = {
+            ...(saved.prewalk?.model ? { model: saved.prewalk.model } : {}),
+            alwaysRearm: saved.prewalk?.alwaysRearm === true,
+          };
         }),
         subagents: { claudeModels: vi.fn().mockResolvedValue([]) },
       } as unknown as FabricState;

@@ -195,6 +195,43 @@ describe("outer-boundary Prewalk handoff", () => {
     expect(ctx.setStatus).toHaveBeenLastCalledWith("fabric-prewalk", "handoff implemented");
   });
 
+  it("re-arms after a handoff when always re-arm is enabled", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "auto");
+    const ctx = context();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      {
+        executeHandoff: vi.fn(async () => ({
+          handedOff: true,
+          completed: true,
+          status: "completed",
+        })),
+      },
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      model: "anthropic/executor",
+      alwaysRearm: true,
+    });
+    expect(controller.status()).not.toHaveProperty("task");
+    expect(ctx.setStatus).toHaveBeenLastCalledWith(
+      "fabric-prewalk",
+      "armed → anthropic/executor",
+    );
+  });
+
   it("gives an explicit deferred request precedence over automatic Prewalk", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/automatic", sessionId: "session-1" });

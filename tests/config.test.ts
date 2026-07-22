@@ -89,8 +89,13 @@ describe("Fabric configuration", () => {
   it("normalizes a dedicated prewalk executor model", () => {
     expect(
       normalizeFabricConfig({ prewalk: { model: "anthropic/executor" } }).prewalk,
-    ).toEqual({ model: "anthropic/executor" });
-    expect(normalizeFabricConfig({ prewalk: { model: "   " } }).prewalk).toEqual({});
+    ).toEqual({ model: "anthropic/executor", alwaysRearm: false });
+    expect(normalizeFabricConfig({ prewalk: { model: "   " } }).prewalk).toEqual({
+      alwaysRearm: false,
+    });
+    expect(normalizeFabricConfig({ prewalk: { alwaysRearm: true } }).prewalk).toEqual({
+      alwaysRearm: true,
+    });
   });
 
   it("forces QuickJS in Schema enforce mode", () => {
@@ -411,7 +416,7 @@ describe("Fabric configuration", () => {
     );
 
     saveFabricConfig(location, { prewalk: { model: "" } });
-    expect(loadFabricConfig(location).prewalk).toEqual({});
+    expect(loadFabricConfig(location).prewalk).toEqual({ alwaysRearm: false });
   });
 
   it("saves array overrides by replacing the array while preserving siblings", () => {

@@ -52,7 +52,9 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
     "allowDynamicServers": true,
     "callTimeoutMs": 120000
   },
-  "prewalk": {},
+  "prewalk": {
+    "alwaysRearm": false
+  },
   "subagents": {
     "enabled": true,
     "runner": "pi",
@@ -104,12 +106,15 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 ```json
 {
   "prewalk": {
-    "model": "anthropic/claude-haiku-4-5"
+    "model": "anthropic/claude-haiku-4-5",
+    "alwaysRearm": true
   }
 }
 ```
 
-The settings UI labels the unset state **Ask each time**. In that state, interactive sessions choose a model while arming prewalk; non-interactive sessions reject the command. This setting is independent of `subagents.model` so ordinary children and the automatic handoff executor can use different models.
+`prewalk.alwaysRearm` defaults to `false`. When enabled, an armed prewalk returns to an armed, taskless state after each handoff or settled task, capturing the next user input until `/fabric prewalk --off` is used.
+
+The settings UI labels the unset model state **Ask each time**. In that state, interactive sessions choose a model while arming prewalk; non-interactive sessions reject the command. This setting is independent of `subagents.model` so ordinary children and the automatic handoff executor can use different models.
 
 ## Result formatting
 

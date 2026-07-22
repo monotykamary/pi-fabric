@@ -277,7 +277,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     if (!state.initialized) return;
     state.dispatchHostEvent("agent_settled", event, context);
     if (state.prewalk.settleTask(context.sessionManager.getSessionId())) {
-      context.ui.setStatus("fabric-prewalk", undefined);
+      const status = state.prewalk.status();
+      context.ui.setStatus(
+        "fabric-prewalk",
+        status.state === "armed" ? `armed → ${status.model}` : undefined,
+      );
     }
     // Keep the completed widget mounted until a newer Fabric run replaces it.
     // Removing rows at settle would pull the editor and latest chat content upward.

@@ -79,19 +79,19 @@ Inside the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "de
 /fabric prewalk --off
 ```
 
-With a task, Fabric arms prewalk and submits that task to Main immediately. Without one, it captures the next user input as the task. The dedicated `prewalk.model` setting is the executor; set it under `/fabric settings` → **Prewalk**. When unset in an interactive session, Fabric asks the user to choose a Pi model while arming. Non-interactive sessions must configure `prewalk.model` first.
+With a task, Fabric arms prewalk and submits that task to Main immediately. Without one, it captures the next user input as the task. The dedicated `prewalk.model` setting is the executor; set it under `/fabric settings` → **Prewalk**. Enable **Always re-arm** there to keep prewalk armed for successive tasks until `/fabric prewalk --off` is used. When unset in an interactive session, Fabric asks the user to choose a Pi model while arming. Non-interactive sessions must configure `prewalk.model` first.
 
 Prewalk adds no system-prompt instructions. The host watches resolved Fabric actions for at least one successful `pi.edit`, `pi.write`, or `schema.commit`. A match makes that outer invocation eligible, but it does not abort, serialize, or suppress any later nested call. The complete sequential or parallel program runs with ordinary Fabric semantics, and the handoff is claimed only after execution settles.
 
 The host then issues a static handoff call without asking Main to invoke it:
 
-1. Claims and disarms the one-shot prewalk after the Fabric program settles.
+1. Claims the prewalk after the Fabric program settles, disarming it unless **Always re-arm** is enabled.
 2. Lets Pi finalize all outer `tool_result` middleware.
 3. Forks the native assistant `fabric_exec` call plus its exact native result.
 4. Spawns the selected executor in the shared workspace and waits.
 5. Replaces Main's visible tool result with the executor completion.
 
-The outer tool is already marked `terminate: true` when the request is staged, so Main performs no automatic post-tool inference. A handoff failure is likewise terminal for that outer invocation and is returned as its failed result. If the captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task; an arm with no captured task keeps waiting for the next user input. An explicit successful `agents.handoff()` suppresses the automatic duplicate. Prewalk currently requires enabled subagents and full code mode, and is unavailable in Schema enforce mode.
+The outer tool is already marked `terminate: true` when the request is staged, so Main performs no automatic post-tool inference. A handoff failure is likewise terminal for that outer invocation and is returned as its failed result. If the captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task; with **Always re-arm**, it instead clears the completed task and captures the next input; an arm with no captured task keeps waiting for the next user input. An explicit successful `agents.handoff()` suppresses the automatic duplicate. Prewalk currently requires enabled subagents and full code mode, and is unavailable in Schema enforce mode.
 
 `runner` is `"pi"` or `"claude"` and defaults to `subagents.runner` (`"pi"`). Pi children use `subagents.model` or inherit the parent model unless `model` is specified. Claude children use `subagents.claude.model` or Claude Code's own runtime default. Their tool allowlist defaults to `subagents.defaultTools`. Reasoning effort defaults to `subagents.thinking` (`medium`); Pi clamps it to model support, while Claude forwards it through `--effort` (`off`/`minimal` map to `low`).
 

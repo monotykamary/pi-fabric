@@ -42,6 +42,28 @@ describe("PrewalkController", () => {
     expect(controller.status()).toEqual({ state: "idle" });
   });
 
+  it("re-arms without leaking the previous task when always re-arm is enabled", () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Inspect without changing anything",
+      alwaysRearm: true,
+    });
+
+    expect(controller.settleTask("session-1")).toBe(true);
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      alwaysRearm: true,
+    });
+    expect(controller.status()).not.toHaveProperty("task");
+
+    controller.observeTask("session-1", "Implement the next task");
+    expect(controller.status()).toMatchObject({ task: "Implement the next task" });
+  });
+
   it("claims only the first successful recognized mutation", () => {
     const controller = new PrewalkController();
     controller.arm({
