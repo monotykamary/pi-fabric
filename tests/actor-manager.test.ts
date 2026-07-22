@@ -59,13 +59,17 @@ afterEach(async () => {
 });
 
 describe("ActorManager", () => {
-  it("does not poll an unchanged mesh at the configured active interval", async () => {
+  it("uses event monitoring where supported and polling fallback on Windows", async () => {
     const { mesh } = setup();
     const tail = vi.spyOn(mesh, "tail");
 
     await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(tail).toHaveBeenCalledTimes(1);
+    if (process.platform === "win32") {
+      expect(tail.mock.calls.length).toBeGreaterThan(1);
+    } else {
+      expect(tail).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("notifies and releases actor state subscribers", async () => {
