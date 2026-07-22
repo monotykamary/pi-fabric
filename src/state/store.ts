@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import {
@@ -8,6 +7,41 @@ import {
   type MeshStateEntry,
 } from "../mesh/store.js";
 import { countFileComplexity } from "./complexity.js";
+import { runCommand, type CommandResult } from "./evidence-runner.js";
+import type {
+  AdvanceHeadInput,
+  StateCertificate,
+  StateCertificationHead,
+  StateCertificationTarget,
+  StateComplexityDelta,
+  StateComplexityFile,
+  StateComplexityResult,
+  StateComplexitySummary,
+  StateGoal,
+  StateHead,
+  StateHeadValue,
+  StateTransitionComplexity,
+  StateTransitionInput,
+  StateTransitionKind,
+  StateTransitionPhase,
+  StateTransitionRecord,
+  VerificationFailure,
+  VerificationReport,
+  VerifyResult,
+} from "./types.js";
+
+export type {
+  AdvanceHeadInput,
+  StateCertificate,
+  StateComplexityResult,
+  StateComplexitySummary,
+  StateGoal,
+  StateHead,
+  StateTransitionInput,
+  StateTransitionKind,
+  StateTransitionRecord,
+  VerificationReport,
+} from "./types.js";
 
 // The Fabric state layer is the Schema world-model heart: an append-only
 // Timeline of typed, validated transitions stored as mesh events, plus a
@@ -19,74 +53,6 @@ export const STATE_TOPIC = "fabric.state";
 export const CURRENT_KEY = "state/current";
 export const GOAL_KEY = "state/goal";
 export const COMPLEXITY_KEY_PREFIX = "state/complexity/";
-
-export type StateTransitionKind = "state" | "representation";
-type StateCertificationStatus = "pending" | "certified";
-type StateTransitionPhase = "proposed" | "committed" | "rejected";
-
-export interface StateTransitionInput {
-  label: string;
-  from?: string;
-  to: string;
-  summary: string;
-  evidence?: string[];
-  tags?: string[];
-  kind?: StateTransitionKind;
-  complexity?: { files: string[] };
-  force?: boolean;
-}
-
-interface StateComplexityDelta {
-  file: string;
-  supported: boolean;
-  language?: string;
-  previous?: number;
-  current?: number;
-  delta?: number;
-  baseline?: boolean;
-}
-
-interface StateTransitionComplexity {
-  files: StateComplexityDelta[];
-  netDelta: number;
-}
-
-interface StateComplexityFile {
-  file: string;
-  supported: boolean;
-  language?: string;
-  current?: number;
-  recorded?: number;
-  delta?: number;
-  recordedDelta?: number;
-}
-
-export interface StateComplexityResult {
-  files: StateComplexityFile[];
-  netDelta: number;
-}
-
-export interface StateComplexitySummary {
-  files: number;
-  decisionPoints: number;
-  lastNetDelta: number;
-}
-
-export interface StateTransitionRecord {
-  transitionId: string;
-  sequence: number;
-  label: string;
-  from?: string;
-  to: string;
-  summary: string;
-  evidence?: string[];
-  tags?: string[];
-  kind: StateTransitionKind;
-  complexity?: StateTransitionComplexity;
-  certificationStatus?: StateCertificationStatus;
-  certificate?: StateCertificate;
-  ts: number;
-}
 
 interface ComplexityLedgerValue {
   file: string;
@@ -106,139 +72,6 @@ interface PreparedComplexity {
   }>;
 }
 
-interface StateHeadCommitProof {
-  version: 1;
-  status: "pending" | "committed";
-}
-
-interface StateHeadValue {
-  protocolVersion?: number;
-  commitProof?: StateHeadCommitProof;
-  transitionSequence?: number;
-  label: string;
-  from?: string;
-  to: string;
-  summary: string;
-  evidence?: string[];
-  tags?: string[];
-  kind: StateTransitionKind;
-  complexity?: StateTransitionComplexity;
-  transitionId: string;
-  certificationStatus?: StateCertificationStatus;
-  certificate?: StateCertificate;
-  ts: number;
-}
-
-export interface StateHead extends StateHeadValue {
-  version: number;
-}
-
-export interface StateGoal {
-  check: string;
-  description?: string;
-}
-
-type VerifyStatus = "confirmed" | "violated" | "error";
-
-interface VerifyResult {
-  claim: string;
-  claimDigest: string;
-  claimOmittedBytes?: number;
-  command: string;
-  commandDigest: string;
-  commandOmittedBytes?: number;
-  status: VerifyStatus;
-  exitCode: number | null;
-  output: string;
-  outputBytes: number;
-  outputOmittedBytes: number;
-  outputDigest: string;
-  error?: string;
-  errorDigest?: string;
-  errorOmittedBytes?: number;
-}
-
-interface StateCertificationTarget {
-  transitionId: string;
-  label: string;
-  to: string;
-}
-
-interface StateCertificationHead {
-  transitionId: string;
-  label: string;
-  labelDigest?: string;
-  labelOmittedBytes?: number;
-  to: string;
-  toDigest?: string;
-  toOmittedBytes?: number;
-  version: number;
-}
-
-export interface StateCertificate {
-  certificateId: string;
-  sequence: number;
-  certificationStatus: "certified";
-  targets: StateCertificationTarget[];
-  head: StateCertificationHead | null;
-  evidenceDigest: string;
-  resultDigest: string;
-  ts: number;
-  current: boolean;
-}
-
-interface VerificationFailure {
-  reason:
-    | "missing-target"
-    | "missing-evidence"
-    | "nonzero-exit"
-    | "execution-error"
-    | "reporting-error";
-  message: string;
-  transitionId?: string;
-  label?: string;
-  command?: string;
-  status?: VerifyStatus;
-  exitCode?: number | null;
-  error?: string;
-}
-
-export interface VerificationReport {
-  results: VerifyResult[];
-  certified: boolean;
-  violated: boolean;
-  certificationStatus: "certified" | "failed";
-  evidenceDigest: string;
-  resultDigest: string;
-  failures: VerificationFailure[];
-  certificate?: StateCertificate;
-  reportingError?: string;
-}
-
-interface RunCommandOptions {
-  cwd: string;
-  timeoutMs: number;
-  signal?: AbortSignal | undefined;
-}
-
-interface CommandResult {
-  status: VerifyStatus;
-  exitCode: number | null;
-  output: string;
-  outputBytes: number;
-  outputOmittedBytes: number;
-  outputDigest: string;
-  error?: string;
-}
-
-export interface AdvanceHeadInput {
-  payload: StateHeadValue;
-  from: string | undefined;
-  force: boolean;
-  expectedVersion: number;
-  identity: MeshIdentity;
-}
-
 interface AppliedStateWrite {
   key: string;
   before: MeshStateEntry | undefined;
@@ -251,7 +84,6 @@ interface TransitionOutcome {
 }
 
 const CAS_RETRY_LIMIT = 8;
-const COMMAND_OUTPUT_MAX_BYTES = 32 * 1024;
 const REPORT_TEXT_MAX_BYTES = 8 * 1024;
 const EVENT_TEXT_MAX_BYTES = 1024;
 const EVENT_OUTPUT_MAX_BYTES = 4 * 1024;
@@ -299,177 +131,6 @@ const casActualVersion = (error: unknown): number | undefined => {
   const match = errorMessage(error).match(/found (\d+)$/);
   return match ? Number(match[1]) : undefined;
 };
-
-const terminateWindowsTree = (child: ChildProcess): Promise<void> =>
-  new Promise((resolve) => {
-    if (child.pid === undefined) {
-      resolve();
-      return;
-    }
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      resolve();
-    };
-    const treeKillCommand = ["task", "kill"].join("");
-    const killer = spawn(treeKillCommand, ["/pid", String(child.pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    killer.once("error", () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The process may already have exited.
-      }
-      finish();
-    });
-    killer.once("close", finish);
-    timeout = setTimeout(() => {
-      try {
-        killer.kill("SIGKILL");
-        child.kill("SIGKILL");
-      } catch {
-        // Bounded best effort is all Windows can guarantee here.
-      }
-      finish();
-    }, 1_000);
-    timeout.unref?.();
-  });
-
-const terminateProcessTree = async (child: ChildProcess): Promise<void> => {
-  if (process.platform === "win32") {
-    await terminateWindowsTree(child);
-    return;
-  }
-  if (child.pid === undefined) return;
-  try {
-    process.kill(-child.pid, "SIGKILL");
-  } catch {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // The process group may already have exited.
-    }
-  }
-};
-
-// Shell evidence is trusted input. Output is streamed into a byte-bounded
-// prefix while a hash and byte count cover the complete stdout/stderr stream.
-// POSIX shells lead detached process groups so timeout/abort can kill the
-// group. Windows uses bounded taskkill tree cleanup and then a direct fallback.
-const runCommand = (
-  command: string,
-  options: RunCommandOptions,
-): Promise<CommandResult> =>
-  new Promise((resolve) => {
-    let settled = false;
-    let outputBytes = 0;
-    const outputChunks: Buffer[] = [];
-    let retainedBytes = 0;
-    const outputHash = createHash("sha256");
-    let timer: NodeJS.Timeout | undefined;
-    let terminationReason: string | undefined;
-    let termination: Promise<void> | undefined;
-    let child: ChildProcess;
-
-    const collect = (chunk: Buffer | string): void => {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      outputBytes += bytes.length;
-      outputHash.update(bytes);
-      if (retainedBytes >= COMMAND_OUTPUT_MAX_BYTES) return;
-      const retained = bytes.subarray(
-        0,
-        Math.min(bytes.length, COMMAND_OUTPUT_MAX_BYTES - retainedBytes),
-      );
-      outputChunks.push(retained);
-      retainedBytes += retained.length;
-    };
-    const finish = (
-      status: VerifyStatus,
-      exitCode: number | null,
-      error?: string,
-    ): void => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      if (options.signal) options.signal.removeEventListener("abort", abort);
-      const retained = Buffer.concat(outputChunks);
-      const boundedOutput = truncateUtf8(retained.toString("utf8"), retained.length);
-      resolve({
-        status,
-        exitCode,
-        output: boundedOutput.value,
-        outputBytes,
-        outputOmittedBytes: outputBytes - Buffer.byteLength(boundedOutput.value, "utf8"),
-        outputDigest: `sha256:${outputHash.digest("hex")}`,
-        ...(error !== undefined ? { error } : {}),
-      });
-    };
-    const terminate = (reason: string): void => {
-      if (terminationReason !== undefined) return;
-      terminationReason = reason;
-      if (timer) clearTimeout(timer);
-      termination = terminateProcessTree(child);
-      if (process.platform === "win32") {
-        void termination.then(() => {
-          const fallback = setTimeout(() => {
-            child.stdout?.removeListener("data", collect);
-            child.stderr?.removeListener("data", collect);
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-            finish("error", null, reason);
-          }, 100);
-          fallback.unref?.();
-        });
-      }
-    };
-    const abort = (): void => terminate("aborted");
-
-    try {
-      child = spawn(command, {
-        shell: true,
-        cwd: options.cwd,
-        detached: process.platform !== "win32",
-        windowsHide: true,
-      });
-    } catch (error) {
-      finish("error", null, errorMessage(error));
-      return;
-    }
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    child.once("error", (error) => finish("error", null, errorMessage(error)));
-    child.once("close", (code) => {
-      void (async () => {
-        if (termination) await termination;
-        if (terminationReason !== undefined) {
-          finish("error", null, terminationReason);
-          return;
-        }
-        const exitCode = typeof code === "number" ? code : null;
-        if (exitCode === null) {
-          finish("error", null, "process terminated by signal");
-          return;
-        }
-        finish(exitCode === 0 ? "confirmed" : "violated", exitCode);
-      })();
-    });
-    if (options.timeoutMs > 0) {
-      timer = setTimeout(
-        () => terminate(`timeout after ${options.timeoutMs}ms`),
-        options.timeoutMs,
-      );
-      timer.unref?.();
-    }
-    if (options.signal) {
-      options.signal.addEventListener("abort", abort, { once: true });
-      if (options.signal.aborted) abort();
-    }
-  });
 
 const toComplexityRecord = (
   value: unknown,
