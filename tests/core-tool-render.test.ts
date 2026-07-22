@@ -10,7 +10,11 @@ import {
   renderCoreToolBody,
   type CoreToolRenderOptions,
 } from "../src/ui/core-tool-render.js";
-import { renderBoundedLines, type FabricRenderAudit } from "../src/ui/fabric-render.js";
+import {
+  inheritComponentBackground,
+  renderBoundedLines,
+  type FabricRenderAudit,
+} from "../src/ui/fabric-render.js";
 
 const settings: CodePreviewSettings = {
   shikiTheme: "dark-plus",
@@ -186,7 +190,9 @@ describe("Fabric core tool parity rendering", () => {
     expect(rendered!.lines.join("\n")).toContain("\x1b[48;2;148;62;70m");
     expect(rendered!.lines.join("\n")).toContain("\x1b[48;2;64;132;82m");
 
-    const rows = renderBoundedLines(rendered!.lines, theme, settings.diffIntensity).render(32);
+    const component = renderBoundedLines(rendered!.lines, theme, settings.diffIntensity);
+    const rows = component.render(32);
+    expect(inheritComponentBackground(component).render(32)).toEqual(rows);
     const changedRows = rows.filter((line) => line.includes("\x1b[48;2;"));
     expect(changedRows).toHaveLength(6);
     expect(changedRows.every((line) => visibleWidth(line) === 32)).toBe(true);
@@ -330,6 +336,11 @@ describe("Fabric core tool parity rendering", () => {
     expect(text).toContain("- │ old");
     expect(text).toContain("+ │ new");
     expect(text).toContain("--- a/src/example.ts");
+
+    const component = renderBoundedLines(rendered!.lines, theme, settings.diffIntensity);
+    const rows = component.render(32);
+    expect(inheritComponentBackground(component).render(32)).toEqual(rows);
+    expect(rows.filter((line) => line.startsWith("\x1b[48;2;"))).toHaveLength(2);
   });
 
   it("separates bounded-read continuation metadata from file content", () => {

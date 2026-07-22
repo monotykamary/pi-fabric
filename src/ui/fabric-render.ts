@@ -92,21 +92,6 @@ export const inheritEnclosingBackground = (text: string): string =>
     return kept.length > 0 ? `\x1b[${kept.join(";")}m` : "";
   });
 
-class InheritedBackgroundComponent implements Component {
-  constructor(private readonly child: Component) {}
-
-  render(width: number): string[] {
-    return this.child.render(width).map(inheritEnclosingBackground);
-  }
-
-  invalidate(): void {
-    this.child.invalidate?.();
-  }
-}
-
-export const inheritComponentBackground = (component: Component): Component =>
-  new InheritedBackgroundComponent(component);
-
 export const safeTerminalText = (value: string): string =>
   value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (character) => {
     const code = character.codePointAt(0)?.toString(16).padStart(2, "0") ?? "00";
@@ -131,6 +116,7 @@ class BoundedLineList implements Component {
     private readonly theme?: Theme,
     private readonly diffIntensity: DiffBackgroundIntensity = "off",
     private readonly wrapLineIndexes?: ReadonlySet<number>,
+    private readonly inheritBackground = false,
   ) {}
 
   render(width: number): string[] {
@@ -142,16 +128,22 @@ class BoundedLineList implements Component {
       const rawLine = this.lines[lineIndex]!;
       const { kind, line } = parseMarkedDiffLine(rawLine);
       if (!kind) {
+        let renderedRows: string[];
         if (this.wrapLineIndexes?.has(lineIndex)) {
           const continuationIndent = width > 2 ? "  " : "";
           const wrapped = wrapTextWithAnsi(
             line,
             Math.max(1, width - visibleWidth(continuationIndent)),
           );
-          rows.push(
-            ...wrapped.map((row, index) => index === 0 ? row : continuationIndent + row),
+          renderedRows = wrapped.map(
+            (row, index) => index === 0 ? row : continuationIndent + row,
           );
-        } else rows.push(truncateBoundedLine(line, width));
+        } else renderedRows = [truncateBoundedLine(line, width)];
+        rows.push(...(
+          this.inheritBackground
+            ? renderedRows.map(inheritEnclosingBackground)
+            : renderedRows
+        ));
         continue;
       }
       const pipe = line.indexOf("│ ");
@@ -177,12 +169,40 @@ class BoundedLineList implements Component {
     this.#cachedRows = undefined;
   }
 
+  withInheritedBackground(): BoundedLineList {
+    if (this.inheritBackground) return this;
+    return new BoundedLineList(
+      this.lines,
+      this.theme,
+      this.diffIntensity,
+      this.wrapLineIndexes,
+      true,
+    );
+  }
+
   #cache(width: number, rows: string[]): string[] {
     this.#cachedWidth = width;
     this.#cachedRows = rows;
     return rows;
   }
 }
+
+class InheritedBackgroundComponent implements Component {
+  constructor(private readonly child: Component) {}
+
+  render(width: number): string[] {
+    return this.child.render(width).map(inheritEnclosingBackground);
+  }
+
+  invalidate(): void {
+    this.child.invalidate?.();
+  }
+}
+
+export const inheritComponentBackground = (component: Component): Component =>
+  component instanceof BoundedLineList
+    ? component.withInheritedBackground()
+    : new InheritedBackgroundComponent(component);
 
 export const renderBoundedLines = (
   lines: string[],
