@@ -1,7 +1,7 @@
 import type { MeshIdentity } from "../mesh/store.js";
 
 export type StateTransitionKind = "state" | "representation";
-export type StateCertificationStatus = "pending" | "certified";
+type StateCertificationStatus = "pending" | "certified";
 export type StateTransitionPhase = "proposed" | "committed" | "rejected";
 
 export interface StateTransitionInput {
@@ -68,7 +68,7 @@ export interface StateTransitionRecord {
   ts: number;
 }
 
-export interface StateHeadCommitProof {
+interface StateHeadCommitProof {
   version: 1;
   status: "pending" | "committed";
 }

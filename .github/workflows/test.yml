@@ -27,9 +27,9 @@ jobs:
       - name: Test Windows type-checker regression
         if: runner.os == 'Windows'
         run: pnpm exec vitest run tests/type-checker.test.ts
+      - name: Build
+        run: pnpm build
       - name: Test
         run: pnpm test
       - name: Lint (dead code)
         run: pnpm lint:dead
-      - name: Build
-        run: pnpm build

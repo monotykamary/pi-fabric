@@ -31,7 +31,7 @@
     "benchmark:real-resume": "pnpm run build && node scripts/benchmark-real-resume.mjs",
     "benchmark:memory-heads": "pnpm run build && node scripts/benchmark-memory-heads.mjs",
     "lint:dead": "knip --no-gitignore",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run lint:dead && pnpm run build",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run test && pnpm run lint:dead",
     "prepack": "pnpm run check"
   },
   "keywords": [
