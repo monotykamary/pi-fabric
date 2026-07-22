@@ -66,6 +66,42 @@ export interface FabricActionDescriptor {
   namespace?: string;
 }
 
+export interface FabricCapabilityActionHead {
+  key: string;
+  parentKey: string;
+  ref: string;
+  name: string;
+  description: string;
+  descriptorHash: string;
+  risk: FabricRisk;
+  namespace?: string;
+}
+
+export interface FabricCapabilityProviderHead {
+  key: string;
+  parentKey: string;
+  name: string;
+  description: string;
+  descriptorHash: string;
+  actions: FabricCapabilityActionHead[];
+}
+
+export interface FabricCapabilityCatalog {
+  kind: "pi-fabric.capability-catalog";
+  version: 1;
+  root: {
+    key: "capability:fabric";
+    name: "Fabric capabilities";
+    description: string;
+    descriptorHash: string;
+  };
+  providers: FabricCapabilityProviderHead[];
+  totalActions: number;
+  indexedActions: number;
+  complete: boolean;
+  reasons: string[];
+}
+
 export interface FabricProviderListRequest {
   namespace?: string;
   query?: string;

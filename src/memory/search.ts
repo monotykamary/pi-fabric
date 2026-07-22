@@ -1,7 +1,7 @@
 import type { DigestEntryAddress } from "./digest.js";
 import type { MemoryBranches } from "./lineage.js";
 import type { NormalizedEntry } from "./normalize.js";
-import type { DigestShard, MemoryCoverage, Shard } from "./index.js";
+import type { DigestShard, MemoryCoverage, SearchFilters, Shard } from "./index.js";
 import { bm25Score, recentEntries, type ScoredEntry } from "./index.js";
 import { executeBoundedRegex, type RegexExecutionError } from "./regex.js";
 import {
@@ -21,12 +21,7 @@ const DEFAULT_SEARCH_MAX_CANDIDATE_ITEMS = 10_000;
 export interface SearchQuery {
   query?: string;
   queryMode?: MemoryQueryMode;
-  filters?: {
-    role?: string;
-    tool?: string;
-    since?: number;
-    until?: number;
-  };
+  filters?: SearchFilters;
   limit?: number;
   candidateLimits?: {
     maxEntries: number;
@@ -81,6 +76,7 @@ interface DigestHit {
   score: number;
   tier: "cold";
   matchedTerms: number;
+  matchedStructuralEntries: number;
 }
 
 export type SearchItem =
@@ -93,7 +89,10 @@ interface QueryCoverage {
   error?: RegexExecutionError;
 }
 
+type MemoryMatchMode = "browse" | "lexical" | "regex" | "structural" | "combined";
+
 export interface SearchResult {
+  matchMode: MemoryMatchMode;
   matchedCount: number;
   totalMatches: number;
   totalItems: number;
@@ -104,18 +103,15 @@ export interface SearchResult {
   queryCoverage: QueryCoverage;
 }
 
-interface SearchFilters {
-  role?: string;
-  tool?: string;
-  since?: number;
-  until?: number;
-}
-
 const segmentStartRoles = new Set(["user", "bashExecution", "compaction"]);
 
 const matchesFilters = (entry: NormalizedEntry, filters: SearchFilters): boolean => {
   if (filters.role !== undefined && entry.role !== filters.role) return false;
   if (filters.tool !== undefined && entry.toolName !== filters.tool) return false;
+  if (filters.ref !== undefined && entry.ref !== filters.ref) return false;
+  if (filters.provider !== undefined && entry.provider !== filters.provider) return false;
+  if (filters.action !== undefined && entry.action !== filters.action) return false;
+  if (filters.outcome !== undefined && entry.outcome !== filters.outcome) return false;
   if (filters.since !== undefined && entry.timestamp !== null && entry.timestamp < filters.since) return false;
   if (filters.until !== undefined && entry.timestamp !== null && entry.timestamp > filters.until) return false;
   return true;
@@ -124,6 +120,10 @@ const matchesFilters = (entry: NormalizedEntry, filters: SearchFilters): boolean
 const addressMatchesFilters = (address: DigestEntryAddress, filters: SearchFilters): boolean => {
   if (filters.role !== undefined && address[3] !== filters.role) return false;
   if (filters.tool !== undefined && address[4] !== filters.tool) return false;
+  if (filters.ref !== undefined && address[6] !== filters.ref) return false;
+  if (filters.provider !== undefined && address[7] !== filters.provider) return false;
+  if (filters.action !== undefined && address[8] !== filters.action) return false;
+  if (filters.outcome !== undefined && address[9] !== filters.outcome) return false;
   if (filters.since !== undefined && address[5] !== null && address[5] < filters.since) return false;
   if (filters.until !== undefined && address[5] !== null && address[5] > filters.until) return false;
   return true;
@@ -174,18 +174,29 @@ const collectRecent = (
   shards: Shard[],
   filters: SearchFilters,
   maxEntries: number,
+  score = 0,
 ): LocatedEntry[] =>
   recentEntries(shards, filters, maxEntries).map((item) => ({
     entry: item.entry,
     matched: true,
     sessionMtime: item.sessionMtime,
-    score: 0,
+    score,
   }));
 
-const digestCanMatchFilters = (digest: DigestShard, filters: SearchFilters): boolean =>
-  !hasFilters(filters) || digest.addresses.some((address) => addressMatchesFilters(address, filters));
+const digestStructuralMatchCount = (digest: DigestShard, filters: SearchFilters): number =>
+  hasFilters(filters)
+    ? digest.addresses.filter((address) => addressMatchesFilters(address, filters)).length
+    : 0;
 
-const toDigestHit = (digest: DigestShard, score: number, matchedTerms: number): DigestHit => ({
+const digestCanMatchFilters = (digest: DigestShard, filters: SearchFilters): boolean =>
+  !hasFilters(filters) || digestStructuralMatchCount(digest, filters) > 0;
+
+const toDigestHit = (
+  digest: DigestShard,
+  score: number,
+  matchedTerms: number,
+  matchedStructuralEntries = 0,
+): DigestHit => ({
   sessionId: digest.sessionId,
   sessionFile: digest.file,
   sourceHash: digest.sourceHash,
@@ -197,6 +208,7 @@ const toDigestHit = (digest: DigestShard, score: number, matchedTerms: number): 
   score,
   tier: "cold",
   matchedTerms,
+  matchedStructuralEntries,
 });
 
 const scoreDigestTerms = (
@@ -206,7 +218,7 @@ const scoreDigestTerms = (
   maxDigests: number,
 ): { hits: DigestHit[]; complete: boolean } => {
   if (digests.length === 0 || terms.length === 0) return { hits: [], complete: true };
-  const candidates: Array<{ digest: DigestShard; matches: string[] }> = [];
+  const candidates: Array<{ digest: DigestShard; matches: string[]; structuralMatches: number }> = [];
   let matchingDigests = 0;
   for (const digest of digests) {
     if (!digestCanMatchFilters(digest, filters)) continue;
@@ -214,7 +226,13 @@ const scoreDigestTerms = (
     const matches = terms.filter((term) => vocabulary.has(term));
     if (matches.length === 0) continue;
     matchingDigests += 1;
-    if (candidates.length < maxDigests) candidates.push({ digest, matches });
+    if (candidates.length < maxDigests) {
+      candidates.push({
+        digest,
+        matches,
+        structuralMatches: digestStructuralMatchCount(digest, filters),
+      });
+    }
   }
   const documentFrequency = new Map<string, number>();
   for (const candidate of candidates) {
@@ -228,7 +246,12 @@ const scoreDigestTerms = (
       const df = documentFrequency.get(term) ?? 0;
       return total + Math.log((candidates.length - df + 0.5) / (df + 0.5) + 1);
     }, 0);
-    return toDigestHit(candidate.digest, score, candidate.matches.length);
+    return toDigestHit(
+      candidate.digest,
+      score,
+      candidate.matches.length,
+      candidate.structuralMatches,
+    );
   });
   return { hits, complete: matchingDigests <= maxDigests };
 };
@@ -347,7 +370,8 @@ const searchRegex = async (
   }
   return {
     located,
-    digestHits: [...coldMatches].map(([digest, count]) => toDigestHit(digest, count, count)),
+    digestHits: [...coldMatches].map(([digest, count]) =>
+      toDigestHit(digest, count, count, digestStructuralMatchCount(digest, filters))),
     coverage: {
       complete: collected.complete && reasons.size === 0,
       reasons: [...reasons].sort(compareLexical),
@@ -381,18 +405,30 @@ export const searchMemoryIndex = async (
   let located: LocatedEntry[];
   let digestHits: DigestHit[] = [];
   let queryCoverage: QueryCoverage = { complete: true, reasons: [] };
-  const hasQuery = plan.kind !== "browse";
+  const structurallyFiltered = hasFilters(filters);
+  const matchMode: MemoryMatchMode = plan.kind === "browse"
+    ? structurallyFiltered ? "structural" : "browse"
+    : structurallyFiltered ? "combined" : plan.kind === "regex" ? "regex" : "lexical";
+  const markOnlyMatches = plan.kind !== "browse" || structurallyFiltered;
   const coverageReasons = new Set<string>();
 
   if (plan.kind === "browse") {
     const eligibleEntries = filteredEntryCount(shards, filters);
-    located = collectRecent(shards, filters, maxEntries);
+    located = collectRecent(shards, filters, maxEntries, structurallyFiltered ? 1 : 0);
     if (eligibleEntries > maxEntries) coverageReasons.add("candidate_entry_budget");
     let eligibleDigests = 0;
     for (const digest of digests) {
       if (!digestCanMatchFilters(digest, filters)) continue;
       eligibleDigests += 1;
-      if (digestHits.length < maxDigests) digestHits.push(toDigestHit(digest, 0, 0));
+      if (digestHits.length < maxDigests) {
+        const structuralMatches = digestStructuralMatchCount(digest, filters);
+        digestHits.push(toDigestHit(
+          digest,
+          structurallyFiltered ? 1 : 0,
+          0,
+          structuralMatches,
+        ));
+      }
     }
     if (eligibleDigests > maxDigests) coverageReasons.add("candidate_digest_budget");
   } else if (plan.kind === "regex") {
@@ -422,7 +458,15 @@ export const searchMemoryIndex = async (
     complete: queryCoverage.complete && coverageReasons.size === 0,
     reasons: [...coverageReasons].sort(compareLexical),
   };
-  return groupIntoResults(shards, located, digestHits, hasQuery, maxItems, queryCoverage);
+  return groupIntoResults(
+    shards,
+    located,
+    digestHits,
+    markOnlyMatches,
+    matchMode,
+    maxItems,
+    queryCoverage,
+  );
 };
 
 export const searchShards = (shards: Shard[], query: SearchQuery): Promise<SearchResult> =>
@@ -432,12 +476,14 @@ const groupIntoResults = (
   shards: Shard[],
   located: LocatedEntry[],
   digestHits: DigestHit[],
-  hasQuery: boolean,
+  markOnlyMatches: boolean,
+  matchMode: MemoryMatchMode,
   maxItems: number,
   queryCoverage: QueryCoverage,
 ): SearchResult => {
   if (located.length === 0 && digestHits.length === 0) {
     return {
+      matchMode,
       matchedCount: 0,
       totalMatches: 0,
       totalItems: 0,
@@ -472,10 +518,10 @@ const groupIntoResults = (
       if (current.length === 0) return;
       const entries: SearchSegmentEntry[] = current.map((entry) => {
         const matched = matchedSet.has(entry.index);
-        return { entry, matched, marker: hasQuery ? (matched ? ">" : " ") : ">" };
+        return { entry, matched, marker: markOnlyMatches ? (matched ? ">" : " ") : ">" };
       });
       const matchedEntries = entries.filter((entry) => entry.matched);
-      if (hasQuery && matchedEntries.length === 0) {
+      if (markOnlyMatches && matchedEntries.length === 0) {
         current = [];
         return;
       }
@@ -538,6 +584,7 @@ const groupIntoResults = (
       }
     : queryCoverage;
   return {
+    matchMode,
     matchedCount,
     totalMatches: matchedCount,
     totalItems: limitedItems.length,
@@ -567,13 +614,39 @@ const compareSearchItems = (left: SearchItem, right: SearchItem): number => {
   return 0;
 };
 
+const structuralFilterLabel = (filters: SearchFilters): string => {
+  const ordered: Array<[keyof SearchFilters, unknown]> = [
+    ["ref", filters.ref],
+    ["provider", filters.provider],
+    ["action", filters.action],
+    ["outcome", filters.outcome],
+    ["role", filters.role],
+    ["tool", filters.tool],
+    ["since", filters.since],
+    ["until", filters.until],
+  ];
+  return ordered
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(", ");
+};
+
 export const formatSearchResult = (
   result: SearchResult,
   query: string | undefined,
   coverage?: MemoryCoverage,
+  filters: SearchFilters = {},
 ): string => {
+  const filterLabel = structuralFilterLabel(filters);
   if (result.items.length === 0) {
     if (result.totalItems > 0) return "No results on this page.";
+    if (result.matchMode === "structural") {
+      if (coverage && !coverage.complete) {
+        const reasons = coverage.reasons.length > 0 ? `; reasons: ${coverage.reasons.join(", ")}` : "";
+        return `No indexed invocations selected by exact structural filters (${filterLabel}); coverage is incomplete (${coverage.indexedSessions}/${coverage.eligibleSessions} sessions indexed${reasons}).`;
+      }
+      return `No invocations selected by exact structural filters (${filterLabel}).`;
+    }
     if (!query) return "No entries in scope.";
     if (coverage && !coverage.complete) {
       const reasons = coverage.reasons.length > 0 ? `; reasons: ${coverage.reasons.join(", ")}` : "";
@@ -588,20 +661,28 @@ export const formatSearchResult = (
   const coldSuffix = result.digestHits.length > 0
     ? ` and ${result.digestHits.length} cold session${result.digestHits.length === 1 ? "" : "s"}`
     : "";
-  const header = query
-    ? `${result.matchedCount} matches across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"}${coldSuffix} for "${query}":`
-    : `${result.matchedCount} most recent entries:`;
+  const header = result.matchMode === "structural"
+    ? `${result.matchedCount} structural result item${result.matchedCount === 1 ? "" : "s"} across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"}${coldSuffix} selected by exact filters (${filterLabel}):`
+    : result.matchMode === "combined"
+      ? `${result.matchedCount} lexical matches across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"}${coldSuffix} for "${query}" within exact structural filters (${filterLabel}):`
+      : query
+        ? `${result.matchedCount} matches across ${result.segmentCount} segment${result.segmentCount === 1 ? "" : "s"}${coldSuffix} for "${query}":`
+        : `${result.matchedCount} most recent entries:`;
   const body = result.items.map((item) =>
-    item.kind === "entry" ? formatSegment(item.segment) : formatDigestHit(item.digest, !query),
+    item.kind === "entry" ? formatSegment(item.segment) : formatDigestHit(item.digest, result.matchMode),
   ).join("\n\n");
   return `${header}\n\n${body}`;
 };
 
-const formatDigestHit = (hit: DigestHit, browse: boolean): string => {
+const formatDigestHit = (hit: DigestHit, matchMode: MemoryMatchMode): string => {
   const timestamp = hit.lastTs === null ? "unknown time" : new Date(hit.lastTs).toISOString();
-  const match = browse
+  const match = matchMode === "browse"
     ? "is available as a cold session pointer"
-    : `has ${hit.matchedTerms} matching lexical term${hit.matchedTerms === 1 ? "" : "s"}`;
+    : matchMode === "structural"
+      ? `has ${hit.matchedStructuralEntries} retained entries selected by exact structural fields`
+      : matchMode === "combined"
+        ? `has ${hit.matchedTerms} matching lexical term${hit.matchedTerms === 1 ? "" : "s"} and ${hit.matchedStructuralEntries} independently matching structural entries; hydrate to establish entry-level co-location`
+        : `has ${hit.matchedTerms} matching lexical term${hit.matchedTerms === 1 ? "" : "s"}`;
   return `> session ${hit.sessionId} (cold, ${hit.cwd}, ${timestamp}, branches=${hit.branches}) ${match} — hydrate exact file ${JSON.stringify(hit.sessionFile)} with branches ${JSON.stringify(hit.branches)}, expectedSourceHash ${JSON.stringify(hit.sourceHash)}, and expectedLineageFingerprint ${JSON.stringify(hit.lineageFingerprint)}.`;
 };
 

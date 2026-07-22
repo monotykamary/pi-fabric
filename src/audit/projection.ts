@@ -170,6 +170,11 @@ export const projectFabricAuditArgs = (
     case "fabric.discovery.models":
     case "fabric.workflow.progress":
       return emptyProjection(args);
+    case "fabric.discovery.catalog":
+      return projected(args, (output) => {
+        copyIdentifier(output, args, "provider");
+        copyNumber(output, args, "limit");
+      });
     case "fabric.discovery.list":
       return projected(args, (output) => {
         copyIdentifier(output, args, "provider");

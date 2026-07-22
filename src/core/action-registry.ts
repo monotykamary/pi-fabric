@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Value } from "typebox/value";
 import {
   executionOutcomeFromError,
@@ -8,6 +8,7 @@ import {
 import {
   FABRIC_NESTED_TOOL_CALL_ID_PREFIX,
   type FabricActionDescriptor,
+  type FabricCapabilityCatalog,
   type FabricInvocationActivityUpdate,
   type FabricInvocationContext,
   type FabricMediaBlock,
@@ -197,6 +198,23 @@ const resolveDescriptor = (
   ref: `${provider.name}.${descriptor.name}`,
 });
 
+const stableJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, stableJsonValue(nested)]),
+  );
+};
+
+const descriptorHash = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(stableJsonValue(value))).digest("hex");
+
+const discoveryTerms = (value: string): string[] =>
+  [...value.normalize("NFKC").matchAll(/[\p{L}\p{N}_]+/gu)]
+    .map((match) => match[0].toLowerCase());
+
 const validationMessage = (
   schema: Record<string, unknown>,
   value: Record<string, unknown>,
@@ -261,29 +279,134 @@ export class ActionRegistry {
     return lists.flat().slice(0, limit);
   }
 
+  async catalog(
+    context: FabricInvocationContext,
+    options: {
+      provider?: string;
+      limit?: number;
+      includeProvider?: (provider: string) => boolean;
+    } = {},
+  ): Promise<FabricCapabilityCatalog> {
+    const providers = (options.provider
+      ? [this.#requireProvider(options.provider)]
+      : [...this.#providers.values()])
+      .filter((provider) => options.includeProvider?.(provider.name) ?? true)
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const lists = await Promise.all(
+      providers.map(async (provider) => ({
+        provider,
+        actions: (await provider.list({}, context))
+          .map((descriptor) => resolveDescriptor(provider, descriptor)),
+      })),
+    );
+    const allActions = lists.flatMap(({ actions }) => actions)
+      .sort((left, right) => left.ref.localeCompare(right.ref));
+    const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 1_000), 1_000));
+    const retainedRefs = new Set(allActions.slice(0, limit).map((action) => action.ref));
+    const providerHeads = lists.map(({ provider, actions }) => {
+      const actionHeads = actions
+        .filter((action) => retainedRefs.has(action.ref))
+        .sort((left, right) => left.ref.localeCompare(right.ref))
+        .map((action) => ({
+          key: `action:${action.ref}`,
+          parentKey: `provider:${provider.name}`,
+          ref: action.ref,
+          name: action.name,
+          description: action.description,
+          descriptorHash: descriptorHash({
+            ref: action.ref,
+            description: action.description,
+            inputSchema: action.inputSchema,
+            outputSchema: action.outputSchema,
+            risk: action.risk,
+            namespace: action.namespace,
+          }),
+          risk: action.risk,
+          ...(action.namespace === undefined ? {} : { namespace: action.namespace }),
+        }));
+      return {
+        key: `provider:${provider.name}`,
+        parentKey: "capability:fabric",
+        name: provider.name,
+        description: provider.description,
+        descriptorHash: descriptorHash({
+          name: provider.name,
+          description: provider.description,
+          actions: actionHeads.map((action) => action.descriptorHash),
+        }),
+        actions: actionHeads,
+      };
+    });
+    const indexedActions = providerHeads.reduce((total, provider) => total + provider.actions.length, 0);
+    const rootHash = descriptorHash(providerHeads.map((provider) => provider.descriptorHash));
+    return {
+      kind: "pi-fabric.capability-catalog",
+      version: 1,
+      root: {
+        key: "capability:fabric",
+        name: "Fabric capabilities",
+        description: "Current registered provider and action metadata for navigation; not historical session evidence.",
+        descriptorHash: rootHash,
+      },
+      providers: providerHeads,
+      totalActions: allActions.length,
+      indexedActions,
+      complete: indexedActions === allActions.length,
+      reasons: indexedActions === allActions.length ? [] : ["action_limit"],
+    };
+  }
+
   async search(
     query: string,
     context: FabricInvocationContext,
     limit = 30,
   ): Promise<ResolvedFabricAction[]> {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = query.normalize("NFKC").trim().toLowerCase();
     if (!normalizedQuery) return [];
-    const listed = await this.list({ query: normalizedQuery, limit: 1_000 }, context);
+    const queryTerms = [...new Set(discoveryTerms(normalizedQuery))];
+    const listed = await this.list({ limit: 1_000 }, context);
     return listed
       .map((action) => {
-        const haystack = [
-          action.ref,
-          action.description,
-          action.namespace ?? "",
-          JSON.stringify(action.inputSchema),
-        ]
-          .join(" ")
-          .toLowerCase();
-        const exactName = action.ref.toLowerCase() === normalizedQuery ? 100 : 0;
-        const startsName = action.ref.toLowerCase().startsWith(normalizedQuery) ? 30 : 0;
-        const includesName = action.ref.toLowerCase().includes(normalizedQuery) ? 10 : 0;
-        const includesBody = haystack.includes(normalizedQuery) ? 1 : 0;
-        return { action, score: exactName + startsName + includesName + includesBody };
+        const providerDescription = this.#providers.get(action.provider)?.description ?? "";
+        const ref = action.ref.normalize("NFKC").toLowerCase();
+        const name = action.name.normalize("NFKC").toLowerCase();
+        const description = action.description.normalize("NFKC").toLowerCase();
+        const provider = action.provider.normalize("NFKC").toLowerCase();
+        const providerBody = providerDescription.normalize("NFKC").toLowerCase();
+        const namespace = (action.namespace ?? "").normalize("NFKC").toLowerCase();
+        const schema = JSON.stringify(action.inputSchema).normalize("NFKC").toLowerCase();
+        const tokenSets = {
+          ref: new Set(discoveryTerms(ref)),
+          name: new Set(discoveryTerms(name)),
+          description: new Set(discoveryTerms(description)),
+          provider: new Set(discoveryTerms(provider)),
+          providerBody: new Set(discoveryTerms(providerBody)),
+          namespace: new Set(discoveryTerms(namespace)),
+          schema: new Set(discoveryTerms(schema)),
+        };
+        const fields = Object.values(tokenSets);
+        let score = 0;
+        if (ref === normalizedQuery) score += 1_000;
+        if (name === normalizedQuery) score += 800;
+        if (ref.startsWith(normalizedQuery)) score += 300;
+        else if (ref.includes(normalizedQuery)) score += 120;
+        if (description.includes(normalizedQuery)) score += 40;
+        if (providerBody.includes(normalizedQuery)) score += 20;
+        if (schema.includes(normalizedQuery)) score += 10;
+        let matchedTerms = 0;
+        for (const term of queryTerms) {
+          const matched = fields.some((field) => field.has(term));
+          if (!matched) continue;
+          matchedTerms += 1;
+          if (tokenSets.ref.has(term) || tokenSets.name.has(term)) score += 30;
+          if (tokenSets.provider.has(term)) score += 20;
+          if (tokenSets.description.has(term)) score += 8;
+          if (tokenSets.providerBody.has(term)) score += 4;
+          if (tokenSets.namespace.has(term)) score += 6;
+          if (tokenSets.schema.has(term)) score += 2;
+        }
+        if (queryTerms.length > 0 && matchedTerms === queryTerms.length) score += 15;
+        return { action, score };
       })
       .filter((entry) => entry.score > 0)
       .sort(

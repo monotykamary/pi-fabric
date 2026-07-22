@@ -134,6 +134,18 @@ describe("memory Fabric trace records", () => {
     const vocabulary = new Set(digest.vocabulary);
     for (const term of ["agents", "state", "mesh", "bash", "read"]) expect(vocabulary.has(term)).toBe(true);
     expect(digest.toolHistogram).toMatchObject({ read: 1, bash: 2, run: 1, get: 1, query: 1 });
+    expect(digest.addresses.find((address) => address[2] === "e2/7")).toEqual([
+      expect.any(Number),
+      "e2/7",
+      "e2/7",
+      "fabricOperation",
+      "run",
+      expect.any(Number),
+      "agents.run",
+      "agents",
+      "run",
+      "succeeded",
+    ]);
 
     const config: FabricMemoryConfig = {
       enabled: true,
@@ -152,6 +164,88 @@ describe("memory Fabric trace records", () => {
       invocation(cwd),
     ) as { expanded: Array<{ operationAddress?: string; ref?: string }> };
     expect(providerExpanded.expanded).toMatchObject([{ operationAddress: "e2/7", ref: "agents.run" }]);
+  });
+
+
+  it("selects exact capability heads in hot and cold tiers without treating catalog prose as evidence", async () => {
+    const agentDir = temp("memory-capability-agent");
+    const indexDir = temp("memory-capability-index");
+    const cwd = "/project/capability";
+    const file = fixture(agentDir, cwd, { trace: recordedIntegrationTrace() });
+    const ref = { id: "trace-session", file, cwd, mtime: fs.statSync(file).mtimeMs };
+    const hot = loadShard(ref, { indexDir, maxEntryChars: 20_000, hotSessions: 1 });
+
+    const structural = await searchShards([hot], { filters: { ref: "pi.edit" } });
+    expect(structural.matchMode).toBe("structural");
+    expect(structural.matchedCount).toBe(2);
+    expect(structural.segments.flatMap((segment) => segment.exactMatches)
+      .map((match) => match.operationAddress)).toEqual(["e2/1", "e2/2"]);
+    expect(structural.segments.flatMap((segment) => segment.entries)
+      .filter((entry) => entry.marker === ">")
+      .every((entry) => entry.entry.ref === "pi.edit")).toBe(true);
+
+    const combined = await searchShards([hot], {
+      query: "failure",
+      filters: { provider: "pi", action: "edit", outcome: "failed" },
+    });
+    expect(combined.matchMode).toBe("combined");
+    expect(combined.matchedCount).toBe(1);
+    expect(combined.segments.flatMap((segment) => segment.exactMatches))
+      .toEqual([{ index: expect.any(Number), entryId: "e2/1", operationAddress: "e2/1" }]);
+
+    const config: FabricMemoryConfig = {
+      enabled: true,
+      indexDir,
+      maxSessions: 100,
+      maxEntryChars: 20_000,
+      indexThinking: false,
+      indexToolOutput: true,
+      hotSessions: 0,
+    };
+    const provider = new MemoryProvider({ agentDir, cwd, config });
+    const pointer = await provider.invoke(
+      "recall",
+      { scope: "project", branches: "all", ref: "agents.run" },
+      invocation(cwd),
+    ) as {
+      matchMode: string;
+      structuralFilters: Record<string, unknown>;
+      digestHits: Array<{
+        sessionFile: string;
+        sourceHash: string;
+        lineageFingerprint: string;
+        matchedStructuralEntries: number;
+      }>;
+      text: string;
+    };
+    expect(pointer.matchMode).toBe("structural");
+    expect(pointer.structuralFilters).toEqual({ ref: "agents.run" });
+    expect(pointer.digestHits).toHaveLength(1);
+    expect(pointer.digestHits[0]!.matchedStructuralEntries).toBe(1);
+    expect(pointer.text).toContain("selected by exact filters");
+
+    const hydrated = await provider.invoke(
+      "recall",
+      {
+        scope: `session:${pointer.digestHits[0]!.sessionFile}`,
+        branches: "all",
+        expectedSourceHash: pointer.digestHits[0]!.sourceHash,
+        expectedLineageFingerprint: pointer.digestHits[0]!.lineageFingerprint,
+        ref: "agents.run",
+      },
+      invocation(cwd),
+    ) as { matchMode: string; segments: Array<{ exactMatches: Array<{ operationAddress: string }> }> };
+    expect(hydrated.matchMode).toBe("structural");
+    expect(hydrated.segments.flatMap((segment) => segment.exactMatches))
+      .toEqual([{ index: expect.any(Number), entryId: "e2/7", operationAddress: "e2/7" }]);
+
+    const absent = await provider.invoke(
+      "recall",
+      { scope: "project", branches: "all", ref: "pi.grep" },
+      invocation(cwd),
+    ) as { matchedCount: number; text: string };
+    expect(absent.matchedCount).toBe(0);
+    expect(absent.text).toContain("No invocations selected by exact structural filters");
   });
 
   it("ignores malformed and unknown trace versions instead of adapting audits", () => {

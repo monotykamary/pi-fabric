@@ -37,7 +37,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 
 | Call | Resolves to |
 |------|-------------|
-| `memory.recall(args?)` | `{scope?,branches?,query?,queryMode?,matchedCount?,totalMatches?,totalItems?,segmentCount?,segments?,digestHits?,items?,page?,pageSize?,hasNext?,coverage?,text?,error?}` |
+| `memory.recall(args?)` | `{scope?,branches?,query?,queryMode?,matchMode?,structuralFilters?,matchedCount?,totalMatches?,totalItems?,segmentCount?,segments?,digestHits?,items?,page?,pageSize?,hasNext?,coverage?,text?,error?}` |
 | `memory.expand(args)` | `{session?,sourceHash?,branches?,lineageFingerprint?,expanded?:unknown[],error?}` |
 | `memory.sessions(args?)` | `{scope?,branches?,sessions?:SessionInfo[],error?}`; slice `result.sessions ?? []`, not the wrapper |
 | `state.transition(args)` | `{event:FabricMeshEvent,head:unknown}` |
@@ -56,6 +56,8 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 | `compact.status()` | `{pending?:CompactIntent,last?:{at,requestedBy,status,summary?,tokensBefore?,estimatedTokensAfter?,error?}}` |
 | `compact.cancel()` | `{cancelled:true}` |
 
+`memory.recall` structural filters (`ref`, `provider`, `action`, `outcome`) use exact persisted trace fields. With no `query`, `matchMode` is `"structural"`; with a lexical/regex query it is `"combined"`. Use `tools.catalog()`/`tools.search()` only to choose a current action head—catalog descriptions are navigation metadata and never become session evidence.
+
 `SessionInfo` is `{id,file,cwd,mtime,entryCount,tier:"hot"|"cold",branches,lineageFingerprint}`. Memory failures are returned in `error: {code,message,...}`; ambiguous-session failures may return only `{error}`. Check `error` before relying on optional success fields.
 
 ### Dynamic provider return shapes
@@ -66,7 +68,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 The guest TypeScript declarations contain the complete argument and return contracts. For a discovered or dynamic action, use `tools.describe({ref})`; inspect `outputSchema` when supplied, otherwise treat the result as `unknown`.
 
 ## `tools` — discovery & generic calls
-Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`); bare names are rejected. `tools.providers()`→`[{name,description}]` · `tools.search({query,limit?})`→`FabricAction[]`(`ref,name,description,inputSchema,risk`) · `tools.describe({ref})`→full `FabricAction` (read `inputSchema` first) · `tools.call({ref,args?})` · `tools.list({provider?,namespace?,query?,limit?})` · `tools.models()`→Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})`→Claude Code runtime models with canonical `claude/<value>` keys. Use `tools.call()` for refs discovered or computed at runtime, or names that cannot use property access—not as the default for known actions. Calling a core-tool name on `tools` (e.g. `tools.read(...)`) throws with a hint to use `pi.read(...)`.
+Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `schema.<action>`); bare names are rejected. `tools.providers()`→`[{name,description}]` · `tools.catalog({provider?,limit?})`→current provider/action head tree (navigation metadata, not session evidence) · `tools.search({query,limit?})`→`FabricAction[]`(`ref,name,description,inputSchema,risk`) · `tools.describe({ref})`→full `FabricAction` (read `inputSchema` first) · `tools.call({ref,args?})` · `tools.list({provider?,namespace?,query?,limit?})` · `tools.models()`→Pi `[{provider,id,name,key}]`; `agents.models({runner:"claude"})`→Claude Code runtime models with canonical `claude/<value>` keys. Use `tools.call()` for refs discovered or computed at runtime, or names that cannot use property access—not as the default for known actions. Calling a core-tool name on `tools` (e.g. `tools.read(...)`) throws with a hint to use `pi.read(...)`.
 
 ## Error recovery: read, describe, retry
 Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); 2 positional args on `read`/`bash`/`ls` (use an options object — positional is supported only for `grep`/`find`/`write`/`edit`).

@@ -153,6 +153,10 @@ describe("memory sleep cycle", () => {
       "user",
       null,
       Date.parse(timestamp(0)),
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 

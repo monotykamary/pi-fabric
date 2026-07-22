@@ -102,6 +102,7 @@ const directoryBytes = (root) => {
   return total;
 };
 
+
 const invocationContext = (cwd) => ({
   cwd,
   signal: undefined,
@@ -473,6 +474,36 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
       : `common certification distractor session_${String(index).padStart(4, "0")}`;
     const entryId = manager.appendMessage(user(text));
     manager.appendMessage(assistantText("Indexed certification session."));
+    if (index === 0) {
+      const structuralTrace = {
+        kind: "pi-fabric.execution",
+        version: 1,
+        outcome: "succeeded",
+        phases: ["Certification"],
+        operations: [{
+          type: "call",
+          sequence: 0,
+          ref: "pi.grep",
+          provider: "pi",
+          action: "grep",
+          args: { path: "src", pattern: "cold_exact_quasar_7f91" },
+          outcome: "succeeded",
+        }],
+        counts: { droppedValues: 0, truncatedValues: 0, redactedValues: 0, droppedOperations: 0 },
+      };
+      manager.appendMessage(assistantCall(
+        "memory-structural-head",
+        "fabric_exec",
+        { source: "typed certification trace" },
+      ));
+      manager.appendMessage(toolResult(
+        "memory-structural-head",
+        "fabric_exec",
+        "typed structural operation persisted",
+        false,
+        { trace: structuralTrace },
+      ));
+    }
     const file = manager.getSessionFile();
     if (!file) throw new Error("Expected a persisted memory session");
     fs.utimesSync(file, baseSeconds + index, baseSeconds + index);
@@ -533,6 +564,41 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
     )
     : { expanded: [], error: { code: "missing_cold_pointer" } };
 
+  const structuralRecall = await provider.invoke(
+    "recall",
+    {
+      scope: "global",
+      ref: "pi.grep",
+      outcome: "succeeded",
+      pageSize: 20,
+    },
+    invocationContext(cwd),
+  );
+  const structuralHit = structuralRecall.digestHits.find(
+    (hit) => hit.sessionId === SessionManager.open(rareSessionFile).getSessionId(),
+  );
+  const structuralHydration = structuralHit
+    ? await provider.invoke(
+      "recall",
+      {
+        scope: `session:${structuralHit.sessionFile}`,
+        expectedSourceHash: structuralHit.sourceHash,
+        expectedLineageFingerprint: structuralHit.lineageFingerprint,
+        ref: "pi.grep",
+        outcome: "succeeded",
+        pageSize: 20,
+      },
+      invocationContext(cwd),
+    )
+    : { segments: [], error: { code: "missing_structural_pointer" } };
+  const structuralEntries = structuralHydration.segments.flatMap((segment) =>
+    segment.entries.filter((item) => item.matched).map((item) => item.entry));
+  const structuralNegative = await provider.invoke(
+    "recall",
+    { scope: "global", ref: "pi.nonexistent", pageSize: 20 },
+    invocationContext(cwd),
+  );
+
   const sourceById = new Map(
     normalizeSession(contextResult.session.file, Number.MAX_SAFE_INTEGER).entries
       .filter((entry) => entry.entryId !== null)
@@ -571,13 +637,26 @@ const createMemoryCertification = async ({ agentDir, cwd, sessionDir, contextRes
       && rareExpansion.expanded.some(
         (entry) => entry.entryId === rareEntryId && entry.text === coldRareFact,
       ),
+    structuralRecallExact: structuralRecall.matchMode === "structural"
+      && structuralRecall.coverage.complete === true
+      && structuralHit?.matchedStructuralEntries === 1
+      && structuralHydration.matchMode === "structural"
+      && structuralHydration.error === undefined
+      && structuralEntries.length === 1
+      && structuralEntries[0].ref === "pi.grep"
+      && structuralEntries[0].provider === "pi"
+      && structuralEntries[0].action === "grep"
+      && structuralEntries[0].outcome === "succeeded",
+    structuralNegativeControl: structuralNegative.matchMode === "structural"
+      && structuralNegative.coverage.complete === true
+      && structuralNegative.matchedCount === 0,
     emittedAddresses: emittedIds.length,
     expandedAddresses: expandedCorrectly,
     addressExpansionRate: emittedIds.length === 0 ? 0 : expandedCorrectly / emittedIds.length,
     integrityBoundExpansion: typeof contextPointer.sourceHash === "string"
       && contextPointer.sourceHash.length === 64
       && expandedAddresses.sourceHash === contextPointer.sourceHash,
-    cacheVersionBehavior: "V5 sourceHash checked for cold hydration and address expansion",
+    cacheVersionBehavior: "V6 sourceHash checked for hydration/expansion; exact capability postings checked by cold structural recall",
     cacheBytes: directoryBytes(indexDir),
     sourceBytes: directoryBytes(sourceRoot),
   };

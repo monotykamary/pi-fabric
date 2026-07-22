@@ -69,6 +69,7 @@ Read-only discovery continues to bypass mutation authorization and approval budg
 
 - `fabric.discovery.providers`: no arguments or results
 - `fabric.discovery.models`: no arguments or results
+- `fabric.discovery.catalog`: identifier-shaped `provider` plus numeric `limit`; catalog metadata and results omitted
 - `fabric.discovery.list`: identifier-shaped `provider` and `namespace`, plus numeric `limit`; free-form `query` and results omitted
 - `fabric.discovery.search`: numeric `limit`; free-form `query` and results omitted
 - `fabric.discovery.describe`: identifier-shaped action `ref`; results omitted

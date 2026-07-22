@@ -81,6 +81,79 @@ describe("ActionRegistry", () => {
     ]);
   });
 
+
+  it("builds deterministic provider/action heads and searches the complete catalog before ranking", async () => {
+    const registry = new ActionRegistry();
+    const descriptors = [{
+      name: "inspect",
+      description: "Inspect stored records",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Local filesystem path" },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+      risk: "read" as const,
+      namespace: "records",
+    }];
+    registry.register({
+      name: "storage",
+      description: "Filesystem discovery capabilities",
+      async list(request) {
+        if (!request.query) return descriptors;
+        const query = request.query.toLowerCase();
+        return descriptors.filter((descriptor) =>
+          `${descriptor.name} ${descriptor.description}`.toLowerCase().includes(query),
+        );
+      },
+      async describe(name) {
+        return name === "inspect" ? descriptors[0] : undefined;
+      },
+      async invoke() {
+        return null;
+      },
+    });
+
+    expect((await registry.search("local filesystem path", context))[0]?.ref)
+      .toBe("storage.inspect");
+    expect((await registry.search("filesystem discovery", context))[0]?.ref)
+      .toBe("storage.inspect");
+
+    const first = await registry.catalog(context);
+    const second = await registry.catalog(context);
+    expect(second).toEqual(first);
+    expect(first).toMatchObject({
+      kind: "pi-fabric.capability-catalog",
+      version: 1,
+      complete: true,
+      totalActions: 1,
+      indexedActions: 1,
+      root: {
+        key: "capability:fabric",
+        description: expect.stringContaining("not historical session evidence"),
+        descriptorHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      providers: [{
+        key: "provider:storage",
+        parentKey: "capability:fabric",
+        actions: [{
+          key: "action:storage.inspect",
+          parentKey: "provider:storage",
+          ref: "storage.inspect",
+          descriptorHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }],
+      }],
+    });
+
+    const originalHash = first.root.descriptorHash;
+    descriptors[0]!.description = "Inspect archived records";
+    const drifted = await registry.catalog(context);
+    expect(drifted.root.descriptorHash).not.toBe(originalHash);
+    expect(drifted.providers[0]!.actions[0]!.ref).toBe("storage.inspect");
+  });
+
   it("emits structured invocation activity without exposing another model tool", async () => {
     const registry = new ActionRegistry();
     registry.register(provider());

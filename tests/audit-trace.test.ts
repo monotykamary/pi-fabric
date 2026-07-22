@@ -156,6 +156,7 @@ describe("Fabric execution trace V1", () => {
       context,
       `
 await tools.providers();
+await tools.catalog({ provider: "demo", limit: 9 });
 await tools.models();
 await tools.list({ provider: "demo", namespace: "public", query: "list-query-secret", limit: 7 });
 await tools.search({ query: "search-query-secret", limit: 3 });
@@ -173,16 +174,23 @@ return true;
       result: operationResult,
     }))).toEqual([
       { sequence: 0, ref: "fabric.discovery.providers", args: {}, outcome: "succeeded", result: undefined },
-      { sequence: 1, ref: "fabric.discovery.models", args: {}, outcome: "succeeded", result: undefined },
       {
-        sequence: 2,
+        sequence: 1,
+        ref: "fabric.discovery.catalog",
+        args: { limit: 9, provider: "demo" },
+        outcome: "succeeded",
+        result: undefined,
+      },
+      { sequence: 2, ref: "fabric.discovery.models", args: {}, outcome: "succeeded", result: undefined },
+      {
+        sequence: 3,
         ref: "fabric.discovery.list",
         args: { limit: 7, namespace: "public", provider: "demo" },
         outcome: "succeeded",
         result: undefined,
       },
-      { sequence: 3, ref: "fabric.discovery.search", args: { limit: 3 }, outcome: "succeeded", result: undefined },
-      { sequence: 4, ref: "fabric.discovery.describe", args: { ref: "demo.echo" }, outcome: "succeeded", result: undefined },
+      { sequence: 4, ref: "fabric.discovery.search", args: { limit: 3 }, outcome: "succeeded", result: undefined },
+      { sequence: 5, ref: "fabric.discovery.describe", args: { ref: "demo.echo" }, outcome: "succeeded", result: undefined },
     ]);
     const serialized = JSON.stringify(createFabricPersistedExecutionDetails(result));
     for (const secret of [
@@ -229,6 +237,8 @@ return true;
         throw new Error("describe-failure-secret");
       },
     });
+    const catalog = serviceFor(failingProvider);
+    const catalogResult = await execute(catalog.service, catalog.context, 'return tools.catalog({ provider: "demo" });');
     const list = serviceFor(failingProvider);
     const listResult = await execute(list.service, list.context, 'return tools.list({ provider: "demo" });');
     const search = serviceFor(failingProvider);
@@ -251,6 +261,12 @@ return true;
       outcome: "failed",
       failureStage: "invoke",
     });
+    expect(catalogResult.trace.operations[0]).toMatchObject({
+      ref: "fabric.discovery.catalog",
+      outcome: "failed",
+      failureStage: "invoke",
+      args: { provider: "demo" },
+    });
     expect(listResult.trace.operations[0]).toMatchObject({
       ref: "fabric.discovery.list",
       outcome: "failed",
@@ -271,6 +287,7 @@ return true;
     const serialized = JSON.stringify([
       createFabricPersistedExecutionDetails(providersResult),
       createFabricPersistedExecutionDetails(modelsResult),
+      createFabricPersistedExecutionDetails(catalogResult),
       createFabricPersistedExecutionDetails(listResult),
       createFabricPersistedExecutionDetails(searchResult),
       createFabricPersistedExecutionDetails(describeResult),

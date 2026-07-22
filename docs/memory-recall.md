@@ -5,8 +5,9 @@ the source of truth; the memory index is derived, disposable state.
 
 The index uses structural extraction only. It does not classify goals,
 preferences, errors, or other prose concepts with regexes. Roles, tool names,
-timestamps, entry IDs, operation addresses, tool errors, and tool argument
-paths come from typed session fields.
+timestamps, entry IDs, operation addresses, exact `ref`/`provider`/`action`
+identities, execution outcomes, tool errors, and tool argument paths come from
+typed session fields.
 
 ## Active branches
 
@@ -36,10 +37,10 @@ and privacy settings, so navigation, append, or policy changes rebuild the
 relevant derived record without contaminating the other mode. `sourceHash`
 continues to cover the complete JSONL source, including off-lineage records.
 
-## Cache V5
+## Cache V6
 
-Cache records use `cacheVersion: 5`. Older or malformed records are removed and
-rebuilt from source; they are never migrated or interpreted as V5. Refresh also
+Cache records use `cacheVersion: 6`. Older or malformed records are removed and
+rebuilt from source; they are never migrated or interpreted as V6. Refresh also
 removes orphan records, records whose encoded cache path does not match their
 source identity, and records for deleted source sessions.
 
@@ -54,7 +55,7 @@ digest contains:
 
 ```ts
 {
-  cacheVersion: 5,
+  cacheVersion: 6,
   kind: "digest",
   sessionId, file, cwd,
   mtime, size, sourceHash,
@@ -62,17 +63,19 @@ digest contains:
   firstTs, lastTs, entryCount,
   filesTouched, toolHistogram, errorCount,
   vocabulary,   // sorted unique canonical strings; no posting lists
-  addresses,    // structural entry/operation identities, stored separately
+  addresses,    // structural identity + ref/provider/action/outcome postings
   indexCoverage,
   cacheBytes, cacheSourceRatio
 }
 ```
 
 Cold vocabulary maps an exact lexical term only to the containing session. It
-does not retain a per-term list of entry indices. Consequently a cold result is
-a session pointer with exact `sessionFile` and `sourceHash`, never an inferred
-entry range. Exact entry IDs, indices, and Fabric operation addresses are
-returned after explicit hydration.
+does not retain a per-term list of entry indices. Structural address tuples
+separately retain exact entry identity, role/tool/time, and persisted
+`ref`/`provider`/`action`/`outcome` fields. Consequently a cold lexical result
+is still a session pointer with exact `sessionFile` and `sourceHash`, never an
+inferred lexical entry range. Exact lexical entry matches are returned only
+after explicit hydration.
 
 `maxColdVocabularyBytes` bounds vocabulary construction for each session and
 `maxColdCacheBytes` is a hard per-session persisted-cache bound. If either cap
@@ -81,6 +84,59 @@ Structural addresses or vocabulary may be retained only as exact prefixes when
 the cache-size cap requires it; this is always reported as
 `max_cold_cache_bytes`, never silently treated as complete. `cacheSourceRatio`
 reports persisted cache bytes divided by source bytes.
+
+## Capability heads and exact structural retrieval
+
+Capability navigation is deliberately separate from memory evidence.
+`tools.catalog()` returns a deterministic current tree:
+
+```text
+Fabric capabilities
+└── provider head
+    └── action head
+```
+
+Provider/action names, descriptions, and descriptor hashes describe the current
+registered catalog; full schemas remain available through `tools.search()` and
+`tools.describe()`. This metadata can help a caller choose an action ref, but it
+is not copied into session entries and is not historical evidence. Catalog
+descriptor changes may alter discovery ranking without changing historical
+structural membership.
+
+`memory.recall` accepts exact structural filters:
+
+- `ref`, such as `pi.grep`;
+- `provider`, such as `pi`;
+- `action`, such as `grep`;
+- `outcome`: `succeeded | failed | aborted | timed_out`;
+- the existing `role`, `tool`, `since`, and `until` filters.
+
+Without `query`, these filters produce `matchMode: "structural"`. Membership is
+established only by persisted typed fields. With `query`, they constrain the
+normal lexical or explicit-regex search and produce `matchMode: "combined"`.
+Responses echo the exact `structuralFilters`; catalog description text never
+becomes a lexical match.
+
+```ts
+const heads = await tools.search({ query: "search source files" });
+const history = await memory.recall({
+  scope: "project",
+  ref: heads[0]?.ref,
+});
+const failures = await memory.recall({
+  scope: "project",
+  query: "timeout",
+  ref: "agents.run",
+  outcome: "failed",
+});
+```
+
+A complete cold structural posting proves that the selected session contains a
+matching typed entry, but the cold response remains an integrity-bound session
+pointer. A combined cold lexical + structural candidate does not prove both
+conditions occur on the same entry because cold vocabulary has no posting
+lists. It reports `cold_structural_filter_requires_hydration` and must be
+hydrated before entry-level co-location is claimed.
 
 ## Exact lexical queries
 
@@ -203,7 +259,8 @@ A cold result has session identity only:
   sourceHash,
   branches,
   lineageFingerprint,
-  matchedTerms
+  matchedTerms,
+  matchedStructuralEntries
 }
 ```
 
@@ -280,7 +337,7 @@ branch-summary prose remain non-semantic.
 The memory index is local derived state, not an encryption or semantic-privacy
 boundary. Depending on configuration and tier, cache JSON can retain plaintext
 lexical vocabulary, cwd and file paths, source pointers and hashes, structural
-tool metadata, selected user/assistant/custom-message content, tool arguments,
+tool and capability metadata, selected user/assistant/custom-message content, tool arguments,
 and (with the default `indexToolOutput: true`) selected tool output. Cold
 vocabulary alone can reveal exact words even though it has no posting lists.
 Thinking text is excluded by default but is plaintext when explicitly enabled.
@@ -301,6 +358,24 @@ best-effort removes its orphaned cache records; delete the configured
 that directory is safe because all records are disposable and rebuilt from
 remaining session JSONL. Deleting caches does not delete source sessions,
 filesystem backups, or copies outside the index directory.
+
+## Benchmarking capability-head retrieval
+
+Run the deterministic synthetic benchmark after changes to discovery, structural
+postings, ranking, or cache layout:
+
+```sh
+pnpm benchmark:memory-heads
+```
+
+It reports catalog head selection separately from source retrieval, hot exact
+operation-address recall, cold session recall, combined lexical + structural
+retrieval, negative controls, cold digest/source ratio, and p50/p95/p99 search
+latency. The command fails if catalog description text leaks into lexical
+matches, structural provenance is lost, cold combined candidates omit the
+hydration requirement, or a nonexistent ref returns history. Repository tests
+provide the source-JSONL, branch, staleness, and cache-generation coverage that
+the synthetic timing corpus intentionally does not duplicate.
 
 ## Configuration
 

@@ -52,9 +52,11 @@ export const evaluateCertification = (report, thresholds = DEFAULT_THRESHOLDS) =
     ["memory.sessions", report.memory.eligibleSessions >= thresholds.minimumSessions, `${report.memory.eligibleSessions} >= ${thresholds.minimumSessions}`],
     ["memory.coverage", report.memory.coverageComplete === true, "all eligible sessions indexed"],
     ["memory.rareRecall", report.memory.rareRecallExact === true, "cold rare fact recalled and expanded exactly"],
+    ["memory.structuralRecall", report.memory.structuralRecallExact === true, "cold exact-ref head recalled and integrity-bound hydration returned the typed operation"],
+    ["memory.structuralNegative", report.memory.structuralNegativeControl === true, "nonexistent exact ref returned no structural results"],
     ["memory.cold", report.memory.rareSessionTier === "cold", `${report.memory.rareSessionTier} === cold`],
     ["memory.addressExpansion", report.memory.addressExpansionRate >= thresholds.minimumAddressExpansionRate, `${report.memory.addressExpansionRate} >= ${thresholds.minimumAddressExpansionRate}`],
-    ["memory.integrityBound", report.memory.integrityBoundExpansion === true, "V5 sourceHash pointer verified during expansion"],
+    ["memory.integrityBound", report.memory.integrityBoundExpansion === true, "V6 sourceHash pointer verified during expansion"],
     ["continuation.address", report.continuation.addressesResolved === true, "every continuation address resolved through MemoryProvider"],
     ["continuation.oracle", report.continuation.passRate >= thresholds.minimumContinuationPassRate, `${report.continuation.passRate} >= ${thresholds.minimumContinuationPassRate}`],
   ].map(([id, passed, evidence]) => ({ id, passed, evidence }));
@@ -170,7 +172,7 @@ export const formatHumanReport = (report) => {
   const lines = [
     `Context + memory certification: ${status}`,
     `  Compaction: ${report.context.cycles}/${report.context.eligibleCycleCount} cycles eligible; ${report.context.maxSummaryBytes} endurance / ${report.context.maximalMultibyte.summaryBytes} maximal UTF-8 bytes; ${report.evaluation.derived.steadySlopeBytesPerCycle.toFixed(2)} B/cycle steady slope`,
-    `  Memory: ${report.memory.indexedSessions}/${report.memory.eligibleSessions} sessions; ${(report.memory.addressExpansionRate * 100).toFixed(1)}% address expansion; ${report.memory.cacheBytes} cache bytes / ${report.memory.sourceBytes} source bytes`,
+    `  Memory: ${report.memory.indexedSessions}/${report.memory.eligibleSessions} sessions; ${(report.memory.addressExpansionRate * 100).toFixed(1)}% address expansion; structural=${report.memory.structuralRecallExact ? "pass" : "fail"}; ${report.memory.cacheBytes} cache bytes / ${report.memory.sourceBytes} source bytes`,
     `  Continuation: ${report.continuation.passedFixtures}/${report.continuation.totalFixtures} executable fixtures passed`,
   ];
   for (const check of report.evaluation.checks.filter((candidate) => !candidate.passed)) {

@@ -373,6 +373,7 @@ return "done";
         code: `
 return {
   providers: await tools.providers(),
+  catalog: await tools.catalog(),
   search: await tools.search({ query: "read" }),
 };
 `,
@@ -382,7 +383,21 @@ return {
         onPartial() {},
       });
       expect(metadata.success).toBe(true);
-      expect(metadata.value).toEqual({ providers: [], search: [] });
+      expect(metadata.value).toMatchObject({
+        providers: [],
+        catalog: {
+          kind: "pi-fabric.capability-catalog",
+          complete: true,
+          totalActions: 0,
+          indexedActions: 0,
+          providers: [],
+          root: {
+            key: "capability:fabric",
+            description: expect.stringContaining("not historical session evidence"),
+          },
+        },
+        search: [],
+      });
 
       const direct = await service.execute({
         code: 'return pi.read({ path: "sample.txt" });',

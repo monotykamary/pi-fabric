@@ -9,7 +9,7 @@ import type { NormalizedEntry } from "./normalize.js";
 import { DEFAULT_MEMORY_INDEX_PRIVACY, normalizeSession } from "./normalize.js";
 import { compareLexical, lexicalTermCounts, tokenizeLexical } from "./tokenize.js";
 
-export const MEMORY_CACHE_VERSION = 5;
+export const MEMORY_CACHE_VERSION = 6;
 export const DEFAULT_HOT_SESSIONS = 50;
 const DEFAULT_MAX_COLD_VOCABULARY_BYTES = 512 * 1024;
 const DEFAULT_MAX_COLD_CACHE_BYTES = 1024 * 1024;
@@ -178,7 +178,22 @@ const readDigestFile = (
         typeof term === "string" && (index === 0 || parsed.vocabulary[index - 1]! < term)) ||
       !Array.isArray(parsed.addresses) ||
       !parsed.addresses.every((address) =>
-        Array.isArray(address) && address.length === 6 && typeof address[0] === "number") ||
+        Array.isArray(address) &&
+        address.length === 10 &&
+        typeof address[0] === "number" &&
+        (address[1] === null || typeof address[1] === "string") &&
+        (address[2] === null || typeof address[2] === "string") &&
+        (address[3] === null || typeof address[3] === "string") &&
+        (address[4] === null || typeof address[4] === "string") &&
+        (address[5] === null || typeof address[5] === "number") &&
+        (address[6] === null || typeof address[6] === "string") &&
+        (address[7] === null || typeof address[7] === "string") &&
+        (address[8] === null || typeof address[8] === "string") &&
+        (address[9] === null ||
+          address[9] === "succeeded" ||
+          address[9] === "failed" ||
+          address[9] === "aborted" ||
+          address[9] === "timed_out")) ||
       typeof parsed.indexCoverage !== "object" ||
       parsed.indexCoverage === null ||
       typeof parsed.indexCoverage.complete !== "boolean" ||
@@ -747,6 +762,10 @@ export const loadTieredIndex = (
 export interface SearchFilters {
   role?: string;
   tool?: string;
+  ref?: string;
+  provider?: string;
+  action?: string;
+  outcome?: NonNullable<NormalizedEntry["outcome"]>;
   since?: number;
   until?: number;
 }
@@ -754,6 +773,10 @@ export interface SearchFilters {
 const matchesFilters = (entry: NormalizedEntry, filters: SearchFilters): boolean => {
   if (filters.role !== undefined && entry.role !== filters.role) return false;
   if (filters.tool !== undefined && entry.toolName !== filters.tool) return false;
+  if (filters.ref !== undefined && entry.ref !== filters.ref) return false;
+  if (filters.provider !== undefined && entry.provider !== filters.provider) return false;
+  if (filters.action !== undefined && entry.action !== filters.action) return false;
+  if (filters.outcome !== undefined && entry.outcome !== filters.outcome) return false;
   if (filters.since !== undefined && entry.timestamp !== null && entry.timestamp < filters.since) return false;
   if (filters.until !== undefined && entry.timestamp !== null && entry.timestamp > filters.until) return false;
   return true;

@@ -72,6 +72,7 @@ const __call = async (ref, args) => {
 const __piToolNames = ["read","bash","edit","write","grep","find","ls"];
 const __toolsBase = {
   providers: () => __call("fabric.$providers", {}),
+  catalog: (args = {}) => __call("fabric.$catalog", args),
   list: (args = {}) => __call("fabric.$list", args),
   search: (args) => __call("fabric.$search", args),
   describe: (args) => __call("fabric.$describe", args),
@@ -90,7 +91,7 @@ globalThis.tools = new Proxy(__toolsBase, {
     if (__piToolNames.indexOf(name) >= 0) {
       return () => {
         throw new Error(
-          "tools." + name + " is not available on the discovery API. tools is discovery + generic calls only (providers/list/search/describe/call/models). For the Pi core tool, call pi." + name + "(args), e.g. pi." + name + "({ ... })."
+          "tools." + name + " is not available on the discovery API. tools is discovery + generic calls only (providers/catalog/list/search/describe/call/models). For the Pi core tool, call pi." + name + "(args), e.g. pi." + name + "({ ... })."
         );
       };
     }

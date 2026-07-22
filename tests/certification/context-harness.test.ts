@@ -52,6 +52,8 @@ const passingReport = () => ({
     indexedSessions: 1_001,
     coverageComplete: true,
     rareRecallExact: true,
+    structuralRecallExact: true,
+    structuralNegativeControl: true,
     rareSessionTier: "cold",
     addressExpansionRate: 1,
     integrityBoundExpansion: true,
@@ -91,6 +93,8 @@ describe("certification thresholds", () => {
   it.each([
     ["eligibility", (report: ReturnType<typeof passingReport>) => { report.context.eligibleCycleCount = 99; }, "context.eligibility"],
     ["poison", (report: ReturnType<typeof passingReport>) => { report.context.poisonLeakCount = 1; }, "context.poison"],
+    ["structural recall", (report: ReturnType<typeof passingReport>) => { report.memory.structuralRecallExact = false; }, "memory.structuralRecall"],
+    ["structural negative", (report: ReturnType<typeof passingReport>) => { report.memory.structuralNegativeControl = false; }, "memory.structuralNegative"],
     ["address", (report: ReturnType<typeof passingReport>) => { report.continuation.addressesResolved = false; }, "continuation.address"],
     ["oracle", (report: ReturnType<typeof passingReport>) => { report.continuation.passRate = 0; }, "continuation.oracle"],
   ])("fails certification when %s evidence is sabotaged", (_name, sabotage, failedCheck) => {

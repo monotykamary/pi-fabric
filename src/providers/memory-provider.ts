@@ -23,6 +23,7 @@ import {
   loadTieredIndex,
   type EntryRange,
   type MemoryIndexOptions,
+  type SearchFilters,
 } from "../memory/index.js";
 import {
   DEFAULT_REGEX_MAX_HAYSTACK_BYTES,
@@ -75,6 +76,26 @@ const descriptors: FabricActionDescriptor[] = [
         pageSize: { type: "number", minimum: 1, maximum: RECALL_MAX_PAGE_SIZE },
         role: { type: "string" },
         tool: { type: "string" },
+        ref: {
+          type: "string",
+          minLength: 1,
+          description: "Exact persisted Fabric action ref, such as pi.grep. This is structural selection, not lexical expansion.",
+        },
+        provider: {
+          type: "string",
+          minLength: 1,
+          description: "Exact persisted Fabric provider identity.",
+        },
+        action: {
+          type: "string",
+          minLength: 1,
+          description: "Exact persisted Fabric action name.",
+        },
+        outcome: {
+          type: "string",
+          enum: ["succeeded", "failed", "aborted", "timed_out"],
+          description: "Exact persisted Fabric execution outcome.",
+        },
         since: { type: "number" },
         until: { type: "number" },
         entryRange: {
@@ -330,6 +351,20 @@ export class MemoryProvider implements FabricProvider {
     const scope = typeof args.scope === "string" ? args.scope : undefined;
     const role = typeof args.role === "string" ? args.role : undefined;
     const tool = typeof args.tool === "string" ? args.tool : undefined;
+    const ref = typeof args.ref === "string" ? args.ref : undefined;
+    const provider = typeof args.provider === "string" ? args.provider : undefined;
+    const action = typeof args.action === "string" ? args.action : undefined;
+    const rawOutcome = args.outcome;
+    if (
+      rawOutcome !== undefined &&
+      rawOutcome !== "succeeded" &&
+      rawOutcome !== "failed" &&
+      rawOutcome !== "aborted" &&
+      rawOutcome !== "timed_out"
+    ) {
+      throw new Error("memory.recall outcome must be succeeded, failed, aborted, or timed_out");
+    }
+    const outcome = rawOutcome as SearchFilters["outcome"];
     const since = typeof args.since === "number" ? args.since : undefined;
     const until = typeof args.until === "number" ? args.until : undefined;
     const page = typeof args.page === "number" && args.page >= 1 ? Math.floor(args.page) : 1;
@@ -454,9 +489,13 @@ export class MemoryProvider implements FabricProvider {
       };
     }
 
-    const filters: { role?: string; tool?: string; since?: number; until?: number } = {};
+    const filters: SearchFilters = {};
     if (role) filters.role = role;
     if (tool) filters.tool = tool;
+    if (ref) filters.ref = ref;
+    if (provider) filters.provider = provider;
+    if (action) filters.action = action;
+    if (outcome) filters.outcome = outcome;
     if (since !== undefined) filters.since = since;
     if (until !== undefined) filters.until = until;
     const searchQuery = {
@@ -500,6 +539,8 @@ export class MemoryProvider implements FabricProvider {
       branches,
       query: query ?? null,
       queryMode,
+      matchMode: result.matchMode,
+      structuralFilters: filters,
       matchedCount: result.matchedCount,
       totalMatches: result.totalMatches,
       totalItems: result.totalItems,
@@ -511,12 +552,16 @@ export class MemoryProvider implements FabricProvider {
       pageSize,
       hasNext: start + pageSize < result.totalItems,
       coverage,
-      text: formatSearchResult(displayResult, query, coverage),
+      text: formatSearchResult(displayResult, query, coverage, filters),
     };
     invocationContext.update(
-      query
-        ? `memory.recall: ${result.matchedCount} matches across ${result.segmentCount} segments`
-        : `memory.recall: ${result.matchedCount} recent entries`,
+      result.matchMode === "structural"
+        ? `memory.recall: ${result.matchedCount} structural result items`
+        : result.matchMode === "combined"
+          ? `memory.recall: ${result.matchedCount} lexical matches within exact structural filters`
+          : query
+            ? `memory.recall: ${result.matchedCount} matches across ${result.segmentCount} segments`
+            : `memory.recall: ${result.matchedCount} recent entries`,
     );
     return pagedResult;
   }

@@ -27,7 +27,7 @@ import {
 const temporaryDirectories: string[] = [];
 
 const temporaryDirectory = (name: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v5-${name}-`));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `pi-fabric-memory-v6-${name}-`));
   temporaryDirectories.push(directory);
   return directory;
 };
@@ -35,8 +35,8 @@ const temporaryDirectory = (name: string): string => {
 const invocationContext = (cwd: string): FabricInvocationContext => ({
   cwd,
   signal: undefined,
-  parentToolCallId: "memory-v5",
-  nestedToolCallId: "memory-v5-nested",
+  parentToolCallId: "memory-v6",
+  nestedToolCallId: "memory-v6-nested",
   extensionContext: {} as FabricInvocationContext["extensionContext"],
   update() {},
 });
@@ -52,7 +52,7 @@ const message = (id: string, text: string, offset = 0) =>
 const directorySize = (directory: string): number =>
   fs.readdirSync(directory).reduce((total, name) => total + fs.statSync(path.join(directory, name)).size, 0);
 
-describe("memory cache V5", () => {
+describe("memory cache V6", () => {
   let agentDir: string;
   let indexDir: string;
   let cwd: string;
@@ -179,7 +179,7 @@ describe("memory cache V5", () => {
     expect(search.digestHits[0]!.sessionId).toBe("browse-0");
   });
 
-  it("rebuilds rewritten and V4 caches and removes caches for deleted sources", async () => {
+  it("rebuilds rewritten and V5 caches and removes caches for deleted sources", async () => {
     const sessionDirectory = path.join(agentDir, "sessions", encodeCwdDir(cwd));
     const file = writeSessionFile(sessionDirectory, "rewrite.jsonl", [
       sessionHeader("rewrite", cwd),
@@ -190,8 +190,8 @@ describe("memory cache V5", () => {
     const ref = resolveScope({ agentDir, cwd, scope: "project", maxSessions: 100 })[0]!;
     const options = { indexDir, maxEntryChars: 2_000, hotSessions: 0, digestTerms: 2 };
     const first = loadDigest(ref, options);
-    const v4 = { ...first, cacheVersion: 4, indexCoverage: undefined };
-    fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v4), "utf8");
+    const v5 = { ...first, cacheVersion: 5, addresses: first.addresses.map((address) => address.slice(0, 6)) };
+    fs.writeFileSync(digestPathForSession(file, indexDir), JSON.stringify(v5), "utf8");
     const rebuilt = loadDigest(ref, options);
     expect(rebuilt.cacheVersion).toBe(MEMORY_CACHE_VERSION);
     expect(rebuilt.vocabulary).toContain("originalword");
@@ -199,7 +199,7 @@ describe("memory cache V5", () => {
     const shard = loadShard(ref, { ...options, hotSessions: 1 });
     fs.writeFileSync(
       shardPathForSession(file, indexDir),
-      JSON.stringify({ ...shard, cacheVersion: 4, indexCoverage: undefined, entries: [] }),
+      JSON.stringify({ ...shard, cacheVersion: 5, indexCoverage: undefined, entries: [] }),
       "utf8",
     );
     const rebuiltShard = loadShard(ref, { ...options, hotSessions: 1 });

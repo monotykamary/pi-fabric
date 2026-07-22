@@ -3,14 +3,18 @@ import { compareLexical, tokenizeLexical } from "./tokenize.js";
 
 const DEFAULT_FILES_TOUCHED_LIMIT = 50;
 
-/** Compact tuple: index, entry id, operation address, role, tool name, timestamp. */
+/** Compact structural posting: source identity, typed role/tool fields, time, and exact Fabric capability identity. */
 export type DigestEntryAddress = [
-  number,
-  string | null,
-  string | null,
-  string | null,
-  string | null,
-  number | null,
+  index: number,
+  entryId: string | null,
+  operationAddress: string | null,
+  role: string | null,
+  toolName: string | null,
+  timestamp: number | null,
+  ref: string | null,
+  provider: string | null,
+  action: string | null,
+  outcome: NormalizedEntry["outcome"] | null,
 ];
 
 interface DigestIndexCoverage {
@@ -104,6 +108,10 @@ export const foldSessionDigest = (input: DigestInput): SessionDigest => {
     entry.role,
     entry.toolName,
     entry.timestamp,
+    entry.ref ?? null,
+    entry.provider ?? null,
+    entry.action ?? null,
+    entry.outcome ?? null,
   ]);
   const reasons = new Set(input.normalizationCoverage?.reasons ?? []);
   if (vocabularyLimitReached) reasons.add("max_cold_vocabulary_bytes");

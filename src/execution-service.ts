@@ -378,6 +378,40 @@ export class FabricExecutionService {
                       (provider) => effectiveFullCodeMode || !fullCodeProvider(provider.name),
                     ),
               );
+            case "fabric.$catalog":
+              return traceAttempt(
+                "fabric.discovery.catalog",
+                args,
+                runtimeSignal,
+                async (setStage) => {
+                  const provider = typeof args.provider === "string" ? args.provider : undefined;
+                  setStage("guard");
+                  if (provider) guardFullCodeRef(`${provider}.*`);
+                  setStage(provider && !this.registry.has(provider) ? "resolve" : "invoke");
+                  return this.registry.catalog(callContext, {
+                    ...(provider ? { provider } : {}),
+                    ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+                    includeProvider: (name) => effectiveFullCodeMode || !fullCodeProvider(name),
+                  });
+                },
+              );
+            case "fabric.$catalog":
+              return traceAttempt(
+                "fabric.discovery.catalog",
+                args,
+                runtimeSignal,
+                async (setStage) => {
+                  const provider = typeof args.provider === "string" ? args.provider : undefined;
+                  setStage("guard");
+                  if (provider) guardFullCodeRef(`${provider}.*`);
+                  setStage(provider && !this.registry.has(provider) ? "resolve" : "invoke");
+                  return this.registry.catalog(callContext, {
+                    ...(provider ? { provider } : {}),
+                    ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+                    includeProvider: (name) => effectiveFullCodeMode || !fullCodeProvider(name),
+                  });
+                },
+              );
             case "fabric.$models": {
               const operation = traceRecorder.issueCall("fabric.discovery.models", args);
               const registry = options.context.modelRegistry;

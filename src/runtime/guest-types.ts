@@ -208,8 +208,42 @@ interface FabricActorLog {
   };
   retainedRuns: string[];
 }
+interface FabricCapabilityActionHead {
+  key: string;
+  parentKey: string;
+  ref: string;
+  name: string;
+  description: string;
+  descriptorHash: string;
+  risk: "read" | "write" | "execute" | "network" | "agent";
+  namespace?: string;
+}
+interface FabricCapabilityProviderHead {
+  key: string;
+  parentKey: string;
+  name: string;
+  description: string;
+  descriptorHash: string;
+  actions: FabricCapabilityActionHead[];
+}
+interface FabricCapabilityCatalog {
+  kind: "pi-fabric.capability-catalog";
+  version: 1;
+  root: {
+    key: "capability:fabric";
+    name: "Fabric capabilities";
+    description: string;
+    descriptorHash: string;
+  };
+  providers: FabricCapabilityProviderHead[];
+  totalActions: number;
+  indexedActions: number;
+  complete: boolean;
+  reasons: string[];
+}
 interface FabricToolsApi {
   providers(): Promise<Array<{ name: string; description: string }>>;
+  catalog(args?: { provider?: string; limit?: number }): Promise<FabricCapabilityCatalog>;
   list(args?: { provider?: string; namespace?: string; query?: string; limit?: number }): Promise<FabricAction[]>;
   search(args: { query: string; limit?: number }): Promise<FabricAction[]>;
   describe(args: { ref: string }): Promise<FabricAction>;
@@ -469,6 +503,10 @@ interface FabricMemoryRecallArgs {
   pageSize?: number;
   role?: string;
   tool?: string;
+  ref?: string;
+  provider?: string;
+  action?: string;
+  outcome?: "succeeded" | "failed" | "aborted" | "timed_out";
   since?: number;
   until?: number;
   entryRange?: FabricMemoryEntryRange;
@@ -478,6 +516,17 @@ interface FabricMemoryRecallResult {
   branches?: FabricMemoryBranches;
   query?: string | null;
   queryMode?: "literal" | "regex";
+  matchMode?: "browse" | "lexical" | "regex" | "structural" | "combined";
+  structuralFilters?: {
+    role?: string;
+    tool?: string;
+    ref?: string;
+    provider?: string;
+    action?: string;
+    outcome?: "succeeded" | "failed" | "aborted" | "timed_out";
+    since?: number;
+    until?: number;
+  };
   matchedCount?: number;
   totalMatches?: number;
   totalItems?: number;
