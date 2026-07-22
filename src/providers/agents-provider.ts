@@ -3,6 +3,7 @@ import { GlobalActorRegistry } from "../actors/global-registry.js";
 import type {
   FabricActorDelivery,
   FabricActorHostEvent,
+  FabricActorInfo,
   FabricActorMessage,
   FabricActorRequest,
 } from "../actors/types.js";
@@ -10,7 +11,16 @@ import type {
   FabricAgentMessageResult,
   FabricMainAgentTarget,
 } from "../main-agent.js";
-import type { FabricPeerSource } from "../peer-session.js";
+import type { MeshIdentity } from "../mesh/store.js";
+import {
+  FabricControlPlane,
+  type FabricControlCommand,
+  type FabricControlAcceptance,
+} from "../topology/control-plane.js";
+import type {
+  FabricParticipantScope,
+  FabricParticipantSource,
+} from "../topology/types.js";
 import type {
   FabricActionDescriptor,
   FabricInvocationContext,
@@ -22,6 +32,8 @@ import {
   SubagentManager,
 } from "../subagents/manager.js";
 import type {
+  SubagentHandleInfo,
+  SubagentRunRecord,
   SubagentRunRequest,
   SubagentRunResult,
   SubagentSessionSeed,
@@ -136,13 +148,40 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "status",
-    description: "Get the latest status of a child agent",
+    description: "Get the latest status of any known project participant",
     inputSchema: idSchema,
     risk: "read",
   },
   {
     name: "list",
-    description: "List child agents created by this Fabric session",
+    description: "List agent participants locally, across the current lineage, or across the project",
+    inputSchema: {
+      type: "object",
+      properties: { scope: { type: "string", enum: ["local", "lineage", "project"] } },
+      additionalProperties: false,
+    },
+    risk: "read",
+  },
+  {
+    name: "members",
+    description: "List the unified project topology of roots, agents, and actors",
+    inputSchema: {
+      type: "object",
+      properties: {
+        scope: { type: "string", enum: ["local", "lineage", "project"] },
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["root", "agent", "actor"] },
+        },
+        includeStale: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    risk: "read",
+  },
+  {
+    name: "self",
+    description: "Return this caller's intrinsic participant identity in the unified topology",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     risk: "read",
   },
@@ -175,7 +214,7 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "stop",
-    description: "Stop a running child agent",
+    description: "Stop a local or remotely owned agent or actor that advertises the stop capability",
     inputSchema: idSchema,
     risk: "agent",
   },
@@ -888,8 +927,9 @@ export class AgentsProvider implements FabricProvider {
     readonly actorManager: ActorManager,
     readonly globalActors: GlobalActorRegistry,
     readonly mainAgent: FabricMainAgentTarget,
+    readonly participants: FabricParticipantSource,
+    readonly control: FabricControlPlane | undefined,
     readonly nestedToolsEnabled: () => boolean = () => true,
-    readonly peers: FabricPeerSource = { list: () => [] },
   ) {}
 
   async list(
@@ -984,6 +1024,7 @@ export class AgentsProvider implements FabricProvider {
           runRequest(args, context, this.manager),
           context.signal,
         );
+        this.participants.scheduleRefresh();
         context.activity?.({
           type: "entity",
           id: handle.id,
@@ -1009,6 +1050,7 @@ export class AgentsProvider implements FabricProvider {
           context.signal,
         );
         this.manager.detachSignal(handle.id);
+        this.participants.scheduleRefresh();
         context.activity?.({
           type: "entity",
           id: handle.id,
@@ -1034,15 +1076,49 @@ export class AgentsProvider implements FabricProvider {
       }
       case "status": {
         const id = String(args.id);
-        if (this.mainAgent.matches(id)) return this.mainAgent.info(context.extensionContext);
-        return this.manager.status(id);
+        if (this.mainAgent.matches(id)) {
+          if (this.mainAgent.local) return this.mainAgent.info(context.extensionContext);
+          const root = this.participants.get(this.mainAgent.id);
+          if (!root) throw new Error(`Unknown Fabric Main participant: ${this.mainAgent.id}`);
+          return root;
+        }
+        try {
+          return this.manager.status(id);
+        } catch (error) {
+          if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+        }
+        const known = this.participants.get(id);
+        if (known && !known.local) return known;
+        try {
+          return this.actorManager.status(id);
+        } catch (error) {
+          if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
+        }
+        const participant = this.participants.get(id);
+        if (!participant) throw new Error(`Unknown Fabric participant: ${id}`);
+        return participant;
       }
       case "list":
-        return this.manager.list();
+        return this.#listAgents(args.scope);
+      case "members": {
+        const kinds = Array.isArray(args.kinds)
+          ? args.kinds.filter(
+              (kind): kind is "root" | "agent" | "actor" =>
+                kind === "root" || kind === "agent" || kind === "actor",
+            )
+          : undefined;
+        return this.participants.list({
+          scope: this.#participantScope(args.scope, "project"),
+          ...(kinds ? { kinds } : {}),
+          ...(args.includeStale === true ? { includeStale: true } : {}),
+        });
+      }
+      case "self":
+        return this.participants.self();
       case "main":
         return this.mainAgent.info(context.extensionContext);
       case "peers":
-        return this.peers.list();
+        return this.participants.peers();
       case "models": {
         const runner =
           args.runner === "pi" || args.runner === "claude"
@@ -1073,7 +1149,7 @@ export class AgentsProvider implements FabricProvider {
         }
       }
       case "stop":
-        return this.manager.stop(String(args.id));
+        return this.stopParticipant(String(args.id));
       case "cleanup":
         return this.manager.cleanup(String(args.id), args.deleteBranch === true);
       case "create": {
@@ -1081,6 +1157,7 @@ export class AgentsProvider implements FabricProvider {
           return this.globalActors.create(actorRequest(args, context, this.manager, false));
         }
         const actor = await this.actorManager.create(actorRequest(args, context, this.manager));
+        this.participants.scheduleRefresh();
         context.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
         return actor;
       }
@@ -1135,14 +1212,20 @@ export class AgentsProvider implements FabricProvider {
         return result;
       }
       case "actorStatus":
-        return this.actorManager.status(String(args.id));
+        return this.#localActor(String(args.id));
       case "actors":
-        return args.scope === "global" ? this.globalActors.list() : this.actorManager.list();
-      case "messages":
+        return args.scope === "global"
+          ? this.globalActors.list()
+          : this.actorManager
+              .list()
+              .filter((actor) => this.#actorIsLocal(actor.id));
+      case "messages": {
+        const actor = this.#localActor(String(args.id));
         return this.actorManager.messages(
-          String(args.id),
+          actor.id,
           typeof args.limit === "number" ? args.limit : 50,
         );
+      }
       case "setModel":
         return this.actorManager.setModel(
           String(args.id),
@@ -1215,9 +1298,9 @@ export class AgentsProvider implements FabricProvider {
         return actor;
       }
       case "export": {
-        const id = String(args.id);
+        const actor = this.#localActor(String(args.id));
         const overwrite = args.overwrite === true;
-        const def = this.actorManager.definition(id);
+        const def = this.actorManager.definition(actor.id);
         return this.globalActors.create(def, overwrite);
       }
       case "log": {
@@ -1227,14 +1310,15 @@ export class AgentsProvider implements FabricProvider {
         const runId = typeof args.runId === "string" ? args.runId : undefined;
         const before = typeof args.before === "number" ? args.before : undefined;
         try {
-          const actor = this.actorManager.status(id);
+          const actor = this.#localActor(id);
           return this.actorManager.readLog(actor.id, {
             type,
             lines,
             ...(runId ? { runId } : {}),
             ...(before !== undefined ? { before } : {}),
           });
-        } catch {
+        } catch (error) {
+          if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
           /* not an actor — fall through to subagent */
         }
         return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
@@ -1266,11 +1350,20 @@ export class AgentsProvider implements FabricProvider {
           ...(data === undefined ? {} : { data }),
         });
       }
-      return this.actorManager.steerRemote(
-        this.mainAgent.id,
-        message,
+      const participant = this.participants.get(this.mainAgent.id);
+      if (!participant) throw new Error(`Unknown Fabric Main participant: ${this.mainAgent.id}`);
+      if (!participant.capabilities.includes(kind)) {
+        throw new Error(`Fabric participant ${participant.id} does not support ${kind}`);
+      }
+      if (!this.control || participant.controlProtocol === "legacy") {
+        return this.actorManager.steerRemote(this.mainAgent.id, message, kind, data);
+      }
+      return this.control.request(
+        participant.ownerHostId,
+        participant.id,
         kind,
-        data,
+        { message, data },
+        participant.ownerIdentityId,
       );
     }
 
@@ -1291,15 +1384,172 @@ export class AgentsProvider implements FabricProvider {
     // Persistent actors consume both delivery modes through their serial mailbox.
     try {
       const actor = this.actorManager.status(id);
-      context?.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
-      const result = this.actorManager.tell(actor.id, message, data);
-      return { queued: true, messageId: result.messageId, routed: "local" };
+      const ownership = this.participants.get(actor.id);
+      if (!ownership || ownership.local) {
+        context?.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
+        const result = this.actorManager.tell(actor.id, message, data);
+        return { queued: true, messageId: result.messageId, routed: "local" };
+      }
     } catch (error) {
       if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
     }
 
-    // Recursive descendants and peers are owned by another Fabric process.
-    return this.actorManager.steerRemote(id, message, kind, data);
+    const participant = this.participants.get(id);
+    if (!participant) throw new Error(`Unknown Fabric participant: ${id}`);
+    if (!participant.capabilities.includes(kind)) {
+      throw new Error(`Fabric participant ${id} does not support ${kind}`);
+    }
+    if (!this.control || participant.controlProtocol === "legacy") {
+      return this.actorManager.steerRemote(id, message, kind, data);
+    }
+    return this.control.request(
+      participant.ownerHostId,
+      participant.id,
+      kind,
+      { message, data },
+      participant.ownerIdentityId,
+    );
+  }
+
+  async acceptControl(
+    command: FabricControlCommand,
+    from: MeshIdentity,
+  ): Promise<FabricControlAcceptance> {
+    if (command.operation === "stop") {
+      try {
+        await this.manager.stop(command.targetId);
+        this.participants.scheduleRefresh();
+        return { accepted: true, messageId: command.commandId };
+      } catch (error) {
+        if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+          return { accepted: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      try {
+        const actor = this.actorManager.status(command.targetId);
+        const ownership = this.participants.get(actor.id);
+        if (ownership && !ownership.local) {
+          return { accepted: false, error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}` };
+        }
+        await this.actorManager.stop(actor.id);
+        this.participants.scheduleRefresh();
+        return { accepted: true, messageId: command.commandId };
+      } catch (error) {
+        if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) {
+          return { accepted: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      return { accepted: false, error: `Owner does not control Fabric participant ${command.targetId}` };
+    }
+
+    const message = command.message?.trim();
+    if (!message) return { accepted: false, error: "Fabric control message must not be empty" };
+    if (this.mainAgent.local && this.mainAgent.matches(command.targetId)) {
+      const result = this.mainAgent.deliverAgent({
+        from,
+        message,
+        delivery: command.operation,
+        ...(command.data === undefined ? {} : { data: command.data }),
+      });
+      return { accepted: true, messageId: result.messageId };
+    }
+    try {
+      this.manager.status(command.targetId);
+      const result =
+        command.operation === "steer"
+          ? this.manager.steer(command.targetId, message, command.data)
+          : this.manager.followUp(command.targetId, message, command.data);
+      return { accepted: true, messageId: result.messageId };
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+        return { accepted: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    try {
+      const actor = this.actorManager.status(command.targetId);
+      const ownership = this.participants.get(actor.id);
+      if (ownership && !ownership.local) {
+        return { accepted: false, error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}` };
+      }
+      const result = this.actorManager.tell(actor.id, message, command.data);
+      return { accepted: true, messageId: result.messageId };
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) {
+        return { accepted: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return { accepted: false, error: `Owner does not control Fabric participant ${command.targetId}` };
+  }
+
+  #actorIsLocal(id: string): boolean {
+    const participant = this.participants.get(id);
+    return this.actorManager.owns(id) && participant?.local !== false;
+  }
+
+  #localActor(id: string): FabricActorInfo {
+    const actor = this.actorManager.status(id);
+    const participant = this.participants.get(actor.id);
+    if (!this.actorManager.owns(actor.id) || participant?.local === false) {
+      throw new Error(`Fabric actor private data is available only from its owner: ${actor.id}`);
+    }
+    return actor;
+  }
+
+  #listAgents(scopeValue: unknown): Array<SubagentRunRecord | SubagentHandleInfo | ReturnType<FabricParticipantSource["self"]>> {
+    const scope = this.#participantScope(scopeValue, "local");
+    if (scope === "local") return this.manager.list();
+    const local = new Map<string, SubagentRunRecord | SubagentHandleInfo>();
+    const append = (record: SubagentRunRecord | SubagentHandleInfo): void => {
+      local.set(record.id, record);
+      if ("nestedAgents" in record) {
+        for (const nested of record.nestedAgents ?? []) append(nested);
+      }
+    };
+    for (const record of this.manager.list()) append(record);
+    return this.participants
+      .list({ scope, kinds: ["agent"] })
+      .map((participant) => local.get(participant.id) ?? participant);
+  }
+
+  #participantScope(
+    value: unknown,
+    fallback: FabricParticipantScope,
+  ): FabricParticipantScope {
+    return value === "local" || value === "lineage" || value === "project" ? value : fallback;
+  }
+
+  async stopParticipant(id: string): Promise<unknown> {
+    try {
+      const result = await this.manager.stop(id);
+      this.participants.scheduleRefresh();
+      return result;
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+    }
+    try {
+      const actor = this.actorManager.status(id);
+      const ownership = this.participants.get(actor.id);
+      if (!ownership || ownership.local) {
+        const result = await this.actorManager.stop(actor.id);
+        this.participants.scheduleRefresh();
+        return result;
+      }
+    } catch (error) {
+      if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
+    }
+    const participant = this.participants.get(id);
+    if (!participant) throw new Error(`Unknown Fabric participant: ${id}`);
+    if (!participant.capabilities.includes("stop")) {
+      throw new Error(`Fabric participant ${id} cannot be stopped`);
+    }
+    if (!this.control) throw new Error("Fabric control plane is unavailable");
+    return this.control.request(
+      participant.ownerHostId,
+      participant.id,
+      "stop",
+      {},
+      participant.ownerIdentityId,
+    );
   }
 
   #steeringMode(mode: unknown): "all" | "one-at-a-time" {
@@ -1311,7 +1561,10 @@ export class AgentsProvider implements FabricProvider {
 
   async close(): Promise<void> {
     this.#transcripts.clear();
-    await this.actorManager.close();
-    await this.manager.close();
+    try {
+      await this.actorManager.close();
+    } finally {
+      await this.manager.close();
+    }
   }
 }

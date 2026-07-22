@@ -15,7 +15,8 @@ ActionRegistry
     ├── extensions.* captured pi.registerTool definitions
     ├── mcp.*        pooled mcporter runtime
     ├── agents.*     one-shot workers + persistent mailbox actors
-    ├── mesh.*       durable topics + compare-and-swap state
+    │                 └→ participant directory + owner-addressed control
+    ├── mesh.*       durable topics + compare-and-swap state + membership view
     └── external     explicit pi.events providers
 
 ActivityStore → compact widget + footer status + interactive dashboard
@@ -54,6 +55,12 @@ For sessions that also call pi tools directly (`read`/`write`/`edit`/`grep`/`fin
 
 An external lever outside fabric's control is enabling Anthropic strict tool use at the provider, which prevents the server from sampling keys not in the schema. It is the strongest mitigation for schema drift but trades against Anthropic's complexity limits on strict tool definitions.
 
+## Federated participant topology
+
+Fabric separates **identity** from **execution ownership**. Roots, one-shot/recursive agents, and actors have one intrinsic participant record with `rootId`, optional `parentId`, `ownerHostId`, and the owner's authenticated wire identity. Main and Peer are projections of root records. Each process publishes one leased host record and only directly managed participants; recursively discovered UI descendants are never re-advertised by an ancestor. Readers treat every record behind an expired host as stale, so crash cleanup is host-wide rather than entity-by-entity. Shared summaries contain operational metadata only—agent prompts, results, and errors stay local. Local run/actor managers overlay richer private detail only when the directory marks that participant local.
+
+Cross-process control is target-resolved, not broadcast. The sender resolves a participant, addresses a versioned command to its owner host, and accepts an acknowledgement only when its target and sender identity match that owner. Owners replay the bounded retained log at startup, CAS-claim command IDs in reserved state, persist acceptance before acknowledging, and re-ack rather than re-execute after restart. A crash after claim but before durable acceptance returns an explicit indeterminate rejection on replay, preserving at-most-once execution. The owner re-resolves against local managers before accepting. Unknown, stale, rejected, spoofed, replayed, or timed-out commands fail closed. Control topics and topology/legacy state prefixes are reserved from guest mesh writes. The old `fabric.steer` event relay plus dual-written root/actor presence remain a mixed-version compatibility path. Absolute project and mesh roots are inherited by Pi children, including worktree and recursive launches, so descendants join the same topology.
+
 ## Security and limitations
 
 - Pi Fabric invokes separately constructed Pi built-in definitions when no captured override exists. When Pi's extension runner is available, Fabric replays their native `tool_call`, `tool_result`, and `tool_execution_*` lifecycle; captured overrides and extension tools use the same lifecycle. Fabric's approval and audit layer remains authoritative around every nested call.
@@ -73,4 +80,4 @@ An external lever outside fabric's control is enabling Anthropic strict tool use
 - Persistent actors are suspended on shutdown and restored when project trust is active. Claude actor session IDs refer to Claude Code's own persisted session store; removing that private session makes resume fail, and removing a Fabric actor does not currently delete Claude Code's private transcript. By default (`mesh.actorScope: "project"`), their definitions, mailbox history, and child session files live under `.pi/fabric/mesh/actors/` and are shared across all Pi sessions in the project, so actors survive `/new`. Set `mesh.actorScope: "session"` to isolate actors per Pi session instead. Mesh topics and shared state are always project-scoped. Do not place secrets in actor prompts, messages, or mesh state.
 - Approving `agents.create()` delegates future subscribed events to that actor until it is stopped. Each activation uses the actor's fixed runner and persisted tool allowlist/model setting; review them before approving a persistent actor. Tool changes apply only to later activations.
 - Actor responses can enter the main context only through the delivery policy fixed at creation. Directive output is schema-validated, but it is still untrusted model output that the main agent should weigh.
-- One Pi process should own the actor registry at a time. This is especially important with project scope, where concurrent Pi sessions in the same project share one registry and may race on writes. Mesh topics are append-only and are not compacted automatically; archive or remove an old mesh root when its history is no longer useful.
+- Project-scoped actor execution is ownership-gated: passive sessions do not consume events, run mailboxes, expose private actor data, mutate settings, or persist shutdown state, and they reload the registry after acquiring ownership. Shared `actors.json` updates use a stale-safe lock plus ownership-aware read/merge/write, so one actor owner cannot overwrite another owner's newer records. Use session scope when roots should define fully independent actor sets. Mesh events are append-only until bounded log compaction retains the newest tail; archive or remove an old mesh root when even that retained history is no longer useful.

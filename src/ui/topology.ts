@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FabricActivityRun } from "../activity/types.js";
 import type { MeshEvent } from "../mesh/store.js";
+import type { FabricParticipantInfo } from "../topology/types.js";
 import type {
   FabricUiActor,
   FabricUiAgent,
@@ -361,6 +362,7 @@ export interface FabricProjectMeshParticipant {
   routes: number;
   lastSeenAt: number;
   agent?: FabricUiAgent;
+  participant?: FabricParticipantInfo;
 }
 
 export interface FabricProjectMeshRoute {
@@ -406,6 +408,8 @@ interface FabricProjectMeshAgentRow {
   kind: "meshAgent";
   entityId: string;
   participant: FabricProjectMeshParticipant;
+  ancestorLast: boolean[];
+  isLast: boolean;
 }
 
 interface FabricProjectMeshTopicRow {
@@ -479,9 +483,15 @@ const SYSTEM_TOPICS = new Set([
   "fabric.actor.lifecycle",
   "fabric.compact",
   "fabric.steer",
+  "fabric.control.command",
+  "fabric.control.ack",
 ]);
 
-const IGNORED_ROUTE_TOPICS = new Set(["fabric.actor.lifecycle", "fabric.compact"]);
+const IGNORED_ROUTE_TOPICS = new Set([
+  "fabric.actor.lifecycle",
+  "fabric.compact",
+  "fabric.control.ack",
+]);
 
 const eventData = (event: MeshEvent): Record<string, unknown> | undefined =>
   typeof event.data === "object" && event.data !== null && !Array.isArray(event.data)
@@ -542,7 +552,11 @@ const projectMeshRoutes = (
       event.topic === "fabric.actor.input" && typeof data?.actorId === "string"
         ? data.actorId
         : undefined;
-    const addressed = event.to ?? actorInputId;
+    const controlTarget =
+      event.topic === "fabric.control.command" && typeof data?.targetId === "string"
+        ? data.targetId
+        : undefined;
+    const addressed = controlTarget ?? event.to ?? actorInputId;
     const targetMain = addressed ? mainByKey.get(addressed) : undefined;
     const targetActor = addressed ? actorByKey.get(addressed) : undefined;
     const targetAgent = addressed ? agentByKey.get(addressed) : undefined;
@@ -612,24 +626,46 @@ const projectMeshRoutes = (
 const projectMeshParticipants = (
   agents: FabricUiAgent[],
   routes: FabricProjectMeshRoute[],
+  directoryParticipants: FabricParticipantInfo[],
 ): FabricProjectMeshParticipant[] => {
   const agentByKey = new Map<string, FabricUiAgent>();
   for (const agent of agents) {
     agentByKey.set(agent.id, agent);
     agentByKey.set(agent.name, agent);
   }
-  const observed = new Map<string, { id: string; name: string; lastSeenAt: number }>();
-  const touch = (id: string, name: string, lastSeenAt: number): void => {
+  const observed = new Map<
+    string,
+    { id: string; name: string; lastSeenAt: number; participant?: FabricParticipantInfo }
+  >();
+  const touch = (
+    id: string,
+    name: string,
+    lastSeenAt: number,
+    participant?: FabricParticipantInfo,
+  ): void => {
     const existing = observed.get(id);
     if (!existing) {
-      observed.set(id, { id, name, lastSeenAt });
+      observed.set(id, {
+        id,
+        name,
+        lastSeenAt,
+        ...(participant ? { participant } : {}),
+      });
       return;
     }
     if (lastSeenAt >= existing.lastSeenAt) {
       existing.name = name;
       existing.lastSeenAt = lastSeenAt;
     }
+    if (participant) existing.participant = participant;
   };
+  for (const participant of directoryParticipants) {
+    const name =
+      participant.kind === "root" && participant.sessionId
+        ? `Peer ${participant.sessionId.slice(0, 8)}`
+        : participant.name;
+    touch(participant.id, name, participant.updatedAt, participant);
+  }
   for (const route of routes) {
     if (route.fromKind === "agent") touch(route.fromId, route.fromName, route.lastAt);
     if (route.targetKind === "agent") touch(route.targetId, route.targetName, route.lastAt);
@@ -654,6 +690,7 @@ const projectMeshParticipants = (
         routes: routesForParticipant,
         lastSeenAt: identity.lastSeenAt,
         ...(agent ? { agent } : {}),
+        ...(identity.participant ? { participant: identity.participant } : {}),
       };
     })
     .sort(
@@ -661,6 +698,56 @@ const projectMeshParticipants = (
         Number(isActiveStatus(right.status)) - Number(isActiveStatus(left.status)) ||
         left.name.localeCompare(right.name),
     );
+};
+
+const projectParticipantTree = (
+  participants: FabricProjectMeshParticipant[],
+): Array<{ participant: FabricProjectMeshParticipant; ancestorLast: boolean[]; isLast: boolean }> => {
+  const byId = new Map(participants.map((participant) => [participant.id, participant] as const));
+  const children = new Map<string, FabricProjectMeshParticipant[]>();
+  const roots: FabricProjectMeshParticipant[] = [];
+  for (const participant of participants) {
+    const parentId = participant.participant?.parentId ?? participant.agent?.parentId;
+    if (!parentId || !byId.has(parentId) || parentId === participant.id) {
+      roots.push(participant);
+      continue;
+    }
+    const entries = children.get(parentId) ?? [];
+    entries.push(participant);
+    children.set(parentId, entries);
+  }
+  const rows: Array<{
+    participant: FabricProjectMeshParticipant;
+    ancestorLast: boolean[];
+    isLast: boolean;
+  }> = [];
+  const visited = new Set<string>();
+  const visit = (
+    participant: FabricProjectMeshParticipant,
+    ancestorLast: boolean[],
+    isLast: boolean,
+  ): void => {
+    if (visited.has(participant.id)) return;
+    visited.add(participant.id);
+    rows.push({ participant, ancestorLast, isLast });
+    const descendants = (children.get(participant.id) ?? []).filter(
+      (candidate) => !visited.has(candidate.id),
+    );
+    for (let index = 0; index < descendants.length; index++) {
+      const descendant = descendants[index];
+      if (descendant) {
+        visit(descendant, [...ancestorLast, isLast], index === descendants.length - 1);
+      }
+    }
+  };
+  for (let index = 0; index < roots.length; index++) {
+    const root = roots[index];
+    if (root) visit(root, [], index === roots.length - 1);
+  }
+  for (const participant of participants) {
+    if (!visited.has(participant.id)) visit(participant, [], true);
+  }
+  return rows;
 };
 
 const projectMeshTopics = (
@@ -704,11 +791,18 @@ export const buildProjectMeshTopology = (input: {
   agents: FabricUiAgent[];
   state: FabricUiStateEntry[];
   events: MeshEvent[];
+  participants?: FabricParticipantInfo[];
   now: number;
 }): FabricProjectMeshModel => {
   const topics = projectMeshTopics(input.actors, input.events, input.now);
   const routes = projectMeshRoutes(input.main, input.actors, input.agents, input.events);
-  const participants = projectMeshParticipants(input.agents, routes);
+  const localActorIds = new Set(input.actors.map((actor) => actor.id));
+  const directoryParticipants = (input.participants ?? []).filter(
+    (participant) =>
+      participant.id !== input.main.id &&
+      !(participant.kind === "actor" && localActorIds.has(participant.id)),
+  );
+  const participants = projectMeshParticipants(input.agents, routes, directoryParticipants);
   const rows: FabricProjectMeshRow[] = [
     {
       kind: "meshRoot",
@@ -730,14 +824,16 @@ export const buildProjectMeshTopology = (input: {
   if (participants.length > 0) {
     rows.push({
       kind: "meshSection",
-      label: "Transient mesh agents",
+      label: "Project participants",
       count: participants.length,
     });
-    for (const participant of participants) {
+    for (const entry of projectParticipantTree(participants)) {
       rows.push({
         kind: "meshAgent",
-        entityId: participant.entityId,
-        participant,
+        entityId: entry.participant.entityId,
+        participant: entry.participant,
+        ancestorLast: entry.ancestorLast,
+        isLast: entry.isLast,
       });
     }
   }

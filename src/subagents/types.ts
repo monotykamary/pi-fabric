@@ -91,6 +91,7 @@ export interface SubagentRunRecord {
   thinking?: FabricThinking;
   actorId?: string;
   actorName?: string;
+  recursive?: boolean;
   startedAt: number;
   updatedAt: number;
   finishedAt?: number;
@@ -130,6 +131,7 @@ export interface SubagentHandleInfo {
   thinking?: FabricThinking;
   actorId?: string;
   actorName?: string;
+  recursive?: boolean;
   sessionId?: string;
   runnerSessionId?: string;
   attachCommand?: string;
@@ -164,6 +166,9 @@ export interface SubagentWorkerOptions {
   actorId?: string;
   actorName?: string;
   meshRoot?: string;
+  projectRoot?: string;
+  ownerHostId?: string;
+  ownerIdentityId?: string;
   runnerSessionId?: string;
   runRoot?: string;
   steerFile?: string;

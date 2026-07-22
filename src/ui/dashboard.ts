@@ -466,8 +466,8 @@ export class FabricDashboard implements Component, Focusable {
         }
       } else if (data === "x") {
         const detail = allEntities.find((entity) => entity.id === this.detailId);
-        if (detail?.kind === "agent" && isActiveStatus(detail.status)) {
-          this.requestAgentStop(detail);
+        if (detail && this.canStop(detail)) {
+          this.requestParticipantStop(detail);
         } else if (
           detail &&
           detail.kind === "actor" &&
@@ -598,8 +598,8 @@ export class FabricDashboard implements Component, Focusable {
         ) {
           this.detailId = selected.id;
           this.openAgentMessageEditor(selected, data === "s" ? "steer" : "followUp");
-        } else if (data === "x" && selected.kind === "agent" && isActiveStatus(selected.status)) {
-          this.requestAgentStop(selected);
+        } else if (data === "x" && this.canStop(selected)) {
+          this.requestParticipantStop(selected);
         } else if (
           data === "x" &&
           selected.kind === "actor" &&
@@ -845,6 +845,13 @@ export class FabricDashboard implements Component, Focusable {
     if (!target) return false;
     if (target.kind === "agent") {
       if (!isActiveStatus(entity.status)) return false;
+      if (
+        entity.kind === "agent" &&
+        entity.value.capabilities &&
+        !entity.value.capabilities.includes(delivery)
+      ) {
+        return false;
+      }
       return Boolean(
         this.onTargetMessage ||
           (delivery === "steer" ? this.onAgentSteer : this.onAgentFollowUp),
@@ -852,6 +859,12 @@ export class FabricDashboard implements Component, Focusable {
     }
     if (!this.onTargetMessage) return false;
     if (target.kind === "actor") return entity.status !== "stopped" && delivery === "steer";
+    if (target.kind === "meshParticipant" && entity.kind === "meshParticipant") {
+      const participant = entity.value.participant;
+      return participant
+        ? !participant.stale && participant.capabilities.includes(delivery)
+        : true;
+    }
     return true;
   }
 
@@ -885,8 +898,32 @@ export class FabricDashboard implements Component, Focusable {
     this.mode = this.detailId ? "detail" : "overview";
   }
 
-  private requestAgentStop(entity: Extract<Entity, { kind: "agent" }>): void {
-    if (!this.onAgentStop) return;
+  private canStop(entity: Entity): entity is Extract<
+    Entity,
+    { kind: "agent" } | { kind: "meshParticipant" }
+  > {
+    if (!this.onAgentStop) return false;
+    if (entity.kind === "agent") {
+      return (
+        isActiveStatus(entity.status) &&
+        (!entity.value.capabilities || entity.value.capabilities.includes("stop"))
+      );
+    }
+    if (entity.kind === "meshParticipant") {
+      const participant = entity.value.participant;
+      return Boolean(
+        participant &&
+          !participant.stale &&
+          participant.capabilities.includes("stop"),
+      );
+    }
+    return false;
+  }
+
+  private requestParticipantStop(
+    entity: Extract<Entity, { kind: "agent" } | { kind: "meshParticipant" }>,
+  ): void {
+    if (!this.onAgentStop || !this.canStop(entity)) return;
     const now = Date.now();
     if (this.pendingStop?.id === entity.value.id && this.pendingStop.expiresAt > now) {
       this.pendingStop = undefined;
@@ -1208,6 +1245,7 @@ export class FabricDashboard implements Component, Focusable {
       agents: snapshot.agents,
       state: snapshot.state,
       events: snapshot.events,
+      ...(snapshot.participants ? { participants: snapshot.participants } : {}),
       now: snapshot.now,
     });
   }
@@ -1251,7 +1289,7 @@ export class FabricDashboard implements Component, Focusable {
       meshModel
         ? [
             `${activeActors}/${snapshot.actors.length} actors active`,
-            `${meshModel.participants.length} mesh agents`,
+            `${meshModel.participants.length} participants`,
             `${meshModel.topics.length} topics`,
             `${snapshot.state.length} shared state`,
             `${meshModel.routes.length} recent routes`,
@@ -1486,7 +1524,7 @@ export class FabricDashboard implements Component, Focusable {
           : undefined,
         this.canMessage(entity, "steer") ? "s steer" : undefined,
         this.canMessage(entity, "followUp") ? "u follow-up" : undefined,
-        isActiveStatus(entity.status) && this.onAgentStop
+        this.canStop(entity)
           ? armed
             ? "x again to stop"
             : "x stop"
@@ -1499,9 +1537,10 @@ export class FabricDashboard implements Component, Focusable {
       const actions = [
         this.canMessage(entity, "steer") ? "s steer" : undefined,
         this.canMessage(entity, "followUp") ? "u follow-up" : undefined,
+        this.canStop(entity) ? "x twice to stop" : undefined,
         "enter details",
       ].filter((value): value is string => Boolean(value));
-      return `mesh agent actions: ${actions.join(" · ")}`;
+      return `participant actions: ${actions.join(" · ")}`;
     }
     return "enter details";
   }
@@ -1637,7 +1676,7 @@ export class FabricDashboard implements Component, Focusable {
         : entity.kind === "peer"
           ? "peer session"
           : entity.kind === "meshParticipant"
-            ? "mesh agent"
+            ? "project participant"
             : entity.kind === "meshTopic"
               ? "topic"
               : entity.kind === "meshRoute"
@@ -1955,7 +1994,7 @@ export class FabricDashboard implements Component, Focusable {
       const actions = [
         this.canMessage(entity, "steer") ? "s steer now" : undefined,
         this.canMessage(entity, "followUp") ? "u queue follow-up" : undefined,
-        isActiveStatus(entity.status) && this.onAgentStop
+        this.canStop(entity)
           ? armed
             ? "x again to confirm stop"
             : "x stop"
@@ -1987,10 +2026,11 @@ export class FabricDashboard implements Component, Focusable {
       const actions = [
         this.canMessage(entity, "steer") ? "s steer over mesh" : undefined,
         this.canMessage(entity, "followUp") ? "u queue follow-up over mesh" : undefined,
+        this.canStop(entity) ? "x twice to stop" : undefined,
       ].filter((value): value is string => Boolean(value));
       return actions.length > 0
-        ? `Remote agent actions: ${actions.join(" · ")}`
-        : "Remote mesh participant is read-only.";
+        ? `Remote participant actions: ${actions.join(" · ")}`
+        : "Remote participant is read-only.";
     }
     if (entity.kind === "globalActor") {
       const actions = [
@@ -2271,11 +2311,20 @@ export class FabricDashboard implements Component, Focusable {
       field("Instructions", def.instructions);
     } else if (entity.kind === "meshParticipant") {
       const participant = entity.value;
-      field("Scope", "transient project mesh agent");
+      const canonical = participant.participant;
+      field("Scope", canonical ? `project ${canonical.kind}` : "observed mesh agent");
       field("Identity", participant.id);
+      field("Root", canonical?.rootId);
+      field("Parent", canonical?.parentId);
+      field("Owner host", canonical?.ownerHostId);
+      field("Owner identity", canonical?.ownerIdentityId);
+      field("Runner", canonical?.runner);
+      field("Transport", canonical?.transport);
+      field("Capabilities", canonical?.capabilities.join(", "));
+      field("Local", canonical ? (canonical.local ? "yes" : "no") : undefined);
       field("Observed routes", participant.routes);
       field("Last activity", new Date(participant.lastSeenAt).toLocaleString());
-      field("Live worker", "not retained in this dashboard snapshot");
+      field("Current work", canonical?.currentTool);
     } else if (entity.kind === "meshTopic") {
       const topic = entity.value;
       field("Scope", "project mesh topic");

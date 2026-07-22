@@ -8,7 +8,7 @@ Every method takes a single options object.
 
 - `agents.run(args)` runs to completion and returns `FabricAgentResult` with `{ id, runner, status, text, value?, error?, usage, turns, toolCalls, runnerSessionId? }`.
 - `agents.spawn(args)` returns a background `FabricAgentHandle` with an `id`. Then use `agents.wait({ id })`, `agents.status({ id })`, `agents.stop({ id })`.
-- `agents.list()` returns all children.
+- `agents.list({ scope? })` returns agent participants. `scope` defaults to `"local"`; use `"lineage"` for every agent under the same root across recursive runtimes, or `"project"` for all live project agents. Local entries retain full run detail; remote entries are bounded participant summaries.
 - `agents.cleanup({ id, deleteBranch? })` returns `{ cleaned }` and removes a worktree branch.
 
 `args` is a `FabricAgentRequest`: `{ task, name?, runner?, transport?, model?, thinking?, tools?, timeoutMs?, extensions?, recursive?, worktree?, schema? }`.
@@ -66,23 +66,26 @@ Prewalk injects no system-prompt guidance and does not ask Main to call a handof
 
 Use `/fabric agents` to list children and `/fabric attach <id>` for the attach command. Abort signals propagate to the transport and selected child process. Claude runs use official `claude -p` stream JSON with `dontAsk`, `--tools`, and `--allowedTools`; `extensions: false` adds Claude safe mode. One-shot Claude sessions use `--no-session-persistence`. Claude cannot use `recursive: true`, `fabric_exec`, or direct mesh APIs.
 
-## Steering running agents
+## Unified participants and steering
 
-Any Fabric-equipped Pi participant (the user-facing Main session, a recursive child, or a persistent Pi actor) can message another known target without discarding its context. Ordinary non-recursive Pi children and Claude children/actors can receive host-routed messages, but cannot initiate `agents.*` calls because they do not run Fabric themselves.
+Every live root, one-shot/recursive agent, and persistent actor is represented in one project participant directory. Participant kinds are intrinsic (`"root"`, `"agent"`, or `"actor"`); **Main** and **Peer** are UI/API views of root participants, not separate identity classes. Execution remains local to an `ownerHostId` and authenticated `ownerIdentityId`, while `rootId` and optional `parentId` describe lineage. Host leases remove a crashed host and all participants it owns from live discovery together. Shared records deliberately omit agent prompts, results, and errors; full detail stays local.
 
-- `agents.peers()` lists other live root Pi sessions sharing the project mesh. The current dashboard owner remains **Main**; other roots are named `Peer <session-prefix>`. Peer records expire after missed heartbeats and can be passed directly to `agents.steer` or `agents.followUp`.
-- `agents.main()` returns the root user-facing Pi target as `{ id, name: "Main", kind: "main", status, ... }`. The stable alias `"main"` is also accepted anywhere a steerable target id is expected. Recursive children and Pi actors inherit the exact root Main id, so the alias does not accidentally target their private child session.
-- `agents.steer({ id, message, data? })` targets Main, a running one-shot child, or a persistent actor. Main receives a host custom message after the current turn's tools and before the next model call; a one-shot child receives the same between-turn queue semantics; an actor receives a serial mailbox item (equivalent to `tell`). Returns `{ queued, messageId, routed }`.
-- `agents.followUp({ id, message, data? })` targets Main or a running one-shot child after its current run settles, or enqueues the same serial actor mailbox. When Main is idle, Pi may start the requested turn immediately.
-- `agents.setSteeringMode({ id, mode })` / `agents.setFollowUpMode({ id, mode })` set how queued steer/follow-up messages are delivered to a running one-shot subagent: `"all"` (deliver every queued message after the current turn / when the agent finishes) or `"one-at-a-time"` (one per turn / per completion — the default). Local subagent only.
-- `agents.status({ id })` surfaces a local one-shot queue as `pendingMessages: { steering: string[]; followUp: string[] }`. For Main (id or alias), it returns `FabricMainAgentInfo` with boolean `pendingMessages`, because Pi's extension API exposes whether host messages are pending but not their contents.
+- `agents.self()` returns the caller's `FabricParticipantInfo`.
+- `agents.members({ scope?, kinds?, includeStale? })` returns the unified directory. `scope` is `"local"`, `"lineage"`, or `"project"` (default); `kinds` filters intrinsic kinds. Normal discovery excludes stale hosts.
+- `agents.main()` remains the compatibility view of the caller's root as `{ id, name: "Main", kind: "main", ... }`; the stable alias `"main"` resolves to that exact root id.
+- `agents.peers()` remains the compatibility view of other live roots as `Peer <session-prefix>`. It is derived from `agents.members`, not maintained by a second registry.
+- `agents.status({ id })` accepts any known participant id. Local runs/actors return full local detail; remote participants return their bounded directory summary.
+- `agents.steer({ id, message, data? })` and `agents.followUp(...)` target Main, a live one-shot child, or an actor without discarding context.
+- `agents.stop({ id })` can stop a local or remotely owned agent/actor when its participant advertises `"stop"`. It returns the local agent result, local actor info, or an acknowledged remote control result according to the target.
+- `agents.setSteeringMode({ id, mode })` / `agents.setFollowUpMode({ id, mode })` remain local one-shot controls.
 
-`routed` is `"main"` for direct delivery to the locally owned user-facing session, `"local"` for a subagent or actor owned by this process, or `"mesh"` for an exact target owned by another Fabric process. Mesh routing is best-effort and requires `mesh.enabled`; the owning process relays to Main, a nested child, or an actor (see `mesh.md`).
+Local delivery returns `routed: "main" | "local"`. Cross-process delivery resolves the participant's exact owner host and identity, publishes an owner-addressed control command, and accepts only a version/target/identity-matched acknowledgement. Success returns `{ queued, messageId, routed: "mesh", acknowledged: true }`; an unknown id, stale owner, owner rejection, or acknowledgement timeout throws instead of reporting an unverified queue. This path requires `mesh.enabled`. Ordinary non-recursive Pi children and Claude children/actors can receive host-routed messages but cannot initiate `agents.*` calls because they do not run Fabric themselves.
 
 ```ts
 const main = await agents.main();
-const peers = await agents.peers();
-if (peers[0]) await agents.steer({ id: peers[0].id, message: "Coordinate on the shared migration." });
+const project = await agents.members({ scope: "project" });
+const peerRoot = project.find((participant) => participant.kind === "root" && participant.id !== main.id);
+if (peerRoot) await agents.steer({ id: peerRoot.id, message: "Coordinate on the shared migration." });
 await agents.followUp({ id: main.id, message: "After the audit, reconcile the worker findings." });
 const handle = await agents.spawn({ task: "Audit auth flows.", tools: ["read", "grep", "find", "ls"] });
 // Watch progress, then redirect between turns without losing the child's context.
@@ -94,7 +97,7 @@ if (s.text.includes("rotating refresh tokens")) {
 return await agents.wait({ id: handle.id });
 ```
 
-Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has useful context you would otherwise discard. Use `agents.stop` only when the child is genuinely off-track and a fresh task is cheaper than a redirect. Steering a finished subagent throws `already finished` — check `agents.status` first. In the dashboard, `s` messages/steers Main, active one-shot agents, actors, and observed mesh agents; `u` queues follow-ups where the target supports a distinct follow-up queue.
+Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has useful context you would otherwise discard. Use `agents.stop` only when the child is genuinely off-track and a fresh task is cheaper than a redirect. Steering a finished subagent throws; check `agents.status` or the participant capabilities first. In the dashboard, `s`, `u`, and `x` use the same ownership-aware path for local and remote participants.
 
 ## Persistent actors
 
@@ -136,13 +139,13 @@ Mailbox:
 
 - `agents.ask({ id, message, data? })` returns a `FabricActorMessage` (blocking exchange).
 - `agents.tell({ id, message, data? })` returns `{ queued, messageId }` (fire and forget).
-- `agents.actorStatus({ id })` and `agents.actors()` return actor info.
+- `agents.actorStatus({ id })` and `agents.actors()` return full info only for locally owned actors. Discover remote actors through `agents.members({ kinds: ["actor"] })`.
 - `agents.setModel({ id, model? })` and `agents.setThinking({ id, thinking? })` migrate the next activation while preserving the actor's runner session.
 - `agents.setTools({ id, tools, scope? })` replaces the persisted tool allowlist for a project actor (default) or global template.
 - `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })` replaces the explicit project/global continuation policy without recreating the actor. In the dashboard, press `y` on an actor/template for the same control.
-- `agents.messages({ id, limit? })` returns message history.
+- `agents.messages({ id, limit? })` returns owner-local message history; passive shared-registry views cannot read another owner's mailbox.
 - `agents.remove({ id })` returns `{ removed }`.
-- `agents.log({ id, type?, lines?, runId? })` reads the LLM/agent log for an actor or one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.
+- `agents.log({ id, type?, lines?, runId? })` reads the LLM/agent log for a locally owned actor or one-shot run. `type` is `session` (the actor's `session.jsonl` transcript — every user/assistant turn and tool call), `run` (the last retained run's `events.jsonl` event stream), or `all` (both; default `session` for actors). Actors retain their last `MAX_RETAINED_RUNS` runs so logs survive after success. Returns `{ actorId, actorName, sessionFile, logDir, session, run?, retainedRuns }` (actors) or `{ id, runDirectory, logFile, status?, events }` (one-shot runs). Use this to inspect what an "offending" actor actually sent to its model. From the TUI: `/fabric log <id>` previews, `/fabric export-log <id> [path]` writes the raw `session.jsonl` + retained `runs/` to disk.
 
 ## Recursive queries
 

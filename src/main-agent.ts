@@ -35,6 +35,7 @@ export interface FabricAgentMessageResult {
   queued: true;
   messageId: string;
   routed: "local" | "main" | "mesh";
+  acknowledged?: boolean;
 }
 
 export interface FabricMainAgentTarget {

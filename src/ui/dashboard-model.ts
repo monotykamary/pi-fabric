@@ -124,7 +124,7 @@ const entityGroupLabels: Record<EntityGroupKind, string> = {
   task: "Tasks",
   custom: "Custom items",
   state: "Shared state",
-  meshParticipant: "Transient mesh agents",
+  meshParticipant: "Project participants",
   meshTopic: "Topics",
   meshRoute: "Recent routes",
 };
@@ -337,6 +337,7 @@ const projectMeshEntitiesFor = (
     agents: snapshot.agents,
     state: snapshot.state,
     events: snapshot.events,
+    ...(snapshot.participants ? { participants: snapshot.participants } : {}),
     now: snapshot.now,
   });
   return model.rows.flatMap((row): Entity[] => {
@@ -632,7 +633,7 @@ export const phasePanels = (
 
   const session: PhasePanel = {
     id: SESSION_PANEL_ID,
-    name: "Peers, actors & shared state",
+    name: "Project participants & shared state",
     status: "idle",
     completed: 0,
     total: 0,

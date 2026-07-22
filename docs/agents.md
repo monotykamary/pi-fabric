@@ -148,32 +148,32 @@ localterm start
 
 Use `/fabric agents` to list children and `/fabric attach <id>` to display the appropriate attach command. Abort signals propagate to the transport and selected child process. When a program uses orchestration entry points (`agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, `rlm.query`)—including `agents.*` refs invoked through `tools.call()` and refs computed at runtime—Fabric raises the whole-program `executor.timeoutMs` to at least `subagents.timeoutMs`, so the parent deadline cannot stop children that are still within their own per-agent budget.
 
-Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called.
+Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called. Fabric passes the absolute project and mesh roots into every Pi child, so a recursive child in a worktree remains in the same participant directory instead of creating a second `.pi/fabric/mesh` under that worktree.
 
-## Steering running agents
+## Unified participants and steering
 
-The dashboard-owning root Pi session is **Main**. Other live root Pi sessions sharing the project mesh are **Peers**, named `Peer <session-prefix>`. `agents.peers()` returns their live heartbeat records; stopped or crashed sessions disappear after the presence lease expires. Peers are steerable by exact id from the dashboard or through `agents.steer`/`agents.followUp`.
+Fabric has one project participant directory. Every live entity has an intrinsic `kind` (`root`, `agent`, or `actor`), a `rootId`, an optional `parentId`, an `ownerHostId`, and an authenticated owner identity naming the process that controls its lifecycle. **Main** is the local user-facing view of one root; **Peers** are compatibility views of the other roots. They are not separate registries or control planes.
 
-Fabric messaging is target-oriented rather than tied to fixed planner/worker roles. The user-facing Pi session is a first-class target named **Main**: `agents.main()` returns its exact identity, and the stable alias `"main"` works with `agents.steer` and `agents.followUp`. Main, recursive Pi children, and persistent Pi actors can initiate Fabric calls; ordinary non-recursive Pi children and Claude children/actors can receive host-routed messages but cannot initiate `agents.*` themselves.
+`agents.self()` returns the caller's participant record. `agents.members({ scope?, kinds?, includeStale? })` lists all kinds; `agents.list({ scope? })` lists agents and defaults to `scope: "local"`. Use `"lineage"` for descendants of the same root across recursive runtimes and `"project"` for every live project agent. `agents.main()` and `agents.peers()` remain convenient root projections. Normal discovery hides every participant whose execution-host lease expired. Shared summaries contain operational metadata but never agent prompts, results, or errors.
 
 ```ts
 const main = await agents.main();
-const peers = await agents.peers();
-if (peers[0]) await agents.steer({ id: peers[0].id, message: "Coordinate on the shared migration." });
+const project = await agents.members({ scope: "project" });
+const peerRoot = project.find(
+  (participant) => participant.kind === "root" && participant.id !== main.id,
+);
+if (peerRoot) {
+  await agents.steer({ id: peerRoot.id, message: "Coordinate on the shared migration." });
+}
 await agents.followUp({ id: main.id, message: "After the audit, reconcile the findings." });
 
-const handle = await agents.spawn({ task: "Audit auth flows.", tools: ["read", "grep", "find", "ls"] });
-const s = await agents.status({ id: handle.id });
-if (s.text.includes("rotating refresh tokens")) {
-  await agents.steer({ id: handle.id, message: "Skip refresh-token rotation; focus on session expiry only." });
-  await agents.setSteeringMode({ id: handle.id, mode: "all" });
-}
-return await agents.wait({ id: handle.id });
+const lineage = await agents.list({ scope: "lineage" });
+return { self: await agents.self(), lineage };
 ```
 
-For Main and one-shot agents, `agents.steer({ id, message })` is delivered after the current turn's tool calls and before the next model call; `agents.followUp({ id, message })` waits for the current run to settle. For a persistent actor, both operations enqueue its serial mailbox. Pi children use the Pi RPC queue; Claude children receive additional user records on the same `claude -p` stream. `agents.status({ id }).pendingMessages` shows a local one-shot queue; Main status exposes only a boolean because Pi does not expose host queue contents to extensions. `agents.setSteeringMode`/`setFollowUpMode` configure `"all"` vs `"one-at-a-time"` for local one-shot agents only.
+For Main and one-shot agents, `steer` is delivered after the current turn's tool calls and before the next model call; `followUp` waits for the current run to settle. For an actor, both enqueue its serial mailbox. `agents.status({ id })` accepts any participant id, returning full detail for a local run/actor and a bounded directory summary for a remote participant. `agents.setSteeringMode`/`setFollowUpMode` remain local one-shot controls.
 
-Routing returns `"main"`, `"local"`, or `"mesh"`. Cross-process delivery publishes an exact target id to `fabric.steer`; the owning process can relay it to Main, a recursive descendant, or an actor. Mesh routing is best-effort and requires `mesh.enabled`. The dashboard exposes the same path: `s` messages/steers Main, active one-shot agents, actors, and observed remote mesh agents; `u` queues a follow-up where that target has a distinct follow-up queue. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
+Local routing returns `"main"` or `"local"`. Cross-process `steer`, `followUp`, and `stop` resolve the target's exact owner, send an owner-addressed control command, and wait for a version/target/owner-identity-matched acknowledgement. Success returns `routed: "mesh", acknowledged: true`; unknown ids, stale owners, rejection, and timeout throw rather than reporting an unverified queue. The dashboard's `s`, `u`, and `x` actions use this same path. Cross-process control requires `mesh.enabled`. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
 
 ## Persistent actors
 
@@ -363,4 +363,4 @@ const claimed = await mesh.put({
 return { event, claimed };
 ```
 
-Topics provide durable channel and direct-message semantics with sequence cursors. `mesh.members()` discovers actor presence across live Fabric sessions. Versioned `get`/`put`/`delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. Together with persistent actors, these are sufficient to express messenger-style swarms in Fabric code without a daemon or fixed planner/worker roles. See [`/skill:fabric-swarm`](../skills/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skills/fabric-exec/references/mesh.md) for the full API.
+Topics provide durable channel and direct-message semantics with sequence cursors. `mesh.members({ scope?, kinds? })` returns the same unified root/agent/actor directory as `agents.members()`. Versioned `get`/`put`/`delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. Together with persistent actors, these are sufficient to express messenger-style swarms in Fabric code without a daemon or fixed planner/worker roles. See [`/skill:fabric-swarm`](../skills/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skills/fabric-exec/references/mesh.md) for the full API.

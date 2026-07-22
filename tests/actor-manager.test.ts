@@ -20,7 +20,10 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<voi
   }
 };
 
-const setup = (persistent = false) => {
+const setup = (
+  persistent = false,
+  canManageActor?: (id: string) => boolean | undefined,
+) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-test-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
@@ -46,7 +49,11 @@ const setup = (persistent = false) => {
     ({ message }) => {
       if (message.text) deliveries.push(message.text);
     },
-    { actorRoot: path.join(root, "actors"), persistent },
+    {
+      actorRoot: path.join(root, "actors"),
+      persistent,
+      ...(canManageActor ? { canManageActor } : {}),
+    },
   );
   actorManagers.push(actors);
   return { actors, mesh, deliveries, root, subagents, identity, meshConfig };
@@ -70,6 +77,93 @@ describe("ActorManager", () => {
     } else {
       expect(tail).toHaveBeenCalledTimes(1);
     }
+  });
+
+  it("executes and mutates actors only while this host owns them", async () => {
+    let owns = true;
+    const { actors, mesh } = setup(false, () => owns);
+    const actor = await actors.create({ name: "leased", instructions: "Observe." });
+    await waitFor(() => Boolean(mesh.get(`actors/test/${actor.id}`)));
+
+    owns = false;
+    expect(() => actors.tell(actor.id, "do not run")).toThrow("owned by another host");
+    expect(actors.dispatchHostEvent("input", { text: "ignored" })).toBe(0);
+    await expect(actors.setModel(actor.id, "provider/model")).rejects.toThrow(
+      "owned by another host",
+    );
+
+    owns = true;
+    expect(actors.tell(actor.id, "run after takeover")).toMatchObject({ queued: true });
+  });
+
+  it("preserves current remote actor records when saving a locally owned actor", async () => {
+    let localId: string | undefined;
+    const state = setup(true, (id) => localId === undefined || id === localId);
+    const local = await state.actors.create({
+      name: "local actor",
+      instructions: "Local instructions.",
+    });
+    await state.actors.create({
+      name: "remote actor",
+      instructions: "Initial remote instructions.",
+    });
+    localId = local.id;
+    const registryPath = path.join(state.root, "actors", "actors.json");
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      actors: Array<Record<string, unknown>>;
+    };
+    const remote = registry.actors.find((actor) => actor.id !== local.id);
+    expect(remote).toBeDefined();
+    remote!.instructions = "Updated by remote owner.";
+    fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+
+    await state.actors.setModel(local.id, "provider/local");
+
+    const saved = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      actors: Array<Record<string, unknown>>;
+    };
+    expect(saved.actors.find((actor) => actor.id !== local.id)?.instructions).toBe(
+      "Updated by remote owner.",
+    );
+  });
+
+  it("discovers the first actor created after an empty standby starts", async () => {
+    let ownerOwns = true;
+    let standbyOwns = false;
+    const state = setup(true, () => ownerOwns);
+    const standbyIdentity: MeshIdentity = {
+      id: "session:standby",
+      name: "main",
+      kind: "main",
+      sessionId: "standby",
+    };
+    const standby = new ActorManager(
+      "standby",
+      standbyIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.subagents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        canManageActor: () => standbyOwns,
+      },
+    );
+    actorManagers.push(standby);
+    expect(standby.list()).toEqual([]);
+
+    const created = await state.actors.create({
+      name: "late actor",
+      instructions: "Persist after standby startup.",
+    });
+    await waitFor(() => standby.list().some((actor) => actor.id === created.id));
+
+    ownerOwns = false;
+    standbyOwns = true;
+    expect(standby.tell(created.id, "continue after takeover")).toMatchObject({
+      queued: true,
+    });
   });
 
   it("notifies and releases actor state subscribers", async () => {

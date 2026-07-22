@@ -6,7 +6,7 @@ import { ActorManager } from "./actors/manager.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
-import type { FabricActorHostEvent } from "./actors/types.js";
+import type { FabricActorHostEvent, FabricActorInfo } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import {
   loadFabricConfig,
@@ -18,14 +18,25 @@ import { CompactController, type CompactLastCommit, type CompactPendingIntent } 
 import { FabricToolResultProxy } from "./core/tool-result-proxy.js";
 import { FabricExecutionService, type FabricExecutionResult } from "./execution-service.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
-import { PeerSessionRegistry, type FabricPeerInfo } from "./peer-session.js";
+import { FabricControlPlane } from "./topology/control-plane.js";
+import { ParticipantDirectory } from "./topology/participant-directory.js";
+import type {
+  FabricParticipantInfo,
+  FabricParticipantListOptions,
+  FabricParticipantRecord,
+  FabricPeerInfo,
+} from "./topology/types.js";
 import { PrewalkController } from "./prewalk/controller.js";
 import {
   claimFabricHandoff,
   runFabricHandoffAtBoundary,
   type PendingFabricHandoff,
 } from "./prewalk/handoff.js";
-import type { SubagentToolResultMessage } from "./subagents/types.js";
+import type {
+  SubagentHandleInfo,
+  SubagentRunRecord,
+  SubagentToolResultMessage,
+} from "./subagents/types.js";
 import {
   MainAgentController,
   resolveFabricIdentity,
@@ -57,6 +68,94 @@ const ACTOR_DELIVERY_MAX_CHARS = 8_000;
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
+const isSubagentRunRecord = (
+  record: SubagentRunRecord | SubagentHandleInfo,
+): record is SubagentRunRecord => "startedAt" in record;
+
+const agentParticipantRecords = (
+  records: Array<SubagentRunRecord | SubagentHandleInfo>,
+  rootId: string,
+  ownerHostId: string,
+  ownerIdentityId: string,
+  parentId: string,
+  firstSeen: Map<string, number>,
+): FabricParticipantRecord[] => {
+  const participants: FabricParticipantRecord[] = [];
+  const append = (
+    record: SubagentRunRecord | SubagentHandleInfo,
+    semanticParentId: string,
+  ): void => {
+    const observedAt = firstSeen.get(record.id) ?? Date.now();
+    firstSeen.set(record.id, observedAt);
+    const run = isSubagentRunRecord(record) ? record : undefined;
+    const parent = record.actorId ?? semanticParentId;
+    if (!record.actorId) {
+      const active = record.status === "queued" || record.status === "running";
+      participants.push({
+        format: 1,
+        id: record.id,
+        kind: "agent",
+        rootId,
+        ownerHostId,
+        ownerIdentityId,
+        parentId: parent,
+        name: record.name,
+        status: record.status,
+        runner: record.runner,
+        transport: record.transport,
+        capabilities: [
+          ...(active ? (["steer", "followUp", "stop"] as const) : []),
+          ...(record.attachCommand ? (["attach"] as const) : []),
+          ...(record.recursive ? (["fabric"] as const) : []),
+        ],
+        cwd: record.cwd,
+        ...(record.sessionId ? { sessionId: record.sessionId } : {}),
+        ...(record.model ? { model: record.model } : {}),
+        ...(record.thinking ? { thinking: record.thinking } : {}),
+        startedAt: run?.startedAt ?? observedAt,
+        updatedAt: run?.updatedAt ?? observedAt,
+        ...(run?.finishedAt !== undefined ? { finishedAt: run.finishedAt } : {}),
+        ...(run?.currentTool ? { currentTool: run.currentTool } : {}),
+        ...(run ? { turns: run.turns, toolCalls: run.toolCalls, usage: { ...run.usage } } : {}),
+        controlProtocol: "v1",
+      });
+    }
+  };
+  for (const record of records) append(record, parentId);
+  return participants;
+};
+
+const actorParticipantRecord = (
+  actor: FabricActorInfo,
+  rootId: string,
+  ownerHostId: string,
+  ownerIdentityId: string,
+  parentId: string,
+): FabricParticipantRecord => ({
+  format: 1,
+  id: actor.id,
+  kind: "actor",
+  rootId,
+  ownerHostId,
+  ownerIdentityId,
+  parentId,
+  name: actor.name,
+  status: actor.status,
+  runner: actor.runner,
+  transport: "host",
+  capabilities: [
+    ...(actor.status === "stopped" ? [] : (["steer", "followUp", "stop"] as const)),
+    ...(actor.runner === "pi" && actor.extensions !== false ? (["fabric"] as const) : []),
+  ],
+  ...(actor.model ? { model: actor.model } : {}),
+  ...(actor.thinking ? { thinking: actor.thinking } : {}),
+  startedAt: actor.createdAt,
+  updatedAt: actor.updatedAt,
+  actorQueued: actor.queued,
+  actorMessages: actor.messages,
+  controlProtocol: "v1",
+});
+
 export class FabricState {
   #registry: ActionRegistry | undefined;
   #config: FabricConfig | undefined;
@@ -67,7 +166,8 @@ export class FabricState {
   #mesh: MeshStore | undefined;
   #identity: MeshIdentity | undefined;
   #mainAgent: MainAgentController | undefined;
-  #peers: PeerSessionRegistry | undefined;
+  #participants: ParticipantDirectory | undefined;
+  #control: FabricControlPlane | undefined;
   #agentsProvider: AgentsProvider | undefined;
   #compact: CompactController | undefined;
   #schema: SchemaController | undefined;
@@ -139,7 +239,11 @@ export class FabricState {
   }
 
   peerInfos(): FabricPeerInfo[] {
-    return this.#peers?.list() ?? [];
+    return this.#participants?.peers() ?? [];
+  }
+
+  participantInfos(options: FabricParticipantListOptions = {}): FabricParticipantInfo[] {
+    return this.#participants?.list(options) ?? [];
   }
 
   async queueUserMessage(
@@ -150,10 +254,15 @@ export class FabricState {
     if (!this.#mainAgent || !this.#agentsProvider) {
       throw new Error("Pi Fabric has not initialized");
     }
-    if (this.#mainAgent.matches(targetId)) {
+    if (this.#mainAgent.matches(targetId) && this.#mainAgent.local) {
       return this.#mainAgent.deliverUser(message, delivery);
     }
     return this.#agentsProvider.routeMessage(targetId, message, undefined, delivery);
+  }
+
+  async stopParticipant(targetId: string): Promise<unknown> {
+    if (!this.#agentsProvider) throw new Error("Pi Fabric has not initialized");
+    return this.#agentsProvider.stopParticipant(targetId);
   }
 
   get compact(): CompactController {
@@ -208,27 +317,38 @@ export class FabricState {
       identity.kind === "main" ? sessionId : undefined,
     );
     this.#mainAgent = mainAgent;
+    const projectRoot = process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd;
     const configuredMeshRoot = this.#config.mesh.root;
     const meshRoot =
       process.env.PI_FABRIC_MESH_ROOT ??
       (configuredMeshRoot
-        ? path.resolve(context.cwd, configuredMeshRoot)
-        : path.join(context.cwd, ".pi", "fabric", "mesh"));
+        ? path.resolve(projectRoot, configuredMeshRoot)
+        : path.join(projectRoot, ".pi", "fabric", "mesh"));
     this.#mesh = new MeshStore(
       meshRoot,
       this.#config.mesh.maxEventBytes,
       this.#config.mesh.maxReadEvents,
     );
-    this.#peers = new PeerSessionRegistry(
-      this.#mesh,
+    const hostId = identity.kind === "main" ? mainAgentId : `runtime:${sessionId}`;
+    this.#participants = new ParticipantDirectory(this.#mesh, {
+      enabled: this.#config.mesh.enabled,
+      hostId,
+      rootId: mainAgentId,
       identity,
-      mainAgent,
-      context,
-      this.#config.mesh.enabled,
-    );
-    await this.#peers.start();
+      ...(process.env.PI_FABRIC_OWNER_HOST_ID
+        ? { selfOwnerHostId: process.env.PI_FABRIC_OWNER_HOST_ID }
+        : {}),
+      ...(process.env.PI_FABRIC_OWNER_IDENTITY_ID
+        ? { selfOwnerIdentityId: process.env.PI_FABRIC_OWNER_IDENTITY_ID }
+        : {}),
+    });
+    this.#control = new FabricControlPlane(this.#mesh, identity, {
+      enabled: this.#config.mesh.enabled,
+      hostId,
+      pollMs: this.#config.mesh.actorPollMs,
+    });
     if (this.#config.mesh.enabled) {
-      this.#registry.register(new MeshProvider(this.#mesh, identity));
+      this.#registry.register(new MeshProvider(this.#mesh, identity, this.#participants));
       this.#registry.register(new StateProvider(this.#mesh, identity));
     }
     this.#schema = new SchemaController(
@@ -251,6 +371,10 @@ export class FabricState {
     this.#subagents = new SubagentManager(context.cwd, subagentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
       mainAgentId,
+      meshRoot,
+      projectRoot,
+      hostId,
+      identityId: identity.id,
       preparePiModel: async (modelKey) => {
         const separator = modelKey.indexOf("/");
         if (separator <= 0 || separator === modelKey.length - 1) return;
@@ -284,6 +408,10 @@ export class FabricState {
         );
       },
     });
+    const canManageActor = (actorId: string): boolean | undefined => {
+      const participant = this.#participants?.get(actorId);
+      return participant ? participant.ownerHostId === hostId : undefined;
+    };
     this.#actors = new ActorManager(
       sessionId,
       identity,
@@ -325,18 +453,45 @@ export class FabricState {
                 : path.join(meshRoot, "actors"),
             persistent: true,
             mainAgent,
+            canManageActor,
           }
-        : { persistent: false, mainAgent },
+        : { persistent: false, mainAgent, canManageActor },
     );
     this.#globalActors = new GlobalActorRegistry(getAgentDir(), this.#config.mesh.maxEventBytes);
+    const firstSeenAgents = new Map<string, number>();
+    if (mainAgent.local) {
+      this.#participants.registerSource(() => [
+        this.#participants!.root(mainAgent.info(context)),
+      ]);
+    }
+    this.#participants.registerSource(() =>
+      agentParticipantRecords(
+        this.#subagents!.listForUi(),
+        mainAgentId,
+        hostId,
+        identity.id,
+        identity.id,
+        firstSeenAgents,
+      ),
+    );
+    this.#participants.registerSource(() =>
+      this.#actors!.list().map((actor) =>
+        actorParticipantRecord(actor, mainAgentId, hostId, identity.id, identity.id),
+      ),
+    );
+    this.#subagents.subscribeUi(() => this.#participants?.scheduleRefresh());
+    this.#actors.subscribe(() => this.#participants?.scheduleRefresh());
     this.#agentsProvider = new AgentsProvider(
       this.#subagents,
       this.#actors,
       this.#globalActors,
       mainAgent,
+      this.#participants,
+      this.#control,
       () => this.#config?.ui.showNestedToolCalls ?? true,
-      this.#peers,
     );
+    this.#control.start((command, from) => this.#agentsProvider!.acceptControl(command, from));
+    await this.#participants.start();
     this.#registry.register(this.#agentsProvider);
     if (this.#config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
@@ -409,6 +564,7 @@ export class FabricState {
 
   noteMainActivity(context: ExtensionContext): void {
     this.#actors?.noteMainActivity(context.isIdle());
+    this.#participants?.scheduleRefresh();
   }
 
   dispatchHostEvent(
@@ -490,8 +646,13 @@ export class FabricState {
   }
 
   async shutdown(): Promise<void> {
-    await this.#peers?.close();
-    await this.#registry?.close();
+    await this.#participants?.quiesce().catch(() => undefined);
+    await this.#control?.close();
+    try {
+      await this.#registry?.close();
+    } finally {
+      await this.#participants?.close();
+    }
     this.#registry = undefined;
     this.#config = undefined;
     this.#execution = undefined;
@@ -501,7 +662,8 @@ export class FabricState {
     this.#mesh = undefined;
     this.#identity = undefined;
     this.#mainAgent = undefined;
-    this.#peers = undefined;
+    this.#participants = undefined;
+    this.#control = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;
@@ -513,7 +675,7 @@ export class FabricState {
   }
 
   // Publish a best-effort mesh event to the durable `fabric.compact` topic so
-  // other Fabric participants (actors, peers) observe compaction transitions.
+  // other roots, agents, and actors can observe compaction transitions.
   // Activity-only sessions (mesh disabled) silently skip this.
   #publishCompactEvent(kind: string, data: CompactPendingIntent | CompactLastCommit): void {
     if (!this.#mesh || !this.#identity || !this.#config?.mesh.enabled) return;
@@ -532,9 +694,14 @@ export class FabricState {
 
   async #closeInternal(): Promise<void> {
     if (!this.#registry) return;
-    await this.#peers?.close();
+    await this.#participants?.quiesce().catch(() => undefined);
+    await this.#control?.close();
     const externalNames = new Set(this.#externalProviders.keys());
-    await this.#registry.close(externalNames);
+    try {
+      await this.#registry.close(externalNames);
+    } finally {
+      await this.#participants?.close();
+    }
     this.#registry = undefined;
     this.#execution = undefined;
     this.#subagents = undefined;
@@ -542,7 +709,8 @@ export class FabricState {
     this.#mesh = undefined;
     this.#identity = undefined;
     this.#mainAgent = undefined;
-    this.#peers = undefined;
+    this.#participants = undefined;
+    this.#control = undefined;
     this.#agentsProvider = undefined;
     this.#compact = undefined;
     this.#schema = undefined;

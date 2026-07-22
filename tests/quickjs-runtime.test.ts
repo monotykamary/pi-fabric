@@ -678,6 +678,37 @@ return { main, queued };
     expect(calls).toEqual(["agents.main", "agents.steer"]);
   });
 
+  it("routes unified participant discovery through the agents provider", async () => {
+    const calls: Array<{ ref: string; args: Record<string, unknown> }> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+const self = await agents.self();
+const members = await agents.members({ scope: "project", kinds: ["agent"] });
+const lineage = await agents.list({ scope: "lineage" });
+return { self, members, lineage };
+`,
+      async (ref, args) => {
+        calls.push({ ref, args });
+        if (ref === "agents.self") return { id: "agent:self", kind: "agent" };
+        if (ref === "agents.members") return [{ id: "agent:peer", kind: "agent" }];
+        if (ref === "agents.list") return [{ id: "agent:self", kind: "agent" }];
+        throw new Error(`Unexpected call: ${ref}`);
+      },
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({
+      self: { id: "agent:self" },
+      members: [{ id: "agent:peer" }],
+      lineage: [{ id: "agent:self" }],
+    });
+    expect(calls).toEqual([
+      { ref: "agents.self", args: {} },
+      { ref: "agents.members", args: { scope: "project", kinds: ["agent"] } },
+      { ref: "agents.list", args: { scope: "lineage" } },
+    ]);
+  });
+
   it("routes agents.setEvents and agents.setInstructions to the actors provider", async () => {
     const calls: string[] = [];
     const result = await new QuickJsRuntime().execute(

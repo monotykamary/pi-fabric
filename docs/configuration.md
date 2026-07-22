@@ -250,10 +250,10 @@ Mesh data defaults to `<project>/.pi/fabric/mesh`. Set `mesh.root` to a relative
 
 `mesh.actorScope` controls where persistent actor definitions, mailboxes, and child sessions are stored and restored from:
 
-- `"project"` (default) keeps a single shared actor registry at `.pi/fabric/mesh/actors/`, so actors survive `/new` and carry over between Pi sessions in the same project without redefinition. One Pi process should own the actor registry at a time — concurrent sessions sharing a registry may race on writes.
+- `"project"` (default) keeps a shared actor registry at `.pi/fabric/mesh/actors/`, so actors survive `/new`. The participant directory chooses each live execution owner; other sessions keep passive views and reload on takeover. Registry writes are lock-serialized and merge only locally owned actor records.
 - `"session"` isolates actors per Pi session (under `.pi/fabric/mesh/actors/<sessionId>/`). Use this when you run concurrent Pi sessions in one project and want each to own its own actors.
 
-With project scope, one Pi process should own the actor registry at a time — concurrent sessions sharing a registry may race on writes. Mesh topics and shared state are always project-scoped. Root Pi sessions publish short-lived presence leases under the mesh so `agents.peers()` and the dashboard can show concurrent sessions; the local dashboard owner is Main and other roots are Peers. Actor relay normally follows filesystem change notifications; `mesh.actorPollMs` controls the fallback interval when those notifications are unavailable. A low-frequency reconciliation check protects against coalesced or missed filesystem events.
+With project scope, each actor has one lifecycle owner and shared registry updates are ownership-aware and lock-serialized. Mesh topics, shared state, and the participant directory are always project-scoped. Every Fabric runtime publishes one short-lived host lease plus canonical records for the roots, agents, and actors it owns. `agents.members()` and `mesh.members()` read that directory; `agents.main()` and `agents.peers()` are root projections. If a host lease expires, all of its participant records disappear from normal discovery together. `mesh.actorPollMs` controls the fallback interval for actor events and owner-addressed control commands when filesystem notifications are unavailable.
 
 ## Compaction
 

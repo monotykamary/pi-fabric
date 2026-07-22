@@ -72,6 +72,20 @@ describe("MeshStore", () => {
     expect(reader.get("shared/value")?.value).toEqual({ revision: 2 });
   });
 
+  it("supports complete internal prefix scans independently of public read limits", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-scan-"));
+    roots.push(root);
+    const store = new MeshStore(root, 64 * 1024, 1);
+    await store.put({ key: "topology/a", value: 1, identity });
+    await store.put({ key: "topology/b", value: 2, identity });
+
+    expect(store.list("topology/", 100)).toHaveLength(1);
+    expect(store.listAll("topology/").map((entry) => entry.key)).toEqual([
+      "topology/a",
+      "topology/b",
+    ]);
+  });
+
   it("supports compare-and-swap shared state", async () => {
     const store = createStore();
     const created = await store.put({

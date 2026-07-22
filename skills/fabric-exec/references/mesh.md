@@ -6,9 +6,11 @@ Every method takes a single options object. Mesh data defaults to `<project>/.pi
 
 ## Identity and presence
 
-- `mesh.self()` returns `{ id, name, kind, sessionId? }` where `kind` is `main`, `actor`, or `agent`. A recursive child uses its parent run id with kind `agent`; a persistent Pi actor uses its actor id; only the user-facing root session uses kind `main`.
-- `agents.peers()` returns heartbeat-backed presence for other live root Pi sessions. The local dashboard owner is **Main**; concurrent roots are **Peers**.
-- `mesh.members({ limit? })` returns actor presence across live Fabric sessions as entries with `{ key, value, version, updatedAt, updatedBy }` (the `value` is a `FabricActorInfo`).
+- `mesh.self()` returns the caller's wire identity `{ id, name, kind, sessionId? }`, where the legacy wire `kind` is `main`, `actor`, or `agent`.
+- `mesh.members({ scope?, kinds?, includeStale?, limit? })` returns the same `FabricParticipantInfo[]` as `agents.members`: intrinsic roots, agents, and actors with `rootId`, optional `parentId`, `ownerHostId`, status, capabilities, and `local`/`stale` flags. `scope` defaults to `"project"`.
+- `agents.self()` is the richer intrinsic identity (`kind: "root" | "agent" | "actor"`). `agents.main()` and `agents.peers()` are compatibility views derived from root participants.
+
+The directory stores participant records separately from short-lived execution-host leases. If a host crashes, all records owned by that host become stale atomically from the reader's perspective. Normal discovery excludes them; `includeStale: true` is diagnostic.
 
 ## Topics (durable channels)
 
@@ -29,7 +31,7 @@ const events = await mesh.read({ topic: "team.auth", limit: 50 });
 - `mesh.delete({ key, ifVersion? })` returns `{ deleted, version? }`.
 - `mesh.list({ prefix?, limit? })` returns matching entries.
 
-Each entry is `{ key, value, version, updatedAt, updatedBy }`. Use `ifVersion` for task claims, leases, reservations, and decisions: create with `ifVersion: 0`, claim by passing the current `version`.
+Each entry is `{ key, value, version, updatedAt, updatedBy }`. Use `ifVersion` for task claims, leases, reservations, and decisions: create with `ifVersion: 0`, claim by passing the current `version`. Keys below `topology/`, `sessions/`, and `actors/` are host-reserved and reject guest `put`/`delete`; use an application prefix such as `tasks/` or `team/`.
 
 ```ts
 const task = await mesh.put({ key: "tasks/auth-review", value: { status: "ready", owner: null }, ifVersion: 0 });
@@ -39,18 +41,9 @@ return claimed;
 
 ## Steering across processes
 
-`fabric.steer` is a reserved topic the ActorManager relays to an exact Main identity, local subagent, or local actor. Fabric-equipped Pi participants use `agents.steer({ id, message })` or `agents.followUp(...)`; those methods resolve the local `"main"` alias to the root session's exact id before publishing across processes. You can also publish directly when you already know that exact id:
+Use `agents.steer`, `agents.followUp`, or `agents.stop` rather than publishing a control topic yourself. Fabric resolves the target in the participant directory, addresses `fabric.control.command` to its `ownerHostId`, and waits for a version/target/owner-identity-matched `fabric.control.ack`. Unknown targets, stale owners, rejection, and acknowledgement timeout fail explicitly. The stable `"main"` alias is resolved locally to the caller's exact root id before routing.
 
-```ts
-await mesh.publish({
-  topic: "fabric.steer",
-  kind: "steer",
-  to: actorOrSubagentId,
-  text: "redirect from a peer",
-});
-```
-
-Use `kind: "followUp"` for a follow-up. The owning process's poll forwards the event to Main through Pi's host queue, to a one-shot child between/after turns, or to a persistent actor mailbox. Do not publish `to: "main"` directly: aliases are intentionally not resolved on the shared mesh because multiple root sessions may coexist. An event addressed to a target no process owns is dropped best-effort.
+The entire `fabric.control.*` namespace is reserved for internal protocol topics, not application channels. `fabric.steer` remains a mixed-version compatibility path for older Fabric participants; direct publication on it has legacy best-effort semantics and no acknowledgement.
 
 ## Notes
 

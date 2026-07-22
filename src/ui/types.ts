@@ -2,7 +2,12 @@ import type { FabricActorInfo, FabricActorMessage, GlobalActorDefinition } from 
 import type { FabricActivityRun } from "../activity/types.js";
 import type { MeshEvent } from "../mesh/store.js";
 import type { FabricMainAgentInfo } from "../main-agent.js";
-import type { FabricPeerInfo } from "../peer-session.js";
+import type {
+  FabricParticipantCapability,
+  FabricParticipantInfo,
+  FabricParticipantKind,
+  FabricPeerInfo,
+} from "../topology/types.js";
 import type { SubagentUsage } from "../subagents/types.js";
 
 export type FabricUiMain = FabricMainAgentInfo;
@@ -37,6 +42,12 @@ export interface FabricUiAgent {
   runId?: string;
   phaseId?: string;
   parentId?: string;
+  rootId?: string;
+  ownerHostId?: string;
+  local?: boolean;
+  stale?: boolean;
+  participantKind?: FabricParticipantKind;
+  capabilities?: FabricParticipantCapability[];
 }
 
 export interface FabricUiActor extends FabricActorInfo {
@@ -63,6 +74,7 @@ export interface FabricDashboardSnapshot {
   runs: FabricActivityRun[];
   main: FabricUiMain;
   peers: FabricUiPeer[];
+  participants?: FabricParticipantInfo[];
   agents: FabricUiAgent[];
   actors: FabricUiActor[];
   /** Project-independent actor templates from the global registry. */

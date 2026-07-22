@@ -435,12 +435,16 @@ export class MeshStore {
   }
 
   list(prefix = "", limit = 100): MeshStateEntry[] {
-    if (prefix) this.#validateKey(prefix);
     const boundedLimit = Math.max(1, Math.min(Math.floor(limit), this.maxReadEvents));
+    return this.listAll(prefix).slice(0, boundedLimit);
+  }
+
+  /** Internal project-state scan for host-managed indexes that must reconcile every key. */
+  listAll(prefix = ""): MeshStateEntry[] {
+    if (prefix) this.#validateKey(prefix);
     return Object.values(this.#readCachedState().entries)
       .filter((entry) => !prefix || entry.key.startsWith(prefix))
       .sort((left, right) => left.key.localeCompare(right.key))
-      .slice(0, boundedLimit)
       .map((entry) => jsonClone(entry));
   }
 

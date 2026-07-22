@@ -86,6 +86,40 @@ interface FabricPeerInfo {
   pendingMessages: boolean;
   local: false;
 }
+type FabricParticipantKind = "root" | "agent" | "actor";
+type FabricParticipantScope = "local" | "lineage" | "project";
+type FabricParticipantCapability = "steer" | "followUp" | "stop" | "attach" | "fabric";
+interface FabricParticipantInfo {
+  format: 1;
+  id: string;
+  kind: FabricParticipantKind;
+  rootId: string;
+  ownerHostId: string;
+  ownerIdentityId: string;
+  parentId?: string;
+  name: string;
+  status: string;
+  runner: FabricAgentRunner;
+  transport: FabricTransport | "host";
+  capabilities: FabricParticipantCapability[];
+  cwd?: string;
+  sessionId?: string;
+  model?: string;
+  thinking?: string;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+  pendingMessages?: boolean;
+  currentTool?: string;
+  turns?: number;
+  toolCalls?: number;
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  actorQueued?: number;
+  actorMessages?: number;
+  controlProtocol: "v1" | "legacy";
+  local: boolean;
+  stale: boolean;
+}
 interface FabricAgentHandle {
   id: string;
   name: string;
@@ -106,6 +140,12 @@ interface FabricAgentHandle {
   value?: unknown;
   error?: string;
   logFile?: string;
+}
+interface FabricRemoteControlResult {
+  queued: true;
+  messageId: string;
+  routed: "mesh";
+  acknowledged: true;
 }
 interface FabricAgentResult extends FabricAgentHandle {
   task: string;
@@ -294,12 +334,14 @@ interface FabricAgentsApi {
   handoff(args: FabricHandoffRequest): Promise<FabricHandoffResult>;
   spawn(args: FabricAgentRequest): Promise<FabricAgentHandle>;
   wait(args: { id: string }): Promise<FabricAgentResult>;
-  status(args: { id: string }): Promise<FabricAgentResult | FabricAgentHandle | FabricMainAgentInfo>;
-  list(): Promise<Array<FabricAgentResult | FabricAgentHandle>>;
+  status(args: { id: string }): Promise<FabricAgentResult | FabricAgentHandle | FabricMainAgentInfo | FabricActorInfo | FabricParticipantInfo>;
+  list(args?: { scope?: FabricParticipantScope }): Promise<Array<FabricAgentResult | FabricAgentHandle | FabricParticipantInfo>>;
+  members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean }): Promise<FabricParticipantInfo[]>;
+  self(): Promise<FabricParticipantInfo>;
   main(): Promise<FabricMainAgentInfo>;
   peers(): Promise<FabricPeerInfo[]>;
   models(args?: { runner?: FabricAgentRunner; refresh?: boolean }): Promise<FabricModelInfo[]>;
-  stop(args: { id: string }): Promise<FabricAgentResult>;
+  stop(args: { id: string }): Promise<FabricAgentResult | FabricActorInfo | FabricRemoteControlResult>;
   cleanup(args: { id: string; deleteBranch?: boolean }): Promise<{ cleaned: boolean }>;
   create(args: FabricActorRequest): Promise<FabricActorInfo>;
   setModel(args: { id: string; model?: string }): Promise<FabricActorInfo>;
@@ -319,8 +361,8 @@ interface FabricAgentsApi {
   }): Promise<FabricActorInfo>;
   ask(args: { id: string; message: string; data?: unknown }): Promise<FabricActorMessage>;
   tell(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string }>;
-  steer(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh" }>;
-  followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh" }>;
+  steer(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
+  followUp(args: { id: string; message: string; data?: unknown }): Promise<{ queued: true; messageId: string; routed?: "local" | "main" | "mesh"; acknowledged?: boolean }>;
   setSteeringMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
   setFollowUpMode(args: { id: string; mode: "all" | "one-at-a-time" }): Promise<{ queued: true; messageId: string }>;
   actorStatus(args: { id: string }): Promise<FabricActorInfo>;
@@ -405,7 +447,7 @@ interface FabricMeshApi {
   self(): Promise<FabricMeshIdentity>;
   publish(args: { topic: string; kind?: string; to?: string; text?: string; data?: unknown }): Promise<FabricMeshEvent>;
   read(args?: { after?: number; topic?: string; to?: string; limit?: number }): Promise<FabricMeshEvent[]>;
-  members(args?: { limit?: number }): Promise<Array<FabricMeshStateEntry<FabricActorInfo>>>;
+  members(args?: { scope?: FabricParticipantScope; kinds?: FabricParticipantKind[]; includeStale?: boolean; limit?: number }): Promise<FabricParticipantInfo[]>;
   get<T = unknown>(args: { key: string }): Promise<FabricMeshStateEntry<T> | null>;
   list<T = unknown>(args?: { prefix?: string; limit?: number }): Promise<Array<FabricMeshStateEntry<T>>>;
   put<T = unknown>(args: { key: string; value: T; ifVersion?: number }): Promise<FabricMeshStateEntry<T>>;

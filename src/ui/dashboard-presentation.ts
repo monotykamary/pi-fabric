@@ -117,7 +117,7 @@ export const entityTail = (entity: Entity, now: number): string => {
   if (entity.kind === "meshParticipant") {
     const participant = entity.value;
     return [
-      "mesh agent",
+      participant.participant ? `project ${participant.participant.kind}` : "observed mesh agent",
       `${participant.routes} route${participant.routes === 1 ? "" : "s"}`,
       `${formatDuration(Math.max(0, now - participant.lastSeenAt))} ago`,
     ].join(" · ");

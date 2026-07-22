@@ -74,7 +74,7 @@ Read the line-numbered error â†’ `await tools.describe({ref})` for the schema â†
 ## Orchestration surfaces (opt-in)
 Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `<skill-dir>/references/agents.md` and `<skill-dir>/references/mesh.md` are branch pointers for low-level API detail.
 
-`agents.main()` returns the dashboard-owning root Pi session; `agents.peers()` lists other live root sessions in the shared project mesh as `Peer <session-prefix>` targets. Peers support `agents.steer()` and `agents.followUp()` by exact id.
+`agents.self()` and `agents.members({scope?,kinds?})` expose one leased directory of intrinsic roots, agents, and actors. `agents.main()` and `agents.peers()` are compatibility views of root participants. `agents.list()` defaults to local agents; use `scope: "lineage" | "project"` for federated discovery. Cross-process `steer`, `followUp`, and `stop` resolve `ownerHostId` and return only after the owner acknowledges.
 
 For an explicit implementation handoff, `agents.handoff({ model, task?, when? })` schedules a Pi child at the completed outer `fabric_exec` boundary; later calls in the same program still run, and Main blocks only after the finalized native outer result is ready. `when` is a guest-only pure synchronous predicate over immutable earlier successful-call facts from any resolved Fabric provider and is stripped before the host call. `/fabric prewalk [task]` is the prompt-free automatic Fabric-boundary path. See `<skill-dir>/references/agents.md`.
 

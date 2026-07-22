@@ -5,8 +5,17 @@ import type {
   FabricProviderListRequest,
 } from "../protocol.js";
 import { MeshStore, type MeshIdentity } from "../mesh/store.js";
+import type { FabricParticipantSource } from "../topology/types.js";
 
 const emptySchema = { type: "object", properties: {}, additionalProperties: false };
+const INTERNAL_STATE_PREFIXES = ["topology/", "sessions/", "actors/"];
+const INTERNAL_CONTROL_PREFIX = "fabric.control.";
+
+const assertPublicStateKey = (key: string): void => {
+  if (INTERNAL_STATE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+    throw new Error(`Fabric mesh key is reserved for host coordination: ${key}`);
+  }
+};
 
 const descriptors: FabricActionDescriptor[] = [
   {
@@ -52,10 +61,18 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "members",
-    description: "List persistent actor presence records visible in this project mesh",
+    description: "List roots, agents, and actors in the unified project participant directory",
     inputSchema: {
       type: "object",
-      properties: { limit: { type: "number", minimum: 1 } },
+      properties: {
+        scope: { type: "string", enum: ["local", "lineage", "project"] },
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["root", "agent", "actor"] },
+        },
+        includeStale: { type: "boolean" },
+        limit: { type: "number", minimum: 1 },
+      },
       additionalProperties: false,
     },
     risk: "read",
@@ -128,6 +145,7 @@ export class MeshProvider implements FabricProvider {
   constructor(
     readonly store: MeshStore,
     readonly identity: MeshIdentity,
+    readonly participants: FabricParticipantSource,
   ) {}
 
   async list(
@@ -157,15 +175,20 @@ export class MeshProvider implements FabricProvider {
     switch (actionName) {
       case "self":
         return this.identity;
-      case "publish":
+      case "publish": {
+        const topic = String(args.topic);
+        if (topic.startsWith(INTERNAL_CONTROL_PREFIX)) {
+          throw new Error(`Fabric mesh topic is reserved for host control: ${topic}`);
+        }
         return this.store.publish({
-          topic: String(args.topic),
+          topic,
           from: this.identity,
           ...(typeof args.kind === "string" ? { kind: args.kind } : {}),
           ...(typeof args.to === "string" ? { to: args.to } : {}),
           ...(typeof args.text === "string" ? { text: args.text } : {}),
           ...(args.data !== undefined ? { data: args.data } : {}),
         });
+      }
       case "read":
         return this.store.read({
           ...(typeof args.after === "number" ? { after: args.after } : {}),
@@ -173,8 +196,26 @@ export class MeshProvider implements FabricProvider {
           ...(typeof args.to === "string" ? { to: args.to } : {}),
           ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
         });
-      case "members":
-        return this.store.list("actors/", typeof args.limit === "number" ? args.limit : 100);
+      case "members": {
+        const kinds = Array.isArray(args.kinds)
+          ? args.kinds.filter(
+              (kind): kind is "root" | "agent" | "actor" =>
+                kind === "root" || kind === "agent" || kind === "actor",
+            )
+          : undefined;
+        const scope =
+          args.scope === "local" || args.scope === "lineage" || args.scope === "project"
+            ? args.scope
+            : "project";
+        const limit = Math.max(1, Math.floor(typeof args.limit === "number" ? args.limit : 100));
+        return this.participants
+          .list({
+            scope,
+            ...(kinds ? { kinds } : {}),
+            ...(args.includeStale === true ? { includeStale: true } : {}),
+          })
+          .slice(0, limit);
+      }
       case "get":
         return this.store.get(String(args.key)) ?? null;
       case "list":
@@ -182,18 +223,24 @@ export class MeshProvider implements FabricProvider {
           typeof args.prefix === "string" ? args.prefix : "",
           typeof args.limit === "number" ? args.limit : 100,
         );
-      case "put":
+      case "put": {
+        const key = String(args.key);
+        assertPublicStateKey(key);
         return this.store.put({
-          key: String(args.key),
+          key,
           value: args.value,
           identity: this.identity,
           ...(typeof args.ifVersion === "number" ? { ifVersion: args.ifVersion } : {}),
         });
-      case "delete":
+      }
+      case "delete": {
+        const key = String(args.key);
+        assertPublicStateKey(key);
         return this.store.delete({
-          key: String(args.key),
+          key,
           ...(typeof args.ifVersion === "number" ? { ifVersion: args.ifVersion } : {}),
         });
+      }
       default:
         throw new Error(`Unknown mesh action: ${actionName}`);
     }

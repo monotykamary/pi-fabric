@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FabricActivityRun } from "../src/activity/types.js";
 import type { FabricState } from "../src/fabric-state.js";
 import type { SubagentRunRecord } from "../src/subagents/types.js";
+import type { FabricParticipantInfo } from "../src/topology/types.js";
 import { createDashboardSnapshot } from "../src/ui/snapshot.js";
 
 const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -61,10 +62,12 @@ const fakeState = (
   records: SubagentRunRecord[],
   actors: unknown[] = [],
   peers: unknown[] = [],
+  participants: FabricParticipantInfo[] = [],
 ): FabricState =>
   ({
     activity: { runs: () => runs },
     peerInfos: () => peers,
+    participantInfos: () => participants,
     mainAgentInfo: () => ({
       id: "session:test",
       name: "Main",
@@ -227,6 +230,84 @@ describe("dashboard snapshot agent ownership", () => {
     expect(snapshot.agents).toHaveLength(240);
     expect(snapshot.agents[0]?.id).toBe("agent-60");
     expect(snapshot.agents.at(-1)?.id).toBe("agent-299");
+  });
+
+  it("keeps an active local agent when newer remote records fill the UI bound", () => {
+    const local = {
+      ...record("local-active"),
+      startedAt: 1,
+      updatedAt: 2,
+      status: "running" as const,
+    };
+    const remote: FabricParticipantInfo[] = Array.from({ length: 240 }, (_, index) => ({
+      format: 1,
+      id: `remote-${index}`,
+      kind: "agent",
+      rootId: "session:peer",
+      ownerHostId: "session:peer",
+      ownerIdentityId: "session:peer",
+      parentId: "session:peer",
+      name: `remote-${index}`,
+      status: "running",
+      runner: "pi",
+      transport: "process",
+      capabilities: ["steer", "followUp", "stop"],
+      startedAt: 1_000 + index,
+      updatedAt: 2_000 + index,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    }));
+
+    const snapshot = createDashboardSnapshot(fakeState([], [local], [], [], remote), []);
+
+    expect(snapshot.agents).toHaveLength(240);
+    expect(snapshot.agents.some((agent) => agent.id === local.id)).toBe(true);
+    expect(snapshot.agents.filter((agent) => agent.local === false)).toHaveLength(239);
+  });
+
+  it("does not overlay private local actor state when another host owns it", () => {
+    const actor = {
+      id: "actor:shared",
+      name: "shared reviewer",
+      status: "idle",
+      events: [],
+      topics: [],
+      delivery: "mailbox",
+      responseMode: "text",
+      triggerTurn: false,
+      coalesce: true,
+      queued: 0,
+      messages: 0,
+      createdAt: 100,
+      updatedAt: 200,
+    };
+    const participant: FabricParticipantInfo = {
+      format: 1,
+      id: actor.id,
+      kind: "actor",
+      rootId: "session:peer",
+      ownerHostId: "session:peer",
+      ownerIdentityId: "session:peer",
+      parentId: "session:peer",
+      name: actor.name,
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "stop", "fabric"],
+      startedAt: 100,
+      updatedAt: 200,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    };
+
+    const snapshot = createDashboardSnapshot(
+      fakeState([], [], [actor], [], [participant]),
+      [],
+    );
+    expect(snapshot.actors).toEqual([]);
+    expect(snapshot.participants).toEqual([participant]);
   });
 
   it("prefers an active actor worker over a newer retained failure", () => {

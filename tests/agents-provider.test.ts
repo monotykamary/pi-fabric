@@ -4,11 +4,16 @@ import path from "node:path";
 import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
+import type { FabricActorRequest } from "../src/actors/types.js";
 import { GlobalActorRegistry } from "../src/actors/global-registry.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
-import type { FabricPeerInfo } from "../src/peer-session.js";
+import type {
+  FabricParticipantInfo,
+  FabricParticipantSource,
+  FabricPeerInfo,
+} from "../src/topology/types.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
 import { AgentsProvider } from "../src/providers/agents-provider.js";
 import { snapshotHandoffSession } from "../src/subagents/handoff.js";
@@ -37,7 +42,10 @@ const context: FabricInvocationContext = {
   activity() {},
 };
 
-const setup = (peers: FabricPeerInfo[] = []) => {
+const setup = (
+  peers: FabricPeerInfo[] = [],
+  members: FabricParticipantInfo[] = [],
+) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
@@ -89,13 +97,47 @@ const setup = (peers: FabricPeerInfo[] = []) => {
   });
   actorManagers.push(actors);
   const globalActors = new GlobalActorRegistry(root, 64 * 1024);
+  const participants: FabricParticipantSource = {
+    list: (options = {}) =>
+      members.filter(
+        (participant) =>
+          (!options.kinds || options.kinds.includes(participant.kind)) &&
+          (options.scope !== "local" || participant.local) &&
+          (options.scope !== "lineage" || participant.rootId === identity.id),
+      ),
+    get: (id) => members.find((participant) => participant.id === id),
+    self: () => ({
+      format: 1,
+      id: identity.id,
+      kind: "root",
+      rootId: identity.id,
+      ownerHostId: identity.id,
+      ownerIdentityId: identity.id,
+      name: "main",
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "fabric"],
+      cwd: process.cwd(),
+      sessionId: "test",
+      startedAt: 1,
+      updatedAt: 1,
+      pendingMessages: false,
+      controlProtocol: "v1",
+      local: true,
+      stale: false,
+    }),
+    peers: () => peers,
+    async refresh() {},
+    scheduleRefresh() {},
+  };
   const provider = new AgentsProvider(
     subagents,
     actors,
     globalActors,
     mainAgent,
+    participants,
     undefined,
-    { list: () => peers },
   );
   return { root, actors, globalActors, provider, mainDeliveries };
 };
@@ -143,6 +185,77 @@ describe("AgentsProvider runner support", () => {
 
     await expect(provider.invoke("peers", {}, context)).resolves.toEqual([peer]);
     expect((await provider.describe("peers", context))?.risk).toBe("read");
+  });
+
+  it("rejects remote Main delivery after its capabilities are withdrawn", async () => {
+    const remoteRoot: FabricParticipantInfo = {
+      format: 1,
+      id: "session:test",
+      kind: "root",
+      rootId: "session:test",
+      ownerHostId: "session:test",
+      ownerIdentityId: "session:test",
+      name: "main",
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: [],
+      cwd: process.cwd(),
+      sessionId: "test",
+      startedAt: 1,
+      updatedAt: 2,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    };
+    const { provider } = setup([], [remoteRoot]);
+    (provider.mainAgent as { local: boolean }).local = false;
+
+    await expect(provider.invoke("status", { id: "main" }, context)).resolves.toEqual(
+      remoteRoot,
+    );
+    await expect(
+      provider.routeMessage("main", "too late", undefined, "steer"),
+    ).rejects.toThrow(
+      "does not support steer",
+    );
+  });
+
+  it("projects remote agents through members, scoped list, and status", async () => {
+    const remote: FabricParticipantInfo = {
+      format: 1,
+      id: "agent:remote",
+      kind: "agent",
+      rootId: "session:peer",
+      ownerHostId: "session:peer",
+      ownerIdentityId: "session:peer",
+      parentId: "session:peer",
+      name: "remote reviewer",
+      status: "running",
+      runner: "pi",
+      transport: "process",
+      capabilities: ["steer", "followUp", "stop"],
+      cwd: process.cwd(),
+      startedAt: 1,
+      updatedAt: 2,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    };
+    const { provider } = setup([], [remote]);
+
+    await expect(
+      provider.invoke("members", { scope: "project" }, context),
+    ).resolves.toEqual([remote]);
+    await expect(
+      provider.invoke("list", { scope: "project" }, context),
+    ).resolves.toEqual([remote]);
+    await expect(
+      provider.invoke("status", { id: remote.id }, context),
+    ).resolves.toEqual(remote);
+    await expect(
+      provider.invoke("list", { scope: "lineage" }, context),
+    ).resolves.toEqual([]);
   });
 
   it("defers explicit handoff until the finalized outer Fabric result", async () => {
@@ -421,6 +534,40 @@ describe("AgentsProvider runner support", () => {
   });
 });
 
+describe("AgentsProvider actor ownership privacy", () => {
+  it("does not expose passive actor mailboxes, definitions, or logs", async () => {
+    const members: FabricParticipantInfo[] = [];
+    const { provider, actors } = setup([], members);
+    const actor = await actors.create(createRequest as FabricActorRequest);
+    members.push({
+      format: 1,
+      id: actor.id,
+      kind: "actor",
+      rootId: "session:peer",
+      ownerHostId: "session:peer",
+      ownerIdentityId: "session:peer",
+      parentId: "session:peer",
+      name: actor.name,
+      status: "idle",
+      runner: "pi",
+      transport: "host",
+      capabilities: ["steer", "followUp", "stop", "fabric"],
+      startedAt: actor.createdAt,
+      updatedAt: actor.updatedAt,
+      controlProtocol: "v1",
+      local: false,
+      stale: false,
+    });
+
+    await expect(provider.invoke("actors", {}, context)).resolves.toEqual([]);
+    for (const action of ["actorStatus", "messages", "export", "log"] as const) {
+      await expect(provider.invoke(action, { id: actor.id }, context)).rejects.toThrow(
+        "private data is available only from its owner",
+      );
+    }
+  });
+});
+
 describe("AgentsProvider global actors", () => {
   it("creates a global template and lists it separately from project actors", async () => {
     const { provider, actors, globalActors } = setup();
@@ -670,6 +817,34 @@ describe("AgentsProvider steering", () => {
     await provider.invoke("stop", { id: handle.id }, context);
   });
 
+  it("accepts an owner-addressed control command for a local subagent", async () => {
+    const { provider, root } = setup();
+    const handle = (await provider.invoke(
+      "spawn",
+      { task: "HANG", transport: "process" },
+      context,
+    )) as { id: string };
+    const acceptance = await provider.acceptControl(
+      {
+        version: 1,
+        commandId: "command-1",
+        targetId: handle.id,
+        operation: "followUp",
+        replyTo: "session:peer",
+        message: "summarize after the current turn",
+        requestedAt: Date.now(),
+      },
+      { id: "session:peer", name: "peer", kind: "main", sessionId: "peer" },
+    );
+
+    expect(acceptance).toMatchObject({ accepted: true, messageId: expect.any(String) });
+    expect(readSteerFile(root, handle.id)[0]).toMatchObject({
+      type: "follow_up",
+      message: "summarize after the current turn",
+    });
+    await provider.invoke("stop", { id: handle.id }, context);
+  });
+
   it("steer routes to a local actor as a mailbox message", async () => {
     const { provider } = setup();
     const actor = (await provider.invoke(
@@ -694,14 +869,15 @@ describe("AgentsProvider steering", () => {
     ).toBe(true);
   });
 
-  it("steer routes a non-local id over the mesh", async () => {
+  it("rejects an unknown remote id instead of broadcasting an unverified steer", async () => {
     const { provider } = setup();
-    const result = (await provider.invoke(
-      "steer",
-      { id: "not-a-local-id", message: "from elsewhere" },
-      context,
-    )) as { routed: string };
-    expect(result.routed).toBe("mesh");
+    await expect(
+      provider.invoke(
+        "steer",
+        { id: "not-a-local-id", message: "from elsewhere" },
+        context,
+      ),
+    ).rejects.toThrow("Unknown Fabric participant");
   });
 
   it("setSteeringMode routes to a local subagent", async () => {

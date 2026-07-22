@@ -167,7 +167,7 @@ export class FabricUiController {
       );
     };
     const onAgentStop = (agentId: string): void => {
-      reportUpdate("Agent stopped", this.state.subagents.stop(agentId));
+      reportUpdate("Agent stopped", this.state.stopParticipant(agentId));
     };
     const onActorModel = (actorId: string, model: string | undefined): void => {
       reportUpdate("Actor model updated", this.state.actors.setModel(actorId, model));

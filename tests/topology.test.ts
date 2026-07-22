@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FabricActivityRun } from "../src/activity/types.js";
 import type { MeshEvent } from "../src/mesh/store.js";
+import type { FabricParticipantInfo } from "../src/topology/types.js";
 import {
   buildProjectMeshTopology,
   buildRunTopologyRows,
@@ -247,6 +248,70 @@ describe("Run topology layout", () => {
 });
 
 describe("Project mesh topology layout", () => {
+  it("shows directory participants even before they emit a mesh route", () => {
+    const participants: FabricParticipantInfo[] = [
+      {
+        format: 1,
+        id: "session:peer",
+        kind: "root",
+        rootId: "session:peer",
+        ownerHostId: "session:peer",
+        ownerIdentityId: "session:peer",
+        name: "main",
+        status: "idle",
+        runner: "pi",
+        transport: "host",
+        capabilities: ["steer", "followUp", "fabric"],
+        cwd: "/tmp/project",
+        sessionId: "peer-session",
+        startedAt: 2,
+        updatedAt: 3,
+        controlProtocol: "v1",
+        local: false,
+        stale: false,
+      },
+      {
+        format: 1,
+        id: "actor:remote",
+        kind: "actor",
+        rootId: "session:peer",
+        ownerHostId: "session:peer",
+        ownerIdentityId: "session:peer",
+        parentId: "session:peer",
+        name: "remote advisor",
+        status: "idle",
+        runner: "pi",
+        transport: "host",
+        capabilities: ["steer", "followUp", "stop", "fabric"],
+        startedAt: 2,
+        updatedAt: 3,
+        controlProtocol: "v1",
+        local: false,
+        stale: false,
+      },
+    ];
+
+    const model = buildProjectMeshTopology({
+      main: main(),
+      actors: [],
+      agents: [],
+      state: [],
+      events: [],
+      participants,
+      now: 1_000,
+    });
+
+    expect(model.participants).toMatchObject([
+      { id: "session:peer", name: "Peer peer-ses", participant: { kind: "root" } },
+      { id: "actor:remote", name: "remote advisor", participant: { kind: "actor" } },
+    ]);
+    expect(model.rows).toContainEqual({
+      kind: "meshSection",
+      label: "Project participants",
+      count: 2,
+    });
+  });
+
   it("connects actors, topics, shared state, and normalized recent routes", () => {
     const actors = [actor()];
     const events: MeshEvent[] = [

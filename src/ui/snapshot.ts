@@ -14,6 +14,25 @@ import {
 
 const MAX_UI_AGENTS = 240;
 
+const boundedUiAgents = (
+  local: FabricUiAgent[],
+  remote: FabricUiAgent[],
+): FabricUiAgent[] => {
+  const selected = new Map<string, FabricUiAgent>();
+  for (const agent of local) {
+    if (activeStatuses.has(agent.status)) selected.set(agent.id, agent);
+  }
+  const addNewest = (agents: FabricUiAgent[]): void => {
+    for (let index = agents.length - 1; index >= 0 && selected.size < MAX_UI_AGENTS; index--) {
+      const agent = agents[index];
+      if (agent) selected.set(agent.id, agent);
+    }
+  };
+  addNewest(orderAgentsByCreation(local));
+  addNewest(orderAgentsByCreation(remote));
+  return orderAgentsByCreation([...selected.values()]);
+};
+
 const isRunRecord = (
   value: SubagentRunRecord | SubagentHandleInfo,
 ): value is SubagentRunRecord => "startedAt" in value;
@@ -134,24 +153,83 @@ export const createDashboardSnapshot = (
   };
   for (const record of agentRecords) appendAgent(record);
 
-  const actors = state.actors.list().map((actor) => {
-    const worker = allAgents
-      .filter((agent) => agent.actorId === actor.id)
-      .sort((left, right) => {
-        const active = Number(activeStatuses.has(right.status)) - Number(activeStatuses.has(left.status));
-        const recency =
-          (numberFrom(right.updatedAt) ?? numberFrom(right.startedAt) ?? 0) -
-          (numberFrom(left.updatedAt) ?? numberFrom(left.startedAt) ?? 0);
-        return active || recency;
-      })[0];
-    return {
-      ...actor,
-      instructions: state.actors.instructions(actor.id),
-      recentMessages: state.actors.messages(actor.id, 12),
-      ...(worker ? { worker } : {}),
-    };
-  });
-  const agents = allAgents.filter((agent) => !agent.actorId);
+  const participants =
+    typeof state.participantInfos === "function"
+      ? state.participantInfos({ scope: "project" })
+      : [];
+  const participantById = new Map(participants.map((participant) => [participant.id, participant]));
+  const canonicalDirectoryActive = participants.length > 0;
+  const actors = state.actors
+    .list()
+    .filter(
+      (actor) =>
+        !canonicalDirectoryActive || participantById.get(actor.id)?.local === true,
+    )
+    .map((actor) => {
+      const worker = allAgents
+        .filter((agent) => agent.actorId === actor.id)
+        .sort((left, right) => {
+          const active =
+            Number(activeStatuses.has(right.status)) -
+            Number(activeStatuses.has(left.status));
+          const recency =
+            (numberFrom(right.updatedAt) ?? numberFrom(right.startedAt) ?? 0) -
+            (numberFrom(left.updatedAt) ?? numberFrom(left.startedAt) ?? 0);
+          return active || recency;
+        })[0];
+      return {
+        ...actor,
+        instructions: state.actors.instructions(actor.id),
+        recentMessages: state.actors.messages(actor.id, 12),
+        ...(worker ? { worker } : {}),
+      };
+    });
+  const localAgents = allAgents
+    .filter((agent) => !agent.actorId)
+    .map((agent) => {
+      const participant = participantById.get(agent.id);
+      return participant
+        ? {
+            ...agent,
+            ...(agent.parentId ? {} : participant.parentId ? { parentId: participant.parentId } : {}),
+            rootId: participant.rootId,
+            ownerHostId: participant.ownerHostId,
+            local: participant.local,
+            stale: participant.stale,
+            participantKind: participant.kind,
+            capabilities: [...participant.capabilities],
+          }
+        : agent;
+    });
+  const localAgentIds = new Set(localAgents.map((agent) => agent.id));
+  const remoteAgents: FabricUiAgent[] = participants
+    .filter((participant) => participant.kind === "agent" && !localAgentIds.has(participant.id))
+    .map((participant) => ({
+      id: participant.id,
+      name: participant.name,
+      status: participant.status,
+      runner: participant.runner,
+      transport: participant.transport,
+      cwd: participant.cwd ?? "",
+      ...(participant.model ? { model: participant.model } : {}),
+      ...(participant.thinking ? { thinking: participant.thinking } : {}),
+      ...(participant.currentTool ? { currentTool: participant.currentTool } : {}),
+      startedAt: participant.startedAt,
+      updatedAt: participant.updatedAt,
+      ...(participant.finishedAt !== undefined ? { finishedAt: participant.finishedAt } : {}),
+      ...(participant.turns !== undefined ? { turns: participant.turns } : {}),
+      ...(participant.toolCalls !== undefined ? { toolCalls: participant.toolCalls } : {}),
+      ...(participant.usage ? { usage: { ...participant.usage } } : {}),
+      ...(participant.parentId ? { parentId: participant.parentId } : {}),
+      rootId: participant.rootId,
+      ownerHostId: participant.ownerHostId,
+      local: participant.local,
+      stale: participant.stale,
+      participantKind: participant.kind,
+      capabilities: [...participant.capabilities],
+    }));
+  const agents = [...localAgents, ...remoteAgents];
+  const visibleAgents = boundedUiAgents(localAgents, remoteAgents);
   const activeRunIds = new Set(
     agents
       .filter((agent) => agent.runId && activeStatuses.has(agent.status))
@@ -168,7 +246,12 @@ export const createDashboardSnapshot = (
 
   const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
   const stateEntries = meshEntries
-    .filter((entry) => !entry.key.startsWith("actors/") && !entry.key.startsWith("sessions/"))
+    .filter(
+      (entry) =>
+        !entry.key.startsWith("actors/") &&
+        !entry.key.startsWith("sessions/") &&
+        !entry.key.startsWith("topology/"),
+    )
     .map(stateEntry)
     .sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
@@ -182,9 +265,10 @@ export const createDashboardSnapshot = (
     runs: orderedRuns,
     main: state.mainAgentInfo(context),
     peers: typeof state.peerInfos === "function" ? state.peerInfos() : [],
+    participants,
     widgetDismissedAt: state.widgetDismissedAt,
     globalActors: state.globalActors.list(),
-    agents: orderAgentsByCreation(agents).slice(-MAX_UI_AGENTS),
+    agents: visibleAgents,
     actors: actors.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;

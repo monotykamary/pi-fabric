@@ -41,6 +41,7 @@ export const renderProjectMeshPanel = ({
     agents: snapshot.agents,
     state: snapshot.state,
     events: snapshot.events,
+    ...(snapshot.participants ? { participants: snapshot.participants } : {}),
     now: snapshot.now,
   });
   const selectableEntityIds = new Set(entities.map((entity) => entity.id));
@@ -54,7 +55,7 @@ export const renderProjectMeshPanel = ({
   ).length;
   const stats = [
     `${snapshot.actors.length} actor${snapshot.actors.length === 1 ? "" : "s"}`,
-    `${model.participants.length} mesh agent${model.participants.length === 1 ? "" : "s"}`,
+    `${model.participants.length} participant${model.participants.length === 1 ? "" : "s"}`,
     `${model.topics.length} topic${model.topics.length === 1 ? "" : "s"}`,
     `${snapshot.state.length} state`,
     `${model.routes.length} route${model.routes.length === 1 ? "" : "s"}`,
@@ -139,7 +140,7 @@ export const renderProjectMeshPanel = ({
           ? entityTail(entityById.get(row.entityId)!, snapshot.now)
           : undefined,
         `${row.actors} actors`,
-        `${row.agents} agents`,
+        `${row.agents} participants`,
         `${row.topics} topics`,
         `${row.state} state`,
         `${row.routes} recent routes`,
@@ -232,7 +233,13 @@ export const renderProjectMeshPanel = ({
         .filter((value): value is string => Boolean(value))
         .join(" · ");
     }
-    const lead = `${prefix}${theme.fg("borderMuted", "├─")} ${colorStatus(
+    const connector =
+      row.kind === "meshAgent"
+        ? `${row.ancestorLast.map((last) => (last ? "  " : "│ ")).join("")}${
+            row.isLast ? "└─" : "├─"
+          }`
+        : "├─";
+    const lead = `${prefix}${theme.fg("borderMuted", connector)} ${colorStatus(
       theme,
       status,
       statusGlyph(status),

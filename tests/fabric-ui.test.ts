@@ -1528,6 +1528,27 @@ describe("Fabric dynamic UI", () => {
 
   it("queues user messages for Main, actors, and remote mesh agents", () => {
     const current = snapshot();
+    current.participants = [
+      {
+        format: 1,
+        id: "remote-agent",
+        kind: "agent",
+        rootId: "session:peer",
+        ownerHostId: "session:peer",
+        ownerIdentityId: "session:peer",
+        parentId: "session:peer",
+        name: "remote implementor",
+        status: "running",
+        runner: "pi",
+        transport: "process",
+        capabilities: ["steer", "followUp", "stop"],
+        startedAt: current.now - 1_000,
+        updatedAt: current.now,
+        controlProtocol: "v1",
+        local: false,
+        stale: false,
+      },
+    ];
     current.events.push({
       id: "external-agent",
       sequence: 2,
@@ -1538,12 +1559,13 @@ describe("Fabric dynamic UI", () => {
       createdAt: current.now,
     });
     const onTargetMessage = vi.fn();
+    const onAgentStop = vi.fn();
     const dashboard = new FabricDashboard(
       { requestRender: vi.fn(), terminal: { rows: 40 } } as unknown as TUI,
       theme,
       () => current,
       vi.fn(),
-      { onTargetMessage },
+      { onTargetMessage, onAgentStop },
     );
     try {
       dashboard.render(120);
@@ -1605,6 +1627,9 @@ describe("Fabric dynamic UI", () => {
         "continue remotely",
         "steer",
       );
+      dashboard.handleInput("x");
+      dashboard.handleInput("x");
+      expect(onAgentStop).toHaveBeenCalledWith("remote-agent");
     } finally {
       dashboard.dispose();
     }
@@ -2357,7 +2382,7 @@ describe("Fabric dynamic UI", () => {
       expect(mesh).toContain("Main");
       expect(mesh).toContain("Persistent actors");
       expect(mesh).toContain("advisor");
-      expect(mesh).toContain("Transient mesh agents");
+      expect(mesh).toContain("Project participants");
       expect(mesh).toContain("security-reviewer");
       expect(mesh).toContain("Topics");
       expect(mesh).toContain("team.review");

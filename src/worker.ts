@@ -81,6 +81,9 @@ const parseOptions = (): SubagentWorkerOptions => {
   const actorId = optional(args, "actor-id");
   const actorName = optional(args, "actor-name");
   const meshRoot = optional(args, "mesh-root");
+  const projectRoot = optional(args, "project-root");
+  const ownerHostId = optional(args, "owner-host-id");
+  const ownerIdentityId = optional(args, "owner-identity-id");
   const runRoot = optional(args, "run-root");
   const steerFile = optional(args, "steer-file");
   const branch = optional(args, "branch");
@@ -119,6 +122,9 @@ const parseOptions = (): SubagentWorkerOptions => {
     ...(actorId ? { actorId } : {}),
     ...(actorName ? { actorName } : {}),
     ...(meshRoot ? { meshRoot } : {}),
+    ...(projectRoot ? { projectRoot } : {}),
+    ...(ownerHostId ? { ownerHostId } : {}),
+    ...(ownerIdentityId ? { ownerIdentityId } : {}),
     ...(runnerSessionId ? { runnerSessionId } : {}),
     ...(runRoot ? { runRoot } : {}),
     ...(steerFile ? { steerFile } : {}),
@@ -390,6 +396,11 @@ const main = async (): Promise<void> => {
       ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
       ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
       ...(options.meshRoot ? { PI_FABRIC_MESH_ROOT: options.meshRoot } : {}),
+      ...(options.projectRoot ? { PI_FABRIC_PROJECT_ROOT: options.projectRoot } : {}),
+      ...(options.ownerHostId ? { PI_FABRIC_OWNER_HOST_ID: options.ownerHostId } : {}),
+      ...(options.ownerIdentityId
+        ? { PI_FABRIC_OWNER_IDENTITY_ID: options.ownerIdentityId }
+        : {}),
       ...(options.runRoot ? { PI_FABRIC_RUN_ROOT: options.runRoot } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],

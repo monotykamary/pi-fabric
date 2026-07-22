@@ -294,6 +294,10 @@ export class SubagentManager {
   readonly #currentDepth: number;
   readonly #fullCodeMode: boolean;
   readonly #mainAgentId: string | undefined;
+  readonly #meshRoot: string | undefined;
+  readonly #projectRoot: string;
+  readonly #hostId: string | undefined;
+  readonly #identityId: string | undefined;
   readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
   readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
   readonly #preparePiModel: ((model: string) => Promise<void>) | undefined;
@@ -320,6 +324,10 @@ export class SubagentManager {
       runRoot?: string;
       fullCodeMode?: boolean;
       mainAgentId?: string;
+      meshRoot?: string;
+      projectRoot?: string;
+      hostId?: string;
+      identityId?: string;
       onBackgroundComplete?: (result: SubagentRunResult) => void;
       preparePiModel?: (model: string) => Promise<void>;
     } = {},
@@ -340,6 +348,11 @@ export class SubagentManager {
     this.#fullCodeMode = options.fullCodeMode ?? true;
     this.#mainAgentId =
       options.mainAgentId ?? process.env.PI_FABRIC_MAIN_AGENT_ID;
+    this.#meshRoot = options.meshRoot ?? process.env.PI_FABRIC_MESH_ROOT;
+    this.#projectRoot =
+      options.projectRoot ?? process.env.PI_FABRIC_PROJECT_ROOT ?? cwd;
+    this.#hostId = options.hostId ?? process.env.PI_FABRIC_HOST_ID;
+    this.#identityId = options.identityId ?? process.env.PI_FABRIC_IDENTITY_ID;
     const inheritedBudget = activeBudgetState();
     this.#budget =
       inheritedBudget ??
@@ -511,7 +524,13 @@ export class SubagentManager {
         ...(sessionFile ? ["--session-file", sessionFile] : []),
         ...(request.actorId ? ["--actor-id", request.actorId] : []),
         ...(request.actorName ? ["--actor-name", request.actorName] : []),
-        ...(request.meshRoot ? ["--mesh-root", request.meshRoot] : []),
+        ...(request.meshRoot ?? this.#meshRoot
+          ? ["--mesh-root", request.meshRoot ?? this.#meshRoot!]
+          : []),
+        "--project-root",
+        this.#projectRoot,
+        ...(this.#hostId ? ["--owner-host-id", this.#hostId] : []),
+        ...(this.#identityId ? ["--owner-identity-id", this.#identityId] : []),
         ...(request.runnerSessionId
           ? ["--runner-session-id", request.runnerSessionId]
           : []),
@@ -1069,6 +1088,7 @@ export class SubagentManager {
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.recursive ? { recursive: true } : {}),
       ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
       ...(managed.transport.attachCommand
@@ -1121,6 +1141,7 @@ export class SubagentManager {
       ...(managed.thinking ? { thinking: managed.thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
+      ...(managed.recursive ? { recursive: true } : {}),
       ...(managed.runnerSessionId ? { runnerSessionId: managed.runnerSessionId } : {}),
       ...(managed.transport.sessionId ? { sessionId: managed.transport.sessionId } : {}),
       ...(managed.transport.attachCommand
