@@ -958,6 +958,22 @@ return true;
     });
   });
 
+  it("retains a bounded underlying cause for Bash invocation failures", () => {
+    const recorder = new FabricExecutionTraceRecorder();
+    const bash = recorder.issueCall("pi.bash", { command: "exit 7" });
+    bash.fail("invoke", new Error(`${"x".repeat(20_000)}\n\nCommand exited with code 7`));
+
+    const operation = recorder.seal("failed", []).operations[0];
+    expect(operation).toMatchObject({
+      ref: "pi.bash",
+      outcome: "failed",
+      failureStage: "invoke",
+    });
+    expect(operation?.error).toContain("Call failed during invoke: ");
+    expect(operation?.error).toContain("Command exited with code 7");
+    expect(Buffer.byteLength(operation?.error ?? "", "utf8")).toBeLessThanOrEqual(8 * 1024);
+  });
+
   it("bounds large call traces while preserving operation order", () => {
     const recorder = new FabricExecutionTraceRecorder();
     for (let index = 0; index < 500; index++) {

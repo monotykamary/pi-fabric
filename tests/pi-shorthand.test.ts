@@ -44,6 +44,44 @@ describe("pi bare-string shorthand", () => {
     expect(hostCall.mock.calls[2]?.[1]).toEqual({ path: "/x" });
     expect(result.value).toEqual({ a: "echo hi", b: "ls", c: "/x" });
   });
+
+  it("settles only ordinary Bash nonzero exits", async () => {
+    const checked = typeCheckFabricCode(
+      `const result = await pi.bashSettled({ command: "exit 7" });
+       return result.ok ? result.output : result.exitCode;`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(checked.errors).toEqual([]);
+
+    const hostCall = vi.fn(async (_ref: string, args: Record<string, unknown>) => {
+      if (args.command === "exit 7") {
+        throw new Error("before\n\n\nCommand exited with code 7");
+      }
+      throw new Error("Command timed out after 1000ms");
+    });
+    const result = await new QuickJsRuntime().execute(
+      `const settled = await pi.bashSettled({ command: "exit 7" });
+       let timeoutError;
+       try { await pi.bashSettled({ command: "sleep 2", timeout: 1 }); }
+       catch (error) { timeoutError = error instanceof Error ? error.message : String(error); }
+       return { settled, timeoutError };`,
+      hostCall,
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toEqual({
+      settled: {
+        ok: false,
+        output: "before\n",
+        details: null,
+        exitCode: 7,
+        error: "before\n\n\nCommand exited with code 7",
+      },
+      timeoutError: "Command timed out after 1000ms",
+    });
+    expect(hostCall.mock.calls.map((call) => call[0])).toEqual(["pi.bash", "pi.bash"]);
+  });
 });
 
 describe("pi argument alias flattening", () => {

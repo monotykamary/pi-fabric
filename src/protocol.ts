@@ -127,6 +127,9 @@ export interface FabricInvocationContext {
   // non-vision note has run; used as the single-call body + content text so the
   // preview shows the clean note instead of the swapped description.
   attachMedia?(blocks: FabricMediaBlock[], note?: string): void;
+  // Providers call this after mutable tool_call middleware has run so live and
+  // durable audit surfaces reflect the arguments actually passed to the tool.
+  updateArguments?(args: Record<string, unknown>): void;
   // Ephemeral renderer-only metadata. It is exposed to live Fabric previews but
   // never projected into the durable execution trace.
   attachPreview?(preview: unknown): void;

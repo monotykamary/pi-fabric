@@ -348,6 +348,17 @@ export class FabricActivityStore {
     this.#emit();
   }
 
+  updateCallArgs(runId: string, callId: string, args: Record<string, unknown>): void {
+    const run = this.#require(runId);
+    const call = this.#callIndex.get(runId)?.get(callId);
+    if (!call) return;
+    call.args = boundedData(args, MAX_CALL_PAYLOAD_CHARS) as Record<string, unknown>;
+    call.label = labelForCall(call.ref, args);
+    call.updatedAt = Date.now();
+    run.updatedAt = call.updatedAt;
+    this.#emit();
+  }
+
   updateCall(runId: string, callId: string, update: FabricInvocationActivityUpdate): void {
     const run = this.#require(runId);
     const call = this.#callIndex.get(runId)?.get(callId);

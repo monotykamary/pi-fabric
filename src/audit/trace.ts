@@ -113,6 +113,19 @@ const truncateUtf8 = (value: string, maxBytes: number): string => {
   return `${value.slice(0, low)}${suffix}`;
 };
 
+const truncateUtf8Middle = (value: string, maxBytes: number): string => {
+  if (byteLength(value) <= maxBytes) return value;
+  const marker = "\n…[truncated]\n";
+  const available = Math.max(0, maxBytes - byteLength(marker));
+  const headBytes = Math.floor(available / 2);
+  const tailBytes = available - headBytes;
+  const head = truncateUtf8(value, headBytes + byteLength("…[truncated]"))
+    .replace(/…\[truncated\]$/, "");
+  let tailStart = value.length;
+  while (tailStart > 0 && byteLength(value.slice(tailStart - 1)) <= tailBytes) tailStart--;
+  return `${head}${marker}${value.slice(tailStart)}`;
+};
+
 const boundedIdentifier = (value: string, maxBytes = MAX_IDENTIFIER_BYTES): string =>
   truncateUtf8(value, maxBytes);
 
@@ -336,13 +349,21 @@ const lexicalIdentity = (ref: string): { provider?: string; action?: string } =>
   };
 };
 
+const errorCause = (error: unknown): string | undefined => {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
+  const trimmed = message?.trim();
+  return trimmed ? truncateUtf8Middle(trimmed, MAX_ERROR_BYTES - 256) : undefined;
+};
+
 const failureMessage = (
   stage: FabricExecutionFailureStageV1,
   outcome: FabricExecutionOutcomeV1,
+  cause?: string,
 ): string => {
   if (outcome === "timed_out") return "Call timed out";
   if (outcome === "aborted") return "Call aborted";
-  return `Call failed during ${stage}`;
+  const summary = `Call failed during ${stage}`;
+  return cause ? `${summary}: ${cause}` : summary;
 };
 
 const executionErrorMessage = (outcome: FabricExecutionOutcomeV1): string | undefined => {
@@ -389,13 +410,20 @@ export class FabricExecutionTraceOperationHandle {
 
   fail(
     stage: FabricExecutionFailureStageV1,
-    _error: unknown,
+    error: unknown,
     outcome: FabricExecutionOutcomeV1 = "failed",
     result?: unknown,
   ): void {
     if (!this.operation || this.recorder.sealed) return;
     this.operation.failureStage = stage;
-    this.operation.error = sanitizeString(failureMessage(stage, outcome), MAX_ERROR_BYTES);
+    const cause =
+      this.operation.projectionRef === "pi.bash" && stage === "invoke" && outcome === "failed"
+        ? errorCause(error)
+        : undefined;
+    this.operation.error = sanitizeString(
+      failureMessage(stage, outcome, cause),
+      MAX_ERROR_BYTES,
+    );
     this.operation.outcome = outcome;
     const projected = projectFabricAuditResult(this.operation.projectionRef, result);
     if (projected !== undefined) {
@@ -458,10 +486,16 @@ export class FabricExecutionTraceRecorder {
         operation.outcome = "timed_out";
       }
       if (operation.outcome !== "succeeded") {
-        operation.error = sanitizeString(
-          failureMessage(operation.failureStage ?? "invoke", operation.outcome),
-          MAX_ERROR_BYTES,
-        );
+        const preserveBashCause =
+          operation.projectionRef === "pi.bash" &&
+          operation.outcome === "failed" &&
+          operation.error !== undefined;
+        if (!preserveBashCause) {
+          operation.error = sanitizeString(
+            failureMessage(operation.failureStage ?? "invoke", operation.outcome),
+            MAX_ERROR_BYTES,
+          );
+        }
       }
     }
 

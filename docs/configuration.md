@@ -145,6 +145,8 @@ return {
 };
 ```
 
+Pi core calls reject when the native tool reports an error; the `{ ok: true, output, details }` shape describes successful `bash`, `edit`, and `write` calls. Catch a rejection when recovery is local. When a nonzero shell exit is an expected result rather than an exception, use `pi.bashSettled(args)`. It returns either the normal success result or `{ ok: false, output, details: null, exitCode, error }`. Timeout, cancellation, approval, security, and spawn failures still reject.
+
 ### Full code mode (default)
 
 `fullCodeMode: true` is the default. Fabric removes active Pi core tools from the parent model and exposes their implementations only inside `fabric_exec` through `pi.*`. Registered overrides such as security gates and code previews are captured too, so `pi.read()` continues to route through the override rather than bypassing it.

@@ -112,6 +112,7 @@ describe("FabricActivityStore", () => {
     const store = new FabricActivityStore();
     store.start("run-d");
     store.beginCall("run-d", { callId: "bash-1", ref: "pi.bash", args: { command: "seq 1 3" } });
+    store.updateCallArgs("run-d", "bash-1", { command: "export SAFE=true\nseq 1 3" });
     store.finishCall("run-d", "bash-1", { success: true, result: { ok: true, output: "line1\nline2" } });
     store.beginCall("run-d", { callId: "read-1", ref: "pi.read", args: { path: "/a.ts" } });
     store.finishCall("run-d", "read-1", {
@@ -124,7 +125,7 @@ describe("FabricActivityStore", () => {
 
     const run = store.get("run-d");
     const bash = run?.calls.find((c) => c.id === "bash-1");
-    expect(bash?.args).toEqual({ command: "seq 1 3" });
+    expect(bash?.args).toEqual({ command: "export SAFE=true\nseq 1 3" });
     expect(bash?.result).toEqual({ ok: true, output: "line1\nline2" });
     expect(bash?.detail).toBe("line1 line2");
     const read = run?.calls.find((c) => c.id === "read-1");

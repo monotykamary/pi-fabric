@@ -17,12 +17,15 @@ One type-checked TS program in a fresh executor (isolated QuickJS by default). O
 | Tool | Form | Returns |
 |------|------|---------|
 | `read` | `path` \| `{path,offset?,limit?}` | `string` |
-| `bash` | `command` \| `{command,timeout?}` | `{ok,output,details}` |
+| `bash` | `command` \| `{command,timeout?}` | `{ok:true,output,details}`; rejects on errors |
+| `bashSettled` | same as `bash` | Bash success or `{ok:false,output,details:null,exitCode,error}` |
 | `grep` | `pattern` \| `{pattern,path?,glob?,ignoreCase?,literal?,context?,limit?}` \| `(pattern, path?, limit?)` | `string` |
 | `find` | `pattern` \| `{pattern,path?,limit?}` \| `(pattern, path?, limit?)` | `string` |
 | `ls` | `path?` \| `{path?,limit?}` | `string` |
 | `edit` | `{path,edits:[{oldText,newText}]}` \| `{path,oldText,newText}` \| `(path, oldText, newText)` | `{ok,output,details}` |
 | `write` | `{path,content}` \| `(path, content)` | `{ok,output,details}` |
+
+`bashSettled` converts only an ordinary nonzero exit into a result. Timeout, cancellation, approval, security, and spawn failures still reject. Other Pi core tool errors reject normally.
 
 Aliases (normalized to canonical before the host validates args): `cmd`/`shell`/`cmdline`→`command`; Bash `timeout` is in seconds, while `timeoutMs` is converted from milliseconds to `timeout`; `query`/`regex`/`search`→`pattern`; `ic`/`caseInsensitive`→`ignoreCase`; `globPattern`→`glob`; `ctx`→`context`; `max`→`limit`; `file`/`dir`→`path`; `start`→`offset`; `old`→`oldText`; `new`/`replacement`→`newText`; `contents`/`body`/`text`→`content`. Misspelled keys still fail the excess-property type check.
 

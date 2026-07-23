@@ -158,6 +158,7 @@ export class CapturedToolsProvider implements FabricProvider {
         toolCallId,
         input: args,
       });
+      context.updateArguments?.(args);
       if (preflight?.block) {
         throw new Error(preflight.reason || `Captured tool ${entry.name} was blocked`);
       }

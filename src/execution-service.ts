@@ -276,6 +276,8 @@ export class FabricExecutionService {
           this.activity.beginCall(options.parentToolCallId, event);
         } else if (event.type === "call_update") {
           this.activity.updateCall(options.parentToolCallId, event.callId, event.update);
+        } else if (event.type === "call_args") {
+          this.activity.updateCallArgs(options.parentToolCallId, event.callId, event.args);
         } else {
           this.activity.finishCall(options.parentToolCallId, event.callId, event);
         }

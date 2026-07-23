@@ -185,14 +185,28 @@ globalThis.pi = new Proxy({}, {
     if (property === "then") return undefined;
     const name = String(property);
     return (...rest) => {
+      const toolName = name === "bashSettled" ? "bash" : name;
       let args;
       if (rest.length <= 1) {
         const first = rest.length === 1 ? rest[0] : undefined;
         args = first === undefined ? {} : first;
       } else {
-        args = __positionalToArgs(name, rest);
+        args = __positionalToArgs(toolName, rest);
       }
-      return __call("pi." + name, __normalizePiArgs(name, args));
+      const call = __call("pi." + toolName, __normalizePiArgs(toolName, args));
+      if (name !== "bashSettled") return call;
+      return call.catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const match = /(?:^|\\n\\n)Command exited with code (\\d+)$/.exec(message);
+        if (!match) throw error;
+        return {
+          ok: false,
+          output: message.slice(0, match.index),
+          details: null,
+          exitCode: Number(match[1]),
+          error: message,
+        };
+      });
     };
   },
 });

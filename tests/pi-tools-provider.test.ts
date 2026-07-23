@@ -6,6 +6,7 @@ import {
   type ExtensionRunner,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+import { FabricExecutionTraceRecorder } from "../src/audit/trace.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry, type FabricCallAudit } from "../src/core/action-registry.js";
@@ -66,6 +67,41 @@ describe("PiToolsProvider lifecycle", () => {
     expect(toolResult).toMatchObject({ toolName: "ls", isError: false });
     // ActionRegistry rewrites nestedToolCallId to fabric_<uuid>.
     expect(toolResult.toolCallId.startsWith(NESTED_TOOL_CALL_ID_PREFIX)).toBe(true);
+  });
+
+  it("synchronizes tool_call argument mutations across audit surfaces", async () => {
+    const runner = makeRunner({
+      emitToolCall: vi.fn(async (event: { input: Record<string, unknown> }) => {
+        event.input.command = `export EXAMPLE=true\n${String(event.input.command)}`;
+      }),
+    });
+    const registry = registerWithRunner(runner);
+    const audits: FabricCallAudit[] = [];
+    const events: unknown[] = [];
+    const trace = new FabricExecutionTraceRecorder();
+
+    const result = await registry.invoke(
+      "pi.bash",
+      { command: `printf "executed:$EXAMPLE\n"` },
+      {
+        ...baseContext,
+        audits,
+        trace,
+        observeInvocation: (event) => events.push(event),
+      },
+    ) as { output: string };
+
+    const executedCommand = `export EXAMPLE=true\nprintf "executed:$EXAMPLE\n"`;
+    expect(result.output).toBe("executed:true\n");
+    expect(audits[0]?.args).toEqual({ command: executedCommand });
+    expect(audits[0]?.preview).toMatchObject({ bashCommand: executedCommand });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "call_args",
+      args: { command: executedCommand },
+    }));
+    expect(trace.seal("succeeded", []).operations[0]?.args).toEqual({
+      command: executedCommand,
+    });
   });
 
   it("applies a tool_result content patch to a core tool result", async () => {

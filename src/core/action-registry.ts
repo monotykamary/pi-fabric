@@ -53,6 +53,11 @@ export type FabricRegistryActivityEvent =
       update: FabricInvocationActivityUpdate;
     }
   | {
+      type: "call_args";
+      callId: string;
+      args: Record<string, unknown>;
+    }
+  | {
       type: "call_end";
       callId: string;
       success: boolean;
@@ -507,6 +512,19 @@ export class ActionRegistry {
           if (!activeAudit.media) activeAudit.media = [];
           for (const block of blocks) activeAudit.media.push(block);
           if (note) activeAudit.mediaNote = note;
+        },
+        updateArguments(updatedArgs) {
+          const updatedPreview = previewArgs(ref, updatedArgs);
+          activeAudit.args = boundedPreviewValue(
+            updatedPreview,
+            MAX_AUDIT_VALUE_CHARS,
+          ) as Record<string, unknown>;
+          traceOperation?.prepared(updatedArgs);
+          context.observeInvocation?.({
+            type: "call_args",
+            callId: nestedToolCallId,
+            args: updatedPreview,
+          });
         },
         attachPreview(preview) {
           activeAudit.preview = preview;
