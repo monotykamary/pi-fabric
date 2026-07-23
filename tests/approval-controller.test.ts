@@ -1,6 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
-import { ApprovalController } from "../src/core/approval-controller.js";
+import {
+  ApprovalController,
+  FabricSessionApprovals,
+} from "../src/core/approval-controller.js";
 import type { ResolvedFabricAction } from "../src/core/action-registry.js";
 
 const action: ResolvedFabricAction = {
@@ -35,29 +38,47 @@ describe("ApprovalController", () => {
     await expect(controller.approve(action)).rejects.toThrow("no interactive UI");
   });
 
-  it("notifies and shows the TUI permission wizard once per risk class", async () => {
-    const custom = vi.fn(async () => "allow");
+  it("allows only the selected call when Allow once is chosen", async () => {
+    const custom = vi.fn(async () => "allow-once");
     const notify = vi.fn();
     const controller = new ApprovalController(policies, tuiContext(custom, notify));
 
     await controller.approve(action);
     await controller.approve({ ...action, ref: "demo.writeAgain" });
 
-    expect(custom).toHaveBeenCalledOnce();
-    expect(notify).toHaveBeenNthCalledWith(
-      1,
-      "Fabric permission requested: demo.write needs write access",
-      "warning",
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(notify).toHaveBeenCalledWith("Allowed once: demo.write", "info");
+    expect(notify).toHaveBeenCalledWith("Allowed once: demo.writeAgain", "info");
+  });
+
+  it("shares an Always allow grant across the Pi session", async () => {
+    const custom = vi.fn(async () => "allow-session");
+    const notify = vi.fn();
+    const session = new FabricSessionApprovals();
+    const firstExecution = new ApprovalController(
+      policies,
+      tuiContext(custom, notify),
+      session,
     );
-    expect(notify).toHaveBeenNthCalledWith(
-      2,
-      "Allowed write access for the current Fabric execution",
+    const laterExecution = new ApprovalController(
+      policies,
+      tuiContext(custom, notify),
+      session,
+    );
+
+    await firstExecution.approve(action);
+    await laterExecution.approve({ ...action, ref: "demo.writeLater" });
+
+    expect(custom).toHaveBeenCalledOnce();
+    expect(session.approvedRisks).toContain("write");
+    expect(notify).toHaveBeenLastCalledWith(
+      "Allowed write access for this Pi session",
       "info",
     );
   });
 
-  it("uses an RPC-compatible select dialog", async () => {
-    const select = vi.fn(async () => "Allow write access");
+  it("uses an RPC-compatible three-choice dialog", async () => {
+    const select = vi.fn(async () => "Allow write access for this session");
     const notify = vi.fn();
     const controller = new ApprovalController(policies, {
       hasUI: true,
@@ -69,7 +90,7 @@ describe("ApprovalController", () => {
 
     expect(select).toHaveBeenCalledWith(
       "Pi Fabric permission · demo.write requests write access. Write data",
-      ["Allow write access", "Deny"],
+      ["Allow once", "Allow write access for this session", "Deny"],
     );
   });
 
@@ -87,26 +108,32 @@ describe("ApprovalController", () => {
     );
   });
 
-  it("coalesces concurrent approval requests for workflow fan-out", async () => {
-    let release: (() => void) | undefined;
-    const custom = vi.fn(
-      () =>
-        new Promise<string>((resolve) => {
-          release = () => resolve("allow");
-        }),
-    );
+  it("serializes concurrent one-time requests instead of widening the grant", async () => {
+    const custom = vi.fn(async () => "allow-once");
     const controller = new ApprovalController(policies, tuiContext(custom));
-    const approvals = Promise.all([
+
+    await Promise.all([
       controller.approve(action),
       controller.approve({ ...action, ref: "demo.parallelWrite" }),
     ]);
+
+    expect(custom).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets a queued request inherit a session grant without a second prompt", async () => {
+    const custom = vi.fn(async () => "allow-session");
+    const controller = new ApprovalController(policies, tuiContext(custom));
+
+    await Promise.all([
+      controller.approve(action),
+      controller.approve({ ...action, ref: "demo.parallelWrite" }),
+    ]);
+
     expect(custom).toHaveBeenCalledOnce();
-    release?.();
-    await approvals;
   });
 
   it("denies actions blocked by policy without prompting", async () => {
-    const custom = vi.fn(async () => "allow");
+    const custom = vi.fn(async () => "allow-once");
     const controller = new ApprovalController(policies, tuiContext(custom));
     await expect(controller.approve({ ...action, risk: "execute" })).rejects.toThrow(
       "denied by the Fabric execute policy",

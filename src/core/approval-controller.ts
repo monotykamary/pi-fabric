@@ -21,34 +21,55 @@ const inheritedRisks = (): FabricRisk[] => {
     .filter((risk): risk is FabricRisk => allowed.has(risk as FabricRisk));
 };
 
-type ApprovalChoice = "allow" | "deny";
+type ApprovalChoice = "allow-once" | "allow-session" | "deny";
 
-const allowLabel = (risk: FabricRisk): string => `Allow ${risk} access`;
+const onceLabel = "Allow once";
+const sessionLabel = (risk: FabricRisk): string =>
+  `Allow ${risk} access for this session`;
+
+export class FabricSessionApprovals {
+  readonly approvedRisks = new Set<FabricRisk>();
+  #tail: Promise<void> = Promise.resolve();
+
+  async serialize<T>(request: () => Promise<T>): Promise<T> {
+    const previous = this.#tail;
+    let release: (() => void) | undefined;
+    this.#tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await request();
+    } finally {
+      release?.();
+    }
+  }
+}
 
 export class ApprovalController {
-  readonly #approvedRisks = new Set<FabricRisk>(inheritedRisks());
-  readonly #pendingApprovals = new Map<FabricRisk, Promise<void>>();
+  readonly #inheritedRisks = new Set<FabricRisk>(inheritedRisks());
 
   constructor(
     readonly config: FabricApprovalConfig,
     readonly context: ExtensionContext,
+    readonly sessionApprovals = new FabricSessionApprovals(),
   ) {}
 
   async approve(action: ResolvedFabricAction): Promise<void> {
     const mode = this.config[action.risk];
-    if (mode === "allow" || this.#approvedRisks.has(action.risk)) return;
+    if (
+      mode === "allow" ||
+      this.#inheritedRisks.has(action.risk) ||
+      this.sessionApprovals.approvedRisks.has(action.risk)
+    ) return;
     if (mode === "deny") {
       throw new Error(`${action.ref} is denied by the Fabric ${action.risk} policy`);
     }
-    const pending = this.#pendingApprovals.get(action.risk);
-    if (pending) return pending;
-    const approval = this.#requestApproval(action);
-    this.#pendingApprovals.set(action.risk, approval);
-    try {
-      await approval;
-    } finally {
-      this.#pendingApprovals.delete(action.risk);
-    }
+
+    await this.sessionApprovals.serialize(async () => {
+      if (this.sessionApprovals.approvedRisks.has(action.risk)) return;
+      await this.#requestApproval(action);
+    });
   }
 
   async #requestApproval(action: ResolvedFabricAction): Promise<void> {
@@ -62,24 +83,30 @@ export class ApprovalController {
       ? await this.#requestTuiApproval(action)
       : await this.#requestDialogApproval(action);
 
-    if (choice !== "allow") {
+    if (choice === "deny") {
       this.context.ui.notify(`Denied ${action.risk} access for ${action.ref}`, "warning");
       throw new Error(`User denied ${action.risk} access for ${action.ref}`);
     }
-    this.#approvedRisks.add(action.risk);
-    this.context.ui.notify(
-      `Allowed ${action.risk} access for the current Fabric execution`,
-      "info",
-    );
+    if (choice === "allow-session") {
+      this.sessionApprovals.approvedRisks.add(action.risk);
+      this.context.ui.notify(
+        `Allowed ${action.risk} access for this Pi session`,
+        "info",
+      );
+      return;
+    }
+    this.context.ui.notify(`Allowed once: ${action.ref}`, "info");
   }
 
   async #requestDialogApproval(action: ResolvedFabricAction): Promise<ApprovalChoice> {
-    const allowed = allowLabel(action.risk);
+    const session = sessionLabel(action.risk);
     const picked = await this.context.ui.select(
       `Pi Fabric permission · ${action.ref} requests ${action.risk} access. ${action.description}`,
-      [allowed, "Deny"],
+      [onceLabel, session, "Deny"],
     );
-    return picked === allowed ? "allow" : "deny";
+    if (picked === onceLabel) return "allow-once";
+    if (picked === session) return "allow-session";
+    return "deny";
   }
 
   async #requestTuiApproval(action: ResolvedFabricAction): Promise<ApprovalChoice> {
@@ -102,7 +129,7 @@ export class ApprovalController {
       container.addChild(new Spacer(1));
       container.addChild(
         new Text(
-          theme.fg("dim", "Approval applies to this risk class for the current Fabric execution."),
+          theme.fg("dim", "Choose whether to allow only this call or this risk class for the session."),
           1,
           0,
         ),
@@ -110,9 +137,14 @@ export class ApprovalController {
       container.addChild(new Spacer(1));
       const items: SelectItem[] = [
         {
-          value: "allow",
-          label: allowLabel(action.risk),
-          description: "Continue this Fabric execution",
+          value: "allow-once",
+          label: onceLabel,
+          description: "Run only this requested action",
+        },
+        {
+          value: "allow-session",
+          label: sessionLabel(action.risk),
+          description: "Do not ask again for this risk class until the Pi session ends",
         },
         {
           value: "deny",

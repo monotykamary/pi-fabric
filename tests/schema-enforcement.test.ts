@@ -620,7 +620,7 @@ describe("Schema central gate", () => {
     expect(fs.existsSync(path.join(setup.cwd, "bypass.txt"))).toBe(false);
   });
 
-  it("requires independent write and execute approvals for schema.commit", async () => {
+  it("retains independent schema.commit grants for the Pi session", async () => {
     const setup = fixture("off");
     const registry = new ActionRegistry();
     registry.register({
@@ -637,21 +637,27 @@ describe("Schema central gate", () => {
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.approvals.write = "ask";
     config.approvals.execute = "ask";
-    const select = vi.fn(async (_title: string, options: string[]) => options[0]);
+    const select = vi.fn(async (_title: string, options: string[]) => options[1]);
     const service = new FabricExecutionService(registry, config);
-    const result = await service.execute({
+    const context = {
+      cwd: setup.cwd,
+      hasUI: true,
+      mode: "rpc",
+      ui: { select, notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const execute = (parentToolCallId: string) => service.execute({
       code: 'return tools.call({ ref: "schema.commit", args: {} });',
       signal: undefined,
-      parentToolCallId: "approval",
-      context: {
-        cwd: setup.cwd,
-        hasUI: true,
-        mode: "rpc",
-        ui: { select, notify: vi.fn() },
-      } as unknown as ExtensionContext,
+      parentToolCallId,
+      context,
       onPartial() {},
     });
+
+    const result = await execute("approval-first");
+    const laterResult = await execute("approval-later");
+
     expect(result.success).toBe(true);
+    expect(laterResult.success).toBe(true);
     expect(select).toHaveBeenCalledTimes(2);
     const titles = select.mock.calls.map((call) => call[0]);
     expect(titles).toEqual([

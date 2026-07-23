@@ -23,7 +23,10 @@ import {
   type FabricCallAudit,
   type FabricRegistryActivityEvent,
 } from "./core/action-registry.js";
-import { ApprovalController } from "./core/approval-controller.js";
+import {
+  ApprovalController,
+  FabricSessionApprovals,
+} from "./core/approval-controller.js";
 import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
@@ -111,6 +114,7 @@ export interface FabricExecutionOptions {
 export class FabricExecutionService {
   #runtime: QuickJsRuntime | NodeProcessRuntime | undefined;
   #runtimeKind: FabricConfig["executor"]["runtime"] | undefined;
+  readonly #sessionApprovals = new FabricSessionApprovals();
 
   constructor(
     readonly registry: ActionRegistry,
@@ -144,7 +148,11 @@ export class FabricExecutionService {
       };
     }
 
-    const approval = new ApprovalController(this.config.approvals, options.context);
+    const approval = new ApprovalController(
+      this.config.approvals,
+      options.context,
+      this.#sessionApprovals,
+    );
     const audits: FabricCallAudit[] = [];
     const phases: string[] = [];
     const workflowSpans = new Map<
