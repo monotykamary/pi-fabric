@@ -771,6 +771,7 @@ export const createFabricExecTool = (
       return {
         content,
         details: persistedDetails,
+        ...(result.usage ? { usage: result.usage } : {}),
         ...(terminate ? { terminate: true } : {}),
         ...(result.success ? {} : { isError: true }),
       };

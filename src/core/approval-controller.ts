@@ -13,6 +13,10 @@ import {
 import type { FabricApprovalConfig } from "../config.js";
 import type { FabricRisk } from "../protocol.js";
 import type { ResolvedFabricAction } from "./action-registry.js";
+import {
+  FabricAutoApprovalClassifier,
+  type FabricAutoApprovalDecision,
+} from "./auto-approval-classifier.js";
 
 const inheritedRisks = (): FabricRisk[] => {
   const allowed = new Set<FabricRisk>(["read", "write", "execute", "network", "agent"]);
@@ -46,6 +50,16 @@ export class FabricSessionApprovals {
   }
 }
 
+export interface FabricAutoApprovalAudit {
+  action: string;
+  risk: FabricRisk;
+  decision: "allow" | "escalate";
+  reason: string;
+  model?: string;
+  error?: string;
+  at: number;
+}
+
 export class ApprovalController {
   readonly #inheritedRisks = new Set<FabricRisk>(inheritedRisks());
 
@@ -53,9 +67,17 @@ export class ApprovalController {
     readonly config: FabricApprovalConfig,
     readonly context: ExtensionContext,
     readonly sessionApprovals = new FabricSessionApprovals(),
+    readonly classifier = new FabricAutoApprovalClassifier(),
+    readonly onAutoDecision?: (
+      audit: FabricAutoApprovalAudit,
+      decision?: FabricAutoApprovalDecision,
+    ) => void,
   ) {}
 
-  async approve(action: ResolvedFabricAction): Promise<void> {
+  async approve(
+    action: ResolvedFabricAction,
+    args: Record<string, unknown> = {},
+  ): Promise<void> {
     const mode = this.config[action.risk];
     if (
       mode === "allow" ||
@@ -68,20 +90,66 @@ export class ApprovalController {
 
     await this.sessionApprovals.serialize(async () => {
       if (this.sessionApprovals.approvedRisks.has(action.risk)) return;
-      await this.#requestApproval(action);
+      if (mode !== "auto") {
+        await this.#requestApproval(action);
+        return;
+      }
+
+      let decision: FabricAutoApprovalDecision;
+      try {
+        decision = await this.classifier.classify(
+          action,
+          args,
+          this.context,
+          this.config.model,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.onAutoDecision?.({
+          action: action.ref,
+          risk: action.risk,
+          decision: "escalate",
+          reason: "Classifier unavailable; explicit approval required",
+          error: message,
+          at: Date.now(),
+        });
+        await this.#requestApproval(
+          action,
+          `Auto mode could not determine safety: ${message}`,
+        );
+        return;
+      }
+      this.onAutoDecision?.({
+        action: action.ref,
+        risk: action.risk,
+        decision: decision.decision,
+        reason: decision.reason,
+        model: decision.model,
+        at: Date.now(),
+      }, decision);
+      if (decision.decision === "allow") return;
+      await this.#requestApproval(
+        action,
+        `Auto mode escalated (${decision.model}): ${decision.reason}`,
+      );
     });
   }
 
-  async #requestApproval(action: ResolvedFabricAction): Promise<void> {
+  async #requestApproval(
+    action: ResolvedFabricAction,
+    escalationReason?: string,
+  ): Promise<void> {
     if (!this.context.hasUI) {
       throw new Error(`${action.ref} requires approval, but no interactive UI is available`);
     }
 
-    const notification = `Fabric permission requested: ${action.ref} needs ${action.risk} access`;
+    const notification = escalationReason
+      ? `Fabric auto mode needs approval: ${action.ref} · ${escalationReason}`
+      : `Fabric permission requested: ${action.ref} needs ${action.risk} access`;
     this.context.ui.notify(notification, "warning");
     const choice = this.context.mode === "tui"
-      ? await this.#requestTuiApproval(action)
-      : await this.#requestDialogApproval(action);
+      ? await this.#requestTuiApproval(action, escalationReason)
+      : await this.#requestDialogApproval(action, escalationReason);
 
     if (choice === "deny") {
       this.context.ui.notify(`Denied ${action.risk} access for ${action.ref}`, "warning");
@@ -98,10 +166,16 @@ export class ApprovalController {
     this.context.ui.notify(`Allowed once: ${action.ref}`, "info");
   }
 
-  async #requestDialogApproval(action: ResolvedFabricAction): Promise<ApprovalChoice> {
+  async #requestDialogApproval(
+    action: ResolvedFabricAction,
+    escalationReason?: string,
+  ): Promise<ApprovalChoice> {
     const session = sessionLabel(action.risk);
     const picked = await this.context.ui.select(
-      `Pi Fabric permission · ${action.ref} requests ${action.risk} access. ${action.description}`,
+      [
+        `Pi Fabric permission · ${action.ref} requests ${action.risk} access. ${action.description}`,
+        escalationReason,
+      ].filter(Boolean).join(" · "),
       [onceLabel, session, "Deny"],
     );
     if (picked === onceLabel) return "allow-once";
@@ -109,7 +183,10 @@ export class ApprovalController {
     return "deny";
   }
 
-  async #requestTuiApproval(action: ResolvedFabricAction): Promise<ApprovalChoice> {
+  async #requestTuiApproval(
+    action: ResolvedFabricAction,
+    escalationReason?: string,
+  ): Promise<ApprovalChoice> {
     const choice = await this.context.ui.custom<ApprovalChoice>((tui, theme, _keybindings, done) => {
       const container = new Container();
       container.addChild(new DynamicBorder((text: string) => theme.fg("warning", text)));
@@ -126,6 +203,12 @@ export class ApprovalController {
         ),
       );
       container.addChild(new Text(theme.fg("muted", action.description), 1, 0));
+      if (escalationReason) {
+        container.addChild(new Spacer(1));
+        container.addChild(
+          new Text(theme.fg("warning", escalationReason), 1, 0),
+        );
+      }
       container.addChild(new Spacer(1));
       container.addChild(
         new Text(

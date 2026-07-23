@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.80.6
+        version: 0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
       '@jitl/quickjs-singlefile-mjs-release-sync':
         specifier: ^0.32.0
         version: 0.32.0
@@ -2058,7 +2061,7 @@ snapshots:
       '@aws-sdk/types': 3.974.0
       '@smithy/core': 3.29.3
       '@smithy/fetch-http-handler': 5.6.5
-      '@smithy/node-http-handler': 4.7.3
+      '@smithy/node-http-handler': 4.9.5
       '@smithy/types': 4.16.1
       tslib: 2.8.1
 

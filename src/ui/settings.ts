@@ -40,7 +40,7 @@ const SUBMENU_LAYOUT: SelectListLayoutOptions = {
 };
 
 const BOOLEANS = ["true", "false"] as const;
-const APPROVAL_MODES = ["allow", "ask", "deny"] as const;
+const APPROVAL_MODES = ["allow", "ask", "auto", "deny"] as const;
 const RUNNERS = ["pi", "claude"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
@@ -206,6 +206,7 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
   // for no override; persist an empty string so normalizeFabricConfig drops it.
   // Subagents inherit; prewalk asks interactively when it is armed.
   if (
+    id === "approvals.model" ||
     id === "prewalk.model" ||
     id === "subagents.model" ||
     id === "subagents.claude.model"
@@ -646,26 +647,39 @@ export const buildFabricSettingsItems = (
       submenu: sectionSubmenu(
         theme,
         "Approvals",
-        "Per-action approval policy for tools invoked from inside fabric_exec.",
+        "Per-action approval policy for tools invoked from inside fabric_exec. Auto routes each call through a dedicated safety classifier and escalates uncertain actions to you.",
         [
+          setting("approvals.model", "Auto model", config.approvals.model || INHERIT_VALUE, {
+            description:
+              "Pi model used as the auto-mode safety classifier. Inherit uses the active session model. The classifier has no executable tools and returns a structured allow-or-escalate verdict.",
+            submenu: modelPickerSubmenu(
+              theme,
+              options.modelSource,
+              {
+                headerText:
+                  "Safety classifier for auto approval policies. Pick Inherit to use the active Pi session model.",
+                inheritName: "Use the active Pi session model",
+              },
+            ),
+          }),
           setting("approvals.read", "Read", config.approvals.read, {
-            description: "Approval policy for read operations.",
+            description: "Approval policy for read operations. Read is normally safe to leave allowed.",
             values: APPROVAL_MODES,
           }),
           setting("approvals.write", "Write", config.approvals.write, {
-            description: "Approval policy for write and edit operations.",
+            description: "Approval policy for write and edit operations. Auto classifies each call.",
             values: APPROVAL_MODES,
           }),
           setting("approvals.execute", "Execute", config.approvals.execute, {
-            description: "Approval policy for shell execution.",
+            description: "Approval policy for shell execution. Auto classifies each command.",
             values: APPROVAL_MODES,
           }),
           setting("approvals.network", "Network", config.approvals.network, {
-            description: "Approval policy for network operations.",
+            description: "Approval policy for network operations. Auto classifies each destination and payload.",
             values: APPROVAL_MODES,
           }),
           setting("approvals.agent", "Agent", config.approvals.agent, {
-            description: "Approval policy for subagent and actor operations.",
+            description: "Approval policy for subagent and actor operations. Auto classifies each request.",
             values: APPROVAL_MODES,
           }),
         ],

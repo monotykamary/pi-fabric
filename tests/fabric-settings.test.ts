@@ -288,6 +288,38 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("High");
   });
 
+  it("offers auto policies and a dedicated classifier model picker", () => {
+    const applied: Array<{ id: string; value: unknown }> = [];
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.approvals.write = "auto";
+    const items = buildFabricSettingsItems(
+      theme,
+      config,
+      (id, value) => applied.push({ id, value }),
+      { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
+    );
+    const approvals = items.find((item) => item.id === "approvals")!;
+    const section = approvals.submenu!("", () => {}) as any;
+    const list = section.settingsList as any;
+    const write = list.items.find((item: { id: string }) => item.id === "approvals.write");
+    expect(write.currentValue).toBe("auto");
+    expect(write.values).toContain("auto");
+    expect(section.render(100).join("\n")).toContain("Auto model ›");
+    expect(section.render(100).join("\n")).toContain("Inherit");
+
+    list.selectedIndex = list.items.findIndex(
+      (item: { id: string }) => item.id === "approvals.model",
+    );
+    list.activateItem();
+    list.submenuComponent.handleInput("\x1b[B");
+    list.submenuComponent.handleInput("\r");
+
+    expect(applied.at(-1)).toEqual({
+      id: "approvals.model",
+      value: "anthropic/claude-sonnet-4-5",
+    });
+  });
+
   it("persists a Prewalk model selection and reopens with its checkmark", () => {
     const applied: Array<{ id: string; value: unknown }> = [];
     const items = buildFabricSettingsItems(

@@ -204,13 +204,35 @@ Extension overrides of core tools are captured and hidden with their built-in co
 
 ## Approvals and risk
 
-Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, or `deny`.
+Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; approval policy values are `allow`, `ask`, `auto`, or `deny`.
 
 - Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`.
 - Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them.
 - `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode.
 - An `ask` policy emits a warning notification and opens an explicit **Allow once** / **Allow for this session** / **Deny** permission prompt, matching Claude-style approval scopes. **Allow once** authorizes only the requested action. **Allow for this session** authorizes that risk class until the current Pi session ends. The TUI uses an inline wizard; RPC clients receive the equivalent `select` dialog.
 - Concurrent requests are serialized so a one-time approval never silently widens to sibling calls. Escape, dismissal, unavailable interactive UI, and session restart all fail closed.
+
+### Auto approval mode
+
+An `auto` policy routes each validated call and its prepared arguments through a separate Pi model before invocation. Configure **Auto model** under `/fabric settings` → **Approvals**, or set the optional canonical `provider/model` key in `fabric.json`:
+
+```json
+{
+  "approvals": {
+    "model": "anthropic/claude-opus-4-6",
+    "write": "auto",
+    "execute": "auto",
+    "network": "auto",
+    "agent": "auto"
+  }
+}
+```
+
+Choosing **Inherit** in the model picker omits `approvals.model` and uses the active Pi session model. Read access remains independently configurable and is normally left as `allow`.
+
+The classifier receives the exact action, bounded prepared arguments, cwd, user-message text, and assistant tool calls. Assistant prose and tool outputs are excluded so model-authored reasoning and retrieved hostile content cannot directly instruct the classifier. It has no executable tools and must return a structured `allow` or `escalate` verdict. `allow` applies only to that call. `escalate`, malformed output, missing authentication, timeout, cancellation, or any classifier error falls back to the explicit **Allow once** / **Allow for this session** / **Deny** prompt; headless runs fail closed when that prompt cannot be shown. Classifier token usage and cost are attached to the outer `fabric_exec` result, and each verdict is recorded as `fabric.approval.auto` in the execution trace.
+
+`deny` remains deterministic and is evaluated before the classifier. Schema enforcement, project trust, budgets, and other host gates also remain authoritative. Auto mode is a model-based policy advisor, not a stronger sandbox boundary. Its initial conservative policy escalates destructive or irreversible actions, shared/external/production changes, credential or sensitive-data exposure, safety bypasses, actions beyond explicit user intent, and actions whose safety is uncertain. This follows the architecture described in Claude Code’s [permission modes](https://code.claude.com/docs/en/permission-modes), [auto-mode configuration](https://code.claude.com/docs/en/auto-mode-config), and Anthropic’s [auto-mode engineering write-up](https://www.anthropic.com/engineering/claude-code-auto-mode), adapted to Pi’s model registry and Fabric’s existing per-risk policy gate.
 
 ## Subagents
 

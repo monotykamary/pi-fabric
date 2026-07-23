@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.25.3",
+  "version": "0.25.4",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -71,6 +71,7 @@
     "image": "https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/cover.jpg"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "0.80.6",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "cross-spawn": "^7.0.6",
     "diff": "^8.0.4",

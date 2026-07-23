@@ -37,7 +37,7 @@ describe("Fabric configuration", () => {
     const config = normalizeFabricConfig({
       fullCodeMode: false,
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
-      approvals: { write: "allow", agent: "invalid" },
+      approvals: { write: "auto", agent: "invalid", model: "anthropic/classifier" },
       subagents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "herdr" },
       capture: {
         keepVisible: ["fabric_exec", "custom", "custom"],
@@ -57,8 +57,9 @@ describe("Fabric configuration", () => {
     expect(config.executor.memoryLimitBytes).toBe(
       Math.min(QUICKJS_MAX_MEMORY_LIMIT_BYTES, MAX_EXECUTOR_MEMORY_LIMIT_BYTES),
     );
-    expect(config.approvals.write).toBe("allow");
+    expect(config.approvals.write).toBe("auto");
     expect(config.approvals.agent).toBe("allow");
+    expect(config.approvals.model).toBe("anthropic/classifier");
     expect(config.subagents.maxConcurrent).toBe(32);
     expect(config.subagents.maxPerExecution).toBe(1_000);
     expect(config.subagents.transport).toBe("herdr");

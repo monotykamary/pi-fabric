@@ -1,3 +1,4 @@
+import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   FabricExecutionTraceRecorder,
@@ -26,7 +27,9 @@ import {
 import {
   ApprovalController,
   FabricSessionApprovals,
+  type FabricAutoApprovalAudit,
 } from "./core/approval-controller.js";
+import { FabricAutoApprovalClassifier } from "./core/auto-approval-classifier.js";
 import {
   codeUsesOrchestration,
   isBlockingOrchestrationRef,
@@ -76,6 +79,27 @@ const executionOutcomeFromTermination = (
   }
 };
 
+const aggregateUsage = (usages: Usage[]): Usage => ({
+  input: usages.reduce((total, usage) => total + usage.input, 0),
+  output: usages.reduce((total, usage) => total + usage.output, 0),
+  cacheRead: usages.reduce((total, usage) => total + usage.cacheRead, 0),
+  cacheWrite: usages.reduce((total, usage) => total + usage.cacheWrite, 0),
+  ...(usages.some((usage) => usage.cacheWrite1h !== undefined)
+    ? { cacheWrite1h: usages.reduce((total, usage) => total + (usage.cacheWrite1h ?? 0), 0) }
+    : {}),
+  ...(usages.some((usage) => usage.reasoning !== undefined)
+    ? { reasoning: usages.reduce((total, usage) => total + (usage.reasoning ?? 0), 0) }
+    : {}),
+  totalTokens: usages.reduce((total, usage) => total + usage.totalTokens, 0),
+  cost: {
+    input: usages.reduce((total, usage) => total + usage.cost.input, 0),
+    output: usages.reduce((total, usage) => total + usage.cost.output, 0),
+    cacheRead: usages.reduce((total, usage) => total + usage.cost.cacheRead, 0),
+    cacheWrite: usages.reduce((total, usage) => total + usage.cost.cacheWrite, 0),
+    total: usages.reduce((total, usage) => total + usage.cost.total, 0),
+  },
+});
+
 export interface FabricExecutionResult {
   success: boolean;
   value: unknown;
@@ -87,6 +111,7 @@ export interface FabricExecutionResult {
   typeErrors?: FabricTypeError[];
   error?: string;
   handoffRequest?: Record<string, unknown>;
+  usage?: Usage;
 }
 
 interface FabricExecutionPartial {
@@ -121,6 +146,7 @@ export class FabricExecutionService {
     readonly config: FabricConfig,
     readonly activity?: FabricActivityStore,
     readonly authorizer?: FabricExecutionAuthorizer,
+    readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
   ) {}
 
   async execute(options: FabricExecutionOptions): Promise<FabricExecutionResult> {
@@ -148,10 +174,24 @@ export class FabricExecutionService {
       };
     }
 
+    const classifierUsages: Usage[] = [];
+    const recordAutoDecision = (
+      audit: FabricAutoApprovalAudit,
+      decision?: { usage: Usage },
+    ): void => {
+      const operation = traceRecorder.issueCall("fabric.approval.auto", {
+        action: audit.action,
+        risk: audit.risk,
+      });
+      operation.succeed(audit);
+      if (decision) classifierUsages.push(decision.usage);
+    };
     const approval = new ApprovalController(
       this.config.approvals,
       options.context,
       this.#sessionApprovals,
+      this.autoApprovalClassifier,
+      recordAutoDecision,
     );
     const audits: FabricCallAudit[] = [];
     const phases: string[] = [];
@@ -346,13 +386,13 @@ export class FabricExecutionService {
                 this.authorizer!.authorize(action.ref, options.parentToolCallId),
             }
           : {}),
-        approve: async (action) => {
+        approve: async (action, preparedArgs) => {
           if (action.ref === "schema.commit") {
-            await approval.approve({ ...action, risk: "write" });
-            await approval.approve({ ...action, risk: "execute" });
+            await approval.approve({ ...action, risk: "write" }, preparedArgs);
+            await approval.approve({ ...action, risk: "execute" }, preparedArgs);
             return;
           }
-          await approval.approve(action);
+          await approval.approve(action, preparedArgs);
         },
         audits,
         maxResultChars: this.config.executor.maxNestedResultChars,
@@ -640,6 +680,9 @@ export class FabricExecutionService {
       elapsedMs: performance.now() - startedAt,
       ...(sandboxResult.error ? { error: sandboxResult.error } : {}),
       ...(handoffRequest ? { handoffRequest } : {}),
+      ...(classifierUsages.length > 0
+        ? { usage: aggregateUsage(classifierUsages) }
+        : {}),
     };
   }
 }

@@ -170,6 +170,11 @@ export const projectFabricAuditArgs = (
     case "fabric.discovery.models":
     case "fabric.workflow.progress":
       return emptyProjection(args);
+    case "fabric.approval.auto":
+      return projected(args, (output) => {
+        copyIdentifier(output, args, "action");
+        copyIdentifier(output, args, "risk");
+      });
     case "fabric.discovery.catalog":
       return projected(args, (output) => {
         copyIdentifier(output, args, "provider");
@@ -272,10 +277,20 @@ export const projectFabricAuditResult = (
   ref: string,
   result: unknown,
 ): FabricAuditProjection | undefined => {
-  if (ref !== "pi.write" || typeof result !== "object" || result === null || Array.isArray(result)) {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) {
     return undefined;
   }
   const record = result as Record<string, unknown>;
+  if (ref === "fabric.approval.auto") {
+    return projected(record, (output) => {
+      copyIdentifier(output, record, "action");
+      copyIdentifier(output, record, "risk");
+      copyIdentifier(output, record, "decision");
+      copyIdentifier(output, record, "model");
+      copyNumber(output, record, "at");
+    });
+  }
+  if (ref !== "pi.write") return undefined;
   const details =
     typeof record.details === "object" && record.details !== null && !Array.isArray(record.details)
       ? (record.details as Record<string, unknown>)

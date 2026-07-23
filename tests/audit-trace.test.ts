@@ -836,6 +836,19 @@ return true;
     recorder.issueCall("memory.recall", { query: "memory-query-secret" }).succeed({
       text: "memory-result-secret",
     });
+    recorder.issueCall("fabric.approval.auto", {
+      action: "pi.bash",
+      risk: "execute",
+      rawArguments: "classifier-argument-secret",
+    }).succeed({
+      action: "pi.bash",
+      risk: "execute",
+      decision: "escalate",
+      model: "anthropic/classifier",
+      reason: "classifier-reason-secret",
+      error: "classifier-error-secret",
+      at: 123,
+    });
 
     const trace = recorder.seal("succeeded", []);
     const details = createFabricPersistedExecutionDetails({ success: true, trace });
@@ -850,6 +863,7 @@ return true;
       { key: "build.status" },
       {},
       {},
+      { action: "pi.bash", risk: "execute" },
     ]);
     expect(trace.operations.map((operation) => operation.result)).toEqual([
       undefined,
@@ -860,6 +874,13 @@ return true;
       undefined,
       undefined,
       undefined,
+      {
+        action: "pi.bash",
+        risk: "execute",
+        decision: "escalate",
+        model: "anthropic/classifier",
+        at: 123,
+      },
     ]);
     for (const secret of [
       "authorization-secret",
@@ -877,6 +898,9 @@ return true;
       "path-password",
       "path-query-secret",
       "read-content-secret",
+      "classifier-argument-secret",
+      "classifier-reason-secret",
+      "classifier-error-secret",
       "mesh-value-secret",
       "mesh-result-secret",
       "state-value-secret",

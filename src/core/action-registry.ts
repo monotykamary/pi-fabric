@@ -63,7 +63,10 @@ export type FabricRegistryActivityEvent =
 
 export interface FabricRegistryInvocationContext extends FabricInvocationContext {
   authorize?(action: ResolvedFabricAction): Promise<void>;
-  approve(action: ResolvedFabricAction): Promise<void>;
+  approve(
+    action: ResolvedFabricAction,
+    args: Record<string, unknown>,
+  ): Promise<void>;
   audits: FabricCallAudit[];
   maxResultChars: number;
   trace?: FabricExecutionTraceRecorder;
@@ -456,7 +459,7 @@ export class ActionRegistry {
       if (invalid) throw new Error(`Invalid arguments for ${ref}: ${invalid}`);
 
       failureStage = "approve";
-      await context.approve(action);
+      await context.approve(action, preparedArgs);
 
       failureStage = "invoke";
       const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}${randomUUID()}`;

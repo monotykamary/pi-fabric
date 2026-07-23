@@ -5,7 +5,7 @@ import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import type { FabricRisk } from "./protocol.js";
 import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "./thinking.js";
 
-type FabricApprovalMode = "allow" | "ask" | "deny";
+type FabricApprovalMode = "allow" | "ask" | "auto" | "deny";
 export type FabricSubagentTransport =
   | "auto"
   | "process"
@@ -35,6 +35,7 @@ export interface FabricApprovalConfig {
   execute: FabricApprovalMode;
   network: FabricApprovalMode;
   agent: FabricApprovalMode;
+  model?: string;
 }
 
 export interface FabricMcpConfig {
@@ -326,7 +327,9 @@ const mergeObjects = (
 };
 
 const approvalMode = (value: unknown, fallback: FabricApprovalMode): FabricApprovalMode =>
-  value === "allow" || value === "ask" || value === "deny" ? value : fallback;
+  value === "allow" || value === "ask" || value === "auto" || value === "deny"
+    ? value
+    : fallback;
 
 const booleanValue = (value: unknown, fallback: boolean): boolean =>
   typeof value === "boolean" ? value : fallback;
@@ -430,6 +433,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
       )
     : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
+  const approvalModel = stringValue(approvals.model);
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
   const memoryIndexDir = stringValue(memory.indexDir);
@@ -510,6 +514,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       execute: approvalMode(approvals.execute, DEFAULT_FABRIC_CONFIG.approvals.execute),
       network: approvalMode(approvals.network, DEFAULT_FABRIC_CONFIG.approvals.network),
       agent: approvalMode(approvals.agent, DEFAULT_FABRIC_CONFIG.approvals.agent),
+      ...(approvalModel ? { model: approvalModel } : {}),
     },
     mcp: {
       enabled: booleanValue(mcp.enabled, DEFAULT_FABRIC_CONFIG.mcp.enabled),
