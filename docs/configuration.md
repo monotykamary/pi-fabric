@@ -209,7 +209,7 @@ Fabric risk classes are `read`, `write`, `execute`, `network`, and `agent`; appr
 - Captured tools default to the conservative `execute` risk because Pi tool definitions do not declare effects. Add exact tool-name overrides under `capture.risks`.
 - Set `capture.hideFromModel` to `false` to index non-core extension tools without hiding them.
 - `capture.keepVisible` names stay in both Fabric and Pi's direct registry, except that Pi core names are always Fabric-owned in full code mode.
-- An `ask` policy is fail-closed in headless modes without interactive UI.
+- An `ask` policy emits a warning notification and opens an explicit **Allow access** / **Deny** permission prompt. The TUI uses an inline wizard; RPC clients receive the equivalent `select` dialog. Escape, dismissal, and unavailable interactive UI all fail closed.
 - Approval is cached by risk class for one `fabric_exec` execution.
 
 ## Subagents

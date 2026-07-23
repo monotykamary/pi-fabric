@@ -637,19 +637,24 @@ describe("Schema central gate", () => {
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.approvals.write = "ask";
     config.approvals.execute = "ask";
-    const confirm = vi.fn(async () => true);
+    const select = vi.fn(async (_title: string, options: string[]) => options[0]);
     const service = new FabricExecutionService(registry, config);
     const result = await service.execute({
       code: 'return tools.call({ ref: "schema.commit", args: {} });',
       signal: undefined,
       parentToolCallId: "approval",
-      context: { cwd: setup.cwd, hasUI: true, ui: { confirm } } as unknown as ExtensionContext,
+      context: {
+        cwd: setup.cwd,
+        hasUI: true,
+        mode: "rpc",
+        ui: { select, notify: vi.fn() },
+      } as unknown as ExtensionContext,
       onPartial() {},
     });
     expect(result.success).toBe(true);
-    expect(confirm).toHaveBeenCalledTimes(2);
-    const messages = confirm.mock.calls.map((call) => (call as unknown as [string, string])[1]);
-    expect(messages).toEqual([
+    expect(select).toHaveBeenCalledTimes(2);
+    const titles = select.mock.calls.map((call) => call[0]);
+    expect(titles).toEqual([
       expect.stringContaining("write access"),
       expect.stringContaining("execute access"),
     ]);
