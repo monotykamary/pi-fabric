@@ -213,13 +213,18 @@ const serializedBytes = (value: unknown): number =>
   Buffer.byteLength(JSON.stringify(value), "utf8");
 
 const applyCacheMetrics = <T extends CacheRecord>(value: T): T => {
-  for (let iteration = 0; iteration < 100; iteration += 1) {
+  let previous = -1;
+  for (let iteration = 0; iteration < 5; iteration += 1) {
     const bytes = serializedBytes(value);
-    const ratio = value.size === 0 ? 0 : Number((bytes / value.size).toFixed(6));
-    if (value.cacheBytes === bytes && value.cacheSourceRatio === ratio) return value;
     value.cacheBytes = bytes;
-    value.cacheSourceRatio = ratio;
+    value.cacheSourceRatio = value.size === 0 ? 0 : Number((bytes / value.size).toFixed(6));
+    if (bytes === previous) break;
+    previous = bytes;
   }
+  value.cacheBytes = serializedBytes(value);
+  value.cacheSourceRatio = value.size === 0
+    ? 0
+    : Number((value.cacheBytes / value.size).toFixed(6));
   return value;
 };
 
@@ -572,6 +577,7 @@ export interface TieredIndexBundle {
 
 const cleanupCacheDirectory = (
   indexDir: string,
+  branchesToClean: MemoryBranches,
   maxFiles: number,
   maxBytes: number,
 ): { complete: boolean; reasons: string[] } => {
@@ -617,6 +623,7 @@ const cleanupCacheDirectory = (
         const branches = parsed.branches === "active" || parsed.branches === "all"
           ? parsed.branches
           : null;
+        if (branches !== null && branches !== branchesToClean) continue;
         const expected = source && branches && kind === "shard"
           ? shardPathForSession(source, indexDir, branches)
           : source && branches && kind === "digest"
@@ -659,6 +666,7 @@ export const loadTieredIndex = (
 ): TieredIndexBundle => {
   const cleanup = cleanupCacheDirectory(
     options.indexDir,
+    options.branches ?? "active",
     options.maxCacheCleanupFiles ?? DEFAULT_MAX_CACHE_CLEANUP_FILES,
     options.maxSyncSourceBytes ?? DEFAULT_MAX_SYNC_SOURCE_BYTES,
   );
