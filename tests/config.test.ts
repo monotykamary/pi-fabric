@@ -38,7 +38,7 @@ describe("Fabric configuration", () => {
       fullCodeMode: false,
       executor: { timeoutMs: 1, memoryLimitBytes: Number.MAX_SAFE_INTEGER },
       approvals: { write: "auto", agent: "invalid", model: "anthropic/classifier" },
-      subagents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "herdr" },
+      agents: { maxConcurrent: 100, maxPerExecution: 5_000, transport: "herdr" },
       capture: {
         keepVisible: ["fabric_exec", "custom", "custom"],
         defaultRisk: "invalid",
@@ -60,9 +60,9 @@ describe("Fabric configuration", () => {
     expect(config.approvals.write).toBe("auto");
     expect(config.approvals.agent).toBe("allow");
     expect(config.approvals.model).toBe("anthropic/classifier");
-    expect(config.subagents.maxConcurrent).toBe(32);
-    expect(config.subagents.maxPerExecution).toBe(1_000);
-    expect(config.subagents.transport).toBe("herdr");
+    expect(config.agents.maxConcurrent).toBe(32);
+    expect(config.agents.maxPerExecution).toBe(1_000);
+    expect(config.agents.transport).toBe("herdr");
     expect(config.capture.keepVisible).toEqual(["fabric_exec", "custom"]);
     expect(config.capture.defaultRisk).toBe("execute");
     expect(config.capture.risks).toMatchObject({ inspect: "read", mutate: "execute" });
@@ -117,55 +117,55 @@ describe("Fabric configuration", () => {
     expect(normalizeFabricConfig({ executor: { resultFormat: "invalid" } }).executor.resultFormat).toBe("auto");
   });
 
-  it("normalizes the subagent cost budget", () => {
-    const enabled = normalizeFabricConfig({ subagents: { budgetUsd: 0.42 } });
-    expect(enabled.subagents.budgetUsd).toBe(0.42);
-    const negative = normalizeFabricConfig({ subagents: { budgetUsd: -5 } });
-    expect(negative.subagents.budgetUsd).toBe(0);
-    const huge = normalizeFabricConfig({ subagents: { budgetUsd: Number.MAX_VALUE } });
-    expect(huge.subagents.budgetUsd).toBe(1_000_000);
-    expect(DEFAULT_FABRIC_CONFIG.subagents.budgetUsd).toBe(0);
+  it("normalizes the agent cost budget", () => {
+    const enabled = normalizeFabricConfig({ agents: { budgetUsd: 0.42 } });
+    expect(enabled.agents.budgetUsd).toBe(0.42);
+    const negative = normalizeFabricConfig({ agents: { budgetUsd: -5 } });
+    expect(negative.agents.budgetUsd).toBe(0);
+    const huge = normalizeFabricConfig({ agents: { budgetUsd: Number.MAX_VALUE } });
+    expect(huge.agents.budgetUsd).toBe(1_000_000);
+    expect(DEFAULT_FABRIC_CONFIG.agents.budgetUsd).toBe(0);
   });
 
-  it("normalizes the subagent default model and drops empty values", () => {
-    expect(DEFAULT_FABRIC_CONFIG.subagents.model).toBeUndefined();
-    const set = normalizeFabricConfig({ subagents: { model: "claude-sonnet-4-5" } });
-    expect(set.subagents.model).toBe("claude-sonnet-4-5");
-    const blank = normalizeFabricConfig({ subagents: { model: "  " } });
-    expect(blank.subagents.model).toBeUndefined();
-    const nonString = normalizeFabricConfig({ subagents: { model: 42 } });
-    expect(nonString.subagents.model).toBeUndefined();
+  it("normalizes the agent default model and drops empty values", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.model).toBeUndefined();
+    const set = normalizeFabricConfig({ agents: { model: "claude-sonnet-4-5" } });
+    expect(set.agents.model).toBe("claude-sonnet-4-5");
+    const blank = normalizeFabricConfig({ agents: { model: "  " } });
+    expect(blank.agents.model).toBeUndefined();
+    const nonString = normalizeFabricConfig({ agents: { model: 42 } });
+    expect(nonString.agents.model).toBeUndefined();
   });
 
   it("normalizes the default runner and independent Claude settings", () => {
-    expect(DEFAULT_FABRIC_CONFIG.subagents.runner).toBe("pi");
-    expect(DEFAULT_FABRIC_CONFIG.subagents.claude).toEqual({ binary: "claude" });
+    expect(DEFAULT_FABRIC_CONFIG.agents.runner).toBe("pi");
+    expect(DEFAULT_FABRIC_CONFIG.agents.claude).toEqual({ binary: "claude" });
     const configured = normalizeFabricConfig({
-      subagents: {
+      agents: {
         runner: "claude",
         claude: { binary: "/opt/claude", model: "claude/haiku" },
       },
     });
-    expect(configured.subagents.runner).toBe("claude");
-    expect(configured.subagents.claude).toEqual({
+    expect(configured.agents.runner).toBe("claude");
+    expect(configured.agents.claude).toEqual({
       binary: "/opt/claude",
       model: "claude/haiku",
     });
     const invalid = normalizeFabricConfig({
-      subagents: { runner: "other", claude: { binary: " ", model: " " } },
+      agents: { runner: "other", claude: { binary: " ", model: " " } },
     });
-    expect(invalid.subagents.runner).toBe("pi");
-    expect(invalid.subagents.claude).toEqual({ binary: "claude" });
+    expect(invalid.agents.runner).toBe("pi");
+    expect(invalid.agents.claude).toEqual({ binary: "claude" });
   });
 
-  it("defaults the subagent thinking level to medium and validates the value", () => {
-    expect(DEFAULT_FABRIC_CONFIG.subagents.thinking).toBe("medium");
-    const set = normalizeFabricConfig({ subagents: { thinking: "high" } });
-    expect(set.subagents.thinking).toBe("high");
-    const invalid = normalizeFabricConfig({ subagents: { thinking: "turbo" } });
-    expect(invalid.subagents.thinking).toBe("medium");
-    const nonString = normalizeFabricConfig({ subagents: { thinking: 42 } });
-    expect(nonString.subagents.thinking).toBe("medium");
+  it("defaults the agent thinking level to medium and validates the value", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.thinking).toBe("medium");
+    const set = normalizeFabricConfig({ agents: { thinking: "high" } });
+    expect(set.agents.thinking).toBe("high");
+    const invalid = normalizeFabricConfig({ agents: { thinking: "turbo" } });
+    expect(invalid.agents.thinking).toBe("medium");
+    const nonString = normalizeFabricConfig({ agents: { thinking: 42 } });
+    expect(nonString.agents.thinking).toBe("medium");
   });
 
   it("defaults actor scope to project and validates the value", () => {
@@ -291,16 +291,16 @@ describe("Fabric configuration", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(
       path.join(agentDir, "fabric.json"),
-      JSON.stringify({ approvals: { network: "allow" }, subagents: { maxConcurrent: 2 } }),
+      JSON.stringify({ approvals: { network: "allow" }, agents: { maxConcurrent: 2 } }),
     );
     fs.writeFileSync(
       path.join(cwd, ".pi", "fabric.json"),
-      JSON.stringify({ subagents: { transport: "localterm" } }),
+      JSON.stringify({ agents: { transport: "localterm" } }),
     );
     const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
     expect(config.approvals.network).toBe("allow");
-    expect(config.subagents.maxConcurrent).toBe(2);
-    expect(config.subagents.transport).toBe("localterm");
+    expect(config.agents.maxConcurrent).toBe(2);
+    expect(config.agents.transport).toBe("localterm");
   });
 
   it("updates the compaction engine environment across config re-initialization", () => {
@@ -362,24 +362,25 @@ describe("Fabric configuration", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(
       path.join(cwd, ".pi", "fabric.json"),
-      JSON.stringify({ subagents: { transport: "localterm" } }),
+      JSON.stringify({ agents: { transport: "localterm" } }),
     );
 
     const result = saveFabricConfig(
       { cwd, agentDir, projectTrusted: true },
-      { subagents: { maxConcurrent: 8 }, fullCodeMode: false },
+      { agents: { maxConcurrent: 8 }, fullCodeMode: false },
     );
 
     expect(result.scope).toBe("project");
     expect(result.path).toBe(path.join(cwd, ".pi", "fabric.json"));
     const saved = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"));
     expect(saved).toEqual({
-      subagents: { transport: "localterm", maxConcurrent: 8 },
+      configVersion: 1,
+      agents: { transport: "localterm", maxConcurrent: 8 },
       fullCodeMode: false,
     });
     const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
-    expect(config.subagents.maxConcurrent).toBe(8);
-    expect(config.subagents.transport).toBe("localterm");
+    expect(config.agents.maxConcurrent).toBe(8);
+    expect(config.agents.transport).toBe("localterm");
     expect(config.fullCodeMode).toBe(false);
   });
 
@@ -398,7 +399,7 @@ describe("Fabric configuration", () => {
     expect(result.path).toBe(path.join(agentDir, "fabric.json"));
     expect(fs.existsSync(path.join(cwd, ".pi", "fabric.json"))).toBe(false);
     const saved = JSON.parse(fs.readFileSync(path.join(agentDir, "fabric.json"), "utf8"));
-    expect(saved).toEqual({ executor: { timeoutMs: 30_000 } });
+    expect(saved).toEqual({ configVersion: 1, executor: { timeoutMs: 30_000 } });
   });
 
   it("persists and clears the dedicated prewalk model", () => {
@@ -429,7 +430,7 @@ describe("Fabric configuration", () => {
     fs.writeFileSync(
       path.join(cwd, ".pi", "fabric.json"),
       JSON.stringify({
-        subagents: { transport: "tmux", defaultTools: ["read", "bash"] },
+        agents: { transport: "tmux", defaultTools: ["read", "bash"] },
         capture: { defaultRisk: "read", keepVisible: ["fabric_exec"] },
       }),
     );
@@ -437,42 +438,42 @@ describe("Fabric configuration", () => {
     saveFabricConfig(
       { cwd, agentDir, projectTrusted: true },
       {
-        subagents: { defaultTools: ["read", "edit", "grep"] },
+        agents: { defaultTools: ["read", "edit", "grep"] },
         capture: { keepVisible: ["fabric_exec", "custom-tool"] },
       },
     );
 
     const saved = JSON.parse(fs.readFileSync(path.join(cwd, ".pi", "fabric.json"), "utf8"));
     // Arrays are replaced, not concatenated; sibling object keys are preserved.
-    expect(saved.subagents).toEqual({ transport: "tmux", defaultTools: ["read", "edit", "grep"] });
+    expect(saved.agents).toEqual({ transport: "tmux", defaultTools: ["read", "edit", "grep"] });
     expect(saved.capture).toEqual({
       defaultRisk: "read",
       keepVisible: ["fabric_exec", "custom-tool"],
     });
     const config = loadFabricConfig({ cwd, agentDir, projectTrusted: true });
-    expect(config.subagents.defaultTools).toEqual(["read", "edit", "grep"]);
+    expect(config.agents.defaultTools).toEqual(["read", "edit", "grep"]);
     expect(config.capture.keepVisible).toEqual(["fabric_exec", "custom-tool"]);
-    expect(config.subagents.transport).toBe("tmux");
+    expect(config.agents.transport).toBe("tmux");
   });
 
-  it("defaults the subagent timeout to 60 minutes and clamps to the 24-hour bound", () => {
-    expect(DEFAULT_FABRIC_CONFIG.subagents.timeoutMs).toBe(3_600_000);
-    expect(normalizeFabricConfig({}).subagents.timeoutMs).toBe(3_600_000);
+  it("defaults the agent timeout to 60 minutes and clamps to the 24-hour bound", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.timeoutMs).toBe(3_600_000);
+    expect(normalizeFabricConfig({}).agents.timeoutMs).toBe(3_600_000);
     expect(
-      normalizeFabricConfig({ subagents: { timeoutMs: 99_999_999 } }).subagents.timeoutMs,
+      normalizeFabricConfig({ agents: { timeoutMs: 99_999_999 } }).agents.timeoutMs,
     ).toBe(86_400_000);
     expect(
-      normalizeFabricConfig({ subagents: { timeoutMs: 1_200_000 } }).subagents.timeoutMs,
+      normalizeFabricConfig({ agents: { timeoutMs: 1_200_000 } }).agents.timeoutMs,
     ).toBe(1_200_000);
   });
 
   it("normalizes the per-child token limit and treats zero as disabled", () => {
-    expect(DEFAULT_FABRIC_CONFIG.subagents.maxTokensPerChild).toBe(0);
-    const set = normalizeFabricConfig({ subagents: { maxTokensPerChild: 50_000 } });
-    expect(set.subagents.maxTokensPerChild).toBe(50_000);
-    const negative = normalizeFabricConfig({ subagents: { maxTokensPerChild: -5 } });
-    expect(negative.subagents.maxTokensPerChild).toBe(0);
-    const huge = normalizeFabricConfig({ subagents: { maxTokensPerChild: Number.MAX_VALUE } });
-    expect(huge.subagents.maxTokensPerChild).toBe(100_000_000);
+    expect(DEFAULT_FABRIC_CONFIG.agents.maxTokensPerChild).toBe(0);
+    const set = normalizeFabricConfig({ agents: { maxTokensPerChild: 50_000 } });
+    expect(set.agents.maxTokensPerChild).toBe(50_000);
+    const negative = normalizeFabricConfig({ agents: { maxTokensPerChild: -5 } });
+    expect(negative.agents.maxTokensPerChild).toBe(0);
+    const huge = normalizeFabricConfig({ agents: { maxTokensPerChild: Number.MAX_VALUE } });
+    expect(huge.agents.maxTokensPerChild).toBe(100_000_000);
   });
 });

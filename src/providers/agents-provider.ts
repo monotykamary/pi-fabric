@@ -37,16 +37,16 @@ import type {
   FabricProviderListRequest,
 } from "../protocol.js";
 import {
-  effectiveSubagentTimeoutMs,
-  SubagentManager,
-} from "../subagents/manager.js";
+  effectiveAgentTimeoutMs,
+  AgentManager,
+} from "../agents/manager.js";
 import type {
-  SubagentHandleInfo,
-  SubagentRunRecord,
-  SubagentRunRequest,
-  SubagentRunResult,
-  SubagentSessionSeed,
-} from "../subagents/types.js";
+  AgentHandleInfo,
+  AgentRunRecord,
+  AgentRunRequest,
+  AgentRunResult,
+  AgentSessionSeed,
+} from "../agents/types.js";
 import { isFabricThinking } from "../thinking.js";
 import { AgentTranscriptReader, recentTranscriptTools } from "../ui/transcript.js";
 
@@ -56,7 +56,7 @@ const runProperties = {
   runner: {
     type: "string",
     enum: ["pi", "claude"],
-    description: "Execution harness. Defaults to subagents.runner.",
+    description: "Execution harness. Defaults to agents.runner.",
   },
   transport: {
     type: "string",
@@ -74,7 +74,7 @@ const runProperties = {
   timeoutMs: {
     type: "number",
     description:
-      "Optional longer wall-clock limit in milliseconds. Omit to use subagents.timeoutMs (60 minutes by default); values below the configured default are ignored.",
+      "Optional longer wall-clock limit in milliseconds. Omit to use agents.timeoutMs (60 minutes by default); values below the configured default are ignored.",
   },
   extensions: { type: "boolean" },
   recursive: { type: "boolean" },
@@ -151,7 +151,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "spawn",
     description:
-      "Start a child agent through Pi or Claude Code and return a handle immediately. Detached runs send Main a follow-up on terminal completion when subagents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
+      "Start a child agent through Pi or Claude Code and return a handle immediately. Detached runs send Main a follow-up on terminal completion when agents.notifyOnComplete is enabled; use wait when this Fabric program needs the result and status only for progress inspection.",
     inputSchema: runSchema,
     risk: "agent",
   },
@@ -370,7 +370,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "steer",
     description:
-      "Steer Main, a running one-shot subagent between turns, or a persistent actor through its mailbox. The stable id alias main targets the root user-facing Pi session. Non-local targets route over the project mesh.",
+      "Steer Main, a running one-shot agent between turns, or a persistent actor through its mailbox. The stable id alias main targets the root user-facing Pi session. Non-local targets route over the project mesh.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
@@ -382,7 +382,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "followUp",
     description:
-      "Queue a follow-up for Main or a running one-shot subagent, or enqueue a persistent actor mailbox message. The stable id alias main targets the root user-facing Pi session. Non-local targets route over the project mesh.",
+      "Queue a follow-up for Main or a running one-shot agent, or enqueue a persistent actor mailbox message. The stable id alias main targets the root user-facing Pi session. Non-local targets route over the project mesh.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" }, message: { type: "string" }, data: {} },
@@ -394,7 +394,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "setSteeringMode",
     description:
-      "Set how queued steer messages are delivered to a running one-shot subagent: all at once after the current turn, or one per turn (default). Local subagent only.",
+      "Set how queued steer messages are delivered to a running one-shot agent: all at once after the current turn, or one per turn (default). Local agent only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -409,7 +409,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "setFollowUpMode",
     description:
-      "Set how queued follow-up messages are delivered to a one-shot subagent: all when it finishes, or one per completion (default). Local subagent only.",
+      "Set how queued follow-up messages are delivered to a one-shot agent: all when it finishes, or one per completion (default). Local agent only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -617,11 +617,11 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "log",
     description:
-      "Read an actor or subagent run's LLM/agent log: the actor's session transcript (session.jsonl) and/or a retained run's event stream (events.jsonl: tool calls, model responses, usage). Actors retain their last runs so logs survive after success.",
+      "Read an actor or agent run's LLM/agent log: the actor's session transcript (session.jsonl) and/or a retained run's event stream (events.jsonl: tool calls, model responses, usage). Actors retain their last runs so logs survive after success.",
     inputSchema: {
       type: "object",
       properties: {
-        id: { type: "string", description: "Actor ID/name or subagent run ID" },
+        id: { type: "string", description: "Actor ID/name or agent run ID" },
         type: {
           type: "string",
           enum: ["session", "run", "all"],
@@ -650,18 +650,18 @@ const stringArray = (value: unknown): string[] | undefined =>
 
 const longerTimeoutOverride = (
   value: unknown,
-  manager: SubagentManager,
+  manager: AgentManager,
 ): number | undefined => {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  const effective = effectiveSubagentTimeoutMs(manager.config.timeoutMs, value);
+  const effective = effectiveAgentTimeoutMs(manager.config.timeoutMs, value);
   return effective > manager.config.timeoutMs ? effective : undefined;
 };
 
 const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
-  manager: SubagentManager,
-): SubagentRunRequest => {
+  manager: AgentManager,
+): AgentRunRequest => {
   const transport =
     args.transport === "auto" ||
     args.transport === "process" ||
@@ -714,7 +714,7 @@ const handoffTask = (args: Record<string, unknown>): string => {
 };
 
 const compactHandoffResult = (
-  result: SubagentRunResult,
+  result: AgentRunResult,
 ): Record<string, unknown> => ({
   handedOff: true,
   completed: result.status === "completed",
@@ -737,7 +737,7 @@ const compactHandoffResult = (
 const actorRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
-  manager: SubagentManager,
+  manager: AgentManager,
   inheritModel = true,
 ): FabricActorRequest => {
   const events = Array.isArray(args.events)
@@ -797,7 +797,7 @@ const actorRequest = (
   };
 };
 
-type AgentProgressStatus = ReturnType<SubagentManager["status"]>;
+type AgentProgressStatus = ReturnType<AgentManager["status"]>;
 
 const attachAgentToolPreview = (
   status: AgentProgressStatus,
@@ -859,14 +859,14 @@ const waitForResultWithProgress = <T>(
   });
 
 const actorWorker = (
-  manager: SubagentManager,
+  manager: AgentManager,
   actorId: string,
   includeTerminal: boolean,
-): ReturnType<SubagentManager["list"]>[number] | undefined => {
+): ReturnType<AgentManager["list"]>[number] | undefined => {
   const candidates = manager.list().filter((candidate) => candidate.actorId === actorId);
   const active = candidates.find((candidate) => candidate.status === "running");
   if (active || !includeTerminal) return active;
-  // SubagentManager.list() preserves run insertion order; the last actor run
+  // AgentManager.list() preserves run insertion order; the last actor run
   // is therefore the terminal snapshot for the ask that just settled.
   return candidates.at(-1);
 };
@@ -881,12 +881,12 @@ const agentProgressRevision = (status: AgentProgressStatus): string =>
   ].join(":");
 
 const waitWithProgress = async (
-  manager: SubagentManager,
+  manager: AgentManager,
   transcripts: AgentTranscriptReader,
   id: string,
   context: FabricInvocationContext,
   nestedToolsEnabled: () => boolean,
-): Promise<SubagentRunResult> => {
+): Promise<AgentRunResult> => {
   const result = manager.wait(id);
   let lastProgressRevision: string | undefined;
   try {
@@ -929,7 +929,7 @@ const waitWithProgress = async (
 };
 
 const waitWithActorProgress = async (
-  manager: SubagentManager,
+  manager: AgentManager,
   transcripts: AgentTranscriptReader,
   actorId: string,
   actorName: string,
@@ -968,7 +968,7 @@ export class AgentsProvider implements FabricProvider {
     "The user-facing Main target, one-shot Pi or Claude Code agents, and persistent mailbox actors over process, tmux, screen, LocalTerm, or Herdr";
 
   constructor(
-    readonly manager: SubagentManager,
+    readonly manager: AgentManager,
     readonly actorManager: ActorManager,
     readonly globalActors: GlobalActorRegistry,
     readonly mainAgent: FabricMainAgentTarget,
@@ -1014,7 +1014,7 @@ export class AgentsProvider implements FabricProvider {
   async executeHandoff(
     args: Record<string, unknown>,
     context: FabricInvocationContext,
-    sessionSeed: SubagentSessionSeed,
+    sessionSeed: AgentSessionSeed,
   ): Promise<Record<string, unknown>> {
     const model = typeof args.model === "string" ? args.model.trim() : "";
     if (!model) throw new Error("agents.handoff requires an explicit Pi target model");
@@ -1131,7 +1131,7 @@ export class AgentsProvider implements FabricProvider {
         try {
           return this.manager.status(id);
         } catch (error) {
-          if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+          if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
         }
         const known = this.participants.get(id);
         if (known && !known.local) return known;
@@ -1395,7 +1395,7 @@ export class AgentsProvider implements FabricProvider {
           });
         } catch (error) {
           if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
-          /* not an actor — fall through to subagent */
+          /* not an actor — fall through to agent */
         }
         return this.manager.readLog(id, { lines, ...(before !== undefined ? { before } : {}) });
       }
@@ -1447,7 +1447,7 @@ export class AgentsProvider implements FabricProvider {
       );
     }
 
-    // Local one-shot subagent: forward between its turns via the worker's
+    // Local one-shot agent: forward between its turns via the worker's
     // steer.jsonl channel, preserving the child's accumulated context.
     try {
       const status = this.manager.status(id);
@@ -1458,7 +1458,7 @@ export class AgentsProvider implements FabricProvider {
           : this.manager.followUp(id, message, data);
       return { queued: true, messageId: result.messageId, routed: "local" };
     } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
     }
 
     // Persistent actors consume both delivery modes through their serial mailbox.
@@ -1522,7 +1522,7 @@ export class AgentsProvider implements FabricProvider {
         this.participants.scheduleRefresh();
         return { accepted: true, messageId: command.commandId };
       } catch (error) {
-        if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+        if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) {
           return { accepted: false, error: error instanceof Error ? error.message : String(error) };
         }
       }
@@ -1562,7 +1562,7 @@ export class AgentsProvider implements FabricProvider {
           : this.manager.followUp(command.targetId, message, command.data);
       return { accepted: true, messageId: result.messageId };
     } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) {
         return { accepted: false, error: error instanceof Error ? error.message : String(error) };
       }
     }
@@ -1596,11 +1596,11 @@ export class AgentsProvider implements FabricProvider {
     return actor;
   }
 
-  #listAgents(scopeValue: unknown): Array<SubagentRunRecord | SubagentHandleInfo | ReturnType<FabricParticipantSource["self"]>> {
+  #listAgents(scopeValue: unknown): Array<AgentRunRecord | AgentHandleInfo | ReturnType<FabricParticipantSource["self"]>> {
     const scope = this.#participantScope(scopeValue, "local");
     if (scope === "local") return this.manager.list();
-    const local = new Map<string, SubagentRunRecord | SubagentHandleInfo>();
-    const append = (record: SubagentRunRecord | SubagentHandleInfo): void => {
+    const local = new Map<string, AgentRunRecord | AgentHandleInfo>();
+    const append = (record: AgentRunRecord | AgentHandleInfo): void => {
       local.set(record.id, record);
       if ("nestedAgents" in record) {
         for (const nested of record.nestedAgents ?? []) append(nested);
@@ -1630,7 +1630,7 @@ export class AgentsProvider implements FabricProvider {
       this.participants.scheduleRefresh();
       return result;
     } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) throw error;
+      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
     }
     try {
       const actor = this.actorManager.status(id);

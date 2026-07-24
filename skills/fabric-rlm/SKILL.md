@@ -272,7 +272,7 @@ Guardrails:
 - Deduplicate and partition before spawning. Plain agents handle context-sized leaves; recursion is only for oversized partitions.
 - Work in batches so an all-failed batch stops new spend. At most two top-level partitions may recurse; additional recursive proposals return as `not_started` with their paths.
 - Partition edit ownership by path or use `worktree: true`; concurrent children must not edit the same files.
-- `subagents.maxDepth` bounds each recursive branch. The shared `subagents.budgetUsd` check and `tokenBudget` are best-effort under concurrency because usage settles afterward; batches reduce, but cannot eliminate, overshoot.
+- `agents.maxDepth` bounds each recursive branch. The shared `agents.budgetUsd` check and `tokenBudget` are best-effort under concurrency because usage settles afterward; batches reduce, but cannot eliminate, overshoot.
 - Reserve current-execution agent capacity for orientation and optional synthesis. Recursive descendants enforce their own process limits.
 - `budget.remaining()` reflects completed usage only. When the ceiling matters, keep batches small rather than treating it as a reservation.
 - Initial approval delegates only agent risk; network, execution, and write approvals are not inherited. Redirect a valuable drifting child with `agents.steer` rather than discarding its context.

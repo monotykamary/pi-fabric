@@ -17,7 +17,7 @@ const images = imagesFile ? JSON.parse(fs.readFileSync(imagesFile, "utf8")) : []
 const task = fs.readFileSync(taskFile, "utf8");
 
 if (task.includes("HANG")) {
-  // Write a non-terminal "running" status so the SubagentManager monitor keeps
+  // Write a non-terminal "running" status so the AgentManager monitor keeps
   // waiting, then stay alive until the transport kills this process (abort/stop).
   fs.mkdirSync(path.dirname(statusFile), { recursive: true });
   fs.writeFileSync(

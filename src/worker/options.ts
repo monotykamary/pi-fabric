@@ -1,4 +1,4 @@
-import type { SubagentWorkerOptions } from "../subagents/types.js";
+import type { AgentWorkerOptions } from "../agents/types.js";
 
 const argumentMap = (argv: readonly string[]): Map<string, string> => {
   const result = new Map<string, string>();
@@ -24,7 +24,7 @@ const optional = (args: Map<string, string>, name: string): string | undefined =
 
 export const parseWorkerOptions = (
   argv: readonly string[] = process.argv,
-): SubagentWorkerOptions => {
+): AgentWorkerOptions => {
   const args = argumentMap(argv);
   const model = optional(args, "model");
   const thinking = optional(args, "thinking");
@@ -70,7 +70,7 @@ export const parseWorkerOptions = (
     extensions: required(args, "extensions") === "true",
     tools: JSON.parse(required(args, "tools")) as string[],
     grantedRisks: JSON.parse(required(args, "granted-risks")) as string[],
-    transport: required(args, "transport") as SubagentWorkerOptions["transport"],
+    transport: required(args, "transport") as AgentWorkerOptions["transport"],
     ...(fabricExtensionPath ? { fabricExtensionPath } : {}),
     ...(model ? { model } : {}),
     ...(thinking ? { thinking } : {}),

@@ -2,11 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
+import {
+  CURRENT_FABRIC_CONFIG_VERSION,
+  migrateFabricConfigDocument,
+} from "./config-migrations.js";
 import type { FabricRisk } from "./protocol.js";
 import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "./thinking.js";
 
 type FabricApprovalMode = "allow" | "ask" | "auto" | "deny";
-export type FabricSubagentTransport =
+export type FabricAgentTransport =
   | "auto"
   | "process"
   | "tmux"
@@ -56,10 +60,10 @@ interface FabricPrewalkConfig {
   alwaysRearm: boolean;
 }
 
-export interface FabricSubagentConfig {
+export interface FabricAgentConfig {
   enabled: boolean;
   runner: FabricAgentRunner;
-  transport: FabricSubagentTransport;
+  transport: FabricAgentTransport;
   model?: string;
   claude: FabricClaudeRunnerConfig;
   thinking: FabricThinking;
@@ -154,7 +158,7 @@ export interface FabricConfig {
   approvals: FabricApprovalConfig;
   mcp: FabricMcpConfig;
   prewalk: FabricPrewalkConfig;
-  subagents: FabricSubagentConfig;
+  agents: FabricAgentConfig;
   capture: FabricToolCaptureConfig;
   ui: FabricUiConfig;
   compaction: FabricCompactionConfig;
@@ -163,9 +167,9 @@ export interface FabricConfig {
   schema: FabricSchemaConfig;
 }
 
-export const MIN_SUBAGENT_TIMEOUT_MS = 1_000;
-const DEFAULT_SUBAGENT_TIMEOUT_MS = 3_600_000;
-export const MAX_SUBAGENT_TIMEOUT_MS = 24 * 3_600_000;
+export const MIN_AGENT_TIMEOUT_MS = 1_000;
+const DEFAULT_AGENT_TIMEOUT_MS = 3_600_000;
+export const MAX_AGENT_TIMEOUT_MS = 24 * 3_600_000;
 export const QUICKJS_MAX_MEMORY_LIMIT_BYTES = 0xffff_ffff;
 export const MAX_EXECUTOR_MEMORY_LIMIT_BYTES = Math.max(
   8 * 1024 * 1024,
@@ -203,7 +207,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   prewalk: {
     alwaysRearm: false,
   },
-  subagents: {
+  agents: {
     enabled: true,
     runner: "pi",
     transport: "process",
@@ -212,7 +216,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     maxConcurrent: 4,
     maxPerExecution: 100,
     maxDepth: 2,
-    timeoutMs: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    timeoutMs: DEFAULT_AGENT_TIMEOUT_MS,
     extensions: true,
     defaultTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     retainRuns: false,
@@ -286,19 +290,28 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   },
 };
 
-const readJsonObject = (filePath: string): Record<string, unknown> | undefined => {
+interface JsonObjectFile {
+  document: Record<string, unknown>;
+  source: string;
+}
+
+const readJsonObjectFile = (filePath: string): JsonObjectFile | undefined => {
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const source = fs.readFileSync(filePath, "utf8");
+    const parsed: unknown = JSON.parse(source);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("configuration root must be an object");
     }
-    return parsed as Record<string, unknown>;
+    return { document: parsed as Record<string, unknown>, source };
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to read ${filePath}: ${message}`);
   }
 };
+
+const readJsonObject = (filePath: string): Record<string, unknown> | undefined =>
+  readJsonObjectFile(filePath)?.document;
 
 const mergeObjects = (
   base: Record<string, unknown>,
@@ -352,8 +365,8 @@ const runnerValue = (value: unknown, fallback: FabricAgentRunner): FabricAgentRu
 
 const transportValue = (
   value: unknown,
-  fallback: FabricSubagentTransport,
-): FabricSubagentTransport =>
+  fallback: FabricAgentTransport,
+): FabricAgentTransport =>
   value === "auto" ||
   value === "process" ||
   value === "tmux" ||
@@ -414,8 +427,8 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const approvals = objectValue(input.approvals);
   const mcp = objectValue(input.mcp);
   const prewalk = objectValue(input.prewalk);
-  const subagents = objectValue(input.subagents);
-  const claude = objectValue(subagents.claude);
+  const agents = objectValue(input.agents);
+  const claude = objectValue(agents.claude);
   const capture = objectValue(input.capture);
   const ui = objectValue(input.ui);
   const compaction = objectValue(input.compaction);
@@ -428,20 +441,20 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     DEFAULT_FABRIC_CONFIG.executor.runtime,
   );
   const executorRuntime = schemaMode === "enforce" ? "quickjs" : configuredExecutorRuntime;
-  const configuredTools = Array.isArray(subagents.defaultTools)
-    ? subagents.defaultTools.filter(
+  const configuredTools = Array.isArray(agents.defaultTools)
+    ? agents.defaultTools.filter(
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
       )
-    : DEFAULT_FABRIC_CONFIG.subagents.defaultTools;
+    : DEFAULT_FABRIC_CONFIG.agents.defaultTools;
   const approvalModel = stringValue(approvals.model);
   const configPath = stringValue(mcp.configPath);
   const meshRoot = stringValue(mesh.root);
   const memoryIndexDir = stringValue(memory.indexDir);
   const prewalkModel = stringValue(prewalk.model);
-  const subagentModel = stringValue(subagents.model);
+  const agentModel = stringValue(agents.model);
   const claudeBinary = stringValue(claude.binary);
   const claudeModel = stringValue(claude.model);
-  const subagentThinking = thinkingValue(subagents.thinking, DEFAULT_FABRIC_CONFIG.subagents.thinking);
+  const agentThinking = thinkingValue(agents.thinking, DEFAULT_FABRIC_CONFIG.agents.thinking);
   const configuredVisible = Array.isArray(capture.keepVisible)
     ? capture.keepVisible.filter(
         (name): name is string => typeof name === "string" && Boolean(name.trim()),
@@ -538,51 +551,51 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         DEFAULT_FABRIC_CONFIG.prewalk.alwaysRearm,
       ),
     },
-    subagents: {
-      enabled: booleanValue(subagents.enabled, DEFAULT_FABRIC_CONFIG.subagents.enabled),
-      runner: runnerValue(subagents.runner, DEFAULT_FABRIC_CONFIG.subagents.runner),
-      transport: transportValue(subagents.transport, DEFAULT_FABRIC_CONFIG.subagents.transport),
-      ...(subagentModel ? { model: subagentModel } : {}),
+    agents: {
+      enabled: booleanValue(agents.enabled, DEFAULT_FABRIC_CONFIG.agents.enabled),
+      runner: runnerValue(agents.runner, DEFAULT_FABRIC_CONFIG.agents.runner),
+      transport: transportValue(agents.transport, DEFAULT_FABRIC_CONFIG.agents.transport),
+      ...(agentModel ? { model: agentModel } : {}),
       claude: {
-        binary: claudeBinary ?? DEFAULT_FABRIC_CONFIG.subagents.claude.binary,
+        binary: claudeBinary ?? DEFAULT_FABRIC_CONFIG.agents.claude.binary,
         ...(claudeModel ? { model: claudeModel } : {}),
       },
-      thinking: subagentThinking,
+      thinking: agentThinking,
       maxConcurrent: boundedInteger(
-        subagents.maxConcurrent,
-        DEFAULT_FABRIC_CONFIG.subagents.maxConcurrent,
+        agents.maxConcurrent,
+        DEFAULT_FABRIC_CONFIG.agents.maxConcurrent,
         1,
         32,
       ),
       maxPerExecution: boundedInteger(
-        subagents.maxPerExecution,
-        DEFAULT_FABRIC_CONFIG.subagents.maxPerExecution,
+        agents.maxPerExecution,
+        DEFAULT_FABRIC_CONFIG.agents.maxPerExecution,
         1,
         1_000,
       ),
-      maxDepth: boundedInteger(subagents.maxDepth, DEFAULT_FABRIC_CONFIG.subagents.maxDepth, 0, 8),
+      maxDepth: boundedInteger(agents.maxDepth, DEFAULT_FABRIC_CONFIG.agents.maxDepth, 0, 8),
       timeoutMs: boundedInteger(
-        subagents.timeoutMs,
-        DEFAULT_FABRIC_CONFIG.subagents.timeoutMs,
-        MIN_SUBAGENT_TIMEOUT_MS,
-        MAX_SUBAGENT_TIMEOUT_MS,
+        agents.timeoutMs,
+        DEFAULT_FABRIC_CONFIG.agents.timeoutMs,
+        MIN_AGENT_TIMEOUT_MS,
+        MAX_AGENT_TIMEOUT_MS,
       ),
-      extensions: booleanValue(subagents.extensions, DEFAULT_FABRIC_CONFIG.subagents.extensions),
+      extensions: booleanValue(agents.extensions, DEFAULT_FABRIC_CONFIG.agents.extensions),
       defaultTools: configuredTools,
-      retainRuns: booleanValue(subagents.retainRuns, DEFAULT_FABRIC_CONFIG.subagents.retainRuns),
+      retainRuns: booleanValue(agents.retainRuns, DEFAULT_FABRIC_CONFIG.agents.retainRuns),
       notifyOnComplete: booleanValue(
-        subagents.notifyOnComplete,
-        DEFAULT_FABRIC_CONFIG.subagents.notifyOnComplete,
+        agents.notifyOnComplete,
+        DEFAULT_FABRIC_CONFIG.agents.notifyOnComplete,
       ),
       budgetUsd: boundedFloat(
-        subagents.budgetUsd,
-        DEFAULT_FABRIC_CONFIG.subagents.budgetUsd,
+        agents.budgetUsd,
+        DEFAULT_FABRIC_CONFIG.agents.budgetUsd,
         0,
         1_000_000,
       ),
       maxTokensPerChild: boundedInteger(
-        subagents.maxTokensPerChild,
-        DEFAULT_FABRIC_CONFIG.subagents.maxTokensPerChild,
+        agents.maxTokensPerChild,
+        DEFAULT_FABRIC_CONFIG.agents.maxTokensPerChild,
         0,
         100_000_000,
       ),
@@ -812,17 +825,90 @@ export const effectiveToolCaptureConfig = (
           risks: { ...config.capture.risks },
         };
 
+interface FabricConfigFilePlan {
+  path: string;
+  document: Record<string, unknown>;
+  source: string;
+  changed: boolean;
+}
+
+const planConfigFile = (filePath: string): FabricConfigFilePlan | undefined => {
+  const input = readJsonObjectFile(filePath);
+  if (!input) return undefined;
+  const migration = migrateFabricConfigDocument(input.document);
+  return {
+    path: filePath,
+    document: migration.document,
+    source: input.source,
+    changed: migration.changed,
+  };
+};
+
+const writeJsonAtomic = (
+  filePath: string,
+  document: Record<string, unknown>,
+  expectedSource?: string,
+): void => {
+  const resolvedPath = fs.existsSync(filePath) ? fs.realpathSync(filePath) : filePath;
+  const directory = path.dirname(resolvedPath);
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+  const mode = fs.existsSync(resolvedPath) ? fs.statSync(resolvedPath).mode & 0o777 : 0o600;
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(resolvedPath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporaryPath, "wx", mode);
+    fs.writeFileSync(descriptor, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    if (expectedSource !== undefined) {
+      let currentSource: string;
+      try {
+        currentSource = fs.readFileSync(resolvedPath, "utf8");
+      } catch (error) {
+        throw new Error(`Fabric configuration changed while updating ${filePath}`, { cause: error });
+      }
+      if (currentSource !== expectedSource) {
+        throw new Error(`Fabric configuration changed while updating ${filePath}`);
+      }
+    }
+    fs.renameSync(temporaryPath, resolvedPath);
+    try {
+      const directoryDescriptor = fs.openSync(directory, "r");
+      try {
+        fs.fsyncSync(directoryDescriptor);
+      } finally {
+        fs.closeSync(directoryDescriptor);
+      }
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? error.code : undefined;
+      if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;
+    }
+  } catch (error) {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+};
+
 export const loadFabricConfig = (options: {
   cwd: string;
   agentDir: string;
   projectTrusted: boolean;
 }): FabricConfig => {
   let merged = structuredClone(DEFAULT_FABRIC_CONFIG) as unknown as Record<string, unknown>;
-  const globalConfig = readJsonObject(path.join(options.agentDir, "fabric.json"));
-  if (globalConfig) merged = mergeObjects(merged, globalConfig);
-  if (options.projectTrusted) {
-    const projectConfig = readJsonObject(path.join(options.cwd, ".pi", "fabric.json"));
-    if (projectConfig) merged = mergeObjects(merged, projectConfig);
+  const plans = [
+    planConfigFile(path.join(options.agentDir, "fabric.json")),
+    ...(options.projectTrusted
+      ? [planConfigFile(path.join(options.cwd, ".pi", "fabric.json"))]
+      : []),
+  ].filter((plan): plan is FabricConfigFilePlan => plan !== undefined);
+  for (const plan of plans) {
+    if (plan.changed) writeJsonAtomic(plan.path, plan.document, plan.source);
+    merged = mergeObjects(merged, plan.document);
   }
   const inheritedFullCodeMode = process.env.PI_FABRIC_FULL_CODE_MODE;
   if (inheritedFullCodeMode === "true" || inheritedFullCodeMode === "false") {
@@ -844,10 +930,13 @@ export const saveFabricConfig = (
   const targetPath = options.projectTrusted
     ? path.join(options.cwd, ".pi", "fabric.json")
     : path.join(options.agentDir, "fabric.json");
-  const existing = readJsonObject(targetPath) ?? {};
+  if (Object.hasOwn(partial, "configVersion") || Object.hasOwn(partial, "subagents")) {
+    throw new Error("Fabric configuration updates must use the current schema");
+  }
+  const input = readJsonObjectFile(targetPath);
+  const existing = migrateFabricConfigDocument(input?.document ?? {}).document;
   const merged = mergeObjects(existing, partial) as Record<string, unknown>;
-  const directory = path.dirname(targetPath);
-  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
-  fs.writeFileSync(targetPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  merged.configVersion = CURRENT_FABRIC_CONFIG_VERSION;
+  writeJsonAtomic(targetPath, merged, input?.source);
   return { scope: options.projectTrusted ? "project" : "global", path: targetPath };
 };

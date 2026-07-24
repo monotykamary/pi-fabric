@@ -8,8 +8,8 @@ import {
   type SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
 import type {
-  SubagentSessionSeed,
-  SubagentToolResultMessage,
+  AgentSessionSeed,
+  AgentToolResultMessage,
 } from "./types.js";
 
 interface HandoffSessionSource {
@@ -77,9 +77,9 @@ const activeFabricTurn = (
 export const snapshotHandoffSession = (
   source: HandoffSessionSource,
   currentModel: CurrentModel | undefined,
-  outerToolResult: SubagentToolResultMessage,
+  outerToolResult: AgentToolResultMessage,
   outerToolCallId: string,
-): SubagentSessionSeed => {
+): AgentSessionSeed => {
   if (
     outerToolResult.toolCallId !== outerToolCallId ||
     outerToolResult.toolName !== "fabric_exec"
@@ -115,7 +115,7 @@ export const snapshotHandoffSession = (
 };
 
 const materializeBranch = (
-  seed: SubagentSessionSeed,
+  seed: AgentSessionSeed,
   cwd: string,
   directory: string,
 ): SessionManager => {
@@ -141,7 +141,7 @@ const materializeBranch = (
 };
 
 const forkBranch = (
-  seed: SubagentSessionSeed,
+  seed: AgentSessionSeed,
   cwd: string,
   directory: string,
 ): SessionManager => {
@@ -161,7 +161,7 @@ const forkBranch = (
 
 const synchronizeSourceSettings = (
   session: SessionManager,
-  seed: SubagentSessionSeed,
+  seed: AgentSessionSeed,
 ): void => {
   const context = session.buildSessionContext();
   if (
@@ -177,7 +177,7 @@ const synchronizeSourceSettings = (
 };
 
 export const writeHandoffSession = (
-  seed: SubagentSessionSeed,
+  seed: AgentSessionSeed,
   cwd: string,
   directory: string,
 ): string => {

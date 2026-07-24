@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeUserMessage } from "../src/subagents/claude-cli.js";
+import { claudeUserMessage } from "../src/agents/claude-cli.js";
 
 describe("Claude stream-json messages", () => {
   it("maps Fabric image blocks to Claude base64 content blocks", () => {

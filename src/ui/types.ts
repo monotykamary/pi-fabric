@@ -8,7 +8,7 @@ import type {
   FabricParticipantKind,
   FabricPeerInfo,
 } from "../topology/types.js";
-import type { SubagentUsage } from "../subagents/types.js";
+import type { AgentUsage } from "../agents/types.js";
 
 export type FabricUiMain = FabricMainAgentInfo;
 export type FabricUiPeer = FabricPeerInfo;
@@ -29,7 +29,7 @@ export interface FabricUiAgent {
   finishedAt?: number;
   turns?: number;
   toolCalls?: number;
-  usage?: SubagentUsage;
+  usage?: AgentUsage;
   text?: string;
   value?: unknown;
   error?: string;

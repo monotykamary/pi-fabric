@@ -52,7 +52,7 @@ export class FabricUiController {
   #timer: NodeJS.Timeout | undefined;
   #activityUnsubscribe: (() => void) | undefined;
   #actorUnsubscribe: (() => void) | undefined;
-  #subagentUnsubscribe: (() => void) | undefined;
+  #agentUnsubscribe: (() => void) | undefined;
   #scheduledRefresh: NodeJS.Timeout | undefined;
   #widgetTui: TUI | undefined;
   #dashboardTui: TUI | undefined;
@@ -80,7 +80,7 @@ export class FabricUiController {
     }
     this.#activityUnsubscribe = this.state.activity.subscribe(() => this.#scheduleRefresh());
     this.#actorUnsubscribe = this.state.actors.subscribe(() => this.#scheduleRefresh());
-    this.#subagentUnsubscribe = this.state.subagents.subscribeUi(() => this.#scheduleRefresh());
+    this.#agentUnsubscribe = this.state.agents.subscribeUi(() => this.#scheduleRefresh());
     this.#refresh();
     this.#schedulePoll();
   }
@@ -95,8 +95,8 @@ export class FabricUiController {
     this.#activityUnsubscribe = undefined;
     this.#actorUnsubscribe?.();
     this.#actorUnsubscribe = undefined;
-    this.#subagentUnsubscribe?.();
-    this.#subagentUnsubscribe = undefined;
+    this.#agentUnsubscribe?.();
+    this.#agentUnsubscribe = undefined;
     if (this.#context?.mode === "tui") {
       this.#context.ui.setWidget(WIDGET_ID, undefined);
     }
@@ -132,7 +132,7 @@ export class FabricUiController {
     let claudeModelSource: ModelSource | undefined;
     if (this.#snapshot.actors.some((actor) => actor.runner === "claude")) {
       try {
-        claudeModelSource = buildClaudeModelSource(await this.state.subagents.claudeModels());
+        claudeModelSource = buildClaudeModelSource(await this.state.agents.claudeModels());
       } catch (error) {
         context.ui.notify(
           `Claude model discovery failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -285,7 +285,7 @@ export class FabricUiController {
             onActorDeliveryPolicy,
             onGlobalDeliveryPolicy,
             onActorTools,
-            actorDefaultTools: this.state.config.subagents?.defaultTools ?? [],
+            actorDefaultTools: this.state.config.agents?.defaultTools ?? [],
             onClearMessages,
             onActorInstructions,
             onGlobalInstructions,

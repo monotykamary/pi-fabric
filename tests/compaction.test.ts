@@ -479,7 +479,7 @@ describe("Pi custom_message compaction", () => {
     expect(JSON.stringify(events)).not.toContain("PLAIN_CUSTOM_POISON");
   });
 
-  it("includes actor and subagent completions in cumulative summaries deterministically", () => {
+  it("includes actor and agent completions in cumulative summaries deterministically", () => {
     resetIds();
     resetClock();
     const session = buildSession(
@@ -489,8 +489,8 @@ describe("Pi custom_message compaction", () => {
         message: { status: "completed" },
       }),
       assistant(textPart("actor received")),
-      customMessage("pi-fabric-subagent-complete", "Fabric agent abc completed: SUBAGENT_FACT_23", false, {
-        id: "subagent-23",
+      customMessage("pi-fabric-agent-complete", "Fabric agent abc completed: AGENT_FACT_23", false, {
+        id: "agent-23",
         status: "completed",
       }),
       assistant(textPart("completion received")),
@@ -502,8 +502,8 @@ describe("Pi custom_message compaction", () => {
     expect(second.compaction.summary).toBe(first.compaction.summary);
     expect(first.compaction.summary).toContain('custom "pi-fabric-actor" (visible)');
     expect(first.compaction.summary).toContain("ACTOR_FACT_17");
-    expect(first.compaction.summary).toContain('custom "pi-fabric-subagent-complete" (hidden)');
-    expect(first.compaction.summary).toContain("SUBAGENT_FACT_23");
+    expect(first.compaction.summary).toContain('custom "pi-fabric-agent-complete" (hidden)');
+    expect(first.compaction.summary).toContain("AGENT_FACT_23");
     expect(first.compaction.details?.counts.cumulativeSourceEntries).toBe(5);
   });
 

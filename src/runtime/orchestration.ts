@@ -1,5 +1,5 @@
 // Static detection lets Fabric start known orchestration programs with the
-// longer subagent deadline. The runtime also extends the deadline when a
+// longer agent deadline. The runtime also extends the deadline when a
 // blocking agent ref is discovered dynamically through tools.call(), so
 // computed and aliased refs cannot fall back to the short executor timeout.
 const BLOCKING_ORCHESTRATION_REFS = new Set([

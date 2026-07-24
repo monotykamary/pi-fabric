@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { LocaltermTransport } from "../src/subagents/transports/localterm-transport.js";
+import { LocaltermTransport } from "../src/agents/transports/localterm-transport.js";
 
 const temporaryDirectories: string[] = [];
 const originalPath = process.env.PATH;

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { readJsonlPageFromDescriptor } from "../log-tail.js";
-import type { FabricLogLine } from "../subagents/types.js";
+import type { FabricLogLine } from "../agents/types.js";
 import {
   missingToolStartIds,
   normalizedToolStarts,

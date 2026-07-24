@@ -3,7 +3,7 @@ import fs from "node:fs";
 // A stub `pi` binary for the real-worker e2e. The Fabric worker spawns this as
 // the child agent and talks to it over stdin/stdout JSON lines. Behavior is
 // selected with the FAKE_PI_BEHAVIOR env var so the e2e can drive the real
-// worker.ts + SubagentManager.#monitor across child outcomes.
+// worker.ts + AgentManager.#monitor across child outcomes.
 const behavior = process.env.FAKE_PI_BEHAVIOR || "success";
 const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n");
 

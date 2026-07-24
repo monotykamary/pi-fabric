@@ -15,8 +15,8 @@ import type {
   FabricRunDisplay,
 } from "./activity/types.js";
 import {
-  MAX_SUBAGENT_TIMEOUT_MS,
-  MIN_SUBAGENT_TIMEOUT_MS,
+  MAX_AGENT_TIMEOUT_MS,
+  MIN_AGENT_TIMEOUT_MS,
   type FabricConfig,
 } from "./config.js";
 import {
@@ -204,8 +204,8 @@ export class FabricExecutionService {
     const maxAgentCalls = Math.max(
       1,
       Math.min(
-        options.maxAgentCalls ?? this.config.subagents.maxPerExecution,
-        this.config.subagents.maxPerExecution,
+        options.maxAgentCalls ?? this.config.agents.maxPerExecution,
+        this.config.agents.maxPerExecution,
       ),
     );
     const guardAgentCall = (ref: string): void => {
@@ -297,7 +297,7 @@ export class FabricExecutionService {
     // host bridge and can extend the active sandbox deadline before they run.
     const orchestrationTimeoutMs = Math.max(
       this.config.executor.timeoutMs,
-      this.config.subagents.timeoutMs,
+      this.config.agents.timeoutMs,
     );
     const effectiveTimeoutMs = codeUsesOrchestration(options.code)
       ? orchestrationTimeoutMs
@@ -321,8 +321,8 @@ export class FabricExecutionService {
         typeof targetArgs.timeoutMs === "number" &&
         Number.isFinite(targetArgs.timeoutMs)
           ? Math.max(
-              MIN_SUBAGENT_TIMEOUT_MS,
-              Math.min(Math.floor(targetArgs.timeoutMs), MAX_SUBAGENT_TIMEOUT_MS),
+              MIN_AGENT_TIMEOUT_MS,
+              Math.min(Math.floor(targetArgs.timeoutMs), MAX_AGENT_TIMEOUT_MS),
             )
           : 0;
       return Math.max(orchestrationTimeoutMs, requestedTimeoutMs);

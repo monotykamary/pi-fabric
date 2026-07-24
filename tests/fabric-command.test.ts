@@ -59,7 +59,7 @@ describe("/fabric command", () => {
         fullCodeMode: true,
         schema: { mode: "off" },
         prewalk: { model: "anthropic/executor" },
-        subagents: { enabled: true },
+        agents: { enabled: true },
       },
       prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
     } as unknown as FabricState;
@@ -101,7 +101,7 @@ describe("/fabric command", () => {
         fullCodeMode: true,
         schema: { mode: "off" },
         prewalk: {},
-        subagents: { enabled: true },
+        agents: { enabled: true },
       },
       prewalk: { arm, status: vi.fn(), cancel: vi.fn() },
     } as unknown as FabricState;

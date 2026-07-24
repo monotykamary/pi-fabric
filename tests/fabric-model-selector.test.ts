@@ -145,7 +145,7 @@ describe("FabricModelSelector", () => {
     // The Inherit row's footer name reflects the custom inherit description.
     expect(text).toContain("Use the Fabric default model (or host default)");
     // The default global wording is no longer present.
-    expect(text).not.toContain("Default model for Fabric subagents and actors");
+    expect(text).not.toContain("Default model for Fabric agents and actors");
     expect(text).not.toContain("Use the host session's default model");
   });
 
@@ -177,7 +177,7 @@ describe("FabricModelSelector", () => {
       onCancel: () => {},
     });
     const text = render(component);
-    expect(text).toContain("Default model for Fabric subagents and actors");
+    expect(text).toContain("Default model for Fabric agents and actors");
     expect(text).toContain("Use the host session's default model");
   });
 });

@@ -1,7 +1,7 @@
 # Programmatic compaction
 
 Programmatic compaction lets the model (or a skill, or a peer) **ask** the host
-to compact its own context — or a running subagent's context — at a safe
+to compact its own context — or a running agent's context — at a safe
 boundary, instead of compaction being only a token-threshold reflex. It is the
 distillation of two proven ideas into first-principles primitives native to
 pi-fabric:
@@ -131,7 +131,7 @@ text rather than typed protocol input.
   `status: "failed"` with the message. If `compact()` itself throws
   synchronously, the same failure path applies.
 
-### Subagent compaction — `agents.compact`
+### Agent compaction — `agents.compact`
 
 ```ts
 const handle = await agents.spawn({
@@ -201,8 +201,8 @@ configuration to be safe.
 | `src/providers/compact-provider.ts` | Fabric provider exposing bounded TypeBox-validated `request` (write, including optional `preserve: string[]`), `status` (read), `cancel` (read). Always registered; activity audit. |
 | `src/fabric-state.ts` | Constructs the controller with mesh-publish hooks; registers the provider; resets on re-init/shutdown. |
 | `src/index.ts` | Invokes `state.compact.maybeCommit(context)` in the existing `agent_settled` handler. |
-| `src/subagents/types.ts` | `SubagentSteerEntry["type"]` extended with `"compact"`; optional `instructions` field. |
-| `src/subagents/manager.ts` | `compact(id, instructions?)` appends a compact entry through the steer channel; rejects Claude-runner children. |
+| `src/agents/types.ts` | `AgentSteerEntry["type"]` extended with `"compact"`; optional `instructions` field. |
+| `src/agents/manager.ts` | `compact(id, instructions?)` appends a compact entry through the steer channel; rejects Claude-runner children. |
 | `src/worker.ts` | Feeds compact controls into the child boundary coordinator and observes Pi RPC lifecycle events. |
-| `src/subagents/compact-control.ts` | Coalesces child requests, waits for `agent_settled`, correlates compact response + `compaction_end`, records outcome, and gates one-shot stdin close. |
+| `src/agents/compact-control.ts` | Coalesces child requests, waits for `agent_settled`, correlates compact response + `compaction_end`, records outcome, and gates one-shot stdin close. |
 | `src/providers/agents-provider.ts` | `agents.compact({id, instructions?})` action (risk: agent) with activity audit. |

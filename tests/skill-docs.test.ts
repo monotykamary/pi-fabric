@@ -38,10 +38,10 @@ describe("fabric-exec skill provider contracts", () => {
     const extension = fs.readFileSync("src/index.ts", "utf8");
 
     expect(skill).toContain("string containing literal `${...}`");
-    expect(skill).toContain("Omit `timeoutMs` for subagents and actors");
+    expect(skill).toContain("Omit `timeoutMs` for agents and actors");
     expect(extension).not.toContain("Shorthands (all accepted)");
     expect(extension).not.toContain("mcp.fal_ai.get_model_schema");
-    expect(extension).not.toContain("For subagents and actors, omit timeoutMs");
+    expect(extension).not.toContain("For agents and actors, omit timeoutMs");
     expect(extension).not.toContain("FABRIC_TEMPLATE_LITERAL_CAVEAT");
   });
 

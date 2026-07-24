@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Use one `fabric_exec` call for a 2–8 model panel and a judge when at least two responses complete. The judge compares rather than merges responses; return a compact status/coverage/analysis envelope so the caller writes the final answer. Use fusion for model-diverse research or critique, not tactical work or a lookup.
 
-Pass every key: `strings.task`; JSON `strings.panel` as `Array<{ model, label? }>`; and optional `strings.judge`, `strings.tools`, and `strings.thinking` as empty strings when unset. Labels are attribution only. Tools default to `read`, `grep`, `find`, `ls`, and `bash`; thinking defaults to configured subagent thinking.
+Pass every key: `strings.task`; JSON `strings.panel` as `Array<{ model, label? }>`; and optional `strings.judge`, `strings.tools`, and `strings.thinking` as empty strings when unset. Labels are attribution only. Tools default to `read`, `grep`, `find`, `ls`, and `bash`; thinking defaults to configured agent thinking.
 
 ```ts
 type FusionAnalysis = {
@@ -194,7 +194,7 @@ try {
 
 Choose distinct models by intent: strongest available, budget-balanced with a frontier judge, or similar-latency models for faster fan-out. The default panel size is three. Cost is N panel calls plus a judge when comparison is possible. Reserve `panel.length + 1` top-level agent calls. Concurrent calls can overshoot observational token/USD checks because usage settles afterward; those settings are not hard concurrent reservations.
 
-Panel members and the judge are plain, non-recursive agents, so deliberation is one level. `bash` enables web access through local search/fetch commands and requires execute approval. Concurrency is capped by `subagents.maxConcurrent`; inner calls otherwise inherit provider limits and use `thinking` for reasoning effort.
+Panel members and the judge are plain, non-recursive agents, so deliberation is one level. `bash` enables web access through local search/fetch commands and requires execute approval. Concurrency is capped by `agents.maxConcurrent`; inner calls otherwise inherit provider limits and use `thinking` for reasoning effort.
 
 For same-model role diversity, recommend `/skill:fabric-council` for the user to invoke; do not invoke another user-only skill yourself. Use a plain agent when competing model perspectives do not justify the cost.
 

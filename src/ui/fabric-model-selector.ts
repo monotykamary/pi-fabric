@@ -75,7 +75,7 @@ export class FabricModelSelector extends Container implements Focusable {
     this.onCancelCallback = options.onCancel;
     this.headerText =
       options.headerText ??
-      "Default model for Fabric subagents and actors. Pick Inherit to use the host session's model.";
+      "Default model for Fabric agents and actors. Pick Inherit to use the host session's model.";
     this.inheritLabel = options.inheritLabel ?? INHERIT_VALUE;
     this.inheritName = options.inheritName ?? "Use the host session's default model";
 

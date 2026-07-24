@@ -61,7 +61,7 @@ describe("codeUsesOrchestration", () => {
     expect(codeUsesOrchestration('return tools.call({ ref: "pi.read", args: {} });')).toBe(false);
     expect(codeUsesOrchestration('return obj.agent("x");')).toBe(false);
     expect(codeUsesOrchestration('return userAgent("x");')).toBe(false);
-    expect(codeUsesOrchestration('return subagent("x");')).toBe(false);
+    expect(codeUsesOrchestration('return worker("x");')).toBe(false);
   });
 
   it("ignores orchestration tokens that are not call sites", () => {

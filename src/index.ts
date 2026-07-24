@@ -31,7 +31,7 @@ import {
   FABRIC_PROVIDER_REGISTER_EVENT,
   type FabricProviderRegistration,
 } from "./protocol.js";
-import type { SubagentToolResultMessage } from "./subagents/types.js";
+import type { AgentToolResultMessage } from "./agents/types.js";
 import { FabricUiController } from "./ui/controller.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { formatFabricValue } from "./ui/structured.js";
@@ -43,7 +43,7 @@ import { fileURLToPath } from "node:url";
 // Absolute path to the Fabric skills bundled with this extension. Resolved
 // relative to the extension entry so it works both in development (src/) and
 // in an installed package (dist/). Contributed via resources_discover so child
-// Pi processes that load Fabric with -e (subagents and actors) discover the
+// Pi processes that load Fabric with -e (agents and actors) discover the
 // same fabric-exec / fabric-advisor / fabric-council skill references as the
 // main agent, which gets them through the package manifest.
 const FABRIC_EXTENSION_ENTRY_PATH = path.resolve(fileURLToPath(import.meta.url));
@@ -312,7 +312,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     if (!pending || event.message.toolName !== "fabric_exec") return undefined;
     pendingHandoffs.delete(event.message.toolCallId);
 
-    const outerToolResult = event.message as SubagentToolResultMessage;
+    const outerToolResult = event.message as AgentToolResultMessage;
     const handoff = await state.runHandoffAtBoundary(
       pending,
       outerToolResult,

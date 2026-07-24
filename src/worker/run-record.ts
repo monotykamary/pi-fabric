@@ -1,15 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import type {
-  SubagentRunRecord,
-  SubagentUsage,
-  SubagentWorkerOptions,
-} from "../subagents/types.js";
+  AgentRunRecord,
+  AgentUsage,
+  AgentWorkerOptions,
+} from "../agents/types.js";
 
 const MAX_RUN_ERROR_CHARS = 20_000;
 const MAX_RUN_TEXT_CHARS = 100_000;
 
-export const emptyUsage = (): SubagentUsage => ({
+export const emptyUsage = (): AgentUsage => ({
   input: 0,
   output: 0,
   cacheRead: 0,
@@ -18,11 +18,11 @@ export const emptyUsage = (): SubagentUsage => ({
 });
 
 export const createRunningRecord = (
-  options: SubagentWorkerOptions,
+  options: AgentWorkerOptions,
   task: string,
-  thinking: SubagentRunRecord["thinking"],
+  thinking: AgentRunRecord["thinking"],
   startedAt: number,
-): SubagentRunRecord => ({
+): AgentRunRecord => ({
   id: options.id,
   name: options.name,
   task,
@@ -45,7 +45,7 @@ export const createRunningRecord = (
   ...(options.worktree ? { worktree: options.worktree } : {}),
 });
 
-export const writeRunRecord = (filePath: string, record: SubagentRunRecord): void => {
+export const writeRunRecord = (filePath: string, record: AgentRunRecord): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, JSON.stringify(record, null, 2), {
@@ -55,18 +55,18 @@ export const writeRunRecord = (filePath: string, record: SubagentRunRecord): voi
   fs.renameSync(temporaryPath, filePath);
 };
 
-export const updateRunRecord = (filePath: string, record: SubagentRunRecord): void => {
+export const updateRunRecord = (filePath: string, record: AgentRunRecord): void => {
   record.updatedAt = Date.now();
   writeRunRecord(filePath, record);
 };
 
 export const writeCrashRunRecord = (
   filePath: string,
-  record: SubagentRunRecord,
+  record: AgentRunRecord,
   error: unknown,
 ): void => {
   const reason = error instanceof Error ? error.message : String(error);
-  const crashed: SubagentRunRecord = {
+  const crashed: AgentRunRecord = {
     ...record,
     status: "failed",
     error: `Worker crashed before reporting a result: ${reason}`.slice(0, MAX_RUN_ERROR_CHARS),
@@ -80,7 +80,7 @@ export const writeCrashRunRecord = (
 const numberField = (value: unknown): number => (typeof value === "number" ? value : 0);
 
 export const applyUsage = (
-  record: SubagentRunRecord,
+  record: AgentRunRecord,
   message: Record<string, unknown>,
 ): void => {
   const usage = message.usage;

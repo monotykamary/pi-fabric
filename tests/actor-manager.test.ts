@@ -6,11 +6,11 @@ import { ActorManager } from "../src/actors/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricMainAgentDeliveryRequest } from "../src/main-agent.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
-import { SubagentManager } from "../src/subagents/manager.js";
+import { AgentManager } from "../src/agents/manager.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
-const subagentManagers: SubagentManager[] = [];
+const agentManagers: AgentManager[] = [];
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -27,11 +27,11 @@ const setup = (
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-actor-test-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-  const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+  const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
     workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
     runRoot: path.join(root, "runs"),
   });
-  subagentManagers.push(subagents);
+  agentManagers.push(agents);
   const identity: MeshIdentity = {
     id: "session:test",
     name: "main",
@@ -45,7 +45,7 @@ const setup = (
     identity,
     mesh,
     meshConfig,
-    subagents,
+    agents,
     ({ message }) => {
       if (message.text) deliveries.push(message.text);
     },
@@ -56,12 +56,12 @@ const setup = (
     },
   );
   actorManagers.push(actors);
-  return { actors, mesh, deliveries, root, subagents, identity, meshConfig };
+  return { actors, mesh, deliveries, root, agents, identity, meshConfig };
 };
 
 afterEach(async () => {
   await Promise.all(actorManagers.splice(0).map((manager) => manager.close()));
-  await Promise.all(subagentManagers.splice(0).map((manager) => manager.close()));
+  await Promise.all(agentManagers.splice(0).map((manager) => manager.close()));
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -142,7 +142,7 @@ describe("ActorManager", () => {
       standbyIdentity,
       state.mesh,
       state.meshConfig,
-      state.subagents,
+      state.agents,
       () => {},
       {
         actorRoot: path.join(state.root, "actors"),
@@ -184,7 +184,7 @@ describe("ActorManager", () => {
   });
 
   it("keeps a persistent actor identity and processes direct mailbox messages", async () => {
-    const { actors, subagents } = setup();
+    const { actors, agents } = setup();
     const actor = await actors.create({
       name: "reviewer",
       instructions: "Review messages and reply concisely.",
@@ -196,7 +196,7 @@ describe("ActorManager", () => {
     expect(reply.actorId).toBe(actor.id);
     await waitFor(() => actors.status(actor.id).status === "idle");
     expect(actors.status(actor.id)).toMatchObject({ status: "idle", messages: 2 });
-    expect(subagents.list()).toEqual([]);
+    expect(agents.list()).toEqual([]);
     expect(actors.messages(actor.id)).toMatchObject([
       { direction: "in", source: "direct" },
       { direction: "out", source: "direct", text: "fake worker complete" },
@@ -261,7 +261,7 @@ describe("ActorManager", () => {
   });
 
   it("stays ambient and retains the failed run when a directive run fails", async () => {
-    const { actors, subagents } = setup();
+    const { actors, agents } = setup();
     const actor = await actors.create({
       name: "supervisor",
       instructions: "Watch and steer only when needed.",
@@ -282,9 +282,9 @@ describe("ActorManager", () => {
     expect(status.lastError).toBeUndefined();
 
     // The failed run is retained for debugging (agents.status(lastRunId)), not cleaned up.
-    const retained = subagents.list();
+    const retained = agents.list();
     expect(retained).toHaveLength(1);
-    const run = subagents.status(retained[0]!.id);
+    const run = agents.status(retained[0]!.id);
     expect(run).toMatchObject({
       status: "failed",
       error: expect.stringContaining("Structured agent output was invalid"),
@@ -292,7 +292,7 @@ describe("ActorManager", () => {
 
     // Removing the actor releases the retained run.
     await actors.remove(actor.id);
-    expect(subagents.list()).toEqual([]);
+    expect(agents.list()).toEqual([]);
   });
 
   it("restores persistent ambient actors for the same Pi session", async () => {
@@ -311,7 +311,7 @@ describe("ActorManager", () => {
       setupState.identity,
       setupState.mesh,
       setupState.meshConfig,
-      setupState.subagents,
+      setupState.agents,
       () => {},
       { actorRoot: path.join(setupState.root, "actors"), persistent: true },
     );
@@ -332,12 +332,12 @@ describe("ActorManager", () => {
     process.env.FAKE_CLAUDE_LOG = invocationLog;
     try {
       const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-      const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
         runRoot: path.join(root, "runs"),
       });
-      subagentManagers.push(subagents);
+      agentManagers.push(agents);
       const identity: MeshIdentity = {
         id: "session:test",
         name: "main",
@@ -351,7 +351,7 @@ describe("ActorManager", () => {
         identity,
         mesh,
         meshConfig,
-        subagents,
+        agents,
         () => {},
         { actorRoot, persistent: true },
       );
@@ -375,7 +375,7 @@ describe("ActorManager", () => {
         identity,
         mesh,
         meshConfig,
-        subagents,
+        agents,
         () => {},
         { actorRoot, persistent: true },
       );
@@ -410,18 +410,18 @@ describe("ActorManager", () => {
     roots.push(scopeDir);
     const sharedRoot = path.join(scopeDir, "actors");
     const firstMesh = new MeshStore(path.join(scopeDir, "mesh"), 64 * 1024, 100);
-    const firstSubagents = new SubagentManager(
+    const firstAgents = new AgentManager(
       process.cwd(),
-      DEFAULT_FABRIC_CONFIG.subagents,
+      DEFAULT_FABRIC_CONFIG.agents,
       { workerPath: path.resolve("tests/fixtures/fake-worker.mjs"), runRoot: path.join(scopeDir, "runs") },
     );
-    subagentManagers.push(firstSubagents);
+    agentManagers.push(firstAgents);
     const first = new ActorManager(
       "session-a",
       { id: "session:a", name: "main", kind: "main", sessionId: "session-a" },
       firstMesh,
       { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 },
-      firstSubagents,
+      firstAgents,
       () => {},
       { actorRoot: sharedRoot, persistent: true },
     );
@@ -436,18 +436,18 @@ describe("ActorManager", () => {
 
     // A brand-new Pi session, same shared actor root.
     const secondMesh = new MeshStore(path.join(scopeDir, "mesh"), 64 * 1024, 100);
-    const secondSubagents = new SubagentManager(
+    const secondAgents = new AgentManager(
       process.cwd(),
-      DEFAULT_FABRIC_CONFIG.subagents,
+      DEFAULT_FABRIC_CONFIG.agents,
       { workerPath: path.resolve("tests/fixtures/fake-worker.mjs"), runRoot: path.join(scopeDir, "runs") },
     );
-    subagentManagers.push(secondSubagents);
+    agentManagers.push(secondAgents);
     const restored = new ActorManager(
       "session-b",
       { id: "session:b", name: "main", kind: "main", sessionId: "session-b" },
       secondMesh,
       { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 },
-      secondSubagents,
+      secondAgents,
       () => {},
       { actorRoot: sharedRoot, persistent: true },
     );
@@ -488,7 +488,7 @@ describe("ActorManager", () => {
   });
 
   it("retains completed-run logs and exposes them via readLog", async () => {
-    const { actors, subagents } = setup();
+    const { actors, agents } = setup();
     const actor = await actors.create({
       name: "reviewer",
       instructions: "Review messages and reply concisely.",
@@ -519,7 +519,7 @@ describe("ActorManager", () => {
     expect(log.retainedRuns).toHaveLength(1);
     // Completed runs are released from the in-memory registry, but the log
     // copy in the actor directory survives.
-    expect(subagents.list()).toEqual([]);
+    expect(agents.list()).toEqual([]);
   });
 
   it("retains failed-run logs too so readLog can inspect them", async () => {
@@ -555,7 +555,7 @@ describe("ActorManager", () => {
     await actors.setModel(actor.id, "anthropic/claude-sonnet-4-5");
     expect(actors.status(actor.id).model).toBe("anthropic/claude-sonnet-4-5");
 
-    // The new model is forwarded to the subagent run launched for the next message.
+    // The new model is forwarded to the agent run launched for the next message.
     await actors.ask(actor.id, "Inspect auth");
     await waitFor(() => actors.status(actor.id).status === "idle");
     const run = actors.readLog(actor.id, { type: "run" });
@@ -597,7 +597,7 @@ describe("ActorManager", () => {
       setupState.identity,
       setupState.mesh,
       setupState.meshConfig,
-      setupState.subagents,
+      setupState.agents,
       () => {},
       { actorRoot: path.join(setupState.root, "actors"), persistent: true },
     );
@@ -624,7 +624,7 @@ describe("ActorManager", () => {
       setupState.identity,
       setupState.mesh,
       setupState.meshConfig,
-      setupState.subagents,
+      setupState.agents,
       () => {},
       { actorRoot: path.join(setupState.root, "actors"), persistent: true },
     );
@@ -647,7 +647,7 @@ describe("ActorManager", () => {
     await actors.setThinking(actor.id, "high");
     expect(actors.status(actor.id).thinking).toBe("high");
 
-    // The new thinking is forwarded to the subagent run launched for the next message.
+    // The new thinking is forwarded to the agent run launched for the next message.
     await actors.ask(actor.id, "Inspect auth");
     await waitFor(() => actors.status(actor.id).status === "idle");
     const run = actors.readLog(actor.id, { type: "run" });
@@ -700,7 +700,7 @@ describe("ActorManager", () => {
       setupState.identity,
       setupState.mesh,
       setupState.meshConfig,
-      setupState.subagents,
+      setupState.agents,
       () => {},
       { actorRoot: path.join(setupState.root, "actors"), persistent: true },
     );
@@ -727,10 +727,10 @@ describe("ActorManager", () => {
 
     expect(actors.haltAll()).toEqual({ halted: 1 });
 
-    // The abort can land before or after the subagent process spawns, so the
+    // The abort can land before or after the agent process spawns, so the
     // rejection reason is either the semaphore's "Operation aborted" or the
-    // transport's "Subagent stopped" — both are valid interrupt outcomes.
-    await expect(askPromise).rejects.toThrow(/Subagent stopped|Operation aborted/);
+    // transport's "Agent stopped" — both are valid interrupt outcomes.
+    await expect(askPromise).rejects.toThrow(/Agent stopped|Operation aborted/);
     await waitFor(() => actors.status(actor.id).status === "idle");
     expect(actors.status(actor.id).queued).toBe(0);
 
@@ -1050,18 +1050,18 @@ describe("ActorManager steering relay", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-relay-"));
     roots.push(root);
     const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-    const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: fakeWorker,
       runRoot: path.join(root, "runs"),
     });
-    subagentManagers.push(subagents);
+    agentManagers.push(agents);
     const disabledConfig = { ...DEFAULT_FABRIC_CONFIG.mesh, enabled: false, actorPollMs: 20 };
     const actors = new ActorManager(
       "test",
       { id: "session:t", name: "main", kind: "main" },
       mesh,
       disabledConfig,
-      subagents,
+      agents,
       () => {},
       { actorRoot: path.join(root, "actors") },
     );
@@ -1069,28 +1069,28 @@ describe("ActorManager steering relay", () => {
     await expect(actors.steerRemote("anyone", "hi", "steer")).rejects.toThrow(/disabled/);
   });
 
-  it("relays a fabric.steer event across processes to a remote subagent", async () => {
+  it("relays a fabric.steer event across processes to a remote agent", async () => {
     const shared = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-relay-"));
     roots.push(shared);
     const meshPath = path.join(shared, "mesh");
     const meshA = new MeshStore(meshPath, 64 * 1024, 100);
     const meshB = new MeshStore(meshPath, 64 * 1024, 100);
-    const subagentsA = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const agentsA = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: fakeWorker,
       runRoot: path.join(shared, "runsA"),
     });
-    const subagentsB = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const agentsB = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: fakeWorker,
       runRoot: path.join(shared, "runsB"),
     });
-    subagentManagers.push(subagentsA, subagentsB);
+    agentManagers.push(agentsA, agentsB);
     const cfg = { ...DEFAULT_FABRIC_CONFIG.mesh, actorPollMs: 20 };
     const actorsA = new ActorManager(
       "a",
       { id: "session:a", name: "main", kind: "main", sessionId: "a" },
       meshA,
       cfg,
-      subagentsA,
+      agentsA,
       () => {},
       { actorRoot: path.join(shared, "actorsA") },
     );
@@ -1099,17 +1099,17 @@ describe("ActorManager steering relay", () => {
       { id: "session:b", name: "main", kind: "main", sessionId: "b" },
       meshB,
       cfg,
-      subagentsB,
+      agentsB,
       () => {},
       { actorRoot: path.join(shared, "actorsB") },
     );
     actorManagers.push(actorsA, actorsB);
 
-    // A owns a running subagent; B steers it by publishing over the shared mesh.
-    const handle = await subagentsA.spawn({ task: "HANG", transport: "process" });
+    // A owns a running agent; B steers it by publishing over the shared mesh.
+    const handle = await agentsA.spawn({ task: "HANG", transport: "process" });
     const remote = await actorsB.steerRemote(handle.id, "redirect from B", "steer");
     expect(remote).toEqual({ queued: true, messageId: expect.any(String), routed: "mesh" });
-    const steerFile = path.join(subagentsA.runDirectory(handle.id)!, "steer.jsonl");
+    const steerFile = path.join(agentsA.runDirectory(handle.id)!, "steer.jsonl");
     await waitFor(
       () => fs.existsSync(steerFile) && fs.readFileSync(steerFile, "utf8").includes("redirect from B"),
       3_000,
@@ -1121,7 +1121,7 @@ describe("ActorManager steering relay", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(forwarded).toHaveLength(1);
     expect(forwarded[0]).toMatchObject({ type: "steer", message: "redirect from B" });
-    await subagentsA.stop(handle.id);
+    await agentsA.stop(handle.id);
   });
 
   it("relays a cross-process follow-up to the owning Main session", async () => {
@@ -1130,17 +1130,17 @@ describe("ActorManager steering relay", () => {
     const meshPath = path.join(shared, "mesh");
     const rootMesh = new MeshStore(meshPath, 64 * 1024, 100);
     const peerMesh = new MeshStore(meshPath, 64 * 1024, 100);
-    const rootSubagents = new SubagentManager(
+    const rootAgents = new AgentManager(
       process.cwd(),
-      DEFAULT_FABRIC_CONFIG.subagents,
+      DEFAULT_FABRIC_CONFIG.agents,
       { workerPath: fakeWorker, runRoot: path.join(shared, "root-runs") },
     );
-    const peerSubagents = new SubagentManager(
+    const peerAgents = new AgentManager(
       process.cwd(),
-      DEFAULT_FABRIC_CONFIG.subagents,
+      DEFAULT_FABRIC_CONFIG.agents,
       { workerPath: fakeWorker, runRoot: path.join(shared, "peer-runs") },
     );
-    subagentManagers.push(rootSubagents, peerSubagents);
+    agentManagers.push(rootAgents, peerAgents);
     const deliveries: FabricMainAgentDeliveryRequest[] = [];
     const mainAgent = {
       id: "session:root",
@@ -1170,7 +1170,7 @@ describe("ActorManager steering relay", () => {
       { id: "session:root", name: "Main", kind: "main", sessionId: "root" },
       rootMesh,
       cfg,
-      rootSubagents,
+      rootAgents,
       () => {},
       { actorRoot: path.join(shared, "root-actors"), mainAgent },
     );
@@ -1179,7 +1179,7 @@ describe("ActorManager steering relay", () => {
       { id: "agent:peer", name: "peer", kind: "agent", sessionId: "peer" },
       peerMesh,
       cfg,
-      peerSubagents,
+      peerAgents,
       () => {},
       { actorRoot: path.join(shared, "peer-actors") },
     );
@@ -1235,8 +1235,8 @@ describe("ActorManager steering relay", () => {
 
 describe("ActorManager extensions flag (read-only Pi actors)", () => {
     it("runs a read-only Pi actor (extensions:false) without fabric_exec or recursion", async () => {
-      const { actors, subagents } = setup();
-      const runSpy = vi.spyOn(subagents, "run");
+      const { actors, agents } = setup();
+      const runSpy = vi.spyOn(agents, "run");
       const actor = await actors.create({
         name: "readonly-nav",
         instructions: "Read-only navigator.",
@@ -1253,8 +1253,8 @@ describe("ActorManager extensions flag (read-only Pi actors)", () => {
     });
 
     it("defaults to Fabric-enabled (extensions true, recursive true) for a Pi actor", async () => {
-      const { actors, subagents } = setup();
-      const runSpy = vi.spyOn(subagents, "run");
+      const { actors, agents } = setup();
+      const runSpy = vi.spyOn(agents, "run");
       const actor = await actors.create({
         name: "default-nav",
         instructions: "Default navigator.",
@@ -1285,12 +1285,12 @@ describe("ActorManager extensions flag (read-only Pi actors)", () => {
         setupState.identity,
         setupState.mesh,
         setupState.meshConfig,
-        setupState.subagents,
+        setupState.agents,
         () => {},
         { actorRoot: path.join(setupState.root, "actors"), persistent: true },
       );
       actorManagers.push(restored);
-      const runSpy = vi.spyOn(setupState.subagents, "run");
+      const runSpy = vi.spyOn(setupState.agents, "run");
       expect(restored.list().find((a) => a.name === "persistent-readonly")?.extensions).toBe(false);
       await restored.ask(created.id, "probe");
       const request = runSpy.mock.calls[0]?.[0] as Partial<{ extensions: boolean; recursive: boolean }> | undefined;

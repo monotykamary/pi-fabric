@@ -39,7 +39,7 @@
     "pi-extension",
     "codemode",
     "mcp",
-    "subagents",
+    "agents",
     "actors",
     "steering",
     "mesh",

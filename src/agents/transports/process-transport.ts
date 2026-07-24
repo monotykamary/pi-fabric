@@ -1,18 +1,18 @@
 import type {
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "../types.js";
 import { spawnDetached } from "./process-utils.js";
 
-export class ProcessTransport implements SubagentTransportAdapter {
+export class ProcessTransport implements AgentTransportAdapter {
   readonly kind = "process" as const;
 
   async available(): Promise<boolean> {
     return true;
   }
 
-  async launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle> {
+  async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
     const processHandle = spawnDetached(
       request.workerPath,
       request.workerArguments,

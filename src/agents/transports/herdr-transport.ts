@@ -1,9 +1,9 @@
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import type {
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
 
@@ -40,7 +40,7 @@ const responseError = (response: HerdrErrorResponse): Error | undefined => {
   return new Error(`Herdr API request failed: ${code}${response.error.message ?? "unknown error"}`);
 };
 
-export class HerdrTransport implements SubagentTransportAdapter {
+export class HerdrTransport implements AgentTransportAdapter {
   readonly kind = "herdr" as const;
 
   constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {}
@@ -61,7 +61,7 @@ export class HerdrTransport implements SubagentTransportAdapter {
     }
   }
 
-  async launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle> {
+  async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
     const workspaceId = this.environment.HERDR_WORKSPACE_ID;
     if (!workspaceId) throw new Error("Herdr transport requires HERDR_WORKSPACE_ID");
     const response = (await this.#request({

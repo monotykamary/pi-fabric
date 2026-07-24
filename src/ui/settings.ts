@@ -71,13 +71,13 @@ const ROOT_ITEM_IDS = [
   "approvals",
   "mcp",
   "prewalk",
-  "subagents",
+  "agents",
   "capture",
   "ui",
   "compaction",
   "mesh",
 ] as const;
-const RELOAD_SECTIONS = new Set(["mesh", "subagents", "mcp"]);
+const RELOAD_SECTIONS = new Set(["mesh", "agents", "mcp"]);
 
 const unique = (values: readonly string[]): string[] => [...new Set(values)];
 
@@ -204,16 +204,16 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
   if (typeof current === "number") return parseFormattedNumericValue(value);
   // The model picker stores the canonical "provider/id" string, or "Inherit"
   // for no override; persist an empty string so normalizeFabricConfig drops it.
-  // Subagents inherit; prewalk asks interactively when it is armed.
+  // Agents inherit; prewalk asks interactively when it is armed.
   if (
     id === "approvals.model" ||
     id === "prewalk.model" ||
-    id === "subagents.model" ||
-    id === "subagents.claude.model"
+    id === "agents.model" ||
+    id === "agents.claude.model"
   ) {
     return value === INHERIT_VALUE || value === PREWALK_MODEL_UNSET_LABEL ? "" : value;
   }
-  if (id === "subagents.thinking") {
+  if (id === "agents.thinking") {
     return THINKING_LEVELS.find((level) => thinkingLabel(level) === value) ?? value;
   }
   return value;
@@ -247,8 +247,8 @@ const summaryFor = (id: string, config: FabricConfig): string => {
       return config.mcp.enabled ? "enabled" : "disabled";
     case "prewalk":
       return `${config.prewalk.model || PREWALK_MODEL_UNSET_LABEL}${config.prewalk.alwaysRearm ? " · repeat" : ""}`;
-    case "subagents":
-      return `${config.subagents.runner}/${config.subagents.transport}`;
+    case "agents":
+      return `${config.agents.runner}/${config.agents.transport}`;
     case "capture":
       return config.capture.enabled ? "enabled" : "disabled";
     case "ui":
@@ -399,7 +399,7 @@ const thinkingSubmenu = (theme: Theme): SettingsSubmenu => (currentValue, done) 
   return new SelectSubmenu(
     theme,
     "Default thinking",
-    "Reasoning effort forwarded to spawned subagents and actors when a call does not specify one. The level is clamped to each model's supported levels (next highest if unsupported).",
+    "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. The level is clamped to each model's supported levels (next highest if unsupported).",
     options,
     canonicalCurrent,
     (value) => done(options.find((option) => option.value === value)?.label ?? value),
@@ -526,20 +526,20 @@ export const buildFabricSettingsItems = (
       : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
 
   const defaultToolsItem = setting(
-    "subagents.defaultTools",
+    "agents.defaultTools",
     "Default tools",
-    formatToolCount(config.subagents.defaultTools.length),
-    { description: "Pi core tools exposed to spawned subagents by default." },
+    formatToolCount(config.agents.defaultTools.length),
+    { description: "Pi core tools exposed to spawned agents by default." },
   );
   defaultToolsItem.submenu = listSubmenu(
     theme,
-    "subagents.defaultTools",
+    "agents.defaultTools",
     "Default tools",
-    "Pi core tools exposed to spawned subagents by default.",
+    "Pi core tools exposed to spawned agents by default.",
     CORE_DEFAULT_TOOL_CANDIDATES,
-    config.subagents.defaultTools,
+    config.agents.defaultTools,
     (selected) => {
-      apply("subagents.defaultTools", selected);
+      apply("agents.defaultTools", selected);
       defaultToolsItem.currentValue = formatToolCount(selected.length);
     },
   );
@@ -679,7 +679,7 @@ export const buildFabricSettingsItems = (
             values: APPROVAL_MODES,
           }),
           setting("approvals.agent", "Agent", config.approvals.agent, {
-            description: "Approval policy for subagent and actor operations. Auto classifies each request.",
+            description: "Approval policy for agent and actor operations. Auto classifies each request.",
             values: APPROVAL_MODES,
           }),
         ],
@@ -759,37 +759,37 @@ export const buildFabricSettingsItems = (
         persist,
       ),
     }),
-    setting("subagents", "Subagents", summaryFor("subagents", config), {
+    setting("agents", "Agents", summaryFor("agents", config), {
       description: "One-shot child agents spawned from inside fabric_exec.",
       submenu: sectionSubmenu(
         theme,
-        "Subagents",
+        "Agents",
         "One-shot child agents spawned from inside fabric_exec.",
         [
-          setting("subagents.enabled", "Enabled", config.subagents.enabled ? "true" : "false", {
-            description: "Enable subagent spawning via workflow.agent() and agents.run().",
+          setting("agents.enabled", "Enabled", config.agents.enabled ? "true" : "false", {
+            description: "Enable agent spawning via workflow.agent() and agents.run().",
             values: BOOLEANS,
           }),
-          setting("subagents.runner", "Default runner", config.subagents.runner, {
+          setting("agents.runner", "Default runner", config.agents.runner, {
             description: "Execution harness used when agents.run/create does not specify runner.",
             values: RUNNERS,
           }),
-          setting("subagents.transport", "Transport", config.subagents.transport, {
-            description: "Preferred transport for spawned subagents.",
+          setting("agents.transport", "Transport", config.agents.transport, {
+            description: "Preferred transport for spawned agents.",
             values: TRANSPORTS,
           }),
-          setting("subagents.model", "Default model", config.subagents.model || INHERIT_VALUE, {
+          setting("agents.model", "Default model", config.agents.model || INHERIT_VALUE, {
             description:
-              "Model forwarded to Pi-backed subagents and actors when a call does not specify one. Pick Inherit to use the host session's default. Order matches pi-model-sort (most recently used first).",
+              "Model forwarded to Pi-backed agents and actors when a call does not specify one. Pick Inherit to use the host session's default. Order matches pi-model-sort (most recently used first).",
             submenu: modelPickerSubmenu(
               theme,
               options.modelSource,
             ),
           }),
           setting(
-            "subagents.claude.model",
+            "agents.claude.model",
             "Claude model",
-            config.subagents.claude.model || INHERIT_VALUE,
+            config.agents.claude.model || INHERIT_VALUE,
             {
               description:
                 "Claude Code model used by Claude-backed agents and actors. Models are enumerated from the installed claude runtime; Inherit uses Claude Code's default.",
@@ -804,64 +804,64 @@ export const buildFabricSettingsItems = (
               ),
             },
           ),
-          setting("subagents.thinking", "Default thinking", thinkingLabel(config.subagents.thinking), {
+          setting("agents.thinking", "Default thinking", thinkingLabel(config.agents.thinking), {
             description:
-              "Reasoning effort forwarded to spawned subagents and actors when a call does not specify one. Clamped to each model's supported levels (next highest if unsupported).",
+              "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. Clamped to each model's supported levels (next highest if unsupported).",
             submenu: thinkingSubmenu(theme),
           }),
-          setting("subagents.maxConcurrent", "Max concurrent", String(config.subagents.maxConcurrent), {
-            description: "Maximum number of subagents that may run at the same time.",
+          setting("agents.maxConcurrent", "Max concurrent", String(config.agents.maxConcurrent), {
+            description: "Maximum number of agents that may run at the same time.",
             submenu: numericSubmenu(
               theme,
               [1, 2, 4, 8, 16, 32],
               String,
-              "Subagent concurrency",
-              "Maximum number of subagents that may run at the same time.",
+              "Agent concurrency",
+              "Maximum number of agents that may run at the same time.",
             ),
           }),
-          setting("subagents.maxPerExecution", "Max per execution", String(config.subagents.maxPerExecution), {
-            description: "Maximum number of subagent calls allowed within a single fabric_exec program.",
+          setting("agents.maxPerExecution", "Max per execution", String(config.agents.maxPerExecution), {
+            description: "Maximum number of agent calls allowed within a single fabric_exec program.",
             submenu: numericSubmenu(
               theme,
               [10, 25, 50, 100, 200, 500],
               String,
-              "Subagents per execution",
-              "Maximum number of subagent calls allowed within a single fabric_exec program.",
+              "Agents per execution",
+              "Maximum number of agent calls allowed within a single fabric_exec program.",
             ),
           }),
-          setting("subagents.maxDepth", "Max depth", String(config.subagents.maxDepth), {
-            description: "Maximum nesting depth for recursive subagent calls.",
+          setting("agents.maxDepth", "Max depth", String(config.agents.maxDepth), {
+            description: "Maximum nesting depth for recursive agent calls.",
             submenu: numericSubmenu(
               theme,
               [0, 1, 2, 3, 4, 6],
               String,
-              "Subagent depth",
-              "Maximum nesting depth for recursive subagent calls.",
+              "Agent depth",
+              "Maximum nesting depth for recursive agent calls.",
             ),
           }),
-          setting("subagents.budgetUsd", "Recursion budget", formatUsd(config.subagents.budgetUsd), {
+          setting("agents.budgetUsd", "Recursion budget", formatUsd(config.agents.budgetUsd), {
             description:
-              "Maximum USD spend for subagent work across the whole recursion tree. 0 disables the budget.",
+              "Maximum USD spend for agent work across the whole recursion tree. 0 disables the budget.",
             submenu: numericSubmenu(
               theme,
               BUDGET_VALUES,
               formatUsd,
               "Recursion budget",
-              "Maximum USD spend for subagent work across the whole recursion tree. 0 disables the budget.",
+              "Maximum USD spend for agent work across the whole recursion tree. 0 disables the budget.",
             ),
           }),
-          setting("subagents.maxTokensPerChild", "Token limit", formatTokens(config.subagents.maxTokensPerChild), {
+          setting("agents.maxTokensPerChild", "Token limit", formatTokens(config.agents.maxTokensPerChild), {
             description:
-              "Maximum cumulative tokens a single subagent may use before it is terminated (0 disables). Caps a runaway child before the host session compacts.",
+              "Maximum cumulative tokens a single agent may use before it is terminated (0 disables). Caps a runaway child before the host session compacts.",
             submenu: numericSubmenu(
               theme,
               TOKEN_VALUES,
               formatTokens,
-              "Subagent token limit",
-              "Maximum cumulative tokens a single subagent may use before it is terminated (0 disables).",
+              "Agent token limit",
+              "Maximum cumulative tokens a single agent may use before it is terminated (0 disables).",
             ),
           }),
-          setting("subagents.timeoutMs", "Timeout", formatMs(config.subagents.timeoutMs), {
+          setting("agents.timeoutMs", "Timeout", formatMs(config.agents.timeoutMs), {
             description: "Default wall-clock timeout and minimum for per-call agent timeouts.",
             submenu: numericSubmenu(
               theme,
@@ -878,21 +878,21 @@ export const buildFabricSettingsItems = (
                 86_400_000,
               ],
               formatMs,
-              "Subagent timeout",
+              "Agent timeout",
               "Default wall-clock timeout and minimum for per-call agent timeouts.",
             ),
           }),
-          setting("subagents.extensions", "Extensions", config.subagents.extensions ? "true" : "false", {
-            description: "Allow subagents to load registered extensions.",
+          setting("agents.extensions", "Extensions", config.agents.extensions ? "true" : "false", {
+            description: "Allow agents to load registered extensions.",
             values: BOOLEANS,
           }),
           defaultToolsItem,
-          setting("subagents.retainRuns", "Retain runs", config.subagents.retainRuns ? "true" : "false", {
-            description: "Keep completed subagent run artifacts for later inspection.",
+          setting("agents.retainRuns", "Retain runs", config.agents.retainRuns ? "true" : "false", {
+            description: "Keep completed agent run artifacts for later inspection.",
             values: BOOLEANS,
           }),
-          setting("subagents.notifyOnComplete", "Notify on complete", config.subagents.notifyOnComplete ? "true" : "false", {
-            description: "Post a message when a background subagent completes.",
+          setting("agents.notifyOnComplete", "Notify on complete", config.agents.notifyOnComplete ? "true" : "false", {
+            description: "Post a message when a background agent completes.",
             values: BOOLEANS,
           }),
         ],
@@ -1156,7 +1156,7 @@ export async function openFabricSettings(
     ...deps.capturedTools.list().map((tool) => tool.name),
   ]);
   const modelSource = buildModelSource(context.modelRegistry);
-  const configuredClaudeModel = deps.state.config.subagents.claude.model;
+  const configuredClaudeModel = deps.state.config.agents.claude.model;
   const claudeModelSource: ModelSource = {
     models: configuredClaudeModel
       ? [{ provider: "claude", id: configuredClaudeModel.replace(/^claude\//, "") }]
@@ -1165,9 +1165,9 @@ export async function openFabricSettings(
   };
   void populateClaudeModelSource(
     claudeModelSource,
-    () => deps.state.subagents.claudeModels(),
+    () => deps.state.agents.claudeModels(),
   ).catch((error: unknown) => {
-    if (deps.state.config.subagents.runner === "claude") {
+    if (deps.state.config.agents.runner === "claude") {
       context.ui.notify(
         `Claude model discovery failed: ${error instanceof Error ? error.message : String(error)}`,
         "warning",
@@ -1193,7 +1193,7 @@ export async function openFabricSettings(
     const needsReload = [...changedSections].some((section) => RELOAD_SECTIONS.has(section));
     if (needsReload) {
       context.ui.notify(
-        "Fabric settings saved. Run /fabric reload to apply mesh, subagent, and MCP changes.",
+        "Fabric settings saved. Run /fabric reload to apply mesh, agent, and MCP changes.",
         "info",
       );
     } else {

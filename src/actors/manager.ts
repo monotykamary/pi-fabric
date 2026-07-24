@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import fs, { type FSWatcher } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { FabricAgentRunner, FabricMeshConfig, FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricMeshConfig, FabricAgentTransport } from "../config.js";
 import { MeshStore, type MeshEvent, type MeshIdentity } from "../mesh/store.js";
 import type { FabricMainAgentTarget } from "../main-agent.js";
-import { SubagentManager } from "../subagents/manager.js";
-import type { SubagentRunRecord, SubagentRunRequest, SubagentRunResult } from "../subagents/types.js";
+import { AgentManager } from "../agents/manager.js";
+import type { AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { readJsonlPage } from "../log-tail.js";
 import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
@@ -56,7 +56,7 @@ interface ManagedActor {
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
-  transport?: FabricSubagentTransport;
+  transport?: FabricAgentTransport;
   timeoutMs?: number;
   extensions?: boolean;
   validWhile?: FabricActorValidWhileSource;
@@ -108,11 +108,11 @@ const atomicWrite = (filePath: string, value: unknown): void => {
 
 const MAX_RETAINED_RUNS = 10;
 
-const readRunRecord = (filePath: string): SubagentRunRecord | undefined => {
+const readRunRecord = (filePath: string): AgentRunRecord | undefined => {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-    return parsed as SubagentRunRecord;
+    return parsed as AgentRunRecord;
   } catch {
     return undefined;
   }
@@ -129,7 +129,7 @@ const directiveSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-const asDirective = (result: SubagentRunResult): FabricActorDirective => {
+const asDirective = (result: AgentRunResult): FabricActorDirective => {
   let value = result.value;
   if (value === undefined) {
     const trimmed = result.text.trim();
@@ -185,7 +185,7 @@ export class ActorManager {
     readonly identity: MeshIdentity,
     readonly mesh: MeshStore,
     readonly meshConfig: FabricMeshConfig,
-    readonly subagents: SubagentManager,
+    readonly agents: AgentManager,
     readonly onDeliver: (request: FabricActorDeliveryRequest) => void,
     options: {
       actorRoot?: string;
@@ -244,7 +244,7 @@ export class ActorManager {
     }
     const deliveryPolicy = resolveActorDeliveryPolicy(request.delivery, request.triggerTurn);
     await validateActorValidWhile(request.validWhile);
-    const runner = request.runner ?? this.subagents.config.runner;
+    const runner = request.runner ?? this.agents.config.runner;
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid Fabric actor runner: ${String(request.runner)}`);
     }
@@ -314,7 +314,7 @@ export class ActorManager {
    * message: #runRequest reads actor.model at run start, so an in-flight run
    * keeps the model it was launched with. Pass undefined (or an empty/whitespace
    * string) to clear the override so the actor uses its runner's Fabric default:
-   * subagents.model/host inheritance for Pi, or subagents.claude.model/the
+   * agents.model/host inheritance for Pi, or agents.claude.model/the
    * Claude Code runtime default for Claude.
    */
   async setModel(id: string, model: string | undefined): Promise<FabricActorInfo> {
@@ -331,7 +331,7 @@ export class ActorManager {
    * on the actor's next queued message: #runRequest reads actor.thinking at run
    * start, so an in-flight run keeps the level it was launched with. Pass
    * undefined (or an empty/whitespace string) to clear the override so the
-   * actor inherits the Fabric default (subagents.thinking, default "medium").
+   * actor inherits the Fabric default (agents.thinking, default "medium").
    */
   async setThinking(id: string, thinking: string | undefined): Promise<FabricActorInfo> {
     const actor = this.#requireOwnedActor(id);
@@ -758,7 +758,7 @@ export class ActorManager {
       const inFlight = actor.abortController !== undefined;
       if (!inFlight && actor.queue.length === 0) continue;
       // Abort the in-flight run; the drain loop's finally block resets the
-      // actor to idle once the aborted subagent settles.
+      // actor to idle once the aborted agent settles.
       actor.abortController?.abort();
       // Reject every queued item so subsequent execution is cancelled.
       for (const item of actor.queue.splice(0)) {
@@ -786,7 +786,7 @@ export class ActorManager {
     fs.rmSync(path.dirname(actor.sessionFile), { recursive: true, force: true });
     await this.#saveActors(new Set([actor.id]));
     await this.mesh.delete({ key: this.#presenceKey(actor.id) }).catch(() => ({ deleted: false }));
-    if (retainedRunId) await this.subagents.cleanup(retainedRunId).catch(() => ({ cleaned: false }));
+    if (retainedRunId) await this.agents.cleanup(retainedRunId).catch(() => ({ cleaned: false }));
     return { removed: true };
   }
 
@@ -951,7 +951,7 @@ export class ActorManager {
         const previousRunId = actor.lastRunId;
         let runCompleted = false;
         try {
-          const result = await this.subagents.run(
+          const result = await this.agents.run(
             this.#runRequest(actor, item),
             abortController.signal,
           );
@@ -1052,17 +1052,17 @@ export class ActorManager {
           // actor's directory so agents.log / /fabric log can inspect what the
           // actor sent to and received from its model, even after a successful
           // run cleans up the in-memory handle and tmp run directory. Failed
-          // runs stay in the subagent registry for agents.status(lastRunId).
+          // runs stay in the agent registry for agents.status(lastRunId).
           if (runId) {
             await this.#retainRunLog(actor, runId).catch(() => undefined);
           }
           // Release the in-memory handle and tmp run dir for completed runs;
           // failed runs are retained for agents.status(actor.lastRunId).
           if (previousRunId && previousRunId !== runId) {
-            await this.subagents.cleanup(previousRunId).catch(() => ({ cleaned: false }));
+            await this.agents.cleanup(previousRunId).catch(() => ({ cleaned: false }));
           }
           if (runId && runCompleted) {
-            await this.subagents.cleanup(runId).catch(() => ({ cleaned: false }));
+            await this.agents.cleanup(runId).catch(() => ({ cleaned: false }));
           }
           delete actor.abortController;
           actor.updatedAt = Date.now();
@@ -1078,7 +1078,7 @@ export class ActorManager {
     }
   }
 
-  #runRequest(actor: ManagedActor, item: ActorQueueItem): SubagentRunRequest {
+  #runRequest(actor: ManagedActor, item: ActorQueueItem): AgentRunRequest {
     return {
       task: [
         `Fabric actor message from ${item.source}:`,
@@ -1134,7 +1134,7 @@ export class ActorManager {
   #outgoingMessage(
     actor: ManagedActor,
     item: ActorQueueItem,
-    result: SubagentRunResult,
+    result: AgentRunResult,
   ): FabricActorMessage {
     if (actor.responseMode === "directive") {
       const directive = asDirective(result);
@@ -1225,7 +1225,7 @@ export class ActorManager {
     item: ActorQueueItem,
     reason = "validWhile returned false",
     runId?: string,
-    usage?: SubagentRunResult["usage"],
+    usage?: AgentRunResult["usage"],
   ): void {
     const message: FabricActorMessage = {
       id: randomUUID(),
@@ -1334,12 +1334,12 @@ export class ActorManager {
       return;
     }
     try {
-      this.subagents.status(target);
-      if (kind === "steer") this.subagents.steer(target, message);
-      else this.subagents.followUp(target, message);
+      this.agents.status(target);
+      if (kind === "steer") this.agents.steer(target, message);
+      else this.agents.followUp(target, message);
       return;
     } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric subagent/.test(error.message))) {
+      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) {
         return;
       }
     }
@@ -1366,7 +1366,7 @@ export class ActorManager {
   }
 
   async #retainRunLog(actor: ManagedActor, runId: string): Promise<void> {
-    const runDirectory = this.subagents.runDirectory(runId);
+    const runDirectory = this.agents.runDirectory(runId);
     if (!runDirectory || !fs.existsSync(runDirectory)) return;
     const dest = path.join(path.dirname(actor.sessionFile), "runs", runId);
     fs.mkdirSync(dest, { recursive: true, mode: 0o700 });

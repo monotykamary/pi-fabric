@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   snapshotHandoffSession,
   writeHandoffSession,
-} from "../src/subagents/handoff.js";
-import type { SubagentToolResultMessage } from "../src/subagents/types.js";
+} from "../src/agents/handoff.js";
+import type { AgentToolResultMessage } from "../src/agents/types.js";
 
 const roots: string[] = [];
 const usage = {
@@ -32,7 +32,7 @@ const assistant = (content: Array<Record<string, unknown>>) => ({
   timestamp: Date.now(),
 }) as unknown as Parameters<SessionManager["appendMessage"]>[0];
 
-const outerResult = (toolCallId: string): SubagentToolResultMessage => ({
+const outerResult = (toolCallId: string): AgentToolResultMessage => ({
   role: "toolResult",
   toolCallId,
   toolName: "fabric_exec",

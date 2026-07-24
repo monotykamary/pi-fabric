@@ -3,10 +3,10 @@ import type {
   SessionEntry,
   SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 
-export type SubagentRunStatus =
+export type AgentRunStatus =
   | "queued"
   | "running"
   | "completed"
@@ -14,12 +14,12 @@ export type SubagentRunStatus =
   | "stopped"
   | "timed_out";
 
-export type SubagentToolResultMessage = Extract<
+export type AgentToolResultMessage = Extract<
   SessionMessageEntry["message"],
   { role: "toolResult" }
 >;
 
-export interface SubagentSessionSeed {
+export interface AgentSessionSeed {
   sourceSessionId: string;
   sourceSessionFile?: string;
   sourceBranchLeafId: string;
@@ -27,15 +27,15 @@ export interface SubagentSessionSeed {
   sourceBranch?: SessionEntry[];
   sourceModel?: { provider: string; modelId: string };
   sourceThinkingLevel?: string;
-  outerToolResult: SubagentToolResultMessage;
+  outerToolResult: AgentToolResultMessage;
 }
 
-export interface SubagentRunRequest {
+export interface AgentRunRequest {
   task: string;
   images?: ImageContent[];
   name?: string;
   runner?: FabricAgentRunner;
-  transport?: FabricSubagentTransport;
+  transport?: FabricAgentTransport;
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
@@ -51,10 +51,10 @@ export interface SubagentRunRequest {
   meshRoot?: string;
   runnerSessionId?: string;
   /** Host-created Pi branch seed ending with the native outer fabric_exec result. */
-  sessionSeed?: SubagentSessionSeed;
+  sessionSeed?: AgentSessionSeed;
 }
 
-export interface SubagentUsage {
+export interface AgentUsage {
   input: number;
   output: number;
   cacheRead: number;
@@ -69,7 +69,7 @@ export interface FabricBudgetSummary {
   tokens: number;
 }
 
-export interface SubagentCompactionStatus {
+export interface AgentCompactionStatus {
   status: "queued" | "in_flight" | "completed" | "failed";
   requestedAt: number;
   updatedAt: number;
@@ -81,13 +81,13 @@ export interface SubagentCompactionStatus {
   error?: string;
 }
 
-export interface SubagentRunRecord {
+export interface AgentRunRecord {
   id: string;
   name: string;
   task: string;
-  status: SubagentRunStatus;
+  status: AgentRunStatus;
   runner: FabricAgentRunner;
-  transport: FabricSubagentTransport;
+  transport: FabricAgentTransport;
   cwd: string;
   model?: string;
   thinking?: FabricThinking;
@@ -105,7 +105,7 @@ export interface SubagentRunRecord {
   error?: string;
   stderr?: string;
   exitCode?: number | null;
-  usage: SubagentUsage;
+  usage: AgentUsage;
   budget?: FabricBudgetSummary;
   sessionId?: string;
   runnerSessionId?: string;
@@ -113,21 +113,21 @@ export interface SubagentRunRecord {
   branch?: string;
   worktree?: string;
   logFile?: string;
-  nestedAgents?: SubagentRunRecord[];
+  nestedAgents?: AgentRunRecord[];
   pendingMessages?: { steering: string[]; followUp: string[] };
-  compaction?: SubagentCompactionStatus;
+  compaction?: AgentCompactionStatus;
 }
 
-export interface SubagentRunResult extends SubagentRunRecord {
+export interface AgentRunResult extends AgentRunRecord {
   status: "completed" | "failed" | "stopped" | "timed_out";
 }
 
-export interface SubagentHandleInfo {
+export interface AgentHandleInfo {
   id: string;
   name: string;
-  status: SubagentRunStatus;
+  status: AgentRunStatus;
   runner: FabricAgentRunner;
-  transport: FabricSubagentTransport;
+  transport: FabricAgentTransport;
   cwd: string;
   model?: string;
   thinking?: FabricThinking;
@@ -141,7 +141,7 @@ export interface SubagentHandleInfo {
   worktree?: string;
 }
 
-export interface SubagentWorkerOptions {
+export interface AgentWorkerOptions {
   id: string;
   runner: FabricAgentRunner;
   name: string;
@@ -176,14 +176,14 @@ export interface SubagentWorkerOptions {
   runnerSessionId?: string;
   runRoot?: string;
   steerFile?: string;
-  transport: FabricSubagentTransport;
+  transport: FabricAgentTransport;
   sessionId?: string;
   attachCommand?: string;
   branch?: string;
   worktree?: string;
 }
 
-export interface SubagentTransportLaunch {
+export interface AgentTransportLaunch {
   id: string;
   name: string;
   cwd: string;
@@ -191,8 +191,8 @@ export interface SubagentTransportLaunch {
   workerArguments: string[];
 }
 
-export interface SubagentTransportHandle {
-  kind: FabricSubagentTransport;
+export interface AgentTransportHandle {
+  kind: FabricAgentTransport;
   sessionId?: string;
   attachCommand?: string;
   livenessPollIntervalMs?: number;
@@ -200,10 +200,10 @@ export interface SubagentTransportHandle {
   stop(): Promise<void>;
 }
 
-export interface SubagentTransportAdapter {
-  kind: FabricSubagentTransport;
+export interface AgentTransportAdapter {
+  kind: FabricAgentTransport;
   available(): Promise<boolean>;
-  launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle>;
+  launch(request: AgentTransportLaunch): Promise<AgentTransportHandle>;
 }
 
 export interface FabricLogLine {
@@ -214,11 +214,11 @@ export interface FabricLogLine {
   parsed?: unknown;
 }
 
-export interface FabricSubagentLog {
+export interface FabricAgentLog {
   id: string;
   runDirectory: string;
   logFile: string;
-  status?: SubagentRunRecord;
+  status?: AgentRunRecord;
   events: FabricLogLine[];
   hasMore: boolean;
   before?: number;
@@ -226,7 +226,7 @@ export interface FabricSubagentLog {
 
 export type FabricSteeringMode = "all" | "one-at-a-time";
 
-export interface SubagentSteerEntry {
+export interface AgentSteerEntry {
   type: "steer" | "follow_up" | "set_steering_mode" | "set_follow_up_mode" | "compact";
   id: string;
   message?: string;
@@ -236,7 +236,7 @@ export interface SubagentSteerEntry {
   ts: number;
 }
 
-export interface SubagentSteerResult {
+export interface AgentSteerResult {
   queued: true;
   messageId: string;
 }

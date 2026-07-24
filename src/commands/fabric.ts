@@ -192,16 +192,16 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         /* actors not initialized */
       }
       try {
-        for (const agent of state.subagents.list()) {
+        for (const agent of state.agents.list()) {
           const short = agent.id.slice(0, 8);
           items.push({
             value: short,
             label: short,
-            description: `${agent.status} ${agent.runner} subagent · ${agent.name}`,
+            description: `${agent.status} ${agent.runner} agent · ${agent.name}`,
           });
         }
       } catch {
-        /* subagents not initialized */
+        /* agents not initialized */
       }
       const filtered = items.filter((item) => item.value.startsWith(idPrefix));
       return filtered.length > 0 ? filtered : null;
@@ -246,10 +246,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         if (
           !state.config.fullCodeMode ||
           state.config.schema.mode === "enforce" ||
-          !state.config.subagents.enabled
+          !state.config.agents.enabled
         ) {
           context.ui.notify(
-            "Fabric prewalk requires enabled subagents, full code mode, and Schema enforce mode disabled.",
+            "Fabric prewalk requires enabled agents, full code mode, and Schema enforce mode disabled.",
             "error",
           );
           return;
@@ -313,7 +313,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         return;
       }
       if (command === "agents") {
-        const agents = state.subagents.list();
+        const agents = state.agents.list();
         context.ui.notify(
           agents.length > 0
             ? agents
@@ -322,7 +322,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
                     `${agent.id.slice(0, 8)} ${agent.status} ${agent.runner}/${agent.transport} — ${agent.name}`,
                 )
                 .join("\n")
-            : "No Fabric subagents",
+            : "No Fabric agents",
           "info",
         );
         return;
@@ -452,8 +452,8 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
               copied.push("runs/");
             }
           } else {
-            const runDir = state.subagents.runDirectory(id);
-            const status = state.subagents.status(id);
+            const runDir = state.agents.runDirectory(id);
+            const status = state.agents.status(id);
             label = status.name;
             if (runDir && fs.existsSync(runDir)) {
               fs.cpSync(runDir, dest, { recursive: true });
@@ -518,13 +518,13 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           context.ui.notify(`Stopped Fabric actor ${actor.id.slice(0, 8)}`, "info");
           return;
         }
-        const agent = state.subagents.list().find((candidate) => candidate.id.startsWith(id));
+        const agent = state.agents.list().find((candidate) => candidate.id.startsWith(id));
         if (!agent) {
-          context.ui.notify(`Unknown Fabric actor or subagent: ${id}`, "error");
+          context.ui.notify(`Unknown Fabric actor or agent: ${id}`, "error");
           return;
         }
-        await state.subagents.stop(agent.id);
-        context.ui.notify(`Stopped Fabric subagent ${agent.id.slice(0, 8)}`, "info");
+        await state.agents.stop(agent.id);
+        context.ui.notify(`Stopped Fabric agent ${agent.id.slice(0, 8)}`, "info");
         return;
       }
       if (command === "remove" || command === "kill") {
@@ -541,23 +541,23 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           context.ui.notify(`Removed Fabric actor ${actor.id.slice(0, 8)} (${actor.name})`, "info");
           return;
         }
-        const agent = state.subagents.list().find((candidate) => candidate.id.startsWith(id));
+        const agent = state.agents.list().find((candidate) => candidate.id.startsWith(id));
         if (!agent) {
-          context.ui.notify(`Unknown Fabric actor or subagent: ${id}`, "error");
+          context.ui.notify(`Unknown Fabric actor or agent: ${id}`, "error");
           return;
         }
-        await state.subagents.stop(agent.id);
-        await state.subagents.cleanup(agent.id);
-        context.ui.notify(`Removed Fabric subagent ${agent.id.slice(0, 8)}`, "info");
+        await state.agents.stop(agent.id);
+        await state.agents.cleanup(agent.id);
+        context.ui.notify(`Removed Fabric agent ${agent.id.slice(0, 8)}`, "info");
         return;
       }
       if (command === "attach") {
         const id = argumentsList[0];
         const agent = id
-          ? state.subagents.list().find((candidate) => candidate.id.startsWith(id))
+          ? state.agents.list().find((candidate) => candidate.id.startsWith(id))
           : undefined;
         if (!agent?.attachCommand) {
-          context.ui.notify("No attachable Fabric subagent found", "warning");
+          context.ui.notify("No attachable Fabric agent found", "warning");
           return;
         }
         context.ui.notify(agent.attachCommand, "info");
@@ -636,12 +636,12 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             .providers()
             .map((provider) => provider.name)
             .join(", ")}`,
-          `runner: ${config.subagents.runner} · transport: ${config.subagents.transport} · model: ${
-            config.subagents.runner === "claude"
-              ? config.subagents.claude.model || "Claude default"
-              : config.subagents.model || "inherit"
+          `runner: ${config.agents.runner} · transport: ${config.agents.transport} · model: ${
+            config.agents.runner === "claude"
+              ? config.agents.claude.model || "Claude default"
+              : config.agents.model || "inherit"
           }`,
-          `subagent limits: concurrency ${config.subagents.maxConcurrent}, per execution ${config.subagents.maxPerExecution}, depth ${config.subagents.maxDepth}`,
+          `agent limits: concurrency ${config.agents.maxConcurrent}, per execution ${config.agents.maxPerExecution}, depth ${config.agents.maxDepth}`,
           (() => {
             const prewalk = state.prewalk.status();
             return prewalk.state === "idle"

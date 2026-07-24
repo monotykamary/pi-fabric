@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricActivityRun } from "../activity/types.js";
 import type { FabricState } from "../fabric-state.js";
 import type { MeshEvent, MeshStateEntry } from "../mesh/store.js";
-import type { SubagentHandleInfo, SubagentRunRecord } from "../subagents/types.js";
+import type { AgentHandleInfo, AgentRunRecord } from "../agents/types.js";
 import { safeText } from "./format.js";
 import {
   activeStatuses,
@@ -34,8 +34,8 @@ const boundedUiAgents = (
 };
 
 const isRunRecord = (
-  value: SubagentRunRecord | SubagentHandleInfo,
-): value is SubagentRunRecord => "startedAt" in value;
+  value: AgentRunRecord | AgentHandleInfo,
+): value is AgentRunRecord => "startedAt" in value;
 
 const numberFrom = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -73,9 +73,9 @@ export const createDashboardSnapshot = (
 ): FabricDashboardSnapshot => {
   const runs = activityRuns ?? state.activity.runs();
   const agentRecords =
-    typeof state.subagents.listForUi === "function"
-      ? state.subagents.listForUi()
-      : state.subagents.list();
+    typeof state.agents.listForUi === "function"
+      ? state.agents.listForUi()
+      : state.agents.list();
   const agentLinks: Array<{ runId: string; call: FabricActivityRun["calls"][number] }> = [];
   for (const run of runs) {
     for (const call of run.calls) {
@@ -89,7 +89,7 @@ export const createDashboardSnapshot = (
     return left.call.startedAt - right.call.startedAt;
   });
   const agentFromRecord = (
-    record: SubagentRunRecord | SubagentHandleInfo,
+    record: AgentRunRecord | AgentHandleInfo,
     nestingDepth: number,
     parentId?: string,
     parent?: FabricUiAgent,
@@ -144,7 +144,7 @@ export const createDashboardSnapshot = (
   };
   const allAgents: FabricUiAgent[] = [];
   const appendAgent = (
-    record: SubagentRunRecord | SubagentHandleInfo,
+    record: AgentRunRecord | AgentHandleInfo,
     nestingDepth: number,
     parentId?: string,
     parent?: FabricUiAgent,

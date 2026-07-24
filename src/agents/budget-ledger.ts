@@ -6,7 +6,7 @@ import path from "node:path";
 /**
  * Cross-process cost budget ledger for a Fabric recursion tree.
  *
- * A recursion tree spans one Pi process per node. Each node's SubagentManager
+ * A recursion tree spans one Pi process per node. Each node's AgentManager
  * records the cost of the children it spawns into a single append-only JSONL
  * file, and checks the accumulated spend before spawning another child. The
  * ledger path and budget travel to descendants through PI_FABRIC_BUDGET*
@@ -16,7 +16,7 @@ import path from "node:path";
  * This mirrors ypi's RLM_BUDGET / RLM_COST_FILE model: the check is best-effort
  * (concurrent children can each pass the check before any cost lands, so a tree
  * may slightly overshoot), while the race-free ceiling remains the per-execution
- * call count (subagents.maxPerExecution). Cost is recorded only after a child
+ * call count (agents.maxPerExecution). Cost is recorded only after a child
  * finishes, matching ypi's append-after-completion semantics.
  */
 

@@ -512,7 +512,7 @@ return true;
     });
     const timed = serviceFor(waitingProvider);
     timed.service.config.executor.timeoutMs = 40;
-    timed.service.config.subagents.timeoutMs = 40;
+    timed.service.config.agents.timeoutMs = 40;
     const code = `return workflow.parallel([
       () => tools.call({ ref: "demo.echo", args: { value: "wait-secret" } }),
     ]);`;

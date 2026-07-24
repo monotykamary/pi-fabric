@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { ChildCompactControl } from "../src/subagents/compact-control.js";
-import type { SubagentCompactionStatus } from "../src/subagents/types.js";
+import { ChildCompactControl } from "../src/agents/compact-control.js";
+import type { AgentCompactionStatus } from "../src/agents/types.js";
 
 const setup = () => {
   const frames: Array<{ id: string; type: "compact"; customInstructions?: string }> = [];
-  const statuses: SubagentCompactionStatus[] = [];
+  const statuses: AgentCompactionStatus[] = [];
   const close = vi.fn();
   let now = 100;
   const control = new ChildCompactControl("run-1", {

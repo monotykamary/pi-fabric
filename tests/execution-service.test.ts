@@ -536,7 +536,7 @@ return "unreachable";
     expect(result.error).toContain("agent budget exhausted (1 per execution)");
   });
 
-  it("raises the executor deadline to the subagent deadline for orchestration programs", async () => {
+  it("raises the executor deadline to the agent deadline for orchestration programs", async () => {
     const registry = new ActionRegistry();
     const descriptor = {
       name: "run",
@@ -572,7 +572,7 @@ return "unreachable";
     config.fullCodeMode = false;
     config.approvals.agent = "allow";
     config.executor.timeoutMs = 100;
-    config.subagents.timeoutMs = 30_000;
+    config.agents.timeoutMs = 30_000;
     const service = new FabricExecutionService(registry, config);
     const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
     const result = await service.execute({
@@ -625,7 +625,7 @@ return "unreachable";
     config.fullCodeMode = false;
     config.approvals.agent = "allow";
     config.executor.timeoutMs = 100;
-    config.subagents.timeoutMs = 30_000;
+    config.agents.timeoutMs = 30_000;
     const service = new FabricExecutionService(registry, config);
     const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
     const result = await service.execute({
@@ -752,7 +752,7 @@ return Promise.all([
     config.fullCodeMode = false;
     config.approvals.read = "allow";
     config.executor.timeoutMs = 100;
-    config.subagents.timeoutMs = 30_000;
+    config.agents.timeoutMs = 30_000;
     const service = new FabricExecutionService(registry, config);
     const context = { cwd: process.cwd(), hasUI: false } as ExtensionContext;
     const result = await service.execute({

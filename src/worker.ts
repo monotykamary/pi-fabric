@@ -8,9 +8,9 @@ import { StringDecoder } from "node:string_decoder";
 import { Value } from "typebox/value";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
-  SubagentRunRecord,
-  SubagentRunStatus,
-} from "./subagents/types.js";
+  AgentRunRecord,
+  AgentRunStatus,
+} from "./agents/types.js";
 
 const NODE_SCRIPT_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".cts", ".mts"]);
 
@@ -22,8 +22,8 @@ const spawnCli = (
   ? crossSpawn(process.execPath, [command, ...args], options)
   : crossSpawn(command, [...args], options);
 
-type ClaudeCliModule = typeof import("./subagents/claude-cli.js");
-type CompactControlModule = typeof import("./subagents/compact-control.js");
+type ClaudeCliModule = typeof import("./agents/claude-cli.js");
+type CompactControlModule = typeof import("./agents/compact-control.js");
 type WorkerOptionsModule = typeof import("./worker/options.js");
 type WorkerRunRecordModule = typeof import("./worker/run-record.js");
 
@@ -40,14 +40,14 @@ const loadWorkerRunRecord = async (): Promise<WorkerRunRecordModule> => {
 };
 
 const loadCompactControl = async (): Promise<CompactControlModule> => {
-  if (!import.meta.url.endsWith(".ts")) return import("./subagents/compact-control.js");
-  const sourceModulePath = "./subagents/compact-control.ts";
+  if (!import.meta.url.endsWith(".ts")) return import("./agents/compact-control.js");
+  const sourceModulePath = "./agents/compact-control.ts";
   return import(sourceModulePath) as Promise<CompactControlModule>;
 };
 
 const loadClaudeCli = async (): Promise<ClaudeCliModule> => {
-  if (!import.meta.url.endsWith(".ts")) return import("./subagents/claude-cli.js");
-  const sourceModulePath = "./subagents/claude-cli.ts";
+  if (!import.meta.url.endsWith(".ts")) return import("./agents/claude-cli.js");
+  const sourceModulePath = "./agents/claude-cli.ts";
   return import(sourceModulePath) as Promise<ClaudeCliModule>;
 };
 
@@ -79,7 +79,7 @@ const extractText = (message: Record<string, unknown>): string => {
 const readImages = (filePath: string | undefined): ImageContent[] => {
   if (!filePath) return [];
   const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  if (!Array.isArray(parsed)) throw new Error("Subagent images file must contain an array");
+  if (!Array.isArray(parsed)) throw new Error("Agent images file must contain an array");
   const images: ImageContent[] = [];
   for (const value of parsed) {
     if (
@@ -90,7 +90,7 @@ const readImages = (filePath: string | undefined): ImageContent[] => {
       typeof (value as { data?: unknown }).data !== "string" ||
       typeof (value as { mimeType?: unknown }).mimeType !== "string"
     ) {
-      throw new Error("Subagent images file contains an invalid image block");
+      throw new Error("Agent images file contains an invalid image block");
     }
     images.push({
       type: "image",
@@ -185,7 +185,7 @@ const parseStructuredValue = (text: string): unknown => {
   return JSON.parse(trimmed);
 };
 
-let crashContext: { statusFile: string; record: SubagentRunRecord } | undefined;
+let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
 let terminalWritten = false;
 const writeCrashStatus = (error: unknown): void => {
@@ -194,7 +194,7 @@ const writeCrashStatus = (error: unknown): void => {
     runRecordHelpers.writeCrashRunRecord(crashContext.statusFile, crashContext.record, error);
   } catch {
     // Best effort: if the crash-status write itself fails, #monitor falls back
-    // to "Subagent transport exited without a result".
+    // to "Agent transport exited without a result".
   }
 };
 process.on("uncaughtException", (error) => {
@@ -326,7 +326,7 @@ const main = async (): Promise<void> => {
   let outputBuffer = "";
   const outputDecoder = new StringDecoder("utf8");
   const stderrDecoder = new StringDecoder("utf8");
-  let terminalStatus: SubagentRunStatus | undefined;
+  let terminalStatus: AgentRunStatus | undefined;
   let terminalError: string | undefined;
   let sawAgentError = false;
   let retryPending = false;
@@ -887,7 +887,7 @@ const main = async (): Promise<void> => {
       if (newline < 0) {
         if (outputBuffer.length > MAX_EVENT_LINE_CHARS) {
           terminalStatus = "failed";
-          terminalError = "Subagent emitted an oversized event line";
+          terminalError = "Agent emitted an oversized event line";
           outputBuffer = "";
           terminateChild(child, "SIGTERM");
         }
@@ -895,7 +895,7 @@ const main = async (): Promise<void> => {
       }
       if (newline > MAX_EVENT_LINE_CHARS) {
         terminalStatus = "failed";
-        terminalError = "Subagent emitted an oversized event line";
+        terminalError = "Agent emitted an oversized event line";
         outputBuffer = "";
         terminateChild(child, "SIGTERM");
         return;
@@ -918,7 +918,7 @@ const main = async (): Promise<void> => {
 
   const timeout = setTimeout(() => {
     terminalStatus = "timed_out";
-    terminalError = `Subagent timed out after ${options.timeoutMs}ms`;
+    terminalError = `Agent timed out after ${options.timeoutMs}ms`;
     terminateChild(child, "SIGTERM");
     setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS).unref();
   }, options.timeoutMs);
@@ -927,7 +927,7 @@ const main = async (): Promise<void> => {
   const stop = (): void => {
     if (terminalStatus) return;
     terminalStatus = "stopped";
-    terminalError = "Subagent stopped";
+    terminalError = "Agent stopped";
     terminateChild(child, "SIGTERM");
     setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS).unref();
   };

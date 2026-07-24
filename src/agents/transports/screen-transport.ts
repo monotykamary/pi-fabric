@@ -1,21 +1,21 @@
 import type {
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
 import { commandAvailable, executeFile } from "./process-utils.js";
 
 const sessionName = (id: string): string => `pi-fabric-${id.slice(0, 12)}`;
 
-export class ScreenTransport implements SubagentTransportAdapter {
+export class ScreenTransport implements AgentTransportAdapter {
   readonly kind = "screen" as const;
 
   async available(): Promise<boolean> {
     return commandAvailable("screen");
   }
 
-  async launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle> {
+  async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
     const session = sessionName(request.id);
     await executeFile(
       "screen",

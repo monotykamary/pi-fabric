@@ -21,12 +21,12 @@ import type {
 } from "../src/topology/types.js";
 import type { FabricInvocationContext } from "../src/protocol.js";
 import { AgentsProvider } from "../src/providers/agents-provider.js";
-import { snapshotHandoffSession } from "../src/subagents/handoff.js";
-import { SubagentManager } from "../src/subagents/manager.js";
+import { snapshotHandoffSession } from "../src/agents/handoff.js";
+import { AgentManager } from "../src/agents/manager.js";
 
 const roots: string[] = [];
 const actorManagers: ActorManager[] = [];
-const subagentManagers: SubagentManager[] = [];
+const agentManagers: AgentManager[] = [];
 
 const usage = {
   input: 0,
@@ -54,12 +54,12 @@ const setup = (
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agents-provider-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-  const subagents = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+  const agents = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
     workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
     claudeBinary: path.resolve("tests/fixtures/fake-claude.mjs"),
     runRoot: path.join(root, "runs"),
   });
-  subagentManagers.push(subagents);
+  agentManagers.push(agents);
   const identity: MeshIdentity = {
     id: "session:test",
     name: "main",
@@ -95,7 +95,7 @@ const setup = (
       };
     },
   };
-  const actors = new ActorManager("test", identity, mesh, meshConfig, subagents, () => {}, {
+  const actors = new ActorManager("test", identity, mesh, meshConfig, agents, () => {}, {
     actorRoot: path.join(root, "actors"),
     persistent: true,
     mainAgent,
@@ -145,7 +145,7 @@ const setup = (
     async (subscription, event) => provider.deliverLifecycle(subscription, event),
   );
   provider = new AgentsProvider(
-    subagents,
+    agents,
     actors,
     globalActors,
     mainAgent,
@@ -158,7 +158,7 @@ const setup = (
 
 afterEach(async () => {
   await Promise.all(actorManagers.splice(0).map((manager) => manager.close()));
-  await Promise.all(subagentManagers.splice(0).map((manager) => manager.close()));
+  await Promise.all(agentManagers.splice(0).map((manager) => manager.close()));
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -947,7 +947,7 @@ describe("AgentsProvider steering", () => {
     ]);
   });
 
-  it("steer routes to a local running subagent and queues a steer command", async () => {
+  it("steer routes to a local running agent and queues a steer command", async () => {
     const { provider, root } = setup();
     const handle = (await provider.invoke(
       "spawn",
@@ -965,7 +965,7 @@ describe("AgentsProvider steering", () => {
     await provider.invoke("stop", { id: handle.id }, context);
   });
 
-  it("accepts an owner-addressed control command for a local subagent", async () => {
+  it("accepts an owner-addressed control command for a local agent", async () => {
     const { provider, root } = setup();
     const handle = (await provider.invoke(
       "spawn",
@@ -1028,7 +1028,7 @@ describe("AgentsProvider steering", () => {
     ).rejects.toThrow("Unknown Fabric participant");
   });
 
-  it("setSteeringMode routes to a local subagent", async () => {
+  it("setSteeringMode routes to a local agent", async () => {
     const { provider, root } = setup();
     const handle = (await provider.invoke(
       "spawn",
@@ -1045,7 +1045,7 @@ describe("AgentsProvider steering", () => {
     const { provider } = setup();
     await expect(
       provider.invoke("setSteeringMode", { id: "unknown-id", mode: "all" }, context),
-    ).rejects.toThrow(/Unknown Fabric subagent/);
+    ).rejects.toThrow(/Unknown Fabric agent/);
   });
 
   it("setSteeringMode rejects an invalid mode", async () => {
@@ -1098,6 +1098,6 @@ describe("AgentsProvider steering", () => {
     const { provider } = setup();
     await expect(
       provider.invoke("compact", { id: "not-a-real-id" }, context),
-    ).rejects.toThrow(/Unknown Fabric subagent/);
+    ).rejects.toThrow(/Unknown Fabric agent/);
   });
 });

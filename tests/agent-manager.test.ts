@@ -5,14 +5,14 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import type { FabricLifecyclePublishRequest } from "../src/lifecycle/types.js";
-import { snapshotHandoffSession } from "../src/subagents/handoff.js";
+import { snapshotHandoffSession } from "../src/agents/handoff.js";
 import {
-  effectiveSubagentTimeoutMs,
-  SubagentManager,
-} from "../src/subagents/manager.js";
-import type { SubagentRunRecord, SubagentRunResult } from "../src/subagents/types.js";
+  effectiveAgentTimeoutMs,
+  AgentManager,
+} from "../src/agents/manager.js";
+import type { AgentRunRecord, AgentRunResult } from "../src/agents/types.js";
 
-const managers: SubagentManager[] = [];
+const managers: AgentManager[] = [];
 const roots: string[] = [];
 const handoffSeed = (fact = "Rare handoff fact 43117") => {
   const source = SessionManager.inMemory();
@@ -80,18 +80,18 @@ afterAll(() => {
   }
 });
 
-describe("effectiveSubagentTimeoutMs", () => {
+describe("effectiveAgentTimeoutMs", () => {
   it("ignores per-call timeouts below the configured default", () => {
-    expect(effectiveSubagentTimeoutMs(3_600_000, 240_000)).toBe(3_600_000);
+    expect(effectiveAgentTimeoutMs(3_600_000, 240_000)).toBe(3_600_000);
   });
 
   it("accepts per-call timeouts above the configured default", () => {
-    expect(effectiveSubagentTimeoutMs(3_600_000, 7_200_000)).toBe(7_200_000);
+    expect(effectiveAgentTimeoutMs(3_600_000, 7_200_000)).toBe(7_200_000);
   });
 
   it("respects a configured default below 60 minutes", () => {
-    expect(effectiveSubagentTimeoutMs(1_800_000, 900_000)).toBe(1_800_000);
-    expect(effectiveSubagentTimeoutMs(1_800_000, 2_400_000)).toBe(2_400_000);
+    expect(effectiveAgentTimeoutMs(1_800_000, 900_000)).toBe(1_800_000);
+    expect(effectiveAgentTimeoutMs(1_800_000, 2_400_000)).toBe(2_400_000);
   });
 });
 
@@ -100,11 +100,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe("SubagentManager", () => {
+describe("AgentManager", () => {
   it("notifies and releases UI subscribers", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -124,7 +124,7 @@ describe("SubagentManager", () => {
   it("runs a worker through the direct process transport", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -132,7 +132,7 @@ describe("SubagentManager", () => {
     managers.push(manager);
     const result = await manager.run({ task: "Inspect this repository", transport: "process" });
     expect(result.status).toBe("completed");
-    expect((result as SubagentRunResult & { fullCodeMode?: string }).fullCodeMode).toBe("false");
+    expect((result as AgentRunResult & { fullCodeMode?: string }).fullCodeMode).toBe("false");
     expect(result.text).toBe("fake worker complete");
     expect(result.transport).toBe("process");
     expect(manager.list()).toHaveLength(1);
@@ -144,7 +144,7 @@ describe("SubagentManager", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
     const lifecycle: FabricLifecyclePublishRequest[] = [];
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       mainAgentId: "session:root",
@@ -182,7 +182,7 @@ describe("SubagentManager", () => {
   it("materializes a private Pi session for a trajectory handoff seed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -224,7 +224,7 @@ describe("SubagentManager", () => {
   it("rejects trajectory seeds for the Claude runner and conflicting session files", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -249,7 +249,7 @@ describe("SubagentManager", () => {
     const preparePiModel = vi.fn(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       preparePiModel,
@@ -276,7 +276,7 @@ describe("SubagentManager", () => {
   it("retries a Pi child that fails before its first turn", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
       runRoot: root,
     });
@@ -294,7 +294,7 @@ describe("SubagentManager", () => {
   it("does not retry deterministic failures before the first turn", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
       runRoot: root,
     });
@@ -312,7 +312,7 @@ describe("SubagentManager", () => {
   it("keeps full results in the API and compact projections for the dashboard", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -323,18 +323,18 @@ describe("SubagentManager", () => {
     expect((result.value as { output: string }).output).toHaveLength(100_000);
 
     const records = manager.listForUi();
-    const compact = records[0] as SubagentRunRecord;
+    const compact = records[0] as AgentRunRecord;
     expect(compact.text.length).toBeLessThanOrEqual(16_001);
     expect(compact.value).toMatchObject({ fabricTruncated: true });
     expect(manager.listForUi()).toBe(records);
-    expect((manager.status(result.id) as SubagentRunRecord).text).toHaveLength(100_000);
+    expect((manager.status(result.id) as AgentRunRecord).text).toHaveLength(100_000);
     expect((await manager.wait(result.id)).text).toHaveLength(100_000);
   });
 
   it("readLog returns the run's event stream and status", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -356,7 +356,7 @@ describe("SubagentManager", () => {
   it("derives trusted log paths and recursively discovers bounded nested runs", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -380,7 +380,7 @@ describe("SubagentManager", () => {
       JSON.stringify({ ...result, id: "grandchild", name: "grandchild", logFile: "/tmp/untrusted-grandchild.jsonl" }),
     );
 
-    const status = manager.status(result.id) as SubagentRunRecord;
+    const status = manager.status(result.id) as AgentRunRecord;
     expect(status.logFile).toBe(path.join(runDirectory, "events.jsonl"));
     expect(status.nestedAgents?.[0]?.logFile).toBe(path.join(childDirectory, "events.jsonl"));
     expect(status.nestedAgents?.[0]?.nestedAgents?.[0]?.logFile).toBe(
@@ -389,7 +389,7 @@ describe("SubagentManager", () => {
 
     status.nestedAgents![0]!.name = "caller mutation";
     fs.rmSync(path.join(runDirectory, "nested"), { recursive: true, force: true });
-    const retained = manager.status(result.id) as SubagentRunRecord;
+    const retained = manager.status(result.id) as AgentRunRecord;
     expect(retained.nestedAgents?.[0]?.name).toBe("child");
     expect(retained.nestedAgents?.[0]?.nestedAgents?.[0]?.name).toBe("grandchild");
   });
@@ -397,7 +397,7 @@ describe("SubagentManager", () => {
   it("captures recursive leaves before the child process removes their directories", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -429,7 +429,7 @@ describe("SubagentManager", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 250));
     fs.rmSync(path.join(runDirectory, "nested"), { recursive: true, force: true });
-    const retained = manager.status(handle.id) as SubagentRunRecord;
+    const retained = manager.status(handle.id) as AgentRunRecord;
     expect(retained.nestedAgents?.[0]).toMatchObject({
       id: "finished-leaf",
       name: "finished leaf",
@@ -441,14 +441,14 @@ describe("SubagentManager", () => {
   it("keeps direct tools native for ordinary children and full code mode for recursion", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: true,
       mainAgentId: "session:root-main",
     });
     managers.push(manager);
-    type ObservedResult = SubagentRunResult & {
+    type ObservedResult = AgentRunResult & {
       fullCodeMode?: string;
       tools?: string[];
       extensions?: string;
@@ -481,7 +481,7 @@ describe("SubagentManager", () => {
     roots.push(root);
     const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
     fs.chmodSync(fakePi, 0o755);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
@@ -519,7 +519,7 @@ describe("SubagentManager", () => {
     roots.push(root);
     const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
     fs.chmodSync(fakePi, 0o755);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
@@ -549,7 +549,7 @@ describe("SubagentManager", () => {
     roots.push(root);
     const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
     fs.chmodSync(fakePi, 0o755);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
@@ -574,7 +574,7 @@ describe("SubagentManager", () => {
     roots.push(root);
     const fakePi = path.resolve("tests/fixtures/fake-pi-rpc.mjs");
     fs.chmodSync(fakePi, 0o755);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
@@ -597,8 +597,8 @@ describe("SubagentManager", () => {
   it("forwards the configured default model when a call omits one", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, model: "claude-sonnet-4-5" };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -612,8 +612,8 @@ describe("SubagentManager", () => {
   it("lets a per-call model override the configured default", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, model: "claude-sonnet-4-5" };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -631,8 +631,8 @@ describe("SubagentManager", () => {
   it("forwards the configured default thinking when a call omits one", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, thinking: "high" as const };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, thinking: "high" as const };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -646,8 +646,8 @@ describe("SubagentManager", () => {
   it("lets a per-call thinking override the configured default", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, thinking: "high" as const };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, thinking: "high" as const };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -665,7 +665,7 @@ describe("SubagentManager", () => {
   it("forwards the medium default when neither config nor call set a thinking level", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -679,7 +679,7 @@ describe("SubagentManager", () => {
   it("inherits the host model when neither config nor call set one", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       fullCodeMode: false,
@@ -697,7 +697,7 @@ describe("SubagentManager", () => {
     const completion = new Promise<string>((resolve) => {
       resolveCompletion = resolve;
     });
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
       onBackgroundComplete: (result) => resolveCompletion?.(result.text),
@@ -711,7 +711,7 @@ describe("SubagentManager", () => {
   it("surfaces the run-log tail when a worker exits without a terminal result", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker-crash.mjs"),
       runRoot: root,
     });
@@ -726,7 +726,7 @@ describe("SubagentManager", () => {
   it("rejects empty tasks", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -737,8 +737,8 @@ describe("SubagentManager", () => {
   it("enforces a cross-process cost budget across spawned agents", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-budget-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, budgetUsd: 0.1 };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0.1 };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"),
       runRoot: root,
     });
@@ -773,7 +773,7 @@ describe("SubagentManager", () => {
     process.env.PI_FABRIC_BUDGET_ID = "inherited-tree";
     fs.writeFileSync(process.env.PI_FABRIC_BUDGET_FILE, "", { mode: 0o600 });
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("tests/fixtures/fake-worker-budget.mjs"),
         runRoot: root,
       });
@@ -800,8 +800,8 @@ describe("SubagentManager", () => {
     fs.chmodSync(fakePi, 0o755);
     // The fake pi emits one assistant turn with 7 tokens (input 3 + output 4);
     // a 5-token ceiling trips the guard after the first message_end.
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, maxTokensPerChild: 5 };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, maxTokensPerChild: 5 };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("src/worker.ts"),
       piBinary: fakePi,
       runRoot: root,
@@ -819,7 +819,7 @@ describe("SubagentManager", () => {
   });
 });
 
-describe("SubagentManager multimodal prompts", () => {
+describe("AgentManager multimodal prompts", () => {
   it("forwards image blocks to the Pi worker RPC prompt", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-images-"));
     roots.push(root);
@@ -827,7 +827,7 @@ describe("SubagentManager multimodal prompts", () => {
     process.env.FAKE_PI_BEHAVIOR = "capture-prompt";
     process.env.FAKE_PI_PROMPT_LOG = promptLog;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         piBinary: path.resolve("tests/fixtures/fake-pi.mjs"),
         runRoot: path.join(root, "runs"),
@@ -854,19 +854,19 @@ describe("SubagentManager multimodal prompts", () => {
   });
 });
 
-describe("SubagentManager Claude runner", () => {
+describe("AgentManager Claude runner", () => {
   const fakeClaude = path.resolve("tests/fixtures/fake-claude.mjs");
 
   it("uses the independent configured Claude runner and model defaults", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
     roots.push(root);
     const config = {
-      ...DEFAULT_FABRIC_CONFIG.subagents,
+      ...DEFAULT_FABRIC_CONFIG.agents,
       runner: "claude" as const,
       model: "openai/pi-only",
-      claude: { ...DEFAULT_FABRIC_CONFIG.subagents.claude, model: "claude/haiku" },
+      claude: { ...DEFAULT_FABRIC_CONFIG.agents.claude, model: "claude/haiku" },
     };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
       runRoot: root,
     });
@@ -886,7 +886,7 @@ describe("SubagentManager Claude runner", () => {
     const invocationLog = path.join(root, "claude-args.jsonl");
     process.env.FAKE_CLAUDE_LOG = invocationLog;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         claudeBinary: fakeClaude,
         runRoot: root,
@@ -943,7 +943,7 @@ describe("SubagentManager Claude runner", () => {
   it("preserves Claude result diagnostics on a failed run", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       claudeBinary: fakeClaude,
       runRoot: root,
@@ -967,7 +967,7 @@ describe("SubagentManager Claude runner", () => {
   it("delivers Claude steering and follow-up messages on later turns", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       claudeBinary: fakeClaude,
       runRoot: root,
@@ -997,7 +997,7 @@ describe("SubagentManager Claude runner", () => {
   it("enumerates models from the Claude runtime control handshake", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       claudeBinary: fakeClaude,
       runRoot: root,
     });
@@ -1015,7 +1015,7 @@ describe("SubagentManager Claude runner", () => {
   it("rejects recursive Fabric and unsupported tools before launching Claude", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-claude-"));
     roots.push(root);
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       claudeBinary: fakeClaude,
       runRoot: root,
     });
@@ -1036,7 +1036,7 @@ describe("SubagentManager Claude runner", () => {
   });
 });
 
-describe("SubagentManager steering", () => {
+describe("AgentManager steering", () => {
   const fakeWorker = path.resolve("tests/fixtures/fake-worker.mjs");
   const fakePiSteer = path.resolve("tests/fixtures/fake-pi-rpc-steer.mjs");
 
@@ -1059,7 +1059,7 @@ describe("SubagentManager steering", () => {
   };
 
   const hangManager = (root: string, workerPath = fakeWorker, piBinary?: string) => {
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath,
       ...(piBinary ? { piBinary } : {}),
       runRoot: root,
@@ -1069,7 +1069,7 @@ describe("SubagentManager steering", () => {
     return manager;
   };
 
-  it("steer appends a queued steer command for a running subagent", async () => {
+  it("steer appends a queued steer command for a running agent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
     roots.push(root);
     const manager = hangManager(root);
@@ -1082,7 +1082,7 @@ describe("SubagentManager steering", () => {
     await manager.stop(handle.id);
   });
 
-  it("steer throws for a finished subagent", async () => {
+  it("steer throws for a finished agent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-steer-"));
     roots.push(root);
     const manager = hangManager(root);
@@ -1121,7 +1121,7 @@ describe("SubagentManager steering", () => {
     const received = path.join(root, "received.jsonl");
     process.env.FAKE_PI_STEER_LOG = received;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         piBinary: fakePiSteer,
         runRoot: root,
@@ -1146,7 +1146,7 @@ describe("SubagentManager steering", () => {
         forwarded.some((e) => e.type === "steer" && e.message === "redirect to session expiry"),
       ).toBe(true);
       await waitFor(() => {
-        const status = manager.status(handle.id) as SubagentRunRecord;
+        const status = manager.status(handle.id) as AgentRunRecord;
         return Boolean(status.pendingMessages?.steering.includes("redirect to session expiry"));
       }, 3_000);
       await manager.stop(handle.id);
@@ -1162,7 +1162,7 @@ describe("SubagentManager steering", () => {
     const received = path.join(root, "received.jsonl");
     process.env.FAKE_PI_STEER_LOG = received;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         piBinary: fakePiSteer,
         runRoot: root,
@@ -1193,7 +1193,7 @@ describe("SubagentManager steering", () => {
     const received = path.join(root, "received.jsonl");
     process.env.FAKE_PI_STEER_LOG = received;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         piBinary: fakePiSteer,
         runRoot: root,
@@ -1252,7 +1252,7 @@ describe("SubagentManager steering", () => {
     await manager.stop(handle.id);
   });
 
-  it("compact throws for a finished subagent", async () => {
+  it("compact throws for a finished agent", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
     roots.push(root);
     const manager = hangManager(root);
@@ -1264,7 +1264,7 @@ describe("SubagentManager steering", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
     roots.push(root);
     const fakeClaude = path.resolve("tests/fixtures/fake-claude.mjs");
-    const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
       workerPath: path.resolve("src/worker.ts"),
       claudeBinary: fakeClaude,
       runRoot: root,
@@ -1287,7 +1287,7 @@ describe("SubagentManager steering", () => {
     const received = path.join(root, "received.jsonl");
     process.env.FAKE_PI_STEER_LOG = received;
     try {
-      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+      const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
         workerPath: path.resolve("src/worker.ts"),
         piBinary: fakePiSteer,
         runRoot: root,

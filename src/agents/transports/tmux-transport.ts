@@ -1,7 +1,7 @@
 import type {
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
 import {
@@ -12,14 +12,14 @@ import {
 
 const sessionName = (id: string): string => `pi-fabric-${id.slice(0, 12)}`;
 
-export class TmuxTransport implements SubagentTransportAdapter {
+export class TmuxTransport implements AgentTransportAdapter {
   readonly kind = "tmux" as const;
 
   async available(): Promise<boolean> {
     return commandAvailable("tmux");
   }
 
-  async launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle> {
+  async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
     const session = sessionName(request.id);
     await executeFile("tmux", [
       "new-session",

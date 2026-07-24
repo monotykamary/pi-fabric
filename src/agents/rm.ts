@@ -16,7 +16,7 @@ const defaultRemove: RemoveFn = (target, options) => fs.promises.rm(target, opti
  * races. `fs.rm({ force: true })` ignores ENOENT, but on macOS/APFS a
  * recursive removal can still surface ENOTEMPTY when a child entry has not
  * yet been purged by the filesystem. Retry a few times with a short backoff
- * so subagent cleanup and shutdown do not flake on that race. The `rm`
+ * so agent cleanup and shutdown do not flake on that race. The `rm`
  * argument is a seam for tests; production callers omit it.
  */
 export const removeTree = async (target: string, rm: RemoveFn = defaultRemove): Promise<void> => {

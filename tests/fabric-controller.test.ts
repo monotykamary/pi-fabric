@@ -57,7 +57,7 @@ const stubState = () =>
       messageId: "message-1",
       routed: "main",
     }),
-    subagents: { list: vi.fn(() => []), subscribeUi: vi.fn(() => () => {}) },
+    agents: { list: vi.fn(() => []), subscribeUi: vi.fn(() => () => {}) },
     actors: {
       list: vi.fn(() => [stubActor]),
       messages: vi.fn(() => []),
@@ -208,13 +208,13 @@ describe("FabricUiController dashboard wiring", () => {
     const state = stubState();
     state.config.ui.refreshMs = 500;
     let onActor = (): void => {};
-    let onSubagent = (): void => {};
+    let onAgent = (): void => {};
     vi.mocked(state.actors.subscribe).mockImplementation((listener) => {
       onActor = listener;
       return () => {};
     });
-    vi.mocked(state.subagents.subscribeUi).mockImplementation((listener) => {
-      onSubagent = listener;
+    vi.mocked(state.agents.subscribeUi).mockImplementation((listener) => {
+      onAgent = listener;
       return () => {};
     });
     const context = {
@@ -228,7 +228,7 @@ describe("FabricUiController dashboard wiring", () => {
       onActor();
       await vi.advanceTimersByTimeAsync(100);
       expect(state.activity.runs).toHaveBeenCalledTimes(2);
-      onSubagent();
+      onAgent();
       await vi.advanceTimersByTimeAsync(100);
       expect(state.activity.runs).toHaveBeenCalledTimes(3);
     } finally {

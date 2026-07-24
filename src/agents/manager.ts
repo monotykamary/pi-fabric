@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  MAX_SUBAGENT_TIMEOUT_MS,
-  MIN_SUBAGENT_TIMEOUT_MS,
+  MAX_AGENT_TIMEOUT_MS,
+  MIN_AGENT_TIMEOUT_MS,
   type FabricAgentRunner,
-  type FabricSubagentConfig,
-  type FabricSubagentTransport,
+  type FabricAgentConfig,
+  type FabricAgentTransport,
 } from "../config.js";
 import {
   discoverClaudeModels,
@@ -26,16 +26,16 @@ import { TmuxTransport } from "./transports/tmux-transport.js";
 import type {
   FabricBudgetSummary,
   FabricSteeringMode,
-  FabricSubagentLog,
-  SubagentHandleInfo,
-  SubagentRunRecord,
-  SubagentRunRequest,
-  SubagentRunResult,
-  SubagentSteerEntry,
-  SubagentSteerResult,
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  FabricAgentLog,
+  AgentHandleInfo,
+  AgentRunRecord,
+  AgentRunRequest,
+  AgentRunResult,
+  AgentSteerEntry,
+  AgentSteerResult,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "./types.js";
 import { WorktreeManager } from "./worktree-manager.js";
 import { writeHandoffSession } from "./handoff.js";
@@ -54,9 +54,9 @@ import {
   type FabricLifecyclePublishRequest,
 } from "../lifecycle/types.js";
 import {
-  SUBAGENT_STARTUP_MAX_ATTEMPTS,
-  SUBAGENT_STARTUP_RETRY_BASE_DELAY_MS,
-  SUBAGENT_STATUS_POLL_INTERVAL_MS,
+  AGENT_STARTUP_MAX_ATTEMPTS,
+  AGENT_STARTUP_RETRY_BASE_DELAY_MS,
+  AGENT_STATUS_POLL_INTERVAL_MS,
 } from "./constants.js";
 const NESTED_SNAPSHOT_POLL_MS = 500;
 const TRANSPORT_EXIT_GRACE_MS = 1_000;
@@ -69,24 +69,24 @@ const MAX_RETAINED_RUN_HANDLES = 1_000;
 const MAX_LOG_SUMMARY_CHARS = 7_000;
 const MAX_LOG_DETAIL_CHARS = 900;
 
-export const effectiveSubagentTimeoutMs = (
+export const effectiveAgentTimeoutMs = (
   configuredTimeoutMs: number,
   requestedTimeoutMs?: number,
 ): number => {
   const configured = Math.max(
-    MIN_SUBAGENT_TIMEOUT_MS,
-    Math.min(Math.floor(configuredTimeoutMs), MAX_SUBAGENT_TIMEOUT_MS),
+    MIN_AGENT_TIMEOUT_MS,
+    Math.min(Math.floor(configuredTimeoutMs), MAX_AGENT_TIMEOUT_MS),
   );
   if (requestedTimeoutMs === undefined || !Number.isFinite(requestedTimeoutMs)) {
     return configured;
   }
   return Math.max(
     configured,
-    Math.min(Math.floor(requestedTimeoutMs), MAX_SUBAGENT_TIMEOUT_MS),
+    Math.min(Math.floor(requestedTimeoutMs), MAX_AGENT_TIMEOUT_MS),
   );
 };
 
-interface ManagedSubagent {
+interface ManagedAgent {
   id: string;
   name: string;
   task: string;
@@ -98,26 +98,26 @@ interface ManagedSubagent {
   lifecycleOffset: number;
   lifecycleRemainder: Buffer;
   runDirectory: string;
-  transport: SubagentTransportHandle;
-  adapter: SubagentTransportAdapter;
-  launch: SubagentTransportLaunch;
+  transport: AgentTransportHandle;
+  adapter: AgentTransportAdapter;
+  launch: AgentTransportLaunch;
   startupAttempts: number;
-  result: Promise<SubagentRunResult> | undefined;
-  resolve: ((result: SubagentRunResult) => void) | undefined;
+  result: Promise<AgentRunResult> | undefined;
+  resolve: ((result: AgentRunResult) => void) | undefined;
   release(): void;
   abortSignal: AbortSignal | undefined;
   abortHandler: (() => void) | undefined;
   model?: string;
-  thinking?: SubagentRunRequest["thinking"];
+  thinking?: AgentRunRequest["thinking"];
   actorId?: string;
   actorName?: string;
   runnerSessionId?: string;
   branch?: string;
   worktree?: string;
-  nestedSnapshot?: SubagentRunRecord[];
+  nestedSnapshot?: AgentRunRecord[];
   nestedSnapshotAt?: number;
-  latestRecord?: SubagentRunRecord;
-  latestUiRecord?: SubagentRunRecord;
+  latestRecord?: AgentRunRecord;
+  latestUiRecord?: AgentRunRecord;
   settled: boolean;
   background: boolean;
   lastLivenessCheckAt: number;
@@ -138,13 +138,13 @@ const safeName = (value: string): string =>
   value
     .replace(/[\r\n\t]+/g, " ")
     .trim()
-    .slice(0, MAX_NAME_LENGTH) || "Fabric subagent";
+    .slice(0, MAX_NAME_LENGTH) || "Fabric agent";
 
-const readRecord = (filePath: string): SubagentRunRecord | undefined => {
+const readRecord = (filePath: string): AgentRunRecord | undefined => {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-    const record = parsed as SubagentRunRecord;
+    const record = parsed as AgentRunRecord;
     return { ...record, runner: record.runner === "claude" ? "claude" : "pi" };
   } catch {
     return undefined;
@@ -166,7 +166,7 @@ const boundedUiValue = (value: unknown): unknown => {
   }
 };
 
-const compactUiRecord = (record: SubagentRunRecord): SubagentRunRecord => {
+const compactUiRecord = (record: AgentRunRecord): AgentRunRecord => {
   const { task, text, error, value, nestedAgents, ...rest } = record;
   return {
     ...rest,
@@ -190,7 +190,7 @@ const compactUiRecord = (record: SubagentRunRecord): SubagentRunRecord => {
   };
 };
 
-const readNestedAgents = (runDirectory: string, depth = 0): SubagentRunRecord[] => {
+const readNestedAgents = (runDirectory: string, depth = 0): AgentRunRecord[] => {
   if (depth >= 8) return [];
   const nestedRoot = path.join(runDirectory, "nested");
   let entries: string[];
@@ -199,7 +199,7 @@ const readNestedAgents = (runDirectory: string, depth = 0): SubagentRunRecord[] 
   } catch {
     return [];
   }
-  const agents: SubagentRunRecord[] = [];
+  const agents: AgentRunRecord[] = [];
   for (const entry of entries.slice(0, 200)) {
     const runDirectory = path.join(nestedRoot, entry);
     const record = readRecord(path.join(runDirectory, "status.json"));
@@ -243,7 +243,7 @@ const summarizeRunLog = (runDirectory: string, lines: number): string => {
   return summary.join(" | ").slice(-MAX_LOG_SUMMARY_CHARS);
 };
 
-const writeRecord = (filePath: string, record: SubagentRunRecord): void => {
+const writeRecord = (filePath: string, record: AgentRunRecord): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, JSON.stringify(record, null, 2), {
@@ -255,12 +255,12 @@ const writeRecord = (filePath: string, record: SubagentRunRecord): void => {
 
 const failedRecord = (
   managed: Omit<
-    ManagedSubagent,
+    ManagedAgent,
     "result" | "resolve" | "release" | "abortSignal" | "abortHandler" | "settled"
   >,
   status: "failed" | "stopped" | "timed_out",
   error: string,
-): SubagentRunResult => {
+): AgentRunResult => {
   const now = Date.now();
   return {
     id: managed.id,
@@ -290,8 +290,8 @@ const failedRecord = (
   };
 };
 
-export class SubagentManager {
-  readonly #runs = new Map<string, ManagedSubagent>();
+export class AgentManager {
+  readonly #runs = new Map<string, ManagedAgent>();
   readonly #semaphore: Semaphore;
   readonly #worktrees = new WorktreeManager();
   readonly #runRoot: string;
@@ -306,8 +306,8 @@ export class SubagentManager {
   readonly #projectRoot: string;
   readonly #hostId: string | undefined;
   readonly #identityId: string | undefined;
-  readonly #transports: Map<FabricSubagentTransport, SubagentTransportAdapter>;
-  readonly #onBackgroundComplete: ((result: SubagentRunResult) => void) | undefined;
+  readonly #transports: Map<FabricAgentTransport, AgentTransportAdapter>;
+  readonly #onBackgroundComplete: ((result: AgentRunResult) => void) | undefined;
   readonly #onLifecycle: ((event: FabricLifecyclePublishRequest) => void) | undefined;
   readonly #preparePiModel: ((model: string) => Promise<void>) | undefined;
   readonly #piModelPreparations = new Map<string, Promise<void>>();
@@ -318,13 +318,13 @@ export class SubagentManager {
   #claudeModelsCache: { at: number; value: ClaudeModelInfo[] } | undefined;
   #uiListRevision = 0;
   #uiListCache:
-    | { revision: number; value: Array<SubagentRunRecord | SubagentHandleInfo> }
+    | { revision: number; value: Array<AgentRunRecord | AgentHandleInfo> }
     | undefined;
   #closing = false;
 
   constructor(
     readonly cwd: string,
-    readonly config: FabricSubagentConfig,
+    readonly config: FabricAgentConfig,
     options: {
       workerPath?: string;
       fabricExtensionPath?: string;
@@ -337,7 +337,7 @@ export class SubagentManager {
       projectRoot?: string;
       hostId?: string;
       identityId?: string;
-      onBackgroundComplete?: (result: SubagentRunResult) => void;
+      onBackgroundComplete?: (result: AgentRunResult) => void;
       onLifecycle?: (event: FabricLifecyclePublishRequest) => void;
       preparePiModel?: (model: string) => Promise<void>;
     } = {},
@@ -372,7 +372,7 @@ export class SubagentManager {
         : undefined);
     this.#budgetOwned =
       !inheritedBudget && this.#currentDepth === 0 && config.budgetUsd > 0;
-    const adapters: SubagentTransportAdapter[] = [
+    const adapters: AgentTransportAdapter[] = [
       new ProcessTransport(),
       new TmuxTransport(),
       new ScreenTransport(),
@@ -407,12 +407,12 @@ export class SubagentManager {
     return () => this.#uiListeners.delete(listener);
   }
 
-  async spawn(request: SubagentRunRequest, signal?: AbortSignal): Promise<SubagentHandleInfo> {
-    if (!this.config.enabled) throw new Error("Subagents are disabled in Fabric configuration");
+  async spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+    if (!this.config.enabled) throw new Error("Agents are disabled in Fabric configuration");
     if (this.#currentDepth >= this.config.maxDepth) {
-      throw new Error(`Fabric subagent depth limit reached (${this.config.maxDepth})`);
+      throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
     }
-    if (!request.task.trim()) throw new Error("Subagent task must not be empty");
+    if (!request.task.trim()) throw new Error("Agent task must not be empty");
     const runner = request.runner ?? this.config.runner;
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Unsupported Fabric agent runner: ${String(runner)}`);
@@ -426,7 +426,7 @@ export class SubagentManager {
       throw new Error("Trajectory handoff sessions are only supported by the Pi runner");
     }
     if (request.sessionSeed && request.sessionFile) {
-      throw new Error("A subagent request cannot combine sessionSeed with sessionFile");
+      throw new Error("A agent request cannot combine sessionSeed with sessionFile");
     }
     const tools = this.#childTools(request, runner);
     if (runner === "claude") mapClaudeTools(tools);
@@ -438,13 +438,13 @@ export class SubagentManager {
       const spent = readBudgetLedger(this.#budget.file).cost;
       if (spent >= this.#budget.budget) {
         throw new Error(
-          `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase subagents.budgetUsd or simplify the task.`,
+          `Fabric recursion budget exceeded: spent $${spent.toFixed(6)} of $${this.#budget.budget.toFixed(6)}. Increase agents.budgetUsd or simplify the task.`,
         );
       }
     }
     const release = await this.#semaphore.acquire(signal);
     const id = randomUUID().replaceAll("-", "");
-    const name = safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric subagent");
+    const name = safeName(request.name ?? request.task.split("\n", 1)[0] ?? "Fabric agent");
     const runDirectory = path.join(this.#runRoot, id);
     fs.mkdirSync(runDirectory, { recursive: true });
     const taskFile = path.join(runDirectory, "task.txt");
@@ -494,7 +494,7 @@ export class SubagentManager {
           )
         : request.sessionFile;
       const adapter = await this.#resolveTransport(request.transport ?? this.config.transport);
-      const timeoutMs = effectiveSubagentTimeoutMs(
+      const timeoutMs = effectiveAgentTimeoutMs(
         this.config.timeoutMs,
         request.timeoutMs,
       );
@@ -566,7 +566,7 @@ export class SubagentManager {
         ...(branch ? ["--branch", branch] : []),
         ...(worktree ? ["--worktree", worktree] : []),
       ];
-      const launch: SubagentTransportLaunch = {
+      const launch: AgentTransportLaunch = {
         id,
         name,
         cwd: agentCwd,
@@ -574,16 +574,16 @@ export class SubagentManager {
         workerArguments,
       };
       const transport = await adapter.launch(launch);
-      let resolveResult: ((result: SubagentRunResult) => void) | undefined;
-      const result = new Promise<SubagentRunResult>((resolve) => {
+      let resolveResult: ((result: AgentRunResult) => void) | undefined;
+      const result = new Promise<AgentRunResult>((resolve) => {
         resolveResult = resolve;
       });
-      if (!resolveResult) throw new Error("Failed to create subagent result promise");
+      if (!resolveResult) throw new Error("Failed to create agent result promise");
       if (signal?.aborted) {
         await transport.stop();
-        throw new Error("Subagent launch aborted");
+        throw new Error("Agent launch aborted");
       }
-      const managed: ManagedSubagent = {
+      const managed: ManagedAgent = {
         id,
         name,
         task: request.task,
@@ -630,23 +630,23 @@ export class SubagentManager {
     }
   }
 
-  async run(request: SubagentRunRequest, signal?: AbortSignal): Promise<SubagentRunResult> {
+  async run(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentRunResult> {
     const handle = await this.spawn(request, signal);
     return this.wait(handle.id);
   }
 
-  async wait(id: string): Promise<SubagentRunResult> {
+  async wait(id: string): Promise<AgentRunResult> {
     const managed = this.#requireRun(id);
     managed.background = false;
     if (!managed.settled) {
-      if (!managed.result) throw new Error(`Subagent ${id} has no pending result`);
+      if (!managed.result) throw new Error(`Agent ${id} has no pending result`);
       return managed.result;
     }
     const record = readRecord(managed.statusFile) ?? managed.latestRecord;
     if (!record || !terminalStatuses.has(record.status)) {
-      throw new Error(`Subagent ${id} settled without a result`);
+      throw new Error(`Agent ${id} settled without a result`);
     }
-    return this.#withTransportMetadata(record, managed) as SubagentRunResult;
+    return this.#withTransportMetadata(record, managed) as AgentRunResult;
   }
 
   detachSignal(id: string): void {
@@ -659,7 +659,7 @@ export class SubagentManager {
     managed.background = true;
   }
 
-  status(id: string): SubagentRunRecord | SubagentHandleInfo {
+  status(id: string): AgentRunRecord | AgentHandleInfo {
     const managed = this.#requireRun(id);
     const record = managed.settled
       ? readRecord(managed.statusFile) ?? managed.latestRecord
@@ -675,11 +675,11 @@ export class SubagentManager {
     return result;
   }
 
-  list(): Array<SubagentRunRecord | SubagentHandleInfo> {
+  list(): Array<AgentRunRecord | AgentHandleInfo> {
     return [...this.#runs.keys()].map((id) => this.status(id));
   }
 
-  listForUi(): Array<SubagentRunRecord | SubagentHandleInfo> {
+  listForUi(): Array<AgentRunRecord | AgentHandleInfo> {
     if (this.#uiListCache?.revision === this.#uiListRevision) {
       return this.#uiListCache.value;
     }
@@ -723,13 +723,13 @@ export class SubagentManager {
     return structuredClone(value);
   }
 
-  async stop(id: string): Promise<SubagentRunResult> {
+  async stop(id: string): Promise<AgentRunResult> {
     const managed = this.#requireRun(id);
     if (managed.settled) return this.wait(id);
     managed.background = false;
     const existing = readRecord(managed.statusFile);
     if (existing && terminalStatuses.has(existing.status)) {
-      const result = this.#withTransportMetadata(existing, managed) as SubagentRunResult;
+      const result = this.#withTransportMetadata(existing, managed) as AgentRunResult;
       this.#settle(managed, result);
       return result;
     }
@@ -738,8 +738,8 @@ export class SubagentManager {
     const terminal = readRecord(managed.statusFile);
     const record =
       terminal && terminalStatuses.has(terminal.status)
-        ? (this.#withTransportMetadata(terminal, managed) as SubagentRunResult)
-        : failedRecord(managed, "stopped", "Subagent stopped");
+        ? (this.#withTransportMetadata(terminal, managed) as AgentRunResult)
+        : failedRecord(managed, "stopped", "Agent stopped");
     if (!terminal || !terminalStatuses.has(terminal.status)) writeRecord(managed.statusFile, record);
     this.#settle(managed, record);
     return record;
@@ -747,7 +747,7 @@ export class SubagentManager {
 
   async cleanup(id: string, deleteBranch = false): Promise<{ cleaned: boolean }> {
     const managed = this.#requireRun(id);
-    if (!managed.settled) throw new Error("Cannot clean up a running subagent");
+    if (!managed.settled) throw new Error("Cannot clean up a running agent");
     const cleaned = await this.#worktrees.cleanup(id, deleteBranch);
     if (!this.config.retainRuns) {
       await removeTree(managed.runDirectory);
@@ -758,7 +758,7 @@ export class SubagentManager {
     return { cleaned: cleaned || !fs.existsSync(managed.runDirectory) };
   }
 
-  readLog(id: string, opts: { lines?: number; before?: number } = {}): FabricSubagentLog {
+  readLog(id: string, opts: { lines?: number; before?: number } = {}): FabricAgentLog {
     const managed = this.#requireRun(id);
     const runDirectory = managed.runDirectory;
     const logFile = path.join(runDirectory, "events.jsonl");
@@ -776,19 +776,19 @@ export class SubagentManager {
     };
   }
 
-  steer(id: string, message: string, data?: unknown): SubagentSteerResult {
+  steer(id: string, message: string, data?: unknown): AgentSteerResult {
     return this.#appendSteer(id, { type: "steer", message, data });
   }
 
-  followUp(id: string, message: string, data?: unknown): SubagentSteerResult {
+  followUp(id: string, message: string, data?: unknown): AgentSteerResult {
     return this.#appendSteer(id, { type: "follow_up", message, data });
   }
 
-  setSteeringMode(id: string, mode: FabricSteeringMode): SubagentSteerResult {
+  setSteeringMode(id: string, mode: FabricSteeringMode): AgentSteerResult {
     return this.#appendSteer(id, { type: "set_steering_mode", mode });
   }
 
-  setFollowUpMode(id: string, mode: FabricSteeringMode): SubagentSteerResult {
+  setFollowUpMode(id: string, mode: FabricSteeringMode): AgentSteerResult {
     return this.#appendSteer(id, { type: "set_follow_up_mode", mode });
   }
 
@@ -798,11 +798,11 @@ export class SubagentManager {
   // compaction_end before closing the one-shot RPC channel. Rejected for
   // Claude-runner children — the official Claude Code CLI exposes no compact
   // RPC; a fresh run is the only way to reset a Claude child's context.
-  compact(id: string, instructions?: string): SubagentSteerResult {
+  compact(id: string, instructions?: string): AgentSteerResult {
     const managed = this.#requireRun(id);
     if (managed.runner === "claude") {
       throw new Error(
-        "Fabric subagent compaction is only supported for Pi-runner children; Claude Code sessions cannot be compacted through Fabric.",
+        "Fabric agent compaction is only supported for Pi-runner children; Claude Code sessions cannot be compacted through Fabric.",
       );
     }
     return this.#appendSteer(id, {
@@ -811,12 +811,12 @@ export class SubagentManager {
     });
   }
 
-  #appendSteer(id: string, entry: Omit<SubagentSteerEntry, "id" | "ts">): SubagentSteerResult {
+  #appendSteer(id: string, entry: Omit<AgentSteerEntry, "id" | "ts">): AgentSteerResult {
     const managed = this.#requireRun(id);
     const record = readRecord(managed.statusFile);
     if (record && terminalStatuses.has(record.status)) {
       throw new Error(
-        `Fabric subagent ${id} already finished (${record.status}); steering has no target`,
+        `Fabric agent ${id} already finished (${record.status}); steering has no target`,
       );
     }
     const steerFile = path.join(managed.runDirectory, "steer.jsonl");
@@ -841,23 +841,23 @@ export class SubagentManager {
     }
   }
 
-  async #waitForTransportExit(managed: ManagedSubagent): Promise<void> {
+  async #waitForTransportExit(managed: ManagedAgent): Promise<void> {
     const deadline = Date.now() + TRANSPORT_EXIT_GRACE_MS * 7;
     const pollIntervalMs =
-      managed.transport.livenessPollIntervalMs ?? SUBAGENT_STATUS_POLL_INTERVAL_MS;
+      managed.transport.livenessPollIntervalMs ?? AGENT_STATUS_POLL_INTERVAL_MS;
     while (Date.now() < deadline && (await managed.transport.isAlive())) {
       await delay(pollIntervalMs);
     }
   }
 
   async #retryStartup(
-    managed: ManagedSubagent,
-    record: SubagentRunRecord,
+    managed: ManagedAgent,
+    record: AgentRunRecord,
     deadline: number,
   ): Promise<boolean> {
     if (
       managed.runner !== "pi" ||
-      managed.startupAttempts >= SUBAGENT_STARTUP_MAX_ATTEMPTS ||
+      managed.startupAttempts >= AGENT_STARTUP_MAX_ATTEMPTS ||
       managed.settled ||
       this.#closing ||
       managed.abortSignal?.aborted ||
@@ -873,7 +873,7 @@ export class SubagentManager {
       return false;
     }
     const retryDelayMs =
-      SUBAGENT_STARTUP_RETRY_BASE_DELAY_MS * 2 ** (managed.startupAttempts - 1);
+      AGENT_STARTUP_RETRY_BASE_DELAY_MS * 2 ** (managed.startupAttempts - 1);
     if (Date.now() + retryDelayMs >= deadline) return false;
     await this.#waitForTransportExit(managed);
     await delay(retryDelayMs);
@@ -894,7 +894,7 @@ export class SubagentManager {
       const retryError = error instanceof Error ? error.message : String(error);
       const failed = {
         ...record,
-        error: `${record.error ?? "Subagent startup failed"} · retry launch failed: ${retryError}`,
+        error: `${record.error ?? "Agent startup failed"} · retry launch failed: ${retryError}`,
       };
       writeRecord(managed.statusFile, failed);
       managed.latestRecord = failed;
@@ -902,7 +902,7 @@ export class SubagentManager {
     }
   }
 
-  async #monitor(managed: ManagedSubagent, timeoutMs: number): Promise<void> {
+  async #monitor(managed: ManagedAgent, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs + TRANSPORT_EXIT_GRACE_MS;
     let firstObservedDeadAt: number | undefined;
     while (!managed.settled) {
@@ -927,7 +927,7 @@ export class SubagentManager {
       }
       if (record && terminalStatuses.has(record.status)) {
         if (await this.#retryStartup(managed, record, deadline)) continue;
-        this.#settle(managed, this.#withTransportMetadata(record, managed) as SubagentRunResult);
+        this.#settle(managed, this.#withTransportMetadata(record, managed) as AgentRunResult);
         return;
       }
       if (Date.now() >= deadline) {
@@ -941,21 +941,21 @@ export class SubagentManager {
         ) {
           this.#settle(
             managed,
-            this.#withTransportMetadata(completed, managed) as SubagentRunResult,
+            this.#withTransportMetadata(completed, managed) as AgentRunResult,
           );
           return;
         }
         const timedOut = failedRecord(
           managed,
           "timed_out",
-          `Subagent timed out after ${timeoutMs}ms`,
+          `Agent timed out after ${timeoutMs}ms`,
         );
         writeRecord(managed.statusFile, timedOut);
         this.#settle(managed, timedOut);
         return;
       }
       const livenessPollIntervalMs =
-        managed.transport.livenessPollIntervalMs ?? SUBAGENT_STATUS_POLL_INTERVAL_MS;
+        managed.transport.livenessPollIntervalMs ?? AGENT_STATUS_POLL_INTERVAL_MS;
       const livenessCheckedAt = Date.now();
       if (livenessCheckedAt - managed.lastLivenessCheckAt >= livenessPollIntervalMs) {
         managed.lastLivenessCheckAt = livenessCheckedAt;
@@ -968,8 +968,8 @@ export class SubagentManager {
               managed,
               "failed",
               logSummary
-                ? `Subagent transport exited without a result; last run log: ${logSummary}`
-                : "Subagent transport exited without a result",
+                ? `Agent transport exited without a result; last run log: ${logSummary}`
+                : "Agent transport exited without a result",
             );
             writeRecord(managed.statusFile, failed);
             this.#settle(managed, failed);
@@ -979,11 +979,11 @@ export class SubagentManager {
           firstObservedDeadAt = undefined;
         }
       }
-      await delay(SUBAGENT_STATUS_POLL_INTERVAL_MS);
+      await delay(AGENT_STATUS_POLL_INTERVAL_MS);
     }
   }
 
-  #settle(managed: ManagedSubagent, result: SubagentRunResult): void {
+  #settle(managed: ManagedAgent, result: AgentRunResult): void {
     if (managed.settled) return;
     this.#drainLifecycle(managed);
     managed.settled = true;
@@ -1043,7 +1043,7 @@ export class SubagentManager {
     }
   }
 
-  #drainLifecycle(managed: ManagedSubagent): void {
+  #drainLifecycle(managed: ManagedAgent): void {
     let content: Buffer;
     try {
       content = fs.readFileSync(managed.lifecycleFile);
@@ -1088,7 +1088,7 @@ export class SubagentManager {
   }
 
   #emitLifecycle(
-    managed: ManagedSubagent,
+    managed: ManagedAgent,
     event: FabricLifecycleEventType,
     occurredAt: number,
     options: { status?: string; data?: unknown } = {},
@@ -1116,7 +1116,7 @@ export class SubagentManager {
     }
   }
 
-  #childTools(request: SubagentRunRequest, runner: FabricAgentRunner): string[] {
+  #childTools(request: AgentRunRequest, runner: FabricAgentRunner): string[] {
     const tools = [...(request.tools ?? this.config.defaultTools)].filter(
       (tool) => tool !== "fabric_exec",
     );
@@ -1127,7 +1127,7 @@ export class SubagentManager {
   #budgetSummary(): FabricBudgetSummary | undefined {
     if (!this.#budget) return undefined;
     const now = Date.now();
-    if (this.#budgetSummaryCache && now - this.#budgetSummaryCache.at < SUBAGENT_STATUS_POLL_INTERVAL_MS) {
+    if (this.#budgetSummaryCache && now - this.#budgetSummaryCache.at < AGENT_STATUS_POLL_INTERVAL_MS) {
       return this.#budgetSummaryCache.value;
     }
     const { cost, tokens } = readBudgetLedger(this.#budget.file);
@@ -1141,11 +1141,11 @@ export class SubagentManager {
     return value;
   }
 
-  async #resolveTransport(requested: FabricSubagentTransport): Promise<SubagentTransportAdapter> {
+  async #resolveTransport(requested: FabricAgentTransport): Promise<AgentTransportAdapter> {
     if (requested !== "auto") {
       const adapter = this.#transports.get(requested);
       if (!adapter || !(await adapter.available())) {
-        throw new Error(`Fabric subagent transport is unavailable: ${requested}`);
+        throw new Error(`Fabric agent transport is unavailable: ${requested}`);
       }
       return adapter;
     }
@@ -1153,7 +1153,7 @@ export class SubagentManager {
       const adapter = this.#transports.get(kind);
       if (adapter && (await adapter.available())) return adapter;
     }
-    throw new Error("No Fabric subagent transport is available");
+    throw new Error("No Fabric agent transport is available");
   }
 
   #pruneRetainedUiRecords(): void {
@@ -1177,18 +1177,18 @@ export class SubagentManager {
       try {
         listener();
       } catch {
-        // UI observers must not interrupt subagent state transitions.
+        // UI observers must not interrupt agent state transitions.
       }
     }
   }
 
-  #requireRun(id: string): ManagedSubagent {
+  #requireRun(id: string): ManagedAgent {
     const managed = this.#runs.get(id);
-    if (!managed) throw new Error(`Unknown Fabric subagent: ${id}`);
+    if (!managed) throw new Error(`Unknown Fabric agent: ${id}`);
     return managed;
   }
 
-  #handleInfo(managed: ManagedSubagent, status: SubagentHandleInfo["status"]): SubagentHandleInfo {
+  #handleInfo(managed: ManagedAgent, status: AgentHandleInfo["status"]): AgentHandleInfo {
     return {
       id: managed.id,
       name: managed.name,
@@ -1214,7 +1214,7 @@ export class SubagentManager {
   // Recursive child processes remove their nested run directories on shutdown.
   // Preserve the last bounded status tree so completed leaves remain visible
   // in the parent run until that parent is explicitly cleaned up.
-  #nestedAgents(managed: ManagedSubagent, force = false): SubagentRunRecord[] {
+  #nestedAgents(managed: ManagedAgent, force = false): AgentRunRecord[] {
     const now = Date.now();
     const needsInitialDiscovery =
       managed.nestedSnapshot === undefined &&
@@ -1236,7 +1236,7 @@ export class SubagentManager {
     return managed.nestedSnapshot ? structuredClone(managed.nestedSnapshot) : [];
   }
 
-  #withTransportMetadata(record: SubagentRunRecord, managed: ManagedSubagent): SubagentRunRecord {
+  #withTransportMetadata(record: AgentRunRecord, managed: ManagedAgent): AgentRunRecord {
     const nestedAgents = this.#nestedAgents(
       managed,
       terminalStatuses.has(record.status) && !managed.settled,

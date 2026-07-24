@@ -186,7 +186,7 @@ describe("memory final integrity guarantees", () => {
       entryId: "abandoned-custom",
       subordinal: "custom-message",
       address: "abandoned-custom/custom-message",
-      customType: "pi-fabric-subagent-complete",
+      customType: "pi-fabric-agent-complete",
       text: "Agent completed CUSTOM_MEMORY_BRANCH_51",
       display: false,
       details: { status: "completed" },
@@ -233,10 +233,10 @@ describe("memory final integrity guarantees", () => {
       factAddress: customMessage.address,
       carrierEntryId: "carrier-original",
       role: "branchCustomMessage",
-      text: "[pi-fabric-subagent-complete] Agent completed CUSTOM_MEMORY_BRANCH_51",
+      text: "[pi-fabric-agent-complete] Agent completed CUSTOM_MEMORY_BRANCH_51",
       branchFact: expect.objectContaining({
         kind: "customMessage",
-        customType: "pi-fabric-subagent-complete",
+        customType: "pi-fabric-agent-complete",
         display: false,
       }),
     });

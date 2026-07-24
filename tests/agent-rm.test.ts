@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { removeTree } from "../src/subagents/rm.js";
+import { removeTree } from "../src/agents/rm.js";
 
 describe("removeTree", () => {
   it("removes a directory tree", async () => {

@@ -300,7 +300,7 @@ describe("deterministic Fabric branch summaries", () => {
       user("c1", "Root task"),
       customMessage(
         "c2",
-        "pi-fabric-subagent-complete",
+        "pi-fabric-agent-complete",
         "Agent completed CUSTOM_BRANCH_FACT_41",
         false,
         { id: "agent-41", status: "completed" },
@@ -312,7 +312,7 @@ describe("deterministic Fabric branch summaries", () => {
     expect(compiled.details.source.oldLeafId).toBe("c2");
     expect(compiled.details.facts).toContainEqual(expect.objectContaining({
       kind: "customMessage",
-      customType: "pi-fabric-subagent-complete",
+      customType: "pi-fabric-agent-complete",
       text: "Agent completed CUSTOM_BRANCH_FACT_41",
       display: false,
       details: { id: "agent-41", status: "completed" },

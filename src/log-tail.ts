@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { FabricLogLine } from "./subagents/types.js";
+import type { FabricLogLine } from "./agents/types.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_READ_MAX_BYTES = 8 * 1024 * 1024;

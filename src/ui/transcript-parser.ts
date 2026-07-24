@@ -1,4 +1,4 @@
-import type { FabricLogLine } from "../subagents/types.js";
+import type { FabricLogLine } from "../agents/types.js";
 import type { FabricAgentTranscript, FabricTranscriptEntry } from "./transcript.js";
 import {
   clip,

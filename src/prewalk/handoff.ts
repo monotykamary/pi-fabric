@@ -7,18 +7,18 @@ import {
 } from "../core/action-registry.js";
 import type { FabricExecutionResult } from "../execution-service.js";
 import type { FabricInvocationContext } from "../protocol.js";
-import { snapshotHandoffSession } from "../subagents/handoff.js";
+import { snapshotHandoffSession } from "../agents/handoff.js";
 import type {
-  SubagentSessionSeed,
-  SubagentToolResultMessage,
-} from "../subagents/types.js";
+  AgentSessionSeed,
+  AgentToolResultMessage,
+} from "../agents/types.js";
 import type { PrewalkController } from "./controller.js";
 
 export interface BoundaryHandoffRunner {
   executeHandoff(
     args: Record<string, unknown>,
     context: FabricInvocationContext,
-    sessionSeed: SubagentSessionSeed,
+    sessionSeed: AgentSessionSeed,
   ): Promise<Record<string, unknown>>;
 }
 
@@ -87,7 +87,7 @@ export const runFabricHandoffAtBoundary = async (
   controller: PrewalkController,
   runner: BoundaryHandoffRunner,
   pending: PendingFabricHandoff,
-  outerToolResult: SubagentToolResultMessage,
+  outerToolResult: AgentToolResultMessage,
   context: ExtensionContext,
 ): Promise<Record<string, unknown>> => {
   const model = String(pending.args.model ?? "");

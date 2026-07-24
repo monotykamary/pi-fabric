@@ -232,7 +232,7 @@ interface FabricLogLine {
   raw: string;
   parsed?: unknown;
 }
-interface FabricSubagentLog {
+interface FabricAgentLog {
   id: string;
   runDirectory: string;
   logFile: string;
@@ -511,7 +511,7 @@ interface FabricAgentsApi {
     lines?: number;
     before?: number;
     runId?: string;
-  }): Promise<FabricActorLog | FabricSubagentLog>;
+  }): Promise<FabricActorLog | FabricAgentLog>;
 }
 interface FabricMcpResult {
   text: string;

@@ -2,12 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { SubagentRunResult } from "../src/subagents/types.js";
-import { SubagentManager } from "../src/subagents/manager.js";
+import type { AgentRunResult } from "../src/agents/types.js";
+import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 
 // End-to-end coverage for the REAL worker (dist/worker.js) driven through
-// SubagentManager + #monitor, with a stub `pi` binary (tests/fixtures/fake-pi.mjs)
+// AgentManager + #monitor, with a stub `pi` binary (tests/fixtures/fake-pi.mjs)
 // whose behavior is selected by FAKE_PI_BEHAVIOR. This is the only place the
 // real worker.ts spawn/exit path is exercised; the other suites use a fake
 // worker that writes status directly. Skips when the package is not built.
@@ -15,20 +15,20 @@ const workerPath = path.resolve("dist/worker.js");
 const piBinary = path.resolve("tests/fixtures/fake-pi.mjs");
 const hasWorker = fs.existsSync(workerPath);
 
-describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
+describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
   const roots: string[] = [];
-  const managers: SubagentManager[] = [];
+  const managers: AgentManager[] = [];
 
   afterEach(async () => {
     await Promise.all(managers.splice(0).map((m) => m.close()));
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const run = async (task = "do it"): Promise<SubagentRunResult> => {
+  const run = async (task = "do it"): Promise<AgentRunResult> => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, timeoutMs: 2000, maxConcurrent: 1 };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2000, maxConcurrent: 1 };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
       runRoot: root,
@@ -37,7 +37,7 @@ describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
     return manager.run({ task, transport: "process" });
   };
 
-  const cases: Array<{ behavior: string; check: (r: SubagentRunResult) => void }> = [
+  const cases: Array<{ behavior: string; check: (r: AgentRunResult) => void }> = [
     {
       behavior: "success",
       check: (r) => {
@@ -131,8 +131,8 @@ describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = behavior;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, timeoutMs: 4_000, maxConcurrent: 1 };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 4_000, maxConcurrent: 1 };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
       runRoot: root,
@@ -171,8 +171,8 @@ describe.skipIf(!hasWorker)("SubagentManager real worker e2e", () => {
     process.env.FAKE_PI_BEHAVIOR = "hang";
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
     roots.push(root);
-    const config = { ...DEFAULT_FABRIC_CONFIG.subagents, timeoutMs: 30_000, maxConcurrent: 1 };
-    const manager = new SubagentManager(process.cwd(), config, {
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 30_000, maxConcurrent: 1 };
+    const manager = new AgentManager(process.cwd(), config, {
       workerPath,
       piBinary,
       runRoot: root,

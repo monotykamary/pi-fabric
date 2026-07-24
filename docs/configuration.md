@@ -7,6 +7,8 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 `/fabric settings` writes changes to the same files: trusted projects write to `<project>/.pi/fabric.json`; untrusted sessions write to the global `~/.pi/agent/fabric.json`.
 
+Configuration documents are versioned with `configVersion`. Fabric migrates each applicable file independently before applying global/project precedence, then atomically rewrites migrated files. Version 0—the historical unversioned format—renames `subagents` to `agents`; when both sections exist, `agents` wins conflicts while non-conflicting values are preserved. Trusted project files are migrated, while untrusted project files are neither read nor rewritten. Future schema changes should be added as sequential migrations rather than runtime aliases.
+
 `executor.runtime` selects `"quickjs"` (the default isolated WASM runtime) or `"node-process"` (a disposable native V8 process). QuickJS memory limits are capped at `4294967295` bytes because its WASM32 `size_t` cannot represent 4 GiB; larger values are rejected rather than wrapped. Node process limits may be set as high as detected physical memory and are passed to V8 as `--max-old-space-size`.
 
 `node-process` is an explicit trusted-code escape hatch, not a security sandbox. It preserves Fabric's IPC host bridge, approvals, audit records, timeout, and cancellation, but Node's `vm` API is not a security boundary. Enable it only for workloads and projects whose generated code you are willing to run with the local user account's authority. Each invocation receives a fresh child process and is forcibly terminated when it settles, times out, or is cancelled. Schema enforce mode always forces `quickjs`. Large limits in either runtime can exhaust system memory or destabilize the machine.
@@ -15,6 +17,7 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 ```json
 {
+  "configVersion": 1,
   "fullCodeMode": true,
   "executor": {
     "runtime": "quickjs",
@@ -55,7 +58,7 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
   "prewalk": {
     "alwaysRearm": false
   },
-  "subagents": {
+  "agents": {
     "enabled": true,
     "runner": "pi",
     "transport": "process",
@@ -114,7 +117,7 @@ Pi Fabric reads configuration from two JSON files. Project values override globa
 
 `prewalk.alwaysRearm` defaults to `false`. When enabled, an armed prewalk returns to an armed, taskless state after each handoff or settled task, capturing the next user input until `/fabric prewalk --off` is used.
 
-The settings UI labels the unset model state **Ask each time**. In that state, interactive sessions choose a model while arming prewalk; non-interactive sessions reject the command. This setting is independent of `subagents.model` so ordinary children and the automatic handoff executor can use different models.
+The settings UI labels the unset model state **Ask each time**. In that state, interactive sessions choose a model while arming prewalk; non-interactive sessions reject the command. This setting is independent of `agents.model` so ordinary children and the automatic handoff executor can use different models.
 
 ## Result formatting
 
@@ -236,11 +239,11 @@ The classifier receives the exact action, bounded prepared arguments, cwd, user-
 
 `deny` remains deterministic and is evaluated before the classifier. Schema enforcement, project trust, budgets, and other host gates also remain authoritative. Auto mode is a model-based policy advisor, not a stronger sandbox boundary. Its initial conservative policy escalates destructive or irreversible actions, shared/external/production changes, credential or sensitive-data exposure, safety bypasses, actions beyond explicit user intent, and actions whose safety is uncertain. This follows the architecture described in Claude Code’s [permission modes](https://code.claude.com/docs/en/permission-modes), [auto-mode configuration](https://code.claude.com/docs/en/auto-mode-config), and Anthropic’s [auto-mode engineering write-up](https://www.anthropic.com/engineering/claude-code-auto-mode), adapted to Pi’s model registry and Fabric’s existing per-risk policy gate.
 
-## Subagents
+## Agents
 
-`subagents.runner` selects the default harness (`"pi"` or `"claude"`). `subagents.model` is the optional Pi `provider/id` override; `subagents.claude.model` is the optional canonical Claude runtime key. `subagents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently.
+`agents.runner` selects the default harness (`"pi"` or `"claude"`). `agents.model` is the optional Pi `provider/id` override; `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently.
 
-Other subagent settings:
+Other agent settings:
 
 - `thinking` — default reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), default `medium`.
 - `maxConcurrent` — global child concurrency semaphore.

@@ -105,7 +105,7 @@ describe("FabricSettingsComponent", () => {
       "Approvals",
       "MCP",
       "Prewalk",
-      "Subagents",
+      "Agents",
       "Capture",
       "UI",
       "Compaction",
@@ -122,14 +122,14 @@ describe("FabricSettingsComponent", () => {
     // Top-level sections open a submenu.
     expect(labels).toContain("Executor ›");
     expect(labels).toContain("Prewalk ›");
-    expect(labels).toContain("Subagents ›");
+    expect(labels).toContain("Agents ›");
     // Full code mode cycles values inline; no drill-in marker.
     expect(labels).toContain("Full code mode");
     expect(labels).not.toContain("Full code mode ›");
 
     // Inside a section, submenu fields are marked but inline value toggles are not.
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents")!;
+    const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default model ›");
     expect(lines).toContain("Max concurrent ›");
     expect(lines).toContain("Default tools ›");
@@ -176,11 +176,11 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("100ms");
   });
 
-  it("surfaces the recursion budget in the Subagents section", () => {
+  it("surfaces the recursion budget in the Agents section", () => {
     const items = buildItems();
-    const subagents = items.find((item) => item.id === "subagents");
-    expect(subagents?.submenu).toBeDefined();
-    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents");
+    expect(agents?.submenu).toBeDefined();
+    const lines = agents!.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Recursion budget");
     expect(lines).toContain("Off");
   });
@@ -188,12 +188,12 @@ describe("FabricSettingsComponent", () => {
   it("shows the configured budget as a currency value", () => {
     const items = buildFabricSettingsItems(
       theme,
-      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, budgetUsd: 0.25 } },
+      { ...DEFAULT_FABRIC_CONFIG, agents: { ...DEFAULT_FABRIC_CONFIG.agents, budgetUsd: 0.25 } },
       () => {},
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents")!;
+    const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Recursion budget");
     expect(lines).toContain("$0.25");
   });
@@ -234,16 +234,16 @@ describe("FabricSettingsComponent", () => {
       (id, value) => applied.push({ id, value }),
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const section = subagents.submenu!("", () => {}) as any;
+    const agents = items.find((item) => item.id === "agents")!;
+    const section = agents.submenu!("", () => {}) as any;
     const list = section.settingsList as any;
     list.selectedIndex = list.items.findIndex(
-      (item: { id: string }) => item.id === "subagents.thinking",
+      (item: { id: string }) => item.id === "agents.thinking",
     );
     list.activateItem();
     list.submenuComponent.selectList.onSelect({ value: "high", label: "High" });
 
-    expect(applied.at(-1)).toEqual({ id: "subagents.thinking", value: "high" });
+    expect(applied.at(-1)).toEqual({ id: "agents.thinking", value: "high" });
     expect(list.items[list.selectedIndex].currentValue).toBe("High");
   });
 
@@ -266,24 +266,24 @@ describe("FabricSettingsComponent", () => {
     expect(parseBudgetValue("$5.00")).toBe(5);
   });
 
-  it("surfaces the default thinking level in the Subagents section as Medium by default", () => {
+  it("surfaces the default thinking level in the Agents section as Medium by default", () => {
     const items = buildItems();
-    const subagents = items.find((item) => item.id === "subagents");
-    expect(subagents?.submenu).toBeDefined();
-    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents");
+    expect(agents?.submenu).toBeDefined();
+    const lines = agents!.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default thinking");
     expect(lines).toContain("Medium");
   });
 
-  it("shows a configured thinking level in the Subagents section", () => {
+  it("shows a configured thinking level in the Agents section", () => {
     const items = buildFabricSettingsItems(
       theme,
-      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, thinking: "high" } },
+      { ...DEFAULT_FABRIC_CONFIG, agents: { ...DEFAULT_FABRIC_CONFIG.agents, thinking: "high" } },
       () => {},
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents")!;
+    const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default thinking");
     expect(lines).toContain("High");
   });
@@ -395,13 +395,13 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("anthropic/claude-sonnet-4-5");
   });
 
-  it("reopens the shared subagent model picker at its live selection", () => {
+  it("reopens the shared agent model picker at its live selection", () => {
     const items = buildItems();
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const section = subagents.submenu!("", () => {}) as any;
+    const agents = items.find((item) => item.id === "agents")!;
+    const section = agents.submenu!("", () => {}) as any;
     const list = section.settingsList as any;
     list.selectedIndex = list.items.findIndex(
-      (item: { id: string }) => item.id === "subagents.model",
+      (item: { id: string }) => item.id === "agents.model",
     );
 
     list.activateItem();
@@ -420,24 +420,24 @@ describe("FabricSettingsComponent", () => {
     expect(inheritLine).not.toContain("✓");
   });
 
-  it("surfaces the default model in the Subagents section as Inherit by default", () => {
+  it("surfaces the default model in the Agents section as Inherit by default", () => {
     const items = buildItems();
-    const subagents = items.find((item) => item.id === "subagents");
-    expect(subagents?.submenu).toBeDefined();
-    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents");
+    expect(agents?.submenu).toBeDefined();
+    const lines = agents!.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default model");
     expect(lines).toContain("Inherit");
   });
 
-  it("shows the configured default model value in the Subagents section", () => {
+  it("shows the configured default model value in the Agents section", () => {
     const items = buildFabricSettingsItems(
       theme,
-      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, model: "claude-sonnet-4-5" } },
+      { ...DEFAULT_FABRIC_CONFIG, agents: { ...DEFAULT_FABRIC_CONFIG.agents, model: "claude-sonnet-4-5" } },
       () => {},
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents")!;
+    const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default model");
     expect(lines).toContain("claude-sonnet-4-5");
     expect(lines).not.toContain("Default model ›      Inherit");
@@ -445,9 +445,9 @@ describe("FabricSettingsComponent", () => {
 
   it("renders the list-editor rows with counts in their sections", () => {
     const items = buildItems(["fabric_exec", "custom-tool"]);
-    const subagents = items.find((item) => item.id === "subagents")!;
-    expect(subagents.submenu!("", () => {}).render(80).join("\n")).toContain("Default tools");
-    expect(subagents.submenu!("", () => {}).render(80).join("\n")).toContain("7 tools");
+    const agents = items.find((item) => item.id === "agents")!;
+    expect(agents.submenu!("", () => {}).render(80).join("\n")).toContain("Default tools");
+    expect(agents.submenu!("", () => {}).render(80).join("\n")).toContain("7 tools");
     const capture = items.find((item) => item.id === "capture")!;
     const captureLines = capture.submenu!("", () => {}).render(80).join("\n");
     expect(captureLines).toContain("Keep visible");
@@ -462,11 +462,11 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("Keep visible");
   });
 
-  it("surfaces the per-child token limit in the Subagents section", () => {
+  it("surfaces the per-child token limit in the Agents section", () => {
     const items = buildItems();
-    const subagents = items.find((item) => item.id === "subagents");
-    expect(subagents?.submenu).toBeDefined();
-    const lines = subagents!.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents");
+    expect(agents?.submenu).toBeDefined();
+    const lines = agents!.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Token limit");
     expect(lines).toContain("Off");
   });
@@ -474,12 +474,12 @@ describe("FabricSettingsComponent", () => {
   it("shows a configured token limit formatted compactly", () => {
     const items = buildFabricSettingsItems(
       theme,
-      { ...DEFAULT_FABRIC_CONFIG, subagents: { ...DEFAULT_FABRIC_CONFIG.subagents, maxTokensPerChild: 500_000 } },
+      { ...DEFAULT_FABRIC_CONFIG, agents: { ...DEFAULT_FABRIC_CONFIG.agents, maxTokensPerChild: 500_000 } },
       () => {},
       { keepVisibleCandidates: ["fabric_exec"], modelSource: fakeModelSource },
     );
-    const subagents = items.find((item) => item.id === "subagents")!;
-    const lines = subagents.submenu!("", () => {}).render(80).join("\n");
+    const agents = items.find((item) => item.id === "agents")!;
+    const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Token limit");
     expect(lines).toContain("500k");
   });
@@ -501,7 +501,7 @@ describe("FabricSettingsComponent", () => {
             alwaysRearm: saved.prewalk?.alwaysRearm === true,
           };
         }),
-        subagents: { claudeModels: vi.fn().mockResolvedValue([]) },
+        agents: { claudeModels: vi.fn().mockResolvedValue([]) },
       } as unknown as FabricState;
       let rootList: any;
       let nestedList: any;

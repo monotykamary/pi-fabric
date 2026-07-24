@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { FabricSubagentTransport } from "../config.js";
+import type { FabricAgentTransport } from "../config.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
 import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
@@ -18,7 +18,7 @@ const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
 const HOST_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set(FABRIC_ACTOR_HOST_EVENTS);
 const DELIVERIES = new Set<FabricActorDelivery>(["mailbox", "steer", "followUp", "nextTurn"]);
 const RESPONSE_MODES = new Set<FabricActorResponseMode>(["text", "directive"]);
-const TRANSPORTS = new Set<FabricSubagentTransport>([
+const TRANSPORTS = new Set<FabricAgentTransport>([
   "auto",
   "process",
   "tmux",
@@ -336,7 +336,7 @@ export class GlobalActorRegistry {
       const tools = Array.isArray(record.tools)
         ? record.tools.filter((tool): tool is string => typeof tool === "string")
         : undefined;
-      const transport: FabricSubagentTransport | undefined =
+      const transport: FabricAgentTransport | undefined =
         record.transport !== undefined && TRANSPORTS.has(record.transport) ? record.transport : undefined;
       const timeoutMs = typeof record.timeoutMs === "number" ? record.timeoutMs : undefined;
       const extensions = typeof record.extensions === "boolean" ? record.extensions : undefined;

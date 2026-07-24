@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { FabricActivityRun } from "../src/activity/types.js";
 import type { FabricState } from "../src/fabric-state.js";
-import type { SubagentRunRecord } from "../src/subagents/types.js";
+import type { AgentRunRecord } from "../src/agents/types.js";
 import type { FabricParticipantInfo } from "../src/topology/types.js";
 import { createDashboardSnapshot } from "../src/ui/snapshot.js";
 
 const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0 };
 
-const record = (id: string, nestedAgents?: SubagentRunRecord[]): SubagentRunRecord => ({
+const record = (id: string, nestedAgents?: AgentRunRecord[]): AgentRunRecord => ({
   id,
   name: id,
   task: `Inspect ${id}`,
@@ -59,7 +59,7 @@ const run = (
 
 const fakeState = (
   runs: FabricActivityRun[],
-  records: SubagentRunRecord[],
+  records: AgentRunRecord[],
   actors: unknown[] = [],
   peers: unknown[] = [],
   participants: FabricParticipantInfo[] = [],
@@ -82,7 +82,7 @@ const fakeState = (
       pendingMessages: false,
       local: true,
     }),
-    subagents: { list: () => records },
+    agents: { list: () => records },
     actors: { list: () => actors, instructions: () => "", messages: () => [] },
     globalActors: { list: () => [] },
     config: { mesh: { enabled: false } },

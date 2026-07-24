@@ -1,6 +1,6 @@
-import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { MeshIdentity } from "../mesh/store.js";
-import type { SubagentUsage } from "../subagents/types.js";
+import type { AgentUsage } from "../agents/types.js";
 
 export type FabricParticipantKind = "root" | "agent" | "actor";
 export type FabricParticipantScope = "local" | "lineage" | "project";
@@ -22,7 +22,7 @@ export interface FabricParticipantRecord {
   name: string;
   status: string;
   runner: FabricAgentRunner;
-  transport: FabricSubagentTransport | "host";
+  transport: FabricAgentTransport | "host";
   capabilities: FabricParticipantCapability[];
   cwd?: string;
   sessionId?: string;
@@ -35,7 +35,7 @@ export interface FabricParticipantRecord {
   currentTool?: string;
   turns?: number;
   toolCalls?: number;
-  usage?: SubagentUsage;
+  usage?: AgentUsage;
   actorQueued?: number;
   actorMessages?: number;
   controlProtocol: "v1" | "legacy";

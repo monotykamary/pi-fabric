@@ -85,4 +85,4 @@ For an explicit implementation handoff, `agents.handoff({ model, task?, when? })
 
 Agent requests and persistent actors accept `runner: "pi" | "claude"`. Pi is the default and is required for `recursive: true`, `rlm.query()`, and actors that must call Fabric or mesh APIs themselves. Claude invokes the official `claude -p` harness; it supports mapped Claude Code tools and host-managed persistent actors, but not recursive/direct Fabric APIs. Use `agents.models({ runner: "claude" })` for runtime-enumerated `claude/<value>` model keys.
 
-Omit `timeoutMs` for subagents and actors unless requesting longer than the configured `subagents.timeoutMs` (60 minutes by default). Per-call values below the configured default are ignored.
+Omit `timeoutMs` for agents and actors unless requesting longer than the configured `agents.timeoutMs` (60 minutes by default). Per-call values below the configured default are ignored.

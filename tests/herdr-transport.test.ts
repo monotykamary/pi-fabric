@@ -3,7 +3,7 @@ import net, { type Server } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HerdrTransport } from "../src/subagents/transports/herdr-transport.js";
+import { HerdrTransport } from "../src/agents/transports/herdr-transport.js";
 
 const servers: Server[] = [];
 const roots: string[] = [];

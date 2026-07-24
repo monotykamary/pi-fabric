@@ -1,7 +1,7 @@
 import type { ExtensionEvent } from "@earendil-works/pi-coding-agent";
-import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
-import type { FabricLogLine, SubagentRunRecord, SubagentUsage } from "../subagents/types.js";
+import type { FabricLogLine, AgentRunRecord, AgentUsage } from "../agents/types.js";
 
 export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
 
@@ -127,7 +127,7 @@ export interface FabricActorRequest {
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
-  transport?: FabricSubagentTransport;
+  transport?: FabricAgentTransport;
   timeoutMs?: number;
   /**
    * Fabric capability for the actor. Defaults to true (today's behavior: a Pi
@@ -180,7 +180,7 @@ export interface FabricActorLog {
   run?: {
     runId: string;
     eventsFile: string;
-    status?: SubagentRunRecord;
+    status?: AgentRunRecord;
     events: FabricLogLine[];
     hasMore: boolean;
     before?: number;
@@ -199,7 +199,7 @@ export interface FabricActorMessage {
   data?: unknown;
   action?: "silent" | "message" | "stop";
   runId?: string;
-  usage?: SubagentUsage;
+  usage?: AgentUsage;
   error?: string;
   stale?: boolean;
   reason?: string;

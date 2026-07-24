@@ -8,11 +8,11 @@ import type { FabricActorValidityFacts } from "../src/actors/types.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { MeshStore, type MeshIdentity } from "../src/mesh/store.js";
 import { QuickJsRuntime } from "../src/runtime/quickjs-runtime.js";
-import { SubagentManager } from "../src/subagents/manager.js";
+import { AgentManager } from "../src/agents/manager.js";
 
 const roots: string[] = [];
 const managers: ActorManager[] = [];
-const subagents: SubagentManager[] = [];
+const agents: AgentManager[] = [];
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
   const deadline = Date.now() + 3_000;
@@ -26,11 +26,11 @@ const setup = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-valid-while-"));
   roots.push(root);
   const mesh = new MeshStore(path.join(root, "mesh"), 64 * 1024, 100);
-  const worker = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+  const worker = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
     workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
     runRoot: path.join(root, "runs"),
   });
-  subagents.push(worker);
+  agents.push(worker);
   const identity: MeshIdentity = { id: "session:test", name: "main", kind: "main", sessionId: "test" };
   const deliveries: string[] = [];
   const actors = new ActorManager(
@@ -48,7 +48,7 @@ const setup = () => {
 
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.close()));
-  await Promise.all(subagents.splice(0).map((manager) => manager.close()));
+  await Promise.all(agents.splice(0).map((manager) => manager.close()));
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 

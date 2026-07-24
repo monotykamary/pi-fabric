@@ -36,10 +36,10 @@ import {
   type PendingFabricHandoff,
 } from "./prewalk/handoff.js";
 import type {
-  SubagentHandleInfo,
-  SubagentRunRecord,
-  SubagentToolResultMessage,
-} from "./subagents/types.js";
+  AgentHandleInfo,
+  AgentRunRecord,
+  AgentToolResultMessage,
+} from "./agents/types.js";
 import {
   MainAgentController,
   resolveFabricIdentity,
@@ -63,19 +63,19 @@ import {
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
-import { SubagentManager } from "./subagents/manager.js";
+import { AgentManager } from "./agents/manager.js";
 
 const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
 
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-const isSubagentRunRecord = (
-  record: SubagentRunRecord | SubagentHandleInfo,
-): record is SubagentRunRecord => "startedAt" in record;
+const isAgentRunRecord = (
+  record: AgentRunRecord | AgentHandleInfo,
+): record is AgentRunRecord => "startedAt" in record;
 
 const agentParticipantRecords = (
-  records: Array<SubagentRunRecord | SubagentHandleInfo>,
+  records: Array<AgentRunRecord | AgentHandleInfo>,
   rootId: string,
   ownerHostId: string,
   ownerIdentityId: string,
@@ -84,12 +84,12 @@ const agentParticipantRecords = (
 ): FabricParticipantRecord[] => {
   const participants: FabricParticipantRecord[] = [];
   const append = (
-    record: SubagentRunRecord | SubagentHandleInfo,
+    record: AgentRunRecord | AgentHandleInfo,
     semanticParentId: string,
   ): void => {
     const observedAt = firstSeen.get(record.id) ?? Date.now();
     firstSeen.set(record.id, observedAt);
-    const run = isSubagentRunRecord(record) ? record : undefined;
+    const run = isAgentRunRecord(record) ? record : undefined;
     const parent = record.actorId ?? semanticParentId;
     if (!record.actorId) {
       const active = record.status === "queued" || record.status === "running";
@@ -162,7 +162,7 @@ export class FabricState {
   #registry: ActionRegistry | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
-  #subagents: SubagentManager | undefined;
+  #agents: AgentManager | undefined;
   #actors: ActorManager | undefined;
   #globalActors: GlobalActorRegistry | undefined;
   #mesh: MeshStore | undefined;
@@ -216,9 +216,9 @@ export class FabricState {
     return this.#execution;
   }
 
-  get subagents(): SubagentManager {
-    if (!this.#subagents) throw new Error("Pi Fabric has not initialized");
-    return this.#subagents;
+  get agents(): AgentManager {
+    if (!this.#agents) throw new Error("Pi Fabric has not initialized");
+    return this.#agents;
   }
 
   get actors(): ActorManager {
@@ -368,10 +368,10 @@ export class FabricState {
       onCommit: (info) => void this.#publishCompactEvent(info.status, info),
     });
     this.#registry.register(new CompactProvider(this.#compact));
-    const subagentConfig = enforceSchema
-      ? { ...this.#config.subagents, enabled: false }
-      : this.#config.subagents;
-    this.#subagents = new SubagentManager(context.cwd, subagentConfig, {
+    const agentConfig = enforceSchema
+      ? { ...this.#config.agents, enabled: false }
+      : this.#config.agents;
+    this.#agents = new AgentManager(context.cwd, agentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
       mainAgentId,
       meshRoot,
@@ -406,7 +406,7 @@ export class FabricState {
             : summary;
         this.pi.sendMessage(
           {
-            customType: "pi-fabric-subagent-complete",
+            customType: "pi-fabric-agent-complete",
             content: `Fabric agent ${result.id.slice(0, 8)} ${result.status} after ${duration}: ${clippedSummary}`,
             display: true,
             details: result,
@@ -424,7 +424,7 @@ export class FabricState {
       identity,
       this.#mesh,
       enforceSchema ? { ...this.#config.mesh, enabled: false } : this.#config.mesh,
-      this.#subagents,
+      this.#agents,
       ({ actor, message, delivery, triggerTurn }) => {
         const text = message.text ?? "";
         if (!text) return;
@@ -483,7 +483,7 @@ export class FabricState {
     }
     this.#participants.registerSource(() =>
       agentParticipantRecords(
-        this.#subagents!.listForUi(),
+        this.#agents!.listForUi(),
         mainAgentId,
         hostId,
         identity.id,
@@ -496,10 +496,10 @@ export class FabricState {
         actorParticipantRecord(actor, mainAgentId, hostId, identity.id, identity.id),
       ),
     );
-    this.#subagents.subscribeUi(() => this.#participants?.scheduleRefresh());
+    this.#agents.subscribeUi(() => this.#participants?.scheduleRefresh());
     this.#actors.subscribe(() => this.#participants?.scheduleRefresh());
     this.#agentsProvider = new AgentsProvider(
-      this.#subagents,
+      this.#agents,
       this.#actors,
       this.#globalActors,
       mainAgent,
@@ -568,7 +568,7 @@ export class FabricState {
 
   async runHandoffAtBoundary(
     pending: PendingFabricHandoff,
-    outerToolResult: SubagentToolResultMessage,
+    outerToolResult: AgentToolResultMessage,
     context: ExtensionContext,
   ): Promise<Record<string, unknown>> {
     if (!this.#agentsProvider) throw new Error("Pi Fabric has not initialized");
@@ -697,7 +697,7 @@ export class FabricState {
     this.#registry = undefined;
     this.#config = undefined;
     this.#execution = undefined;
-    this.#subagents = undefined;
+    this.#agents = undefined;
     this.#actors = undefined;
     this.#globalActors = undefined;
     this.#mesh = undefined;
@@ -747,7 +747,7 @@ export class FabricState {
     }
     this.#registry = undefined;
     this.#execution = undefined;
-    this.#subagents = undefined;
+    this.#agents = undefined;
     this.#actors = undefined;
     this.#mesh = undefined;
     this.#identity = undefined;

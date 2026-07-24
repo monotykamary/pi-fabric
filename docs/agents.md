@@ -1,6 +1,6 @@
 # Agents, actors & mesh
 
-This is the human-facing reference for Fabric's multi-agent runtime. The model-facing API lives in [`skills/fabric-exec/references/agents.md`](../skills/fabric-exec/references/agents.md) and [`mesh.md`](../skills/fabric-exec/references/mesh.md); the reusable patterns live in the [skills](../skills/) (`fabric-workflow`, `fabric-swarm`, `fabric-council`, `fabric-rlm`, `fabric-supervisor`, `fabric-advisor`, `fabric-fusion`). See [configuration](configuration.md) for the `subagents` and `mesh` settings.
+This is the human-facing reference for Fabric's multi-agent runtime. The model-facing API lives in [`skills/fabric-exec/references/agents.md`](../skills/fabric-exec/references/agents.md) and [`mesh.md`](../skills/fabric-exec/references/mesh.md); the reusable patterns live in the [skills](../skills/) (`fabric-workflow`, `fabric-swarm`, `fabric-council`, `fabric-rlm`, `fabric-supervisor`, `fabric-advisor`, `fabric-fusion`). See [configuration](configuration.md) for the `agents` and `mesh` settings.
 
 ## Workflows
 
@@ -20,7 +20,7 @@ Available helpers:
 
 `fabric_exec` accepts optional `agentBudget` and `tokenBudget` limits; configuration supplies a hard per-execution agent cap. A JSON Schema on an agent request makes the worker return validated structured data through `result.value`; workflow helpers return that value directly and otherwise return the agent's final text. See [`/skill:fabric-workflow`](../skills/fabric-workflow/SKILL.md) for the full pattern.
 
-## Subagents
+## Agents
 
 ```ts
 const result = await agents.run({
@@ -91,9 +91,9 @@ The host then issues a static handoff call without asking Main to invoke it:
 4. Spawns the selected executor in the shared workspace and waits.
 5. Replaces Main's visible tool result with the executor completion.
 
-The outer tool is already marked `terminate: true` when the request is staged, so Main performs no automatic post-tool inference. A handoff failure is likewise terminal for that outer invocation and is returned as its failed result. If the captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task; with **Always re-arm**, it instead clears the completed task and captures the next input; an arm with no captured task keeps waiting for the next user input. An explicit successful `agents.handoff()` suppresses the automatic duplicate. Prewalk currently requires enabled subagents and full code mode, and is unavailable in Schema enforce mode.
+The outer tool is already marked `terminate: true` when the request is staged, so Main performs no automatic post-tool inference. A handoff failure is likewise terminal for that outer invocation and is returned as its failed result. If the captured task settles without a monitored trigger, prewalk disarms instead of leaking into the next task; with **Always re-arm**, it instead clears the completed task and captures the next input; an arm with no captured task keeps waiting for the next user input. An explicit successful `agents.handoff()` suppresses the automatic duplicate. Prewalk currently requires enabled agents and full code mode, and is unavailable in Schema enforce mode.
 
-`runner` is `"pi"` or `"claude"` and defaults to `subagents.runner` (`"pi"`). Pi children use `subagents.model` or inherit the parent model unless `model` is specified. Claude children use `subagents.claude.model` or Claude Code's own runtime default. Their tool allowlist defaults to `subagents.defaultTools`. Reasoning effort defaults to `subagents.thinking` (`medium`); Pi clamps it to model support, while Claude forwards it through `--effort` (`off`/`minimal` map to `low`).
+`runner` is `"pi"` or `"claude"` and defaults to `agents.runner` (`"pi"`). Pi children use `agents.model` or inherit the parent model unless `model` is specified. Claude children use `agents.claude.model` or Claude Code's own runtime default. Their tool allowlist defaults to `agents.defaultTools`. Reasoning effort defaults to `agents.thinking` (`medium`); Pi clamps it to model support, while Claude forwards it through `--effort` (`off`/`minimal` map to `low`).
 
 ### Claude Code runner
 
@@ -146,7 +146,7 @@ LocalTerm already exposes the needed tmux-parity primitives: detached creation, 
 localterm start
 ```
 
-Use `/fabric agents` to list children and `/fabric attach <id>` to display the appropriate attach command. Abort signals propagate to the transport and selected child process. When a program uses orchestration entry points (`agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, `rlm.query`)—including `agents.*` refs invoked through `tools.call()` and refs computed at runtime—Fabric raises the whole-program `executor.timeoutMs` to at least `subagents.timeoutMs`, so the parent deadline cannot stop children that are still within their own per-agent budget.
+Use `/fabric agents` to list children and `/fabric attach <id>` to display the appropriate attach command. Abort signals propagate to the transport and selected child process. When a program uses orchestration entry points (`agent`/`workflow.agent`, `agents.run`/`agents.wait`/`agents.ask`, `council.run`, `rlm.query`)—including `agents.*` refs invoked through `tools.call()` and refs computed at runtime—Fabric raises the whole-program `executor.timeoutMs` to at least `agents.timeoutMs`, so the parent deadline cannot stop children that are still within their own per-agent budget.
 
 Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<id>` branch. Worktrees are retained for inspection until `agents.cleanup()` is called. Fabric passes the absolute project and mesh roots into every Pi child, so a recursive child in a worktree remains in the same participant directory instead of creating a second `.pi/fabric/mesh` under that worktree.
 
@@ -197,7 +197,7 @@ if (peer) {
 
 Pi-specific events are namespaced as `pi.input`, `pi.agent_start`, `pi.agent_end`, `pi.turn_end`, `pi.agent_settled`, `pi.tool_error`, and `pi.session_compact`. Runner-neutral terminal events are `run.completed`, `run.failed`, `run.stopped`, and `run.timed_out`. Lifecycle envelopes intentionally contain source identity and bounded operational metadata rather than session transcripts.
 
-A detached local `agents.spawn()` also has a narrower convenience path: when `subagents.notifyOnComplete` is enabled, terminal completion sends Main a triggered follow-up automatically. Calling `agents.wait()` makes it foreground work and suppresses that detached notification.
+A detached local `agents.spawn()` also has a narrower convenience path: when `agents.notifyOnComplete` is enabled, terminal completion sends Main a triggered follow-up automatically. Calling `agents.wait()` makes it foreground work and suppresses that detached notification.
 
 ## Persistent actors
 
@@ -293,7 +293,7 @@ return agents.create({
 });
 ```
 
-Pi actors keep model context in their Fabric-owned Pi session file. Claude actors persist the session ID emitted by the official CLI, reapply tools/permissions/schema/system-prompt flags on every activation, and use `--resume <id>` after the first message; Fabric also keeps a runner-neutral stream transcript instead of reading Claude's private JSONL format. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `subagents.thinking` (`medium`); set it at creation or change it later with `e` from the dashboard. Its `tools` array is a persisted allowlist: set it at creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty list disables optional tools; Pi actors retain the host-required `fabric_exec` capability for mailbox and mesh coordination unless created with `extensions: false`. Set `extensions: false` at creation to opt a Pi actor out of Fabric entirely — the activation runs without `fabric_exec`, `agents.*`, or `mesh.*`, while the host still manages its mailbox and delivery. This does not make the actor read-only by itself: `tools` still defaults to `subagents.defaultTools`. For a read-only persistent actor, also set `tools: ["read", "grep", "find", "ls"]`; use `tools: []` for an actor with no tools.
+Pi actors keep model context in their Fabric-owned Pi session file. Claude actors persist the session ID emitted by the official CLI, reapply tools/permissions/schema/system-prompt flags on every activation, and use `--resume <id>` after the first message; Fabric also keeps a runner-neutral stream transcript instead of reading Claude's private JSONL format. Each actor's reasoning effort is its `thinking` level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), defaulting to `agents.thinking` (`medium`); set it at creation or change it later with `e` from the dashboard. Its `tools` array is a persisted allowlist: set it at creation, replace it with `agents.setTools({ id, tools })`, or press `o` in the dashboard. An empty list disables optional tools; Pi actors retain the host-required `fabric_exec` capability for mailbox and mesh coordination unless created with `extensions: false`. Set `extensions: false` at creation to opt a Pi actor out of Fabric entirely — the activation runs without `fabric_exec`, `agents.*`, or `mesh.*`, while the host still manages its mailbox and delivery. This does not make the actor read-only by itself: `tools` still defaults to `agents.defaultTools`. For a read-only persistent actor, also set `tools: ["read", "grep", "find", "ls"]`; use `tools: []` for an actor with no tools.
 
 ### Response modes and delivery
 
@@ -376,7 +376,7 @@ return council.run({
 });
 ```
 
-Council members run concurrently under the global subagent semaphore. With `synthesize: true`, a final child agent reconciles their reports. See [`/skill:fabric-council`](../skills/fabric-council/SKILL.md).
+Council members run concurrently under the global agent semaphore. With `synthesize: true`, a final child agent reconciles their reports. See [`/skill:fabric-council`](../skills/fabric-council/SKILL.md).
 
 ## Recursive queries
 
@@ -388,9 +388,9 @@ return rlm.query({
 });
 ```
 
-`rlm.query()` is `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child. Claude runners are intentionally rejected for recursive Fabric. Recursion is rejected at `subagents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits. When `subagents.budgetUsd` is set, a shared append-only cost ledger bounds total spend across the whole recursion tree: every node records the cost of the children it spawns into one ledger file inherited via environment, and each node rejects a new child when the accumulated spend reaches the budget. The check is best-effort (concurrent children can each pass before any cost lands, so a tree may slightly overshoot); the race-free ceiling remains `subagents.maxPerExecution`. The result and live status of every recursive child carry a `budget` summary (`limit`, `spent`, `remaining`, `tokens`). Fabric also keeps the latest bounded nested-agent status tree in memory, so completed recursive leaves remain visible in **Topology · Run** after the child process removes its temporary nested run directories. The snapshot is released when the parent run is cleaned up or the Fabric session shuts down.
+`rlm.query()` is `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child. Claude runners are intentionally rejected for recursive Fabric. Recursion is rejected at `agents.maxDepth`. Approval of the initial recursive call delegates only the `agent` risk capability to recursive children; network, execution, and write approvals are not inherited. Each Fabric process enforces its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger bounds total spend across the whole recursion tree: every node records the cost of the children it spawns into one ledger file inherited via environment, and each node rejects a new child when the accumulated spend reaches the budget. The check is best-effort (concurrent children can each pass before any cost lands, so a tree may slightly overshoot); the race-free ceiling remains `agents.maxPerExecution`. The result and live status of every recursive child carry a `budget` summary (`limit`, `spent`, `remaining`, `tokens`). Fabric also keeps the latest bounded nested-agent status tree in memory, so completed recursive leaves remain visible in **Topology · Run** after the child process removes its temporary nested run directories. The snapshot is released when the parent run is cleaned up or the Fabric session shuts down.
 
-`subagents.maxTokensPerChild` (0 = disabled) bounds each child's cumulative token usage. The wall-clock `timeoutMs` and the cost `budgetUsd` bound time and money; this bounds a single runaway child's context before the host session compacts, terminating it with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skills/fabric-rlm/SKILL.md).
+`agents.maxTokensPerChild` (0 = disabled) bounds each child's cumulative token usage. The wall-clock `timeoutMs` and the cost `budgetUsd` bound time and money; this bounds a single runaway child's context before the host session compacts, terminating it with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skills/fabric-rlm/SKILL.md).
 
 ## Durable mesh coordination
 

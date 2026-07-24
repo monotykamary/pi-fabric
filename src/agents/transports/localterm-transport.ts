@@ -1,7 +1,7 @@
 import type {
-  SubagentTransportAdapter,
-  SubagentTransportHandle,
-  SubagentTransportLaunch,
+  AgentTransportAdapter,
+  AgentTransportHandle,
+  AgentTransportLaunch,
 } from "../types.js";
 import { EXTERNAL_TRANSPORT_LIVENESS_POLL_INTERVAL_MS } from "../constants.js";
 import {
@@ -16,7 +16,7 @@ interface LocaltermSession {
   pid: number;
 }
 
-export class LocaltermTransport implements SubagentTransportAdapter {
+export class LocaltermTransport implements AgentTransportAdapter {
   readonly kind = "localterm" as const;
 
   async available(): Promise<boolean> {
@@ -29,7 +29,7 @@ export class LocaltermTransport implements SubagentTransportAdapter {
     }
   }
 
-  async launch(request: SubagentTransportLaunch): Promise<SubagentTransportHandle> {
+  async launch(request: AgentTransportLaunch): Promise<AgentTransportHandle> {
     const command = `${workerCommand(request.workerPath, request.workerArguments)}; exit $?`;
     const { stdout } = await executeFile("localterm", [
       "session",

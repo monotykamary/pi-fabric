@@ -6,7 +6,7 @@ import {
   claimFabricHandoff,
   runFabricHandoffAtBoundary,
 } from "../src/prewalk/handoff.js";
-import type { SubagentToolResultMessage } from "../src/subagents/types.js";
+import type { AgentToolResultMessage } from "../src/agents/types.js";
 
 const execution = (): FabricExecutionResult => ({
   success: true,
@@ -58,7 +58,7 @@ const execution = (): FabricExecutionResult => ({
   elapsedMs: 1,
 });
 
-const outerResult = (): SubagentToolResultMessage => ({
+const outerResult = (): AgentToolResultMessage => ({
   role: "toolResult",
   toolCallId: "outer",
   toolName: "fabric_exec",

@@ -8,7 +8,7 @@ import {
   clearOwnedBudgetEnv,
   initBudgetLedger,
   readBudgetLedger,
-} from "../src/subagents/budget-ledger.js";
+} from "../src/agents/budget-ledger.js";
 
 const temporaryFiles: string[] = [];
 

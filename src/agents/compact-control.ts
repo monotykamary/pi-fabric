@@ -1,4 +1,4 @@
-import type { SubagentCompactionStatus } from "./types.js";
+import type { AgentCompactionStatus } from "./types.js";
 
 interface CompactControlFrame {
   id: string;
@@ -19,7 +19,7 @@ interface CompactControlEvent {
 export interface ChildCompactControlHooks {
   send(frame: CompactControlFrame): void;
   close(): void;
-  update(status: SubagentCompactionStatus): void;
+  update(status: AgentCompactionStatus): void;
   now?: () => number;
 }
 
@@ -157,9 +157,9 @@ export class ChildCompactControl {
   }
 
   #publish(
-    status: SubagentCompactionStatus["status"],
+    status: AgentCompactionStatus["status"],
     requestedAt: number,
-    extra: Partial<SubagentCompactionStatus> = {},
+    extra: Partial<AgentCompactionStatus> = {},
   ): void {
     this.hooks.update({
       status,
