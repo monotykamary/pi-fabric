@@ -58,6 +58,7 @@ import {
   observeResultRows,
   type ResultRowBalance,
 } from "./ui/row-balance.js";
+import { type SpinnerTimerState, updateSpinner } from "./ui/spinner.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { countNewlines, truncateMiddle } from "./util.js";
 
@@ -72,6 +73,7 @@ type FabricRendererState = {
   fabricCallHeadlinePreviews?: FabricCallHeadlinePreview[];
   fabricAgentPreviews?: FabricAgentPreview[];
   fabricResultRowBalance?: ResultRowBalance;
+  fabricSpinner?: SpinnerTimerState;
 };
 
 const countLabel = (count: number, singular: string): string =>
@@ -140,6 +142,11 @@ export const createFabricExecTool = (
     renderCall(params, theme, context) {
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const rendererState = context.state as FabricRendererState;
+      const spinner = updateSpinner(
+        rendererState.fabricSpinner ??= {},
+        context.isPartial,
+        context.invalidate,
+      );
       const rowBalance = rendererState.fabricResultRowBalance ??= {};
       if (rendererState.fabricWriteBindingsCode !== code) {
         rendererState.fabricWriteBindingsCode = code;
@@ -154,6 +161,7 @@ export const createFabricExecTool = (
               expanded: context.expanded,
               cwd: context.cwd,
               settings: codePreviewSettings,
+              spinner,
             },
             theme,
             context.invalidate,
@@ -208,6 +216,11 @@ export const createFabricExecTool = (
         context.args,
       );
       const rendererState = context.state as FabricRendererState;
+      const spinner = updateSpinner(
+        rendererState.fabricSpinner ??= {},
+        isPartial,
+        context.invalidate,
+      );
       const rowBalance = rendererState.fabricResultRowBalance ??= {};
       const trackRows = (component: Component): Component =>
         observeResultRows(
@@ -307,7 +320,7 @@ export const createFabricExecTool = (
           const audit = audits[0]!;
           const glyph =
             audit.success === undefined
-              ? theme.fg("warning", "◐")
+              ? theme.fg("warning", spinner)
               : audit.success === false
                 ? theme.fg("error", "✗")
                 : theme.fg("dim", "›");
@@ -378,6 +391,7 @@ export const createFabricExecTool = (
               preview,
               core: corePreviewContext,
               showNestedToolCalls,
+              spinner,
             },
             theme,
             context?.invalidate,

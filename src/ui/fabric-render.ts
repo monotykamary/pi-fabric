@@ -325,6 +325,7 @@ export interface FabricWriteArgumentPreviewInput {
   expanded: boolean;
   cwd?: string | undefined;
   settings?: CodePreviewSettings | undefined;
+  spinner?: string | undefined;
 }
 
 const renderWriteArgumentBody = (
@@ -430,7 +431,7 @@ export const renderFabricWriteArgumentPreview = (
       index !== activeIndex && typeof available[index] === "string"
         ? theme.fg("dim", "›")
         : index === activeIndex
-          ? theme.fg("warning", "◐")
+          ? theme.fg("warning", input.spinner ?? "◐")
           : theme.fg("dim", "○");
     rows.push(
       `${glyph} ${nestedCallTitle(
@@ -786,6 +787,7 @@ export interface FabricMulticallPartialInput {
   preview?: FabricMulticallPreview | undefined;
   core?: { cwd: string; settings: CodePreviewSettings } | undefined;
   showNestedToolCalls?: boolean | undefined;
+  spinner?: string | undefined;
 }
 
 export const singleCallProgressLine = (
@@ -828,7 +830,7 @@ export const renderFabricMulticallPartial = (
     if (input.expanded && visibleIndex > 0) rows.push("");
     const glyph =
       audit.success === undefined
-        ? theme.fg("warning", "◐")
+        ? theme.fg("warning", input.spinner ?? "◐")
         : audit.success === false
           ? theme.fg("error", "✗")
           : theme.fg("dim", "›");

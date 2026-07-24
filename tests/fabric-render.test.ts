@@ -171,11 +171,13 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         ],
         strings: { one: "one complete", two: "two growing" },
         expanded: false,
+        spinner: "◓",
       },
       plainTheme,
     )!.render(100);
 
     expect(composing[0]).toContain("Fabric composing · 1/3 writes");
+    expect(composing.some((line) => line.startsWith("◓ write two.unknown"))).toBe(true);
     expect(composing).toContain("  two growing");
     expect(composing).not.toContain("one complete");
   });
@@ -328,12 +330,13 @@ pi.write({ path: "nested.md", metadata: { content: π.wrong }, text: π.right })
         phases: [],
         expanded: false,
         showNestedToolCalls: true,
+        spinner: "◑",
       },
       plainTheme,
     ).render(120);
 
     expect(lines).toContain("◆ Fabric running · 0/1 calls");
-    expect(lines).toContain("◐ wait researcher › read src/current.ts");
+    expect(lines).toContain("◑ wait researcher › read src/current.ts");
     expect(lines.join("\n")).not.toContain("previously inspected");
   });
 

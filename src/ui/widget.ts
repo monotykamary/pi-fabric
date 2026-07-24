@@ -2,6 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
+import { spinnerFrame } from "./spinner.js";
 import type {
   FabricActivityRun,
   FabricActivityStatus,
@@ -14,8 +15,6 @@ import {
   type FabricUiAgent,
 } from "./types.js";
 
-const spinnerFrames = ["◐", "◓", "◑", "◒"];
-
 const statusGlyph = (status: string): string => {
   if (status === "completed" || status === "done") return "✓";
   if (status === "failed" || status === "timed_out") return "✗";
@@ -23,7 +22,7 @@ const statusGlyph = (status: string): string => {
   if (status === "stopped" || status === "cancelled") return "■";
   if (status === "queued" || status === "pending" || status === "ready") return "○";
   if (status === "idle" || status === "state") return "·";
-  return spinnerFrames[Math.floor(Date.now() / 250) % spinnerFrames.length] ?? "●";
+  return spinnerFrame();
 };
 
 const colorStatus = (theme: Theme, status: string, value: string): string => {

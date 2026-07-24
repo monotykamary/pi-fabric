@@ -1,8 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatDuration, formatTokens, safeText } from "./format.js";
+import { spinnerFrame } from "./spinner.js";
 import type { Entity } from "./dashboard-model.js";
-
-const spinnerFrames = ["◐", "◓", "◑", "◒"];
 
 export const statusGlyph = (status: string): string => {
   if (status === "completed" || status === "done") return "✓";
@@ -12,7 +11,7 @@ export const statusGlyph = (status: string): string => {
   if (status === "queued" || status === "pending" || status === "ready") return "○";
   if (status === "idle" || status === "state") return "·";
   if (status === "global") return "◇";
-  return spinnerFrames[Math.floor(Date.now() / 250) % spinnerFrames.length] ?? "●";
+  return spinnerFrame();
 };
 
 export const colorStatus = (theme: Theme, status: string, value: string): string => {
