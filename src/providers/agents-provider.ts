@@ -1,5 +1,6 @@
 import { ActorManager } from "../actors/manager.js";
 import { GlobalActorRegistry } from "../actors/global-registry.js";
+import { FABRIC_ACTOR_HOST_EVENTS, isFabricActorHostEvent } from "../actors/types.js";
 import type {
   FabricActorDelivery,
   FabricActorHostEvent,
@@ -284,7 +285,7 @@ const descriptors: FabricActionDescriptor[] = [
   {
     name: "create",
     description:
-      'Create a persistent actor with a mailbox and optional host-event or mesh-topic subscriptions. Use scope "global" to save a reusable project-independent template to the global registry instead of a live project actor; global templates are not live and carry no history.',
+      'Create a persistent actor with a mailbox and optional subscriptions to any session-bound Pi event or mesh topic. Image-bearing events attach images to the actor model automatically while persistent event data stays redacted. Use scope "global" to save a reusable project-independent template to the global registry instead of a live project actor; global templates are not live and carry no history.',
     inputSchema: {
       type: "object",
       properties: {
@@ -294,7 +295,7 @@ const descriptors: FabricActionDescriptor[] = [
           type: "array",
           items: {
             type: "string",
-            enum: ["input", "turn_end", "agent_settled", "tool_error", "session_compact"],
+            enum: [...FABRIC_ACTOR_HOST_EVENTS],
           },
         },
         topics: { type: "array", items: { type: "string" } },
@@ -508,7 +509,7 @@ const descriptors: FabricActionDescriptor[] = [
   },
   {
     name: "setEvents",
-    description: "Replace a persistent actor's host-event subscriptions",
+    description: "Replace a persistent actor's session-bound Pi and synthetic tool_error event subscriptions",
     inputSchema: {
       type: "object",
       properties: {
@@ -517,7 +518,7 @@ const descriptors: FabricActionDescriptor[] = [
           type: "array",
           items: {
             type: "string",
-            enum: ["input", "turn_end", "agent_settled", "tool_error", "session_compact"],
+            enum: [...FABRIC_ACTOR_HOST_EVENTS],
           },
         },
       },
@@ -741,12 +742,7 @@ const actorRequest = (
 ): FabricActorRequest => {
   const events = Array.isArray(args.events)
     ? args.events.filter(
-        (event): event is FabricActorHostEvent =>
-          event === "input" ||
-          event === "turn_end" ||
-          event === "agent_settled" ||
-          event === "tool_error" ||
-          event === "session_compact",
+        (event): event is FabricActorHostEvent => isFabricActorHostEvent(event),
       )
     : undefined;
   const topics = stringArray(args.topics);
@@ -1331,12 +1327,7 @@ export class AgentsProvider implements FabricProvider {
       case "setEvents": {
         const events = Array.isArray(args.events)
           ? args.events.filter(
-              (event): event is FabricActorHostEvent =>
-                event === "input" ||
-                event === "turn_end" ||
-                event === "agent_settled" ||
-                event === "tool_error" ||
-                event === "session_compact",
+              (event): event is FabricActorHostEvent => isFabricActorHostEvent(event),
             )
           : [];
         return this.actorManager.setEvents(String(args.id), events);

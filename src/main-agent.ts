@@ -3,8 +3,6 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { MeshIdentity } from "./mesh/store.js";
 
 const MAIN_AGENT_ALIAS = "main";
-const MAIN_AGENT_MESSAGE_MAX_CHARS = 8_000;
-
 export type FabricAgentMessageDelivery = "steer" | "followUp";
 
 export interface FabricMainAgentInfo {
@@ -84,25 +82,12 @@ export const resolveFabricIdentity = (
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-const boundedMessage = (value: string): string =>
-  value.length > MAIN_AGENT_MESSAGE_MAX_CHARS
-    ? `${value.slice(0, MAIN_AGENT_MESSAGE_MAX_CHARS)}\n[agent message truncated]`
-    : value;
-
-const boundedData = (value: unknown): unknown => {
+const serializableData = (value: unknown): unknown => {
   try {
     const serialized = JSON.stringify(value);
-    if (serialized === undefined) return undefined;
-    if (serialized.length <= MAIN_AGENT_MESSAGE_MAX_CHARS) {
-      return JSON.parse(serialized) as unknown;
-    }
-    return {
-      fabricTruncated: true,
-      originalChars: serialized.length,
-      preview: serialized.slice(0, MAIN_AGENT_MESSAGE_MAX_CHARS - 200),
-    };
+    return serialized === undefined ? undefined : JSON.parse(serialized) as unknown;
   } catch {
-    return { fabricTruncated: true, preview: String(value).slice(0, 1_000) };
+    return { fabricUnserializable: true };
   }
 };
 
@@ -156,10 +141,10 @@ export class MainAgentController implements FabricMainAgentTarget {
 
   deliverAgent(request: FabricMainAgentDeliveryRequest): FabricAgentMessageResult {
     if (!this.local) throw new Error(`Main agent ${this.id} is owned by another Fabric process`);
-    const message = boundedMessage(request.message.trim());
+    const message = request.message.trim();
     if (!message) throw new Error("Main agent message must not be empty");
     const messageId = randomUUID();
-    const data = request.data === undefined ? undefined : boundedData(request.data);
+    const data = request.data === undefined ? undefined : serializableData(request.data);
     this.pi.sendMessage(
       {
         customType: "pi-fabric-agent-message",

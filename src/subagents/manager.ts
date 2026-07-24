@@ -453,7 +453,16 @@ export class SubagentManager {
     const logFile = path.join(runDirectory, "events.jsonl");
     const steerFile = path.join(runDirectory, "steer.jsonl");
     const schemaFile = request.schema ? path.join(runDirectory, "schema.json") : undefined;
+    const imagesFile = request.images && request.images.length > 0
+      ? path.join(runDirectory, "images.json")
+      : undefined;
     fs.writeFileSync(taskFile, request.task, { encoding: "utf8", mode: 0o600 });
+    if (imagesFile) {
+      fs.writeFileSync(imagesFile, JSON.stringify(request.images), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+    }
     if (schemaFile) {
       fs.writeFileSync(schemaFile, JSON.stringify(request.schema, null, 2), {
         encoding: "utf8",
@@ -501,6 +510,7 @@ export class SubagentManager {
         runner,
         "--task-file",
         taskFile,
+        ...(imagesFile ? ["--images-file", imagesFile] : []),
         "--status-file",
         statusFile,
         "--lifecycle-file",
@@ -977,6 +987,10 @@ export class SubagentManager {
     if (managed.settled) return;
     this.#drainLifecycle(managed);
     managed.settled = true;
+    // Images are transport inputs, not retained run artifacts. Startup retries
+    // have finished by settlement, so remove the owner-only handoff file for
+    // every terminal outcome even when retainRuns keeps the rest of the run.
+    fs.rmSync(path.join(managed.runDirectory, "images.json"), { force: true });
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });

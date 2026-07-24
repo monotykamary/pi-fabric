@@ -112,16 +112,17 @@ describe("MainAgentController", () => {
       { deliverAs: "followUp", triggerTurn: true },
     );
 
+    const longMessage = "x".repeat(20_000);
+    const longData = { body: "y".repeat(20_000) };
     controller.deliverAgent({
       from: { id: "agent-1", name: "worker", kind: "agent" },
-      message: "bounded payload",
+      message: longMessage,
       delivery: "steer",
-      data: { body: "x".repeat(20_000) },
+      data: longData,
     });
     expect(sendMessage.mock.calls.at(-1)?.[0]).toMatchObject({
-      details: {
-        data: { fabricTruncated: true, originalChars: expect.any(Number) },
-      },
+      content: expect.stringContaining(longMessage),
+      details: { data: longData },
     });
 
     controller.deliverAgent({

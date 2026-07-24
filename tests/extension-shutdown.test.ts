@@ -35,11 +35,9 @@ describe("Pi Fabric extension shutdown", () => {
       await piFabric(pi);
       expect(providerListeners.size).toBe(1);
 
-      const shutdown = handlers.get("session_shutdown")?.[0] as
-        | (() => Promise<void>)
-        | undefined;
-      expect(shutdown).toBeDefined();
-      await shutdown?.();
+      const shutdownHandlers = handlers.get("session_shutdown") ?? [];
+      expect(shutdownHandlers.length).toBeGreaterThan(0);
+      for (const shutdown of shutdownHandlers) await shutdown();
       expect(providerListeners.size).toBe(0);
     }
   });

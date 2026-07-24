@@ -235,7 +235,38 @@ return agents.create({
 
 Claude actors can retain context, inspect/edit with mapped Claude Code tools, consume host events and mesh messages delivered by Fabric, and return text or directives. They cannot themselves call `fabric_exec`, `agents.*`, or `mesh.*`; use a Pi actor when the actor must recursively coordinate through Fabric. If Claude's private session has been removed, the next activation fails clearly rather than silently discarding actor context. Recreate the actor to start a fresh Claude session.
 
-This is the primitive behind emergent supervisors and advisors; neither requires another extension. Host events include a bounded recent-session snapshot. Actors process messages one at a time, coalesce repeated host events by default, and restore with the trusted project actor registry.
+This is the primitive behind emergent supervisors and advisors; neither requires another extension. Actors can observe every session-bound public Pi extension event: resource discovery; session start/info/switch/fork/compaction/tree/shutdown events; input and before-agent-start; agent, turn, and message lifecycle; context and provider request/response lifecycle; tool call/result/execution lifecycle; model and thinking changes; and user bash. The exact event names are the Pi extension names (for example `input`, `before_agent_start`, `tool_call`, and `tool_result`), plus Fabric's synthetic `tool_error`. `project_trust` is the sole exception because it fires before Fabric may read the trusted project actor registry. Intercepting Pi hooks remain observations: an actor runs asynchronously and cannot block a tool, rewrite context, mutate provider headers, or return another extension hook result. Shutdown and immediate session-replacement observations are best-effort because the owning runtime is being torn down.
+
+Host-event JSON includes a bounded recent-session snapshot and is sanitized before it enters the mailbox: credential-shaped fields and encoded blobs are redacted. Pi `ImageContent` blocks are different. Fabric replaces each persisted block with an indexed descriptor, carries the raw image out of band on the transient activation, and submits it to the selected Pi or Claude actor model automatically. There is no media opt-in flag—the explicit event subscription is the trust boundary. Raw image bytes never enter `actors.json` or the actor mailbox record, although the selected runner's own persistent model session may retain images using its normal session semantics. `activation.signal.media` contains descriptor metadata for freshness predicates and correlation.
+
+Actors process messages one at a time, coalesce repeated host events by default (especially useful for `message_update` and `tool_execution_update`), and restore with the trusted project actor registry.
+
+### Native asynchronous vision handoff
+
+A vision handoff no longer needs its own event-watching extension. Create one persistent actor once, target a multimodal model, and subscribe to `input`; Fabric detects and attaches the prompt's images automatically. Passive `steer` delivers the description to Main without starting an unrelated idle turn, and `coalesce: false` preserves distinct image prompts while the vision actor is busy:
+
+```ts
+return agents.create({
+  name: "vision-handoff",
+  instructions: `Inspect every attached image from the parent prompt.
+Return { action: "silent" } when no image is attached.
+Otherwise return { action: "message", message } with a precise, compact visual description
+that Main can use without seeing the image. Do not answer the user's broader coding task.`,
+  events: ["input"],
+  runner: "pi",
+  model: "provider/multimodal-model", // replace with a key from tools.models()
+  responseMode: "directive",
+  delivery: "steer",
+  triggerTurn: false,
+  coalesce: false,
+  validWhile: ({ activation }) =>
+    activation.kind !== "hostEvent" || (activation.signal?.media?.length ?? 0) > 0,
+  tools: [],
+  extensions: false,
+});
+```
+
+`validWhile` drops image-free input activations before a model run, so ordinary text prompts incur no vision-agent inference. The actor is persistent, but dispatch remains asynchronous: Main's current inference is never blocked waiting for the visual description. Use `before_agent_start` instead of `input` only when the actor specifically needs Pi's expanded prompt/system context; subscribing to both intentionally produces two activations for one user prompt.
 
 `validWhile` adds a programmatic freshness guard for persistent actors. Fabric serializes its pure synchronous function source, checks it before starting queued work and before delivering completed work, and persists it with project actors and global templates. The immutable `activation` fact is a `hostEvent`, `direct`, or `mesh` activation; `current` contains `latestActivationSequence`, `mainRevision`, `taskRevision`, `idle`, and `now`. Main revisions advance on completed tools and lifecycle events, so a tool-error review can become stale after Main recovers. Return `false` or `{ valid: false, reason? }` to suppress stale work. Invalidated fire-and-forget work is recorded as a silent stale outbox entry; an invalidated `agents.ask()` rejects. Predicates cannot be async, call tools, or depend on closures because their source must execute after restoration.
 
@@ -271,7 +302,7 @@ Two response modes are available:
 - `text`: every non-empty response becomes an actor outbox message.
 - `directive`: validated `{ action: "silent" | "message" | "stop", message?, data? }` output lets the actor decide whether intervention is useful.
 
-Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. `steer` and `followUp` require an explicit `triggerTurn: true | false`: `true` starts Main when it is idle, while `false` is passive and is visibly labeled as not starting Main. `mailbox` and `nextTurn` never start Main and reject `triggerTurn: true`. This explicit policy prevents a delivered actor message from looking like a stalled continuation.
+Delivery can remain in `mailbox` or enter the main session as `steer`, `followUp`, or `nextTurn`. `steer` and `followUp` require an explicit `triggerTurn: true | false`: `true` starts Main when it is idle, while `false` is passive and is visibly labeled as not starting Main. `mailbox` and `nextTurn` never start Main and reject `triggerTurn: true`. This explicit policy prevents a delivered actor message from looking like a stalled continuation. Fabric no longer imposes an additional 8,000-character truncation on local actor or agent messages to Main; normal model-context, provider, and cross-mesh event-size limits still apply.
 
 The actor cannot escalate delivery in its own response, but the owner can update a live actor or global template without losing history:
 

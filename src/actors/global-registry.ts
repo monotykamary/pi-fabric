@@ -4,6 +4,7 @@ import path from "node:path";
 import type { FabricSubagentTransport } from "../config.js";
 import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
+import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
   FabricActorDelivery,
   FabricActorHostEvent,
@@ -14,13 +15,7 @@ import type {
 
 const ACTOR_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,59}$/;
 const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
-const HOST_EVENTS = new Set<FabricActorHostEvent>([
-  "input",
-  "turn_end",
-  "agent_settled",
-  "tool_error",
-  "session_compact",
-]);
+const HOST_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set(FABRIC_ACTOR_HOST_EVENTS);
 const DELIVERIES = new Set<FabricActorDelivery>(["mailbox", "steer", "followUp", "nextTurn"]);
 const RESPONSE_MODES = new Set<FabricActorResponseMode>(["text", "directive"]);
 const TRANSPORTS = new Set<FabricSubagentTransport>([

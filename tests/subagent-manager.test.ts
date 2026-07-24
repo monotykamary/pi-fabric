@@ -819,6 +819,41 @@ describe("SubagentManager", () => {
   });
 });
 
+describe("SubagentManager multimodal prompts", () => {
+  it("forwards image blocks to the Pi worker RPC prompt", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-images-"));
+    roots.push(root);
+    const promptLog = path.join(root, "prompt.json");
+    process.env.FAKE_PI_BEHAVIOR = "capture-prompt";
+    process.env.FAKE_PI_PROMPT_LOG = promptLog;
+    try {
+      const manager = new SubagentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.subagents, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: path.resolve("tests/fixtures/fake-pi.mjs"),
+        runRoot: path.join(root, "runs"),
+      });
+      managers.push(manager);
+      const result = await manager.run({
+        task: "Inspect the attached image",
+        transport: "process",
+        images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      });
+
+      expect(result.status).toBe("completed");
+      const frame = JSON.parse(fs.readFileSync(promptLog, "utf8")) as Record<string, unknown>;
+      expect(frame).toEqual({
+        type: "prompt",
+        message: "Inspect the attached image",
+        images: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+      });
+      expect(fs.existsSync(path.join(manager.runDirectory(result.id)!, "images.json"))).toBe(false);
+    } finally {
+      delete process.env.FAKE_PI_BEHAVIOR;
+      delete process.env.FAKE_PI_PROMPT_LOG;
+    }
+  });
+});
+
 describe("SubagentManager Claude runner", () => {
   const fakeClaude = path.resolve("tests/fixtures/fake-claude.mjs");
 

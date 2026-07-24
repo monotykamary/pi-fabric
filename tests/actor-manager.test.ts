@@ -842,6 +842,51 @@ describe("ActorManager", () => {
     expect(actors.halted).toBe(true);
   });
 
+  it("passes host-event images transiently without recording their base64 in the actor registry", async () => {
+    const { actors, root } = setup(true);
+    const actor = await actors.create({
+      name: "image-observer",
+      instructions: "Inspect attached images.",
+      events: ["input"],
+      responseMode: "directive",
+      delivery: "steer",
+      triggerTurn: false,
+    });
+    const data = "cGl4ZWwtc2VjcmV0";
+    expect(
+      actors.dispatchHostEvent(
+        "input",
+        {
+          signal: {
+            payload: {
+              type: "input",
+              text: "Inspect this image",
+              images: [{
+                type: "image",
+                mediaIndex: 0,
+                mimeType: "image/png",
+                redacted: true,
+              }],
+            },
+            media: [{ type: "image", mediaIndex: 0, mimeType: "image/png" }],
+            idle: false,
+          },
+        },
+        [{ type: "image", data, mimeType: "image/png" }],
+      ),
+    ).toBe(1);
+    await waitFor(() => actors.status(actor.id).status === "idle");
+
+    expect(actors.messages(actor.id).at(-1)).toMatchObject({
+      direction: "out",
+      action: "message",
+      data: { imageCount: 1 },
+    });
+    const registry = fs.readFileSync(path.join(root, "actors", "actors.json"), "utf8");
+    expect(registry).not.toContain(data);
+    expect(registry).toContain('"redacted": true');
+  });
+
   it("setEvents replaces an actor's host-event subscriptions and dedupes", async () => {
     const { actors } = setup();
     const actor = await actors.create({

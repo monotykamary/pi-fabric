@@ -1,3 +1,4 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
   SessionEntry,
   SessionMessageEntry,
@@ -31,6 +32,7 @@ export interface SubagentSessionSeed {
 
 export interface SubagentRunRequest {
   task: string;
+  images?: ImageContent[];
   name?: string;
   runner?: FabricAgentRunner;
   transport?: FabricSubagentTransport;
@@ -144,6 +146,7 @@ export interface SubagentWorkerOptions {
   runner: FabricAgentRunner;
   name: string;
   taskFile: string;
+  imagesFile?: string;
   statusFile: string;
   lifecycleFile: string;
   logFile: string;

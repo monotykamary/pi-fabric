@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { loadCodePreviewSettings } from "pi-code-previews";
+import { registerFabricActorHostEventObservers } from "./actors/host-event-observer.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
@@ -236,21 +237,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     installHaltOnEscape(context);
   });
 
-  pi.on("session_shutdown", async () => {
-    unsubscribeProviderRegistration();
-    try {
-      pendingHandoffs.clear();
-      uninstallHaltOnEscape();
-      fabricUi.stop();
-      suspendToolCapture();
-      toolOwnership.release();
-      fabricToolLifecycle.clear();
-      await state.shutdown();
-    } finally {
-      toolCapture.dispose();
-    }
-  });
-
   // Tool ownership changes only at session or mode transitions; lifecycle hooks
   // forward host events without churning an explicitly selected active set.
   pi.on("input", async (event, context) => {
@@ -259,7 +245,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       context.sessionManager.getSessionId(),
       event.text,
     );
-    state.dispatchHostEvent("input", event, context);
     await state.publishHostLifecycle("pi.input", event);
   });
 
@@ -273,13 +258,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("turn_end", async (event, context) => {
     if (!state.initialized) return;
-    state.dispatchHostEvent("turn_end", event, context);
     await state.publishHostLifecycle("pi.turn_end", event);
   });
 
   pi.on("agent_settled", async (event, context) => {
     if (!state.initialized) return;
-    state.dispatchHostEvent("agent_settled", event, context);
     if (state.prewalk.settleTask(context.sessionManager.getSessionId())) {
       const status = state.prewalk.status();
       context.ui.setStatus(
@@ -368,7 +351,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_compact", async (event, context) => {
     if (!state.initialized) return;
-    state.dispatchHostEvent("session_compact", event, context);
     await state.publishHostLifecycle("pi.session_compact", event);
   });
 
@@ -444,6 +426,26 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     return {
       systemPrompt: `${systemPrompt}\n\n${guidance}`,
     };
+  });
+
+  registerFabricActorHostEventObservers(pi, (eventName, event, context) => {
+    if (!state.initialized) return;
+    state.dispatchHostEvent(eventName, event, context);
+  });
+
+  pi.on("session_shutdown", async () => {
+    unsubscribeProviderRegistration();
+    try {
+      pendingHandoffs.clear();
+      uninstallHaltOnEscape();
+      fabricUi.stop();
+      suspendToolCapture();
+      toolOwnership.release();
+      fabricToolLifecycle.clear();
+      await state.shutdown();
+    } finally {
+      toolCapture.dispose();
+    }
   });
 
   registerFabricCommand(pi, { state, fabricUi, capturedTools, applyFabricMode, suspendToolCapture });

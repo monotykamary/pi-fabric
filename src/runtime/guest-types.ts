@@ -338,10 +338,49 @@ interface PiToolsApi {
   find(pattern: string, path?: string, limit?: number): Promise<string>;
   ls(args?: string | { path?: string; limit?: number; max?: number } | { dir?: string; limit?: number; max?: number } | { file?: string; limit?: number; max?: number }): Promise<string>;
 }
-type FabricActorHostEvent = "input" | "turn_end" | "agent_settled" | "tool_error" | "session_compact";
+type FabricActorHostEvent =
+  | "resources_discover"
+  | "session_start"
+  | "session_info_changed"
+  | "session_before_switch"
+  | "session_before_fork"
+  | "session_before_compact"
+  | "session_compact"
+  | "session_shutdown"
+  | "session_before_tree"
+  | "session_tree"
+  | "input"
+  | "before_agent_start"
+  | "agent_start"
+  | "agent_end"
+  | "agent_settled"
+  | "turn_start"
+  | "turn_end"
+  | "message_start"
+  | "message_update"
+  | "message_end"
+  | "context"
+  | "before_provider_headers"
+  | "before_provider_request"
+  | "after_provider_response"
+  | "tool_execution_start"
+  | "tool_call"
+  | "tool_execution_update"
+  | "tool_result"
+  | "tool_execution_end"
+  | "model_select"
+  | "thinking_level_select"
+  | "user_bash"
+  | "tool_error";
 type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
+interface FabricActorHostMediaDescriptor {
+  readonly type: "image";
+  readonly mediaIndex: number;
+  readonly mimeType: string;
+}
 interface FabricActorHostSignal {
   readonly payload: unknown;
+  readonly media?: readonly FabricActorHostMediaDescriptor[];
   readonly idle: boolean;
   readonly observedAt: number;
 }

@@ -138,7 +138,8 @@ Prefer `agents.steer` over `agents.stop` + `agents.spawn` when the child has use
 - `runner` is fixed at creation. Omitted uses `subagents.runner`. Pi actors are recursively Fabric-equipped; Claude actors retain Claude context and use Claude Code tools, while mailbox/event delivery and coordination remain host-managed (no `fabric_exec` or direct `mesh.*` inside Claude).
 - `model` follows the selected runner's key format. Omitted uses that runner's configured/default model. `agents.setModel({ id, model? })` changes or clears the override for the next activation without replacing the actor session; `tell`/`ask` payloads do not change it.
 - `thinking` is the reasoning effort forwarded to the actor's runs (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Omitted inherits `subagents.thinking` (default `medium`), clamped to the model's supported levels. Change it later with `agents.setThinking({ id, thinking? })` or `e` from the dashboard actor detail; omitting `thinking` clears the override.
-- `events` is a subset of `input`, `turn_end`, `agent_settled`, `tool_error`, `session_compact` (host events to subscribe to).
+- `events` may contain any session-bound public Pi extension event: `resources_discover`; `session_start`, `session_info_changed`, `session_before_switch`, `session_before_fork`, `session_before_compact`, `session_compact`, `session_shutdown`, `session_before_tree`, `session_tree`; `input`, `before_agent_start`; `agent_start`, `agent_end`, `agent_settled`; `turn_start`, `turn_end`; `message_start`, `message_update`, `message_end`; `context`, `before_provider_headers`, `before_provider_request`, `after_provider_response`; `tool_execution_start`, `tool_call`, `tool_execution_update`, `tool_result`, `tool_execution_end`; `model_select`, `thinking_level_select`, and `user_bash`. Fabric also provides synthetic `tool_error`. `project_trust` is unavailable because it precedes trusted actor-registry initialization. These are asynchronous observations and cannot mutate or block the originating Pi hook.
+- Host events automatically forward every Pi `ImageContent` block to the actor's selected model. The JSON envelope and persisted mailbox contain only redacted indexed descriptors; raw base64 travels through the transient worker prompt and may then follow the selected runner's ordinary persistent-session semantics. No media flag is required. Credential-shaped fields and unrelated encoded blobs are redacted before persistence.
 - `topics` lists durable mesh topics to subscribe to (see `mesh.md`).
 - `responseMode` is `text` (every non-empty response becomes an outbox message) or `directive` (validated `{ action, message?, data? }` where `action` is `silent`, `message`, or `stop`; the actor decides whether to intervene).
 - `delivery` is `mailbox`, `steer`, `followUp`, or `nextTurn`. An actor cannot escalate it in a response; the owner can replace it with `agents.setDeliveryPolicy({ id, delivery, triggerTurn, scope? })`.
@@ -164,6 +165,8 @@ return agents.create({
   tools: ["read", "grep", "find", "ls"],
 });
 ```
+
+For a native asynchronous vision handoff, create one actor with an explicit multimodal `model`, `events: ["input"]`, `responseMode: "directive"`, passive `delivery: "steer"`, `triggerTurn: false`, `coalesce: false`, `validWhile: ({ activation }) => activation.kind !== "hostEvent" || (activation.signal?.media?.length ?? 0) > 0`, `tools: []`, and usually `extensions: false`. Instruct it to return `silent` when no image is attached and otherwise return only a compact visual description for Main. Fabric attaches prompt images automatically; do not add base64 to the task or mailbox data. The actor does not block Main's current inference.
 
 Mailbox:
 

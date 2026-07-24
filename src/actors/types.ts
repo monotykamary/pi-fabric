@@ -1,13 +1,62 @@
+import type { ExtensionEvent } from "@earendil-works/pi-coding-agent";
 import type { FabricAgentRunner, FabricSubagentTransport } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricLogLine, SubagentRunRecord, SubagentUsage } from "../subagents/types.js";
 
-export type FabricActorHostEvent =
-  | "input"
-  | "turn_end"
-  | "agent_settled"
-  | "tool_error"
-  | "session_compact";
+export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
+
+const defineFabricActorPiHostEvents = <
+  const Events extends readonly FabricActorPiHostEvent[],
+>(
+  events: Exclude<FabricActorPiHostEvent, Events[number]> extends never ? Events : never,
+): Events => events;
+
+export const FABRIC_ACTOR_PI_HOST_EVENTS = defineFabricActorPiHostEvents([
+  "resources_discover",
+  "session_start",
+  "session_info_changed",
+  "session_before_switch",
+  "session_before_fork",
+  "session_before_compact",
+  "session_compact",
+  "session_shutdown",
+  "session_before_tree",
+  "session_tree",
+  "input",
+  "before_agent_start",
+  "agent_start",
+  "agent_end",
+  "agent_settled",
+  "turn_start",
+  "turn_end",
+  "message_start",
+  "message_update",
+  "message_end",
+  "context",
+  "before_provider_headers",
+  "before_provider_request",
+  "after_provider_response",
+  "tool_execution_start",
+  "tool_call",
+  "tool_execution_update",
+  "tool_result",
+  "tool_execution_end",
+  "model_select",
+  "thinking_level_select",
+  "user_bash",
+]);
+
+export const FABRIC_ACTOR_HOST_EVENTS = [
+  ...FABRIC_ACTOR_PI_HOST_EVENTS,
+  "tool_error",
+] as const;
+
+export type FabricActorHostEvent = (typeof FABRIC_ACTOR_HOST_EVENTS)[number];
+
+const FABRIC_ACTOR_HOST_EVENT_SET: ReadonlySet<string> = new Set(FABRIC_ACTOR_HOST_EVENTS);
+
+export const isFabricActorHostEvent = (value: unknown): value is FabricActorHostEvent =>
+  typeof value === "string" && FABRIC_ACTOR_HOST_EVENT_SET.has(value);
 
 export type FabricActorDelivery = "mailbox" | "steer" | "followUp" | "nextTurn";
 export type FabricActorResponseMode = "text" | "directive";
@@ -65,6 +114,7 @@ export interface FabricActorValidityFacts {
 export interface FabricActorRequest {
   name: string;
   instructions: string;
+  /** Asynchronous observations of session-bound Pi events plus synthetic tool_error. */
   events?: FabricActorHostEvent[];
   topics?: string[];
   /** Defaults to mailbox. steer/followUp require an explicit triggerTurn choice. */

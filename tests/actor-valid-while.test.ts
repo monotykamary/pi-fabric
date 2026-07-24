@@ -132,6 +132,41 @@ describe("persistent actor validWhile", () => {
     expect(actors.messages(actor.id).at(-1)).toMatchObject({ action: "silent", stale: true });
   });
 
+  it("skips image-free input before a multimodal actor run", async () => {
+    const { actors, deliveries } = setup();
+    const actor = await actors.create({
+      name: "vision-handoff",
+      instructions: "Describe attached images.",
+      events: ["input"],
+      responseMode: "directive",
+      delivery: "steer",
+      triggerTurn: false,
+      validWhile: {
+        version: 1,
+        source: "({ activation }) => activation.kind !== 'hostEvent' || (activation.signal?.media?.length ?? 0) > 0",
+      },
+    });
+
+    actors.dispatchHostEvent("input", { signal: { payload: { text: "text only" }, idle: false } });
+    await waitFor(() => actors.status(actor.id).status === "idle");
+    expect(deliveries).toEqual([]);
+    expect(actors.messages(actor.id).at(-1)).toMatchObject({ action: "silent", stale: true });
+
+    actors.dispatchHostEvent(
+      "input",
+      {
+        signal: {
+          payload: { text: "with image" },
+          media: [{ type: "image", mediaIndex: 0, mimeType: "image/png" }],
+          idle: false,
+        },
+      },
+      [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+    );
+    await waitFor(() => deliveries.length === 1);
+    expect(deliveries).toEqual(["fake actor advice"]);
+  });
+
   it("rejects a blocking ask when its direct activation is invalid", async () => {
     const { actors } = setup();
     const actor = await actors.create({

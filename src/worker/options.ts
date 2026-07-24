@@ -30,6 +30,7 @@ export const parseWorkerOptions = (
   const thinking = optional(args, "thinking");
   const fabricExtensionPath = optional(args, "fabric-extension");
   const schemaFile = optional(args, "schema-file");
+  const imagesFile = optional(args, "images-file");
   const systemPrompt = optional(args, "system-prompt");
   const sessionFile = optional(args, "session-file");
   const actorId = optional(args, "actor-id");
@@ -54,6 +55,7 @@ export const parseWorkerOptions = (
     runner,
     name: required(args, "name"),
     taskFile: required(args, "task-file"),
+    ...(imagesFile ? { imagesFile } : {}),
     statusFile: required(args, "status-file"),
     lifecycleFile: required(args, "lifecycle-file"),
     logFile: required(args, "log-file"),

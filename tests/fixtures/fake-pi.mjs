@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 // A stub `pi` binary for the real-worker e2e. The Fabric worker spawns this as
 // the child agent and talks to it over stdin/stdout JSON lines. Behavior is
 // selected with the FAKE_PI_BEHAVIOR env var so the e2e can drive the real
@@ -9,6 +10,23 @@ const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n");
 // Drain the prompt the worker writes so its stdin write does not block.
 process.stdin.resume();
 process.stdin.on("data", () => {});
+
+const capturePrompt = () => {
+  process.stdin.removeAllListeners("data");
+  let buffer = "";
+  process.stdin.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    const newline = buffer.indexOf("\n");
+    if (newline < 0) return;
+    const frame = JSON.parse(buffer.slice(0, newline).replace(/\r$/, ""));
+    if (process.env.FAKE_PI_PROMPT_LOG) {
+      fs.writeFileSync(process.env.FAKE_PI_PROMPT_LOG, JSON.stringify(frame));
+    }
+    emit({ type: "message_end", message: { role: "assistant", content: "captured prompt" } });
+    emit({ type: "agent_settled" });
+    process.exit(0);
+  });
+};
 
 const runCompactionLifecycle = (fail) => {
   process.stdin.removeAllListeners("data");
@@ -54,6 +72,9 @@ const runCompactionLifecycle = (fail) => {
 };
 
 switch (behavior) {
+  case "capture-prompt":
+    capturePrompt();
+    break;
   case "compact-success":
     runCompactionLifecycle(false);
     break;

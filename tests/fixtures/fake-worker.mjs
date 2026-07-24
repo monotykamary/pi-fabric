@@ -11,7 +11,9 @@ const logFile = args.get("log-file");
 const lifecycleFile = args.get("lifecycle-file");
 const sessionFile = args.get("session-file");
 const schemaFile = args.get("schema-file");
+const imagesFile = args.get("images-file");
 const schema = schemaFile ? JSON.parse(fs.readFileSync(schemaFile, "utf8")) : undefined;
+const images = imagesFile ? JSON.parse(fs.readFileSync(imagesFile, "utf8")) : [];
 const task = fs.readFileSync(taskFile, "utf8");
 
 if (task.includes("HANG")) {
@@ -44,7 +46,11 @@ if (task.includes("HANG")) {
 } else {
   const fail = task.includes("FAIL_DIRECTIVE");
   const directive = schema?.properties?.action
-    ? { action: "message", message: "fake actor advice" }
+    ? {
+        action: "message",
+        message: "fake actor advice",
+        ...(images.length > 0 ? { data: { imageCount: images.length } } : {}),
+      }
     : undefined;
   const now = Date.now();
   const largeText = task.includes("LARGE_RESULT") ? "x".repeat(100_000) : undefined;
@@ -60,6 +66,7 @@ if (task.includes("HANG")) {
     mainAgentId: args.get("main-agent-id"),
     tools: JSON.parse(args.get("tools") ?? "[]"),
     extensions: args.get("extensions"),
+    imageCount: images.length,
     cwd: args.get("cwd"),
     startedAt: now,
     updatedAt: now,

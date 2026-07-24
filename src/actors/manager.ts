@@ -1,3 +1,4 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import fs, { type FSWatcher } from "node:fs";
 import os from "node:os";
@@ -8,6 +9,7 @@ import type { FabricMainAgentTarget } from "../main-agent.js";
 import { SubagentManager } from "../subagents/manager.js";
 import type { SubagentRunRecord, SubagentRunRequest, SubagentRunResult } from "../subagents/types.js";
 import { readJsonlPage } from "../log-tail.js";
+import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
   FabricActorDelivery,
   FabricActorActivation,
@@ -30,6 +32,7 @@ interface ActorQueueItem {
   id: string;
   source: string;
   payload: unknown;
+  images?: ImageContent[];
   createdAt: number;
   coalesceKey?: string;
   activation: FabricActorActivation;
@@ -72,7 +75,8 @@ interface ManagedActor {
 
 const ACTOR_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,59}$/;
 const TOPIC_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
-const HOST_EVENTS = new Set<FabricActorHostEvent>([
+const HOST_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set(FABRIC_ACTOR_HOST_EVENTS);
+const MAIN_REVISION_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set([
   "input",
   "turn_end",
   "agent_settled",
@@ -615,8 +619,77 @@ export class ActorManager {
     this.#mainIdle = idle;
   }
 
-  dispatchHostEvent(event: FabricActorHostEvent, payload: unknown): number {
-    if (this.#closing || !this.meshConfig.enabled) return 0;
+  observeHostEvent(event: FabricActorHostEvent, idle = false): boolean {
+    if (!this.#beginHostEvent(event, idle)) return false;
+    return [...this.#actors.values()].some(
+      (actor) =>
+        this.#canManageCached(actor.id) &&
+        actor.status !== "stopped" &&
+        actor.events.includes(event),
+    );
+  }
+
+  dispatchHostEvent(
+    event: FabricActorHostEvent,
+    payload: unknown,
+    images: readonly ImageContent[] = [],
+  ): number {
+    const payloadIdle = typeof payload === "object" && payload !== null &&
+      typeof (payload as { signal?: { idle?: unknown } }).signal?.idle === "boolean"
+      ? (payload as { signal: { idle: boolean } }).signal.idle
+      : undefined;
+    if (!this.#beginHostEvent(event, payloadIdle ?? event === "agent_settled")) return 0;
+    return this.dispatchObservedHostEvent(event, payload, images);
+  }
+
+  dispatchObservedHostEvent(
+    event: FabricActorHostEvent,
+    payload: unknown,
+    images: readonly ImageContent[] = [],
+  ): number {
+    let delivered = 0;
+    for (const actor of this.#actors.values()) {
+      if (
+        !this.#canManageCached(actor.id) ||
+        actor.status === "stopped" ||
+        !actor.events.includes(event)
+      ) {
+        continue;
+      }
+      try {
+        this.#enqueue(
+          actor,
+          `host:${event}`,
+          payload,
+          {
+            ...(actor.coalesce ? { coalesceKey: `host:${event}` } : {}),
+            ...(images.length > 0 ? { images } : {}),
+            ownershipChecked: true,
+          },
+        );
+        delivered++;
+      } catch (error) {
+        actor.lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return delivered;
+  }
+
+  #beginHostEvent(event: FabricActorHostEvent, idle: boolean): boolean {
+    if (this.#closing || !this.meshConfig.enabled) return false;
+    // Streaming/message/provider hooks are frequent. The actor registry watcher
+    // keeps this in-memory roster current, so events that do not participate in
+    // Main freshness revisions can return without per-update filesystem work
+    // unless an active actor actually subscribes to them.
+    if (
+      !MAIN_REVISION_EVENTS.has(event) &&
+      ![...this.#actors.values()].some(
+        (actor) =>
+          this.#canManageCached(actor.id) &&
+          actor.status !== "stopped" &&
+          actor.events.includes(event),
+      )
+    ) return false;
     this.#syncActorsFromRegistry();
     this.#refreshOwnership();
     // The user sending a new message ends a stop-the-world halt: lift the gate
@@ -625,32 +698,11 @@ export class ActorManager {
       this.#halted = false;
       this.#scheduleMeshPoll();
     }
-    if (this.#halted) return 0;
-    this.#mainRevision++;
+    if (this.#halted) return false;
+    if (MAIN_REVISION_EVENTS.has(event)) this.#mainRevision++;
     if (event === "input") this.#taskRevision++;
-    const payloadIdle = typeof payload === "object" && payload !== null &&
-      typeof (payload as { signal?: { idle?: unknown } }).signal?.idle === "boolean"
-      ? (payload as { signal: { idle: boolean } }).signal.idle
-      : undefined;
-    this.#mainIdle = payloadIdle ?? event === "agent_settled";
-    let delivered = 0;
-    for (const actor of this.#actors.values()) {
-      if (!this.#canManage(actor.id) || actor.status === "stopped" || !actor.events.includes(event)) {
-        continue;
-      }
-      try {
-        this.#enqueue(
-          actor,
-          `host:${event}`,
-          payload,
-          actor.coalesce ? { coalesceKey: `host:${event}` } : {},
-        );
-        delivered++;
-      } catch (error) {
-        actor.lastError = error instanceof Error ? error.message : String(error);
-      }
-    }
-    return delivered;
+    this.#mainIdle = idle;
+    return true;
   }
 
   async stop(id: string): Promise<FabricActorInfo> {
@@ -780,9 +832,14 @@ export class ActorManager {
       resolve?: (message: FabricActorMessage) => void;
       reject?: (error: Error) => void;
       coalesceKey?: string;
+      images?: readonly ImageContent[];
+      ownershipChecked?: boolean;
     } = {},
   ): ActorQueueItem {
-    if (!this.#canManage(actor.id)) {
+    const canManage = options.ownershipChecked
+      ? this.#canManageCached(actor.id)
+      : this.#canManage(actor.id);
+    if (!canManage) {
       throw new Error(`Fabric actor is owned by another host: ${actor.id}`);
     }
     if (actor.status === "stopped") throw new Error(`Fabric actor is stopped: ${actor.id}`);
@@ -792,6 +849,11 @@ export class ActorManager {
       const existing = actor.queue.find((item) => item.coalesceKey === options.coalesceKey);
       if (existing) {
         existing.payload = structuredClone(payload);
+        if (options.images && options.images.length > 0) {
+          existing.images = options.images.map((image) => ({ ...image }));
+        } else {
+          delete existing.images;
+        }
         existing.createdAt = createdAt;
         existing.activation = this.#activation(existing.id, source, payload, sequence, createdAt);
         this.#ensureDrain(actor);
@@ -808,6 +870,9 @@ export class ActorManager {
       id: itemId,
       source,
       payload: structuredClone(payload),
+      ...(options.images && options.images.length > 0
+        ? { images: options.images.map((image) => ({ ...image })) }
+        : {}),
       createdAt,
       activation: this.#activation(itemId, source, payload, sequence, createdAt),
       ...(options.resolve ? { resolve: options.resolve } : {}),
@@ -1028,6 +1093,7 @@ export class ActorManager {
       actorId: actor.id,
       actorName: actor.name,
       meshRoot: this.mesh.root,
+      ...(item.images && item.images.length > 0 ? { images: item.images } : {}),
       ...(actor.responseMode === "directive" ? { schema: directiveSchema } : {}),
       ...(actor.runnerSessionId ? { runnerSessionId: actor.runnerSessionId } : {}),
       ...(actor.model ? { model: actor.model } : {}),
@@ -1737,9 +1803,13 @@ export class ActorManager {
     }
   }
 
+  #canManageCached(id: string): boolean {
+    return this.#ownership.get(id) ?? this.#ownershipDecision(id);
+  }
+
   #canManage(id: string): boolean {
     this.#refreshOwnership();
-    return this.#ownership.get(id) ?? this.#ownershipDecision(id);
+    return this.#canManageCached(id);
   }
 
   #requireOwnedActor(id: string): ManagedActor {

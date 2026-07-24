@@ -6,6 +6,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
 import { Value } from "typebox/value";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
   SubagentRunRecord,
   SubagentRunStatus,
@@ -73,6 +74,31 @@ const extractText = (message: Record<string, unknown>): string => {
     )
     .map((part) => part.text)
     .join("");
+};
+
+const readImages = (filePath: string | undefined): ImageContent[] => {
+  if (!filePath) return [];
+  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  if (!Array.isArray(parsed)) throw new Error("Subagent images file must contain an array");
+  const images: ImageContent[] = [];
+  for (const value of parsed) {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      (value as { type?: unknown }).type !== "image" ||
+      typeof (value as { data?: unknown }).data !== "string" ||
+      typeof (value as { mimeType?: unknown }).mimeType !== "string"
+    ) {
+      throw new Error("Subagent images file contains an invalid image block");
+    }
+    images.push({
+      type: "image",
+      data: (value as { data: string }).data,
+      mimeType: (value as { mimeType: string }).mimeType,
+    });
+  }
+  return images;
 };
 
 const numberField = (value: unknown): number => (typeof value === "number" ? value : 0);
@@ -208,6 +234,7 @@ const main = async (): Promise<void> => {
       ? options.thinking
       : undefined;
   const task = fs.readFileSync(options.taskFile, "utf8");
+  const images = readImages(options.imagesFile);
   const record = createRunningRecord(options, task, thinking, Date.now());
   writeRunRecord(options.statusFile, record);
   const emitLifecycle = (
@@ -385,13 +412,19 @@ const main = async (): Promise<void> => {
     update();
   };
 
-  const writeClaudeInput = (kind: ClaudeInputKind, message: string): void => {
+  const writeClaudeInput = (
+    kind: ClaudeInputKind,
+    message: string,
+    inputImages: readonly ImageContent[] = [],
+  ): void => {
     if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
     claudeCloseTimer = undefined;
     if (!child.stdin || child.stdin.writableEnded || child.stdin.destroyed) return;
     claudeSentInputs.push({ kind, message });
     if (kind === "follow_up") claudeCanFollowUp = false;
-    child.stdin.write(`${JSON.stringify(claudeCli!.claudeUserMessage(message))}\n`);
+    child.stdin.write(
+      `${JSON.stringify(claudeCli!.claudeUserMessage(message, inputImages))}\n`,
+    );
     updateClaudeQueue();
   };
 
@@ -723,8 +756,16 @@ const main = async (): Promise<void> => {
   };
 
   child.stdin?.on("error", () => {});
-  if (options.runner === "claude") writeClaudeInput("initial", task);
-  else child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task })}\n`);
+  if (options.runner === "claude") writeClaudeInput("initial", task, images);
+  else {
+    child.stdin?.write(
+      `${JSON.stringify({
+        type: "prompt",
+        message: task,
+        ...(images.length > 0 ? { images } : {}),
+      })}\n`,
+    );
+  }
 
   // Tail a control file (steer.jsonl) the parent appends to and forward each
   // queued command to the child pi over its RPC stdin. This is the fabric

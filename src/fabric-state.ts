@@ -6,6 +6,7 @@ import { ActorManager } from "./actors/manager.js";
 import { GlobalActorRegistry } from "./actors/global-registry.js";
 import { buildActorContext } from "./actors/context.js";
 import { actorDeliveryNotice } from "./actors/delivery-policy.js";
+import { prepareFabricActorHostPayload } from "./actors/host-event-payload.js";
 import type { FabricActorHostEvent, FabricActorInfo } from "./actors/types.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import {
@@ -65,7 +66,6 @@ import {
 import { SubagentManager } from "./subagents/manager.js";
 
 const BACKGROUND_COMPLETION_MAX_CHARS = 8_000;
-const ACTOR_DELIVERY_MAX_CHARS = 8_000;
 
 const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -426,12 +426,8 @@ export class FabricState {
       enforceSchema ? { ...this.#config.mesh, enabled: false } : this.#config.mesh,
       this.#subagents,
       ({ actor, message, delivery, triggerTurn }) => {
-        const actorText = message.text ?? "";
-        if (!actorText) return;
-        const text =
-          actorText.length > ACTOR_DELIVERY_MAX_CHARS
-            ? `${actorText.slice(0, ACTOR_DELIVERY_MAX_CHARS)}\n[actor delivery truncated]`
-            : actorText;
+        const text = message.text ?? "";
+        if (!text) return;
         const deliveryNotice = actorDeliveryNotice(delivery, triggerTurn);
         this.pi.sendMessage(
           {
@@ -600,48 +596,41 @@ export class FabricState {
       !this.#config?.mesh.enabled ||
       this.#config.schema.mode === "enforce"
     ) return 0;
-    const maxChars = this.#config.mesh.eventContextChars;
-    const bounded = (value: unknown): unknown => {
-      let json: string;
-      try {
-        const serialized = JSON.stringify(value, (_key, nested) => {
-          if (typeof nested === "bigint") return String(nested);
-          if (typeof nested === "function") return undefined;
-          if (
-            typeof nested === "object" &&
-            nested !== null &&
-            "type" in nested &&
-            (nested as { type?: unknown }).type === "image"
-          ) {
-            return { type: "image", redacted: true };
-          }
-          return nested;
-        });
-        if (serialized === undefined) return null;
-        json = serialized;
-      } catch {
-        return String(value);
-      }
-      if (json.length > maxChars) json = json.slice(json.length - maxChars);
-      try {
-        return JSON.parse(json) as unknown;
-      } catch {
-        return json;
-      }
-    };
+    const idle = context.isIdle();
+    if (!this.#actors.observeHostEvent(event, idle)) return 0;
     const branch = context.sessionManager.getBranch();
     const { digest, transcript } = buildActorContext(
       branch as unknown[],
       this.#config.mesh.actorContextEntries,
       this.#config.mesh.eventContextChars,
     );
-    return this.#actors.dispatchHostEvent(event, {
+    const prepared = prepareFabricActorHostPayload(
+      payload,
+      this.#config.mesh.eventContextChars,
+    );
+    const preparedContext = prepareFabricActorHostPayload(
+      { digest, transcript },
+      this.#config.mesh.eventContextChars,
+    ).payload;
+    const safeContext = isPlainObject(preparedContext)
+      ? preparedContext
+      : { digest: {}, transcript: [String(preparedContext)] };
+    return this.#actors.dispatchObservedHostEvent(
       event,
-      session: { id: context.sessionManager.getSessionId(), cwd: context.cwd },
-      digest,
-      transcript,
-      signal: { payload: bounded(payload), idle: context.isIdle(), observedAt: Date.now() },
-    });
+      {
+        event,
+        session: { id: context.sessionManager.getSessionId(), cwd: context.cwd },
+        digest: safeContext.digest ?? {},
+        transcript: safeContext.transcript ?? [],
+        signal: {
+          payload: prepared.payload,
+          ...(prepared.media.length > 0 ? { media: prepared.media } : {}),
+          idle,
+          observedAt: Date.now(),
+        },
+      },
+      prepared.images,
+    );
   }
 
   async publishHostLifecycle(

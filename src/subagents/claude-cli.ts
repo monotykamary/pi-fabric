@@ -1,3 +1,4 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -149,9 +150,27 @@ export const buildClaudeArguments = (options: ClaudeRunArguments): string[] => {
   return args;
 };
 
-export const claudeUserMessage = (message: string): Record<string, unknown> => ({
+export const claudeUserMessage = (
+  message: string,
+  images: readonly ImageContent[] = [],
+): Record<string, unknown> => ({
   type: "user",
-  message: { role: "user", content: message },
+  message: {
+    role: "user",
+    content: images.length === 0
+      ? message
+      : [
+          { type: "text", text: message },
+          ...images.map((image) => ({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: image.mimeType,
+              data: image.data,
+            },
+          })),
+        ],
+  },
   parent_tool_use_id: null,
   session_id: "",
   uuid: randomUUID(),

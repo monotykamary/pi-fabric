@@ -803,6 +803,35 @@ describe("AgentsProvider global actors", () => {
   });
 
 
+  it("accepts the complete host-event catalog through create and setEvents", async () => {
+    const { provider, actors } = setup();
+    const actor = (await provider.invoke(
+      "create",
+      {
+        ...createRequest,
+        events: ["before_agent_start", "tool_call", "tool_result", "message_update"],
+      },
+      context,
+    )) as { id: string };
+    expect(actors.status(actor.id).events).toEqual([
+      "before_agent_start",
+      "tool_call",
+      "tool_result",
+      "message_update",
+    ]);
+
+    await provider.invoke(
+      "setEvents",
+      { id: actor.id, events: ["context", "before_provider_request", "session_tree"] },
+      context,
+    );
+    expect(actors.status(actor.id).events).toEqual([
+      "context",
+      "before_provider_request",
+      "session_tree",
+    ]);
+  });
+
   it("validates and updates delivery policies for project actors and global templates", async () => {
     const { provider, actors, globalActors } = setup();
     const { triggerTurn: _triggerTurn, ...ambiguous } = createRequest;

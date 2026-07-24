@@ -1295,6 +1295,27 @@ describe("Fabric dynamic UI", () => {
     }
   });
 
+  it("scrolls the expanded host-event catalog around the current selection", () => {
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const dashboard = new FabricDashboard(tui, theme, snapshot, vi.fn(), {
+      modelSource: actorModelSource,
+      onActorEvents: vi.fn(),
+    });
+    try {
+      openActorDetail(dashboard);
+      dashboard.handleInput("v");
+      for (let index = 0; index < 28; index++) dashboard.handleInput("\x1b[B");
+      const picker = dashboard.render(120);
+      const pickerText = picker.join("\n");
+      expect(pickerText).toContain("tool_result");
+      expect(pickerText).toContain("earlier events");
+      expect(pickerText).not.toContain("raw user or extension input");
+      expect(picker.every((line) => visibleWidth(line) <= 120)).toBe(true);
+    } finally {
+      dashboard.dispose();
+    }
+  });
+
   it("canceling the events picker returns to the detail without changing events", () => {
     const tui = { requestRender: vi.fn() } as unknown as TUI;
     const onActorEvents = vi.fn();
