@@ -43,6 +43,55 @@ if (task.includes("HANG")) {
   stay();
   process.on("SIGTERM", () => process.exit(0));
   process.on("SIGINT", () => process.exit(0));
+} else if (task.includes("STREAM_PREVIEW")) {
+  const startedAt = Date.now();
+  const running = {
+    id: args.get("id"),
+    name: args.get("name"),
+    task,
+    status: "running",
+    runner: args.get("runner") ?? "pi",
+    transport: args.get("transport"),
+    cwd: args.get("cwd"),
+    startedAt,
+    updatedAt: startedAt,
+    turns: 0,
+    toolCalls: 0,
+    text: "",
+    exitCode: null,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+  };
+  fs.mkdirSync(path.dirname(statusFile), { recursive: true });
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
+  fs.writeFileSync(statusFile, JSON.stringify(running));
+  fs.writeFileSync(
+    logFile,
+    `${JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "first.ts" } })}\n`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  fs.appendFileSync(
+    logFile,
+    [
+      { type: "tool_execution_end", toolCallId: "read-1", toolName: "read", result: "first" },
+      { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "echo second" } },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  fs.appendFileSync(
+    logFile,
+    `${JSON.stringify({ type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: "second" })}\n`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const finishedAt = Date.now();
+  fs.writeFileSync(statusFile, JSON.stringify({
+    ...running,
+    status: "completed",
+    updatedAt: finishedAt,
+    finishedAt,
+    turns: 1,
+    toolCalls: 2,
+    text: "stream preview complete",
+  }));
 } else {
   const fail = task.includes("FAIL_DIRECTIVE");
   const directive = schema?.properties?.action

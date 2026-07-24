@@ -307,6 +307,47 @@ return "complete outer result";
     expect(immediatePartials.length).toBeGreaterThan(1);
   });
 
+  it("throttles continuous nested progress without starving intermediate snapshots", async () => {
+    const registry = new ActionRegistry();
+    const descriptor = {
+      name: "stream",
+      description: "emit sustained progress",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      risk: "read" as const,
+    };
+    registry.register({
+      name: "demo",
+      description: "stream fixture",
+      async list() { return [descriptor]; },
+      async describe(name) { return name === "stream" ? descriptor : undefined; },
+      async invoke(_name, _args, invocation) {
+        for (let index = 0; index < 8; index++) {
+          invocation.update(`tick ${index}`);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        return true;
+      },
+    });
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.fullCodeMode = false;
+    config.approvals.read = "allow";
+    config.ui.nestedToolDebounceMs = 50;
+    const partials: Array<{ progress?: string | undefined; audits: Array<{ success?: boolean }> }> = [];
+
+    const result = await new FabricExecutionService(registry, config).execute({
+      code: 'return tools.call({ ref: "demo.stream" });',
+      signal: undefined,
+      parentToolCallId: "continuous-progress",
+      context: { cwd: process.cwd(), hasUI: false } as ExtensionContext,
+      onPartial(snapshot) { partials.push(structuredClone(snapshot)); },
+    });
+
+    expect(result.success).toBe(true);
+    expect(partials.some((snapshot) => snapshot.audits[0]?.success === undefined)).toBe(true);
+    expect(partials.some((snapshot) => snapshot.progress?.startsWith("tick ") && snapshot.progress !== "tick 7")).toBe(true);
+    expect(partials.length).toBeLessThan(8);
+  });
+
   it("coalesces rapid workflow phase updates through the same debounce", async () => {
     const config = structuredClone(DEFAULT_FABRIC_CONFIG);
     config.ui.nestedToolDebounceMs = 10_000;

@@ -259,7 +259,10 @@ export class FabricExecutionService {
         flushEmit();
         return;
       }
-      if (emitTimer) clearTimeout(emitTimer);
+      // Throttle to one render per window without resetting the timer. A
+      // trailing debounce starves continuously streaming tools because every
+      // delta postpones the render until the tool finishes.
+      if (emitTimer) return;
       emitTimer = setTimeout(() => {
         emitTimer = undefined;
         if (emitPending) emitNow();

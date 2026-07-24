@@ -152,7 +152,7 @@ Set `worktree: true` to create a dedicated Git worktree and `pi-fabric/<name>-<i
 
 ## Unified participants and steering
 
-Fabric has one project participant directory. Every live entity has an intrinsic `kind` (`root`, `agent`, or `actor`), a `rootId`, an optional `parentId`, an `ownerHostId`, and an authenticated owner identity naming the process that controls its lifecycle. **Main** is the local user-facing view of one root; **Peers** are compatibility views of the other roots. They are not separate registries or control planes.
+Fabric has one project participant directory. Every live entity has an intrinsic `kind` (`root`, `agent`, or `actor`), a `rootId`, an optional `parentId`, an `ownerHostId`, and an authenticated owner identity naming the process that controls its lifecycle. **Main** is the local user-facing view of one root; **Peers** are compatibility views of the other roots. They are not separate registries or control planes. **Peer is a reserved Fabric term for another root Pi session, never shorthand for a child agent.** Use `agents.peers()` first when asked about a peer; `agents.list()` only reports child agents and cannot determine peer-root settlement.
 
 `agents.self()` returns the caller's participant record. `agents.members({ scope?, kinds?, includeStale? })` lists all kinds; `agents.list({ scope? })` lists agents and defaults to `scope: "local"`. Use `"lineage"` for descendants of the same root across recursive runtimes and `"project"` for every live project agent. `agents.main()` and `agents.peers()` remain convenient root projections. Normal discovery hides every participant whose execution-host lease expired. Shared summaries contain operational metadata but never agent prompts, results, or errors.
 

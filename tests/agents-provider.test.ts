@@ -553,6 +553,30 @@ describe("AgentsProvider runner support", () => {
     });
   });
 
+  it("refreshes bounded agent previews when only the transcript changes", async () => {
+    const { provider } = setup();
+    const previews: Array<Record<string, unknown>> = [];
+    const previewContext: FabricInvocationContext = {
+      ...context,
+      attachPreview(preview) {
+        previews.push(preview as Record<string, unknown>);
+      },
+    };
+
+    await provider.invoke(
+      "run",
+      { task: "STREAM_PREVIEW", name: "stream-preview-agent", transport: "process" },
+      previewContext,
+    );
+
+    const liveTools = previews
+      .filter((preview) => preview.status === "running")
+      .flatMap((preview) => preview.tools as Array<{ label?: string; toolName?: string }> ?? []);
+    expect(liveTools.some((tool) => (tool.toolName ?? tool.label) === "read")).toBe(true);
+    expect(liveTools.some((tool) => (tool.toolName ?? tool.label) === "bash")).toBe(true);
+    expect(previews.length).toBeLessThanOrEqual(4);
+  }, 10_000);
+
   it("attaches previews and reports friendly names while waiting for spawned agents", async () => {
     const { provider } = setup();
     const updates: string[] = [];

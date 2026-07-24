@@ -709,6 +709,44 @@ return { self, members, lineage };
     ]);
   });
 
+  it("routes lifecycle subscriptions through the direct agents API", async () => {
+    const calls: Array<{ ref: string; args: Record<string, unknown> }> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+const created = await agents.subscribe({
+  from: "session:peer",
+  events: ["pi.agent_settled"],
+  delivery: "followUp",
+  triggerTurn: true,
+  once: true,
+});
+const listed = await agents.subscriptions({ from: "session:peer" });
+const removed = await agents.unsubscribe({ id: created.id });
+return { created, listed, removed };
+`,
+      async (ref, args) => {
+        calls.push({ ref, args });
+        if (ref === "agents.subscribe") return { id: "subscription-1", ...args };
+        if (ref === "agents.subscriptions") return [{ id: "subscription-1" }];
+        if (ref === "agents.unsubscribe") return { removed: true };
+        throw new Error(`Unexpected call: ${ref}`);
+      },
+      options,
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({
+      created: { id: "subscription-1" },
+      listed: [{ id: "subscription-1" }],
+      removed: { removed: true },
+    });
+    expect(calls.map((call) => call.ref)).toEqual([
+      "agents.subscribe",
+      "agents.subscriptions",
+      "agents.unsubscribe",
+    ]);
+  });
+
   it("routes agents.setEvents and agents.setInstructions to the actors provider", async () => {
     const calls: string[] = [];
     const result = await new QuickJsRuntime().execute(

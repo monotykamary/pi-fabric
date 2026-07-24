@@ -203,7 +203,7 @@ export class PiToolsProvider implements FabricProvider {
         context.nestedToolCallId,
         args,
         context.signal,
-        undefined,
+        (partialResult) => this.#attachPartialPreview(name, partialResult, args, context),
         context.extensionContext,
       );
       this.#attachReadMedia(name, result, context);
@@ -256,10 +256,7 @@ export class PiToolsProvider implements FabricProvider {
         args,
         context.signal,
         (partialResult) => {
-          const progress = textContent(
-            (partialResult as { content: ToolContent }).content,
-          ).trim();
-          if (progress) context.update(`${name}: ${progress.slice(0, 500)}`);
+          this.#attachPartialPreview(name, partialResult, args, context);
           updateTail = updateTail
             .then(() =>
               runner.emit({
@@ -342,6 +339,27 @@ export class PiToolsProvider implements FabricProvider {
     const normalized = normalizeResult(name, result);
     if (name !== "read" || typeof normalized !== "string") return normalized;
     return expandSkillDirMarkersForRead(normalized, args, this.#cwd);
+  }
+
+  #attachPartialPreview(
+    name: PiCoreToolName,
+    partialResult: { content: ToolContent; details?: unknown; isError?: boolean },
+    args: Record<string, unknown>,
+    context: FabricInvocationContext,
+  ): void {
+    const progress = textContent(partialResult.content).trim();
+    const boundedProgress = Array.from(progress).slice(-4_000).join("");
+    const bashCommand =
+      name === "bash" &&
+      typeof args.command === "string" &&
+      args.command.length <= MAX_RENDERER_ARGUMENT_CHARS
+        ? args.command
+        : undefined;
+    context.attachPreview?.({
+      result: boundedProgress,
+      ...(bashCommand !== undefined ? { bashCommand } : {}),
+    });
+    context.update(`${name}: ${boundedProgress.slice(-500) || "running"}`);
   }
 
   #attachPreview(

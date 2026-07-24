@@ -804,8 +804,9 @@ const attachAgentToolPreview = (
   transcripts: AgentTranscriptReader,
   context: FabricInvocationContext,
   enabled: () => boolean,
-): void => {
-  if (!context.attachPreview) return;
+  previousRevision?: string,
+): string => {
+  if (!context.attachPreview) return agentProgressRevision(status);
   try {
     const tools =
       enabled() && "logFile" in status && status.logFile
@@ -814,7 +815,7 @@ const attachAgentToolPreview = (
             AGENT_PREVIEW_TOOL_LIMIT,
           )
         : [];
-    context.attachPreview({
+    const preview = {
       kind: "fabric-agent-tools",
       id: status.id,
       name: status.actorName ?? status.name,
@@ -825,9 +826,16 @@ const attachAgentToolPreview = (
         ? { text: tailCodePoints(status.text, AGENT_PREVIEW_TEXT_CODE_POINTS) }
         : {}),
       tools,
-    });
+    };
+    // The preview is bounded before this point. Comparing its compact snapshot
+    // keeps the one-second filesystem poll cheap while still noticing transcript
+    // deltas that do not update the worker's coarse status record.
+    const revision = JSON.stringify(preview);
+    if (revision !== previousRevision) context.attachPreview(preview);
+    return revision;
   } catch {
     // The worker may settle and clean up while its final preview is being read.
+    return previousRevision ?? agentProgressRevision(status);
   }
 };
 
@@ -888,14 +896,19 @@ const waitWithProgress = async (
   nestedToolsEnabled: () => boolean,
 ): Promise<AgentRunResult> => {
   const result = manager.wait(id);
-  let lastProgressRevision: string | undefined;
+  let lastPreviewRevision: string | undefined;
   try {
     const settled = await waitForResultWithProgress(result, () => {
       const status = manager.status(id);
-      const revision = agentProgressRevision(status);
-      if (revision === lastProgressRevision) return;
-      lastProgressRevision = revision;
-      attachAgentToolPreview(status, transcripts, context, nestedToolsEnabled);
+      const revision = attachAgentToolPreview(
+        status,
+        transcripts,
+        context,
+        nestedToolsEnabled,
+        lastPreviewRevision,
+      );
+      if (revision === lastPreviewRevision) return;
+      lastPreviewRevision = revision;
       const currentTool =
         "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
       const displayName = status.actorName ?? status.name;
@@ -937,16 +950,21 @@ const waitWithActorProgress = async (
   context: FabricInvocationContext,
   nestedToolsEnabled: () => boolean,
 ): Promise<FabricActorMessage> => {
-  let lastProgressRevision: string | undefined;
+  let lastPreviewRevision: string | undefined;
   try {
     return await waitForResultWithProgress(result, () => {
       const worker = actorWorker(manager, actorId, false);
-      const revision = worker ? agentProgressRevision(worker) : "queued";
-      if (worker && revision !== lastProgressRevision) {
-        attachAgentToolPreview(worker, transcripts, context, nestedToolsEnabled);
-      }
-      if (revision === lastProgressRevision) return;
-      lastProgressRevision = revision;
+      const revision = worker
+        ? attachAgentToolPreview(
+            worker,
+            transcripts,
+            context,
+            nestedToolsEnabled,
+            lastPreviewRevision,
+          )
+        : "queued";
+      if (revision === lastPreviewRevision) return;
+      lastPreviewRevision = revision;
       const currentTool =
         worker && "currentTool" in worker && worker.currentTool ? ` · ${worker.currentTool}` : "";
       context.update(

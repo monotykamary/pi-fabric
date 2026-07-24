@@ -135,6 +135,25 @@ describe("PiToolsProvider lifecycle", () => {
     ).rejects.toThrow("denied by gate");
   });
 
+  it("forwards bounded partial previews without an extension runner", async () => {
+    const provider = new PiToolsProvider(process.cwd(), undefined, undefined);
+    const previews: Array<{ result?: unknown }> = [];
+    const updates: string[] = [];
+
+    await provider.invoke(
+      "bash",
+      { command: "printf first; sleep 0.15; printf second" },
+      {
+        ...baseContext,
+        update(message) { updates.push(message); },
+        attachPreview(preview) { previews.push(preview as { result?: unknown }); },
+      },
+    );
+
+    expect(updates.some((message) => message.includes("first"))).toBe(true);
+    expect(previews.some((preview) => JSON.stringify(preview.result).includes("first"))).toBe(true);
+  });
+
   it("falls back to a direct execute (no events) when no runner is bound", async () => {
     const registry = new ActionRegistry();
     registry.register(new PiToolsProvider(process.cwd(), undefined, undefined));
