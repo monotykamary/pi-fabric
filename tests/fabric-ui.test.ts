@@ -274,6 +274,7 @@ describe("Fabric dynamic UI", () => {
 
     actor.status = "idle";
     actor.worker.status = "completed";
+    widget.invalidate();
     const settled = widget.render(100);
     expect(settled).toHaveLength(active.length);
 
@@ -286,6 +287,7 @@ describe("Fabric dynamic UI", () => {
       transport: "process",
       cwd: "/tmp/project",
     };
+    widget.invalidate();
     const next = widget.render(100);
     expect(next).toHaveLength(2);
   });
@@ -476,6 +478,7 @@ describe("Fabric dynamic UI", () => {
     expect(first.length).toBe(3); // header + alpha + beta
 
     current.agents[1]!.status = "completed";
+    widget.invalidate();
     const second = widget.render(72);
     expect(second).toHaveLength(first.length);
     expect(second.join("\n")).toContain("alpha");
@@ -483,6 +486,7 @@ describe("Fabric dynamic UI", () => {
     expect(second.every((line) => visibleWidth(line) > 0)).toBe(true);
 
     current.agents[0]!.status = "completed";
+    widget.invalidate();
     const third = widget.render(72);
     expect(third).toHaveLength(first.length);
     expect(third.join("\n")).toContain("alpha");
@@ -514,6 +518,7 @@ describe("Fabric dynamic UI", () => {
     expect(withAgents).toHaveLength(3);
 
     current.agents = [];
+    widget.invalidate();
     const withoutAgents = widget.render(72);
     expect(withoutAgents).toHaveLength(withAgents.length);
     expect(withoutAgents.join("\n")).not.toContain("Custom index");
@@ -527,6 +532,7 @@ describe("Fabric dynamic UI", () => {
       startedAt: current.now,
       updatedAt: current.now,
     };
+    widget.invalidate();
     const newerRun = widget.render(72);
     expect(newerRun).toHaveLength(1);
     expect(newerRun.join("\n")).not.toContain("Custom index");
@@ -545,6 +551,27 @@ describe("Fabric dynamic UI", () => {
     const lines = new FabricWidget(theme, () => current, 2).render(24);
     expect(lines[1]).toContain("+1");
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
+  });
+
+  it("reuses cached rows for unrelated TUI redraws", () => {
+    let current = snapshot();
+    const fg = vi.fn((_color: string, text: string) => text);
+    const cachedTheme = { ...theme, fg } as unknown as Theme;
+    const widget = new FabricWidget(cachedTheme, () => current, 8);
+
+    const first = widget.render(72);
+    fg.mockClear();
+    expect(widget.render(72)).toBe(first);
+    expect(fg).not.toHaveBeenCalled();
+
+    current = { ...current, now: current.now + 500 };
+    widget.render(72);
+    expect(fg).toHaveBeenCalled();
+
+    fg.mockClear();
+    widget.invalidate();
+    widget.render(72);
+    expect(fg).toHaveBeenCalled();
   });
 
   it("reports whether the rendered output changed", () => {

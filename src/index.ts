@@ -84,14 +84,17 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const toolOwnership = new FabricToolOwnership(pi);
   const fabricUi = new FabricUiController(state, codePreviewSettings);
 
-  pi.events.on(FABRIC_PROVIDER_REGISTER_EVENT, (value: unknown) => {
-    const registration = registrationFrom(value);
-    if (!registration) throw new Error("Invalid Pi Fabric provider registration");
-    state.registerExternal(
-      registration.provider,
-      registration.overwrite === undefined ? {} : { overwrite: registration.overwrite },
-    );
-  });
+  const unsubscribeProviderRegistration = pi.events.on(
+    FABRIC_PROVIDER_REGISTER_EVENT,
+    (value: unknown) => {
+      const registration = registrationFrom(value);
+      if (!registration) throw new Error("Invalid Pi Fabric provider registration");
+      state.registerExternal(
+        registration.provider,
+        registration.overwrite === undefined ? {} : { overwrite: registration.overwrite },
+      );
+    },
+  );
 
   pi.on("resources_discover", async () => {
     if (existsSync(FABRIC_SKILLS_DIR)) return { skillPaths: [FABRIC_SKILLS_DIR] };
@@ -234,6 +237,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("session_shutdown", async () => {
+    unsubscribeProviderRegistration();
     try {
       pendingHandoffs.clear();
       uninstallHaltOnEscape();

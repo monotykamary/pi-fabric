@@ -111,6 +111,7 @@ export class FabricWidget implements Component {
   ) {}
 
   #lastWidth: number | undefined;
+  #lastSnapshot: FabricDashboardSnapshot | undefined;
   #lastLines: string[] | undefined;
   #leaseKey: string | undefined;
   #leasedRows = 0;
@@ -124,9 +125,14 @@ export class FabricWidget implements Component {
     const lines =
       this.#pending?.width === width && this.#pending.snapshot === snapshot
         ? this.#pending.lines
-        : this.#renderLines(snapshot, width);
+        : this.#lastWidth === width &&
+            this.#lastSnapshot === snapshot &&
+            this.#lastLines
+          ? this.#lastLines
+          : this.#renderLines(snapshot, width);
     this.#pending = undefined;
     this.#lastWidth = width;
+    this.#lastSnapshot = snapshot;
     this.#lastLines = lines;
     return lines;
   }
@@ -144,6 +150,9 @@ export class FabricWidget implements Component {
 
   invalidate(): void {
     this.#pending = undefined;
+    this.#lastWidth = undefined;
+    this.#lastSnapshot = undefined;
+    this.#lastLines = undefined;
   }
 
   #renderLines(snapshot: FabricDashboardSnapshot, width: number): string[] {
