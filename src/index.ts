@@ -2,7 +2,11 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { loadCodePreviewSettings } from "pi-code-previews";
+import {
+  loadCodePreviewSettings,
+  type FabricToolShellDecorator,
+  withLightweightCodePreviewShell,
+} from "./ui/code-preview.js";
 import { registerFabricActorHostEventObservers } from "./actors/host-event-observer.js";
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
@@ -74,6 +78,16 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 
 export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   const codePreviewSettings = await loadCodePreviewSettings();
+  let decorateShell: FabricToolShellDecorator = withLightweightCodePreviewShell;
+  let refreshBorderSettings: ((cwd?: string, trusted?: boolean) => Promise<void>) | undefined;
+  if (codePreviewSettings.toolCallBackground === "border") {
+    const codePreviews = await import("pi-code-previews");
+    await codePreviews.loadCodePreviewSettings();
+    decorateShell = codePreviews.withCodePreviewShell;
+    refreshBorderSettings = async (cwd, trusted) => {
+      await codePreviews.loadCodePreviewSettings(cwd, trusted);
+    };
+  }
   let compatibilityWarningShown = false;
   configureHighlighting(
     codePreviewSettings.shikiTheme,
@@ -106,6 +120,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     state,
     codePreviewSettings,
     pendingHandoffs,
+    decorateShell,
   );
   const fabricToolLifecycle = new FabricToolLifecycle(
     () => ownsFabricToolSource(pi.getAllTools(), FABRIC_EXTENSION_ENTRY_PATH),
@@ -220,13 +235,14 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         codePreviewSettings,
         await loadCodePreviewSettings(context.cwd, projectTrusted),
       );
+      await refreshBorderSettings?.(context.cwd, projectTrusted);
       configureHighlighting(
         codePreviewSettings.shikiTheme,
         codePreviewSettings.syntaxHighlighting,
       );
       Object.assign(
         fabricTool,
-        createFabricExecTool(state, codePreviewSettings, pendingHandoffs),
+        createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell),
       );
     } catch (error) {
       console.warn("[pi-fabric] Failed to refresh code preview settings.", error);

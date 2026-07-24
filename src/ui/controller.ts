@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "./code-preview.js";
 import type { FabricActivityRun } from "../activity/types.js";
 import type { FabricActorDelivery, FabricActorHostEvent } from "../actors/types.js";
 import type { FabricState } from "../fabric-state.js";

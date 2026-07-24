@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AppKeybinding, Theme } from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "./code-preview.js";
 import {
   getKeybindings,
   truncateToWidth,

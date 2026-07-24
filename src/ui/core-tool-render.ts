@@ -2,7 +2,7 @@
 import { homedir } from "node:os";
 import { basename, extname, isAbsolute, relative } from "node:path";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "./code-preview.js";
 import { diffLines } from "diff";
 import { bundledLanguages, bundledThemesInfo } from "shiki";
 import type { FabricRenderAudit } from "./fabric-render.js";

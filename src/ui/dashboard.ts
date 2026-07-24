@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { CodePreviewSettings } from "pi-code-previews";
+import type { CodePreviewSettings } from "./code-preview.js";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import {
   Editor,

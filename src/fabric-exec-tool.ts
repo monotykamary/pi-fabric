@@ -5,8 +5,9 @@ import {
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import {
   type CodePreviewSettings,
-  withCodePreviewShell,
-} from "pi-code-previews";
+  type FabricToolShellDecorator,
+  withLightweightCodePreviewShell,
+} from "./ui/code-preview.js";
 import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
@@ -83,7 +84,8 @@ export const createFabricExecTool = (
   state: FabricState,
   codePreviewSettings: CodePreviewSettings,
   pendingHandoffs: Map<string, PendingFabricHandoff>,
-): ToolDefinition<any, any, any> => withCodePreviewShell(
+  decorateShell: FabricToolShellDecorator = withLightweightCodePreviewShell,
+): ToolDefinition<any, any, any> => decorateShell(
   defineTool({
     name: "fabric_exec",
     label: "Fabric",
@@ -791,5 +793,8 @@ export const createFabricExecTool = (
       };
     },
   }),
-  { mode: codePreviewSettings.toolCallBackground },
+  {
+    mode: codePreviewSettings.toolCallBackground,
+    toolCallTiming: codePreviewSettings.toolCallTiming,
+  },
 );
