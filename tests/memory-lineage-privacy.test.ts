@@ -184,14 +184,20 @@ describe("memory active lineage and privacy policy", () => {
     expect(all.matchedCount).toBe(1);
     expect(activeAgain.matchedCount).toBe(0);
 
-    const activeCache = JSON.parse(fs.readFileSync(digestPathForSession(file, indexDir), "utf8")) as {
+    const activeCachePath = digestPathForSession(file, indexDir);
+    const allCachePath = digestPathForSession(file, indexDir, "all");
+    const activeCache = JSON.parse(fs.readFileSync(activeCachePath, "utf8")) as {
       branches: string;
       vocabulary: string[];
+      cacheBytes: number;
     };
-    const allCache = JSON.parse(fs.readFileSync(digestPathForSession(file, indexDir, "all"), "utf8")) as {
+    const allCache = JSON.parse(fs.readFileSync(allCachePath, "utf8")) as {
       branches: string;
       vocabulary: string[];
+      cacheBytes: number;
     };
+    expect(activeCache.cacheBytes).toBe(fs.statSync(activeCachePath).size);
+    expect(allCache.cacheBytes).toBe(fs.statSync(allCachePath).size);
     expect(activeCache.branches).toBe("active");
     expect(activeCache.vocabulary).not.toContain("cold_sibling_vocab_15");
     expect(allCache.branches).toBe("all");

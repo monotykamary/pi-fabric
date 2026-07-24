@@ -213,18 +213,13 @@ const serializedBytes = (value: unknown): number =>
   Buffer.byteLength(JSON.stringify(value), "utf8");
 
 const applyCacheMetrics = <T extends CacheRecord>(value: T): T => {
-  let previous = -1;
-  for (let iteration = 0; iteration < 5; iteration += 1) {
+  for (let iteration = 0; iteration < 100; iteration += 1) {
     const bytes = serializedBytes(value);
+    const ratio = value.size === 0 ? 0 : Number((bytes / value.size).toFixed(6));
+    if (value.cacheBytes === bytes && value.cacheSourceRatio === ratio) return value;
     value.cacheBytes = bytes;
-    value.cacheSourceRatio = value.size === 0 ? 0 : Number((bytes / value.size).toFixed(6));
-    if (bytes === previous) break;
-    previous = bytes;
+    value.cacheSourceRatio = ratio;
   }
-  value.cacheBytes = serializedBytes(value);
-  value.cacheSourceRatio = value.size === 0
-    ? 0
-    : Number((value.cacheBytes / value.size).toFixed(6));
   return value;
 };
 
