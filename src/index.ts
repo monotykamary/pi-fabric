@@ -12,7 +12,11 @@ import { registerFabricActorHostEventObservers } from "./actors/host-event-obser
 import { CapturedToolCatalog } from "./capture/catalog.js";
 import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
-import { withTrajectoryRearmDirective } from "./prewalk/handoff.js";
+import {
+  filterPrewalkContinuationMessages,
+  settleInPlacePrewalk,
+  withTrajectoryRearmDirective,
+} from "./prewalk/handoff.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -281,7 +285,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
 
   pi.on("agent_settled", async (event, context) => {
     if (!state.initialized) return;
-    if (state.prewalk.settleTask(context.sessionManager.getSessionId())) {
+    const sessionId = context.sessionManager.getSessionId();
+    const settledInPlace = await settleInPlacePrewalk(state.prewalk, pi, context);
+    if (!settledInPlace && state.prewalk.settleTask(sessionId)) {
       const status = state.prewalk.status();
       context.ui.setStatus(
         "fabric-prewalk",
@@ -419,9 +425,15 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         : DEFAULT_FABRIC_CONFIG.compaction.thresholds[modelKey],
   });
 
-  pi.on("context", (event) => {
-    let changed = false;
-    const messages = event.messages.map((message) => {
+  pi.on("context", (event, context) => {
+    const sessionId = context.sessionManager.getSessionId();
+    const continuation = filterPrewalkContinuationMessages(
+      event.messages,
+      (continuationId) => state.initialized &&
+        state.prewalk.acceptContinuation(sessionId, continuationId),
+    );
+    let changed = continuation.changed;
+    const messages = continuation.messages.map((message) => {
       if (message.role !== "user") return message;
       if (typeof message.content === "string") {
         const content = expandSkillDirMarkersInSkillBlock(message.content);

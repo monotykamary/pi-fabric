@@ -18,13 +18,26 @@ interface FabricPrewalkArm {
   thinking?: FabricThinking;
 }
 
+interface FabricPrewalkContinuation extends FabricPrewalkArm {
+  continuationId: string;
+  returnModel: string;
+  accepted: boolean;
+}
+
 export type FabricPrewalkStatus =
   | { state: "idle" }
-  | ({ state: "armed" | "handing_off" } & FabricPrewalkArm);
+  | ({ state: "armed" | "handing_off" } & FabricPrewalkArm)
+  | ({ state: "continuation_pending" } & FabricPrewalkContinuation);
 
 export interface FabricPrewalkClaim {
   arm: FabricPrewalkArm;
   mutation: FabricCallAudit;
+}
+
+export interface FabricPrewalkSettlement {
+  continuationId: string;
+  returnModel: string;
+  executorModel: string;
 }
 
 const normalizedTask = (value: string | undefined): string | undefined => {
@@ -34,6 +47,7 @@ const normalizedTask = (value: string | undefined): string | undefined => {
 
 export class PrewalkController {
   #status: FabricPrewalkStatus = { state: "idle" };
+  #settling = new Set<string>();
 
   status(): FabricPrewalkStatus {
     return structuredClone(this.#status);
@@ -53,6 +67,7 @@ export class PrewalkController {
       throw new Error(`Invalid prewalk thinking level: ${String(input.thinking)}`);
     }
     const task = normalizedTask(input.task);
+    this.#settling.clear();
     this.#status = {
       state: "armed",
       mode: input.mode ?? "in-place",
@@ -84,6 +99,68 @@ export class PrewalkController {
       this.#status.state === "armed" &&
       (sessionId === undefined || this.#status.sessionId === sessionId)
     );
+  }
+
+  beginContinuation(continuationId: string, returnModel: string): FabricPrewalkStatus {
+    if (this.#status.state !== "handing_off" || this.#status.mode !== "in-place") {
+      return this.status();
+    }
+    this.#status = {
+      ...this.#status,
+      state: "continuation_pending",
+      continuationId,
+      returnModel,
+      accepted: false,
+    };
+    return this.status();
+  }
+
+  acceptContinuation(sessionId: string, continuationId: string): boolean {
+    if (
+      this.#status.state !== "continuation_pending" ||
+      this.#status.sessionId !== sessionId ||
+      this.#status.continuationId !== continuationId
+    ) {
+      return false;
+    }
+    this.#status = { ...this.#status, accepted: true };
+    return true;
+  }
+
+  takeContinuationSettlement(sessionId: string): FabricPrewalkSettlement | undefined {
+    if (
+      this.#status.state !== "continuation_pending" ||
+      this.#status.sessionId !== sessionId ||
+      !this.#status.accepted ||
+      this.#settling.has(this.#status.continuationId)
+    ) {
+      return undefined;
+    }
+    this.#settling.add(this.#status.continuationId);
+    return {
+      continuationId: this.#status.continuationId,
+      returnModel: this.#status.returnModel,
+      executorModel: this.#status.model,
+    };
+  }
+
+  finishContinuation(sessionId: string, continuationId: string): boolean {
+    if (
+      this.#status.state !== "continuation_pending" ||
+      this.#status.sessionId !== sessionId ||
+      this.#status.continuationId !== continuationId ||
+      !this.#settling.delete(continuationId)
+    ) {
+      return false;
+    }
+    this.completeTask();
+    return true;
+  }
+
+  failHandoff(): FabricPrewalkStatus {
+    if (this.#status.state !== "handing_off") return this.status();
+    this.#status = { ...this.#status, state: "armed" };
+    return this.status();
   }
 
   settleTask(sessionId: string): boolean {
@@ -140,6 +217,7 @@ export class PrewalkController {
   }
 
   cancel(): void {
+    this.#settling.clear();
     this.#status = { state: "idle" };
   }
 }

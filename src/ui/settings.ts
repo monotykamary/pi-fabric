@@ -945,7 +945,7 @@ export const buildFabricSettingsItems = (
         [
           setting("prewalk.mode", "Mode", config.prewalk.mode, {
             description:
-              "In-place switches Main, retains that model, and queues a hidden continuation. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",
+              "In-place temporarily switches Main to the executor, queues a hidden continuation, then returns to Main's previous model. Trajectory moves the session snapshot to a visible child executor, then queues a hidden verify-and-summarize continuation for Main when it finishes.",
             values: PREWALK_MODES,
           }),
           setting(

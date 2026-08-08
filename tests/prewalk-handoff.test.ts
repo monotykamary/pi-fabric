@@ -10,9 +10,11 @@ import { PrewalkController } from "../src/prewalk/controller.js";
 import {
   PREWALK_ARMED_MESSAGE_TYPE,
   claimFabricHandoff,
+  filterPrewalkContinuationMessages,
   hasPrewalkArmedPrompt,
   prewalkArmedPrompt,
   runFabricHandoffAtBoundary,
+  settleInPlacePrewalk,
   withTrajectoryRearmDirective,
 } from "../src/prewalk/handoff.js";
 
@@ -78,6 +80,7 @@ const outerResult = (): AgentToolResultMessage => ({
 
 const context = () => {
   const source = SessionManager.inMemory();
+  vi.spyOn(source, "getSessionId").mockReturnValue("session-1");
   source.appendMessage({ role: "user", content: "Implement everything", timestamp: 1 });
   source.appendMessage({
     role: "assistant",
@@ -102,21 +105,31 @@ const context = () => {
     timestamp: 2,
   });
   const target = { provider: "anthropic", id: "executor" };
+  const sourceModel = { provider: "anthropic", id: "frontier" };
+  const nextMainModel = { provider: "anthropic", id: "main-next" };
   const setStatus = vi.fn();
   return {
     value: {
       cwd: process.cwd(),
       signal: undefined,
-      model: { provider: "anthropic", id: "frontier" },
+      model: sourceModel,
       modelRegistry: {
-        find: (provider: string, id: string) =>
-          provider === target.provider && id === target.id ? target : undefined,
+        find: (provider: string, id: string) => {
+          if (provider === target.provider && id === target.id) return target;
+          if (provider === sourceModel.provider && id === sourceModel.id) return sourceModel;
+          if (provider === nextMainModel.provider && id === nextMainModel.id) {
+            return nextMainModel;
+          }
+          return undefined;
+        },
       },
       sessionManager: source,
       ui: { setStatus, notify: vi.fn() },
     } as unknown as ExtensionContext,
     setStatus,
     target,
+    sourceModel,
+    nextMainModel,
   };
 };
 
@@ -172,7 +185,7 @@ describe("outer-boundary Prewalk", () => {
     expect(runner.executeHandoff).not.toHaveBeenCalled();
     expect(ext.setModel).toHaveBeenCalledWith(ctx.target);
     expect(ctx.value.ui.notify).toHaveBeenCalledWith(
-      "Prewalk continuing Main in place with anthropic/executor. Pi will retain this model after the task.",
+      "Prewalk is continuing in Main with anthropic/executor, then returning to anthropic/frontier.",
       "info",
     );
     expect(ext.sendMessage).toHaveBeenCalledWith(
@@ -180,6 +193,10 @@ describe("outer-boundary Prewalk", () => {
         customType: "pi-fabric-prewalk-continue",
         display: false,
         content: expect.stringContaining("Continue the existing task"),
+        details: expect.objectContaining({
+          continuationId: expect.any(String),
+          returnModel: "anthropic/frontier",
+        }),
       }),
       { deliverAs: "followUp", triggerTurn: true },
     );
@@ -191,11 +208,302 @@ describe("outer-boundary Prewalk", () => {
       trigger: { ref: "pi.edit" },
     });
     expect(activity).toHaveBeenCalledWith(expect.objectContaining({ type: "progress" }));
-    expect(controller.status()).toEqual({ state: "idle" });
+    expect(controller.status()).toMatchObject({
+      state: "continuation_pending",
+      model: "anthropic/executor",
+      returnModel: "anthropic/frontier",
+      accepted: false,
+    });
     expect(ctx.setStatus).toHaveBeenLastCalledWith(
       "fabric-prewalk",
       "continuing Main → anthropic/executor",
     );
+  });
+
+
+  it("returns Main to its boundary model and re-arms only after the matching continuation settles", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+
+    expect(controller.acceptContinuation("session-1", "stale-id")).toBe(false);
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(false);
+    expect(ext.setModel).toHaveBeenCalledTimes(1);
+
+    expect(controller.acceptContinuation(
+      "session-1",
+      continuation.details.continuationId,
+    )).toBe(true);
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(true);
+
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      model: "anthropic/executor",
+      alwaysRearm: true,
+    });
+    expect(controller.status()).not.toHaveProperty("task");
+    expect(ctx.value.ui.notify).toHaveBeenLastCalledWith(
+      "Prewalk complete. Main returned to anthropic/frontier and re-armed for the next task.",
+      "info",
+    );
+
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(false);
+    expect(ext.setModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("filters stale continuation messages and accepts only the pending identity", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+    const stale = {
+      role: "custom",
+      customType: "pi-fabric-prewalk-continue",
+      content: "stale",
+      details: { continuationId: "stale-id" },
+    };
+    const current = { ...continuation, role: "custom" };
+    const ordinary = { role: "user", content: "keep me" };
+
+    const filtered = filterPrewalkContinuationMessages(
+      [stale, current, ordinary],
+      (continuationId) => controller.acceptContinuation("session-1", continuationId),
+    );
+
+    expect(filtered).toEqual({ messages: [current, ordinary], changed: true });
+    expect(controller.status()).toMatchObject({ accepted: true });
+  });
+
+  it("automatically returns Main and becomes idle after a one-shot in-place continuation", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+    controller.acceptContinuation("session-1", continuation.details.continuationId);
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(true);
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+    expect(controller.status()).toEqual({ state: "idle" });
+    expect(ctx.setStatus).toHaveBeenLastCalledWith("fabric-prewalk", undefined);
+  });
+  it("automatically repeats Main → executor → Main with a freshly captured Main model", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "First task",
+      alwaysRearm: true,
+    });
+    const ctx = context();
+    const ext = extension();
+
+    const runCycle = async () => {
+      const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+      await runFabricHandoffAtBoundary(
+        controller,
+        unusedRunner(),
+        ext.value,
+        pending!,
+        outerResult(),
+        ctx.value,
+      );
+      const continuation = ext.sendMessage.mock.calls
+        .filter(([message]) => message.customType === "pi-fabric-prewalk-continue")
+        .at(-1)?.[0] as { details: { continuationId: string; returnModel: string } };
+      expect(controller.acceptContinuation(
+        "session-1",
+        continuation.details.continuationId,
+      )).toBe(true);
+      ctx.value.model = ctx.target as typeof ctx.value.model;
+      expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(true);
+      expect(controller.status()).toMatchObject({
+        state: "armed",
+        model: "anthropic/executor",
+        alwaysRearm: true,
+      });
+      expect(controller.status()).not.toHaveProperty("task");
+      return continuation.details.returnModel;
+    };
+
+    expect(await runCycle()).toBe("anthropic/frontier");
+
+    ctx.value.model = ctx.nextMainModel as typeof ctx.value.model;
+    controller.observeTask("session-1", "Second task");
+    expect(await runCycle()).toBe("anthropic/main-next");
+
+    expect(ext.setModel.mock.calls).toEqual([
+      [ctx.target],
+      [ctx.sourceModel],
+      [ctx.target],
+      [ctx.nextMainModel],
+    ]);
+    expect(ext.sendMessage.mock.calls.filter(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )).toHaveLength(2);
+  });
+
+  it("returns Main and keeps the task armed when queuing the continuation fails", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+    ext.sendMessage.mockImplementationOnce(() => {
+      throw new Error("queue unavailable");
+    });
+
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({
+      status: "failed",
+      continued: false,
+      error: "queue unavailable",
+    });
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+  });
+  it("reports restoration failure once and re-arms without retrying automatically", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+    controller.acceptContinuation("session-1", continuation.details.continuationId);
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+    ext.setModel.mockResolvedValueOnce(false);
+
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(false);
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      model: "anthropic/executor",
+      alwaysRearm: true,
+    });
+    expect(ctx.setStatus).toHaveBeenLastCalledWith(
+      "fabric-prewalk",
+      "return failed → anthropic/frontier",
+    );
+    expect(await settleInPlacePrewalk(controller, ext.value, ctx.value)).toBe(false);
+    expect(ext.setModel).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the armed task when the executor model cannot be selected", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+    ext.setModel.mockResolvedValueOnce(false);
+
+    const result = await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+
+    expect(result).toMatchObject({ status: "failed", continued: false });
+    expect(ext.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ customType: "pi-fabric-prewalk-continue" }),
+      expect.anything(),
+    );
+    expect(controller.status()).toMatchObject({
+      state: "armed",
+      task: "Implement the guard",
+      alwaysRearm: true,
+    });
   });
 
   it("sends a bounded thinking digest ahead of the in-place continuation for foreign channels", async () => {
@@ -499,7 +807,7 @@ describe("outer-boundary Prewalk", () => {
     });
   });
 
-  it("re-arms after an in-place continuation when configured", async () => {
+  it("keeps continuous in-place prewalk pending until its continuation settles", async () => {
     const controller = new PrewalkController();
     controller.arm({
       model: "anthropic/executor",
@@ -519,15 +827,15 @@ describe("outer-boundary Prewalk", () => {
     );
 
     expect(controller.status()).toMatchObject({
-      state: "armed",
+      state: "continuation_pending",
       mode: "in-place",
       model: "anthropic/executor",
       alwaysRearm: true,
+      task: "Implement the guard",
     });
-    expect(controller.status()).not.toHaveProperty("task");
     expect(ctx.setStatus).toHaveBeenLastCalledWith(
       "fabric-prewalk",
-      "armed → anthropic/executor",
+      "continuing Main → anthropic/executor",
     );
   });
 
