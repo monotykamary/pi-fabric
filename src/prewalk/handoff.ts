@@ -50,9 +50,13 @@ const prewalkContinuationId = (message: unknown): string | undefined => {
   if (custom.role !== "custom" || custom.customType !== PREWALK_CONTINUE_MESSAGE_TYPE) {
     return undefined;
   }
-  if (typeof custom.details !== "object" || custom.details === null) return "";
-  const continuationId = (custom.details as { continuationId?: unknown }).continuationId;
-  return typeof continuationId === "string" ? continuationId : "";
+  if (typeof custom.details !== "object" || custom.details === null) return undefined;
+  const details = custom.details as { mode?: unknown; continuationId?: unknown };
+  // Identity filtering applies to in-place continuations only: they carry the
+  // accept/settle lifecycle. The trajectory verify prompt shares this custom
+  // type but has no continuation identity and must always reach Main.
+  if (details.mode !== "in-place") return undefined;
+  return typeof details.continuationId === "string" ? details.continuationId : "";
 };
 
 export const filterPrewalkContinuationMessages = <Message>(

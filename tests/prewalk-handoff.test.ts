@@ -297,7 +297,7 @@ describe("outer-boundary Prewalk", () => {
       role: "custom",
       customType: "pi-fabric-prewalk-continue",
       content: "stale",
-      details: { continuationId: "stale-id" },
+      details: { mode: "in-place", continuationId: "stale-id" },
     };
     const current = { ...continuation, role: "custom" };
     const ordinary = { role: "user", content: "keep me" };
@@ -310,6 +310,22 @@ describe("outer-boundary Prewalk", () => {
     expect(filtered).toEqual({ messages: [current, ordinary], changed: true });
     expect(controller.status()).toMatchObject({ accepted: true });
   });
+
+  it("keeps trajectory continuation prompts out of the in-place identity filter", () => {
+    const trajectory = {
+      role: "custom",
+      customType: "pi-fabric-prewalk-continue",
+      content: "Prewalk trajectory handoff complete: verify and summarize.",
+      details: { mode: "trajectory", model: "anthropic/executor", trigger: "pi.edit" },
+    };
+
+    const result = filterPrewalkContinuationMessages([trajectory], () => {
+      throw new Error("trajectory prompts must never reach the acceptance gate");
+    });
+
+    expect(result).toEqual({ messages: [trajectory], changed: false });
+  });
+
 
   it("automatically returns Main and becomes idle after a one-shot in-place continuation", async () => {
     const controller = new PrewalkController();
