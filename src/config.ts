@@ -66,6 +66,9 @@ interface FabricPrewalkConfig {
   mode: FabricPrewalkMode;
   model?: string;
   alwaysRearm: boolean;
+  // Compact with the configured engine just before restoring Main's boundary
+  // model after an in-place continuation settles.
+  compactOnReturn: boolean;
   // Reasoning effort for the trajectory executor; unset inherits agents.thinking.
   thinking?: FabricThinking;
 }
@@ -226,6 +229,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   prewalk: {
     mode: "in-place",
     alwaysRearm: false,
+    compactOnReturn: true,
   },
   agents: {
     enabled: true,
@@ -602,6 +606,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       alwaysRearm: booleanValue(
         prewalk.alwaysRearm,
         DEFAULT_FABRIC_CONFIG.prewalk.alwaysRearm,
+      ),
+      compactOnReturn: booleanValue(
+        prewalk.compactOnReturn,
+        DEFAULT_FABRIC_CONFIG.prewalk.compactOnReturn,
       ),
     },
     agents: {

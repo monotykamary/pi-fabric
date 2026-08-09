@@ -116,7 +116,7 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
 
 `prewalk.model` is the optional Pi `provider/model` selected by `/fabric prewalk`. `prewalk.mode` chooses how execution continues:
 
-- `"in-place"` (default) switches Main to the executor model and queues a hidden follow-up in the same session.
+- `"in-place"` (default) switches Main to the executor model, queues a hidden follow-up in the same session, and restores Main's boundary model when the continuation settles.
 - `"trajectory"` forks the finalized outer Fabric call/result to a visible Pi child and waits; when the child finishes, a hidden continuation turn has Main verify the work and summarize instead of going idle.
 
 ```json
@@ -125,7 +125,8 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "mode": "in-place",
     "model": "anthropic/claude-haiku-4-5",
     "thinking": "high",
-    "alwaysRearm": true
+    "alwaysRearm": true,
+    "compactOnReturn": true
   }
 }
 ```
@@ -134,7 +135,9 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
 
 `prewalk.alwaysRearm` defaults to `false`. When enabled, prewalk returns to an armed, taskless state after each continuation or settled task. The settings UI labels an unset model **Ask each time**; non-interactive sessions must configure a model. In-place mode does not require child agents. Trajectory mode requires `agents.enabled` and exposes child spawn, progress, nested tools, metrics, and completion in Main's Fabric activity UI.
 
-Pi's public `setModel` extension API persists the in-place executor as the active session model and updates Pi's default model setting. Fabric does not silently restore the planner model after the task.
+`prewalk.compactOnReturn` defaults to `true`. When an in-place continuation settles, Fabric requests a compaction with the configured `compaction.engine` and commits it while the executor is still the active model, so Main's restored model re-ingests the compacted transcript rather than the executor's full scratch work. Set to `false` to keep the complete transcript on Main's return.
+
+Each in-place handoff captures Main's active model at the boundary and restores it when the continuation settles; because Pi's public `setModel` extension API also updates Pi's default model setting, the restore returns the configured default to Main's model as well. A session that ends mid-continuation leaves the executor selection persisted until the next settle.
 
 ## Result formatting
 

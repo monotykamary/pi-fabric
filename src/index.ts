@@ -286,7 +286,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   pi.on("agent_settled", async (event, context) => {
     if (!state.initialized) return;
     const sessionId = context.sessionManager.getSessionId();
-    const settledInPlace = await settleInPlacePrewalk(state.prewalk, pi, context);
+    const settledInPlace = await settleInPlacePrewalk(state.prewalk, pi, context, {
+      compactOnReturn: state.config.prewalk.compactOnReturn,
+      compact: state.compact,
+    });
     if (!settledInPlace && state.prewalk.settleTask(sessionId)) {
       const status = state.prewalk.status();
       context.ui.setStatus(

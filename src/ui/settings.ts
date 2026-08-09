@@ -959,6 +959,16 @@ export const buildFabricSettingsItems = (
             },
           ),
           setting(
+            "prewalk.compactOnReturn",
+            "Compact on return",
+            config.prewalk.compactOnReturn ? "true" : "false",
+            {
+              description:
+                "After an in-place continuation settles, compact the session with the configured compaction engine just before Main's boundary model is restored, so Main re-ingests a compacted transcript rather than the executor's full scratch work.",
+              values: BOOLEANS,
+            },
+          ),
+          setting(
             "prewalk.thinking",
             "Thinking",
             config.prewalk.thinking

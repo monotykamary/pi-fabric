@@ -326,6 +326,99 @@ describe("outer-boundary Prewalk", () => {
     expect(result).toEqual({ messages: [trajectory], changed: false });
   });
 
+  it("compacts before restoring Main when compactOnReturn is enabled", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+    controller.acceptContinuation("session-1", continuation.details.continuationId);
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+
+    const compact = {
+      request: vi.fn(),
+      maybeCommit: vi.fn(async () => {}),
+    };
+    expect(
+      await settleInPlacePrewalk(controller, ext.value, ctx.value, {
+        compactOnReturn: true,
+        compact,
+      }),
+    ).toBe(true);
+
+    expect(compact.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: "in-place prewalk return",
+        requestedBy: "prewalk",
+      }),
+    );
+    expect(compact.maybeCommit).toHaveBeenCalledWith(ctx.value);
+    const compactionOrder = compact.maybeCommit.mock.invocationCallOrder[0]!;
+    const switchOrder = ext.setModel.mock.invocationCallOrder;
+    expect(compactionOrder).toBeGreaterThan(switchOrder[0]!);
+    expect(compactionOrder).toBeLessThan(switchOrder[1]!);
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+    expect(controller.status()).toEqual({ state: "idle" });
+  });
+
+  it("restores Main without compacting when compactOnReturn is disabled", async () => {
+    const controller = new PrewalkController();
+    controller.arm({
+      model: "anthropic/executor",
+      sessionId: "session-1",
+      task: "Implement the guard",
+    });
+    const pending = claimFabricHandoff(controller, execution(), "session-1", "json");
+    const ctx = context();
+    const ext = extension();
+
+    await runFabricHandoffAtBoundary(
+      controller,
+      unusedRunner(),
+      ext.value,
+      pending!,
+      outerResult(),
+      ctx.value,
+    );
+    const continuation = ext.sendMessage.mock.calls.find(
+      ([message]) => message.customType === "pi-fabric-prewalk-continue",
+    )?.[0] as { details: { continuationId: string } };
+    controller.acceptContinuation("session-1", continuation.details.continuationId);
+    ctx.value.model = ctx.target as typeof ctx.value.model;
+
+    const compact = {
+      request: vi.fn(),
+      maybeCommit: vi.fn(async () => {}),
+    };
+    expect(
+      await settleInPlacePrewalk(controller, ext.value, ctx.value, {
+        compactOnReturn: false,
+        compact,
+      }),
+    ).toBe(true);
+
+    expect(compact.request).not.toHaveBeenCalled();
+    expect(compact.maybeCommit).not.toHaveBeenCalled();
+    expect(ext.setModel.mock.calls).toEqual([[ctx.target], [ctx.sourceModel]]);
+  });
+
+
 
   it("automatically returns Main and becomes idle after a one-shot in-place continuation", async () => {
     const controller = new PrewalkController();

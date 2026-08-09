@@ -8,6 +8,7 @@ import {
   NESTED_TOOL_CALL_ID_PREFIX,
   type FabricCallAudit,
 } from "../core/action-registry.js";
+import type { CompactRequestIntent } from "../core/compact-controller.js";
 import type { FabricExecutionResult } from "../execution-service.js";
 import type {
   FabricInvocationActivityUpdate,
@@ -342,10 +343,26 @@ const modelForReturnKey = (key: string, context: ExtensionContext) => {
   return context.modelRegistry.find(key.slice(0, separator), key.slice(separator + 1));
 };
 
+const PREWALK_RETURN_COMPACTION_INSTRUCTIONS = [
+  "Compact before Main returns to its boundary model after an in-place prewalk continuation.",
+  "Preserve the executor's final report and verification results; summarize implementation scratch work, file reads, and command output.",
+].join(" ");
+
+export interface InPlacePrewalkSettleOptions {
+  // Enabled by default when a compact controller is provided.
+  compactOnReturn?: boolean;
+  compact?: {
+    request(intent: CompactRequestIntent): unknown;
+    maybeCommit(context: ExtensionContext): Promise<void>;
+    status?(): { pending?: unknown };
+  };
+}
+
 export const settleInPlacePrewalk = async (
   controller: PrewalkController,
   extension: ExtensionAPI,
   context: ExtensionContext,
+  options?: InPlacePrewalkSettleOptions,
 ): Promise<boolean> => {
   const sessionId = context.sessionManager.getSessionId();
   const settlement = controller.takeContinuationSettlement(sessionId);
@@ -363,6 +380,22 @@ export const settleInPlacePrewalk = async (
   }
 
   context.ui.setStatus("fabric-prewalk", `returning Main → ${settlement.returnModel}`);
+  if (options?.compact && options.compactOnReturn !== false) {
+    // Compact while the executor is still active so the restored boundary
+    // model re-ingests a compacted transcript instead of the executor's full
+    // implementation scratch work: the return prefill is cold regardless of
+    // provider cache-policy differences, so keep it small. An already-pending
+    // intent (e.g. requested by the model) wins over ours. The commit is
+    // best-effort; the controller records failures without throwing.
+    if (!options.compact.status?.().pending) {
+      options.compact.request({
+        reason: "in-place prewalk return",
+        instructions: PREWALK_RETURN_COMPACTION_INSTRUCTIONS,
+        requestedBy: "prewalk",
+      });
+    }
+    await options.compact.maybeCommit(context);
+  }
   let restored = false;
   try {
     restored = await extension.setModel(model);

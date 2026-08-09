@@ -95,14 +95,21 @@ describe("Fabric configuration", () => {
   it("normalizes a dedicated prewalk executor model", () => {
     expect(
       normalizeFabricConfig({ prewalk: { model: "anthropic/executor" } }).prewalk,
-    ).toEqual({ mode: "in-place", model: "anthropic/executor", alwaysRearm: false });
+    ).toEqual({
+      mode: "in-place",
+      model: "anthropic/executor",
+      alwaysRearm: false,
+      compactOnReturn: true,
+    });
     expect(normalizeFabricConfig({ prewalk: { model: "   " } }).prewalk).toEqual({
       mode: "in-place",
       alwaysRearm: false,
+      compactOnReturn: true,
     });
     expect(normalizeFabricConfig({ prewalk: { alwaysRearm: true } }).prewalk).toEqual({
       mode: "in-place",
       alwaysRearm: true,
+      compactOnReturn: true,
     });
     expect(normalizeFabricConfig({ prewalk: { mode: "trajectory" } }).prewalk.mode).toBe(
       "trajectory",
@@ -531,7 +538,11 @@ describe("Fabric configuration", () => {
     );
 
     saveFabricConfig(location, { prewalk: { model: "" } });
-    expect(loadFabricConfig(location).prewalk).toEqual({ mode: "in-place", alwaysRearm: false });
+    expect(loadFabricConfig(location).prewalk).toEqual({
+      mode: "in-place",
+      alwaysRearm: false,
+      compactOnReturn: true,
+    });
   });
 
   it("saves array overrides by replacing the array while preserving siblings", () => {
