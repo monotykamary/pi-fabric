@@ -193,6 +193,8 @@ export class ResidentHost {
       const participant = this.participants.get(id);
       return participant ? participant.ownerHostId === this.hostId : undefined;
     };
+    const lineageAlive = (rootId: string): boolean =>
+      this.participants.get(rootId) !== undefined;
     this.actors = new ActorManager(
       config.sessionId,
       this.identity,
@@ -215,6 +217,7 @@ export class ResidentHost {
         actorRoot: config.actorRoot,
         persistent: true,
         canManageActor,
+        lineageAlive,
         claimResidency: "durable",
         rootId: config.rootId,
         meshCursorPath: path.join(config.residencyRoot, "actor-mesh-cursor.json"),

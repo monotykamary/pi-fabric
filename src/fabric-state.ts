@@ -341,6 +341,8 @@ export class FabricState {
       const participant = this.#participants?.get(actorId);
       return participant ? participant.ownerHostId === hostId : undefined;
     };
+    const lineageAlive = (rootId: string): boolean =>
+      this.#participants?.get(rootId) !== undefined;
     const persistentActorRoot =
       this.#config.mesh.actorScope === "session"
         ? path.join(meshRoot, "actors", sessionId)
@@ -380,6 +382,7 @@ export class FabricState {
             persistent: true,
             mainAgent,
             canManageActor,
+            lineageAlive,
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,
@@ -388,6 +391,7 @@ export class FabricState {
             persistent: false,
             mainAgent,
             canManageActor,
+            lineageAlive,
             claimResidency: "session",
             rootId: mainAgentId,
             retention: this.#config.retention,

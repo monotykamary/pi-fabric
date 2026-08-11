@@ -53,6 +53,10 @@ interface ManagedActor {
   id: string;
   name: string;
   rootId: string;
+  // Fencing token written when a host adopts this lineage: a lineage adopted
+  // this recently still has an adopter finding its footing — do not adopt
+  // over it until ORPHAN_ADOPTION_RETRY_MS has elapsed.
+  adoptedAt?: number;
   instructions: string;
   status: FabricActorStatus;
   events: FabricActorHostEvent[];
@@ -97,6 +101,7 @@ const MAIN_REVISION_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set([
 const MESSAGE_HISTORY_LIMIT = 100;
 const MESH_WATCH_RECONCILE_MS = 2_000;
 const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
+const ORPHAN_ADOPTION_RETRY_MS = 30_000;
 const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
@@ -165,6 +170,7 @@ export class ActorManager {
   readonly #persistent: boolean;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
   readonly #canManageActor: ((id: string) => boolean | undefined) | undefined;
+  readonly #lineageAlive: ((rootId: string) => boolean) | undefined;
   readonly #claimResidency: FabricParticipantResidency | undefined;
   readonly #rootId: string;
   readonly #meshCursorPath: string | undefined;
@@ -172,6 +178,13 @@ export class ActorManager {
   readonly #locallyCreated = new Set<string>();
   readonly #ceded = new Set<string>();
   readonly #ownership = new Map<string, boolean>();
+  // Lineage rootIds as last read from / written to the registry on disk.
+  // Adoption compares against this snapshot so two racing adopters cannot
+  // both move the same dead lineage: only the first fenced write succeeds.
+  readonly #persistedRoots = new Map<string, string>();
+  // In-flight fenced adoption attempts, one per actor.
+  readonly #adoptionPending = new Set<string>();
+  readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
   #pollTimer: NodeJS.Timeout | undefined;
   #retentionTimer: NodeJS.Timeout | undefined;
@@ -203,6 +216,8 @@ export class ActorManager {
       persistent?: boolean;
       mainAgent?: FabricMainAgentTarget;
       canManageActor?: (id: string) => boolean | undefined;
+      lineageAlive?: (rootId: string) => boolean;
+      adoptionGraceMs?: number;
       claimResidency?: FabricParticipantResidency;
       rootId?: string;
       meshCursorPath?: string;
@@ -214,6 +229,8 @@ export class ActorManager {
     this.#persistent = options.persistent ?? false;
     this.#mainAgent = options.mainAgent;
     this.#canManageActor = options.canManageActor;
+    this.#lineageAlive = options.lineageAlive;
+    this.#adoptionGraceMs = options.adoptionGraceMs ?? ORPHAN_ADOPTION_RETRY_MS;
     this.#claimResidency = options.claimResidency;
     this.#rootId = options.rootId ?? identity.id;
     this.#meshCursorPath = options.meshCursorPath;
@@ -740,15 +757,13 @@ export class ActorManager {
   }
 
   #observesHostEvent(actor: ManagedActor, event: FabricActorHostEvent): boolean {
-    if (actor.status === "stopped" || !actor.events.includes(event)) {
-      return false;
-    }
-    // After orphan takeover, ownership may flip before rootId is rebound/persisted.
-    // Prefer the live ownership decision over a stale creating-root stamp.
-    if (actor.rootId !== this.#rootId && !this.#canManageCached(actor.id)) {
-      return false;
-    }
-    return this.#canManageCached(actor.id) || actor.residency === "durable";
+    if (actor.status === "stopped" || !actor.events.includes(event)) return false;
+    // Refreshing check: adoption grants ownership only after the fenced
+    // registry write, and a cede must stop event consumption immediately —
+    // the ownership cache alone lags directory movement.
+    return (
+      this.#canManage(actor.id) || (actor.rootId === this.#rootId && actor.residency === "durable")
+    );
   }
 
   #relayHostEvent(
@@ -1658,6 +1673,7 @@ export class ActorManager {
       id: actor.id,
       name: actor.name,
       rootId: actor.rootId,
+      ...(actor.adoptedAt !== undefined ? { adoptedAt: actor.adoptedAt } : {}),
       instructions: actor.instructions,
       status: actor.status,
       events: actor.events,
@@ -1773,6 +1789,11 @@ export class ActorManager {
       const actors = [...preserved, ...owned.map((actor) => this.#serializedActor(actor))];
       atomicWrite(this.#registryPath, { format: 1, actors });
       this.#registryFingerprint = this.#currentRegistryFingerprint();
+      for (const id of removedIds) this.#persistedRoots.delete(id);
+      for (const actor of owned) this.#persistedRoots.set(actor.id, actor.rootId);
+      for (const record of preserved) {
+        if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
+      }
     });
   }
 
@@ -1834,6 +1855,13 @@ export class ActorManager {
     for (const value of records) {
       if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
       const record = value as Partial<ManagedActor>;
+      if (typeof record.id === "string" && typeof record.rootId === "string") {
+        this.#persistedRoots.set(record.id, record.rootId);
+      }
+    }
+    for (const value of records) {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+      const record = value as Partial<ManagedActor>;
       if (
         typeof record.id !== "string" ||
         !/^[a-f0-9]{32}$/.test(record.id) ||
@@ -1859,6 +1887,7 @@ export class ActorManager {
         id: record.id,
         name: record.name,
         rootId: typeof record.rootId === "string" ? record.rootId : this.#rootId,
+        ...(typeof record.adoptedAt === "number" ? { adoptedAt: record.adoptedAt } : {}),
         instructions: record.instructions,
         status,
         events: Array.isArray(record.events)
@@ -1974,17 +2003,13 @@ export class ActorManager {
     if (decision === true) return true;
 
     // No live directory signal.
-    // Without a canManageActor hook, preserve creating-root lineage locks
-    // (resident brokers and unit tests that opt out of directory integration).
-    // With a hook that returned undefined, there is no live owner advertisement
-    // for this actor — treat it as orphaned and allow residency-matched takeover
-    // so project-scoped actors can reload after the creating session exits.
-    if (
-      actor &&
-      this.#claimResidency &&
-      actor.rootId !== this.#rootId &&
-      this.#canManageActor === undefined
-    ) {
+    if (actor && this.#claimResidency && actor.rootId !== this.#rootId) {
+      // Foreign lineage. Without a directory hook, preserve creating-root
+      // lineage locks (resident brokers and unit tests that opt out of
+      // directory integration). With a hook, the creating root may be dead:
+      // residency-matched adoption is possible, but only completes through
+      // the fenced registry write in #confirmAdoption. Deny provisionally so
+      // concurrent starters cannot run the same orphan while adoption races.
       return false;
     }
 
@@ -1995,17 +2020,98 @@ export class ActorManager {
     return this.#canManageActor === undefined;
   }
 
-  #rebindOwnedRoot(actor: ManagedActor): boolean {
-    if (actor.rootId === this.#rootId) return false;
-    actor.rootId = this.#rootId;
-    actor.updatedAt = Date.now();
-    return true;
+  #maybeAdoptOrphan(actor: ManagedActor): void {
+    if (
+      !this.#persistent ||
+      this.#closing ||
+      !this.#canManageActor ||
+      this.#claimResidency === undefined ||
+      this.#adoptionPending.has(actor.id)
+    ) {
+      return;
+    }
+    if (actor.rootId === this.#rootId) return;
+    // Only residency-matched rows: Main adopts "session" actors, the resident
+    // host adopts "durable" actors.
+    if (actor.residency !== this.#claimResidency) return;
+    // Only when the directory has no live opinion about the actor itself.
+    if (this.#canManageActor(actor.id) !== undefined) return;
+    // Only when the lineage root itself is provably dead. This refuses
+    // lineages a racing winner already claimed and advertised, even when the
+    // winner persisted before we loaded and its actor presence has not
+    // reached our tail yet.
+    if (this.#lineageAlive?.(actor.rootId) === true) return;
+    // Only against a disk view we are in sync with.
+    if (this.#persistedRoots.get(actor.id) !== actor.rootId) return;
+    // A lineage adopted this recently has a live adopter that may simply be
+    // invisible to our directory tail yet; give it the grace window.
+    if (actor.adoptedAt !== undefined && Date.now() - actor.adoptedAt < this.#adoptionGraceMs) {
+      return;
+    }
+    void this.#confirmAdoption(actor).catch(() => undefined);
+  }
+
+  async #confirmAdoption(actor: ManagedActor): Promise<void> {
+    if (this.#adoptionPending.has(actor.id)) return;
+    this.#adoptionPending.add(actor.id);
+    try {
+      const expectedRootId = actor.rootId;
+      const adopted = await this.#withRegistryLock(() => {
+        const records = this.#registryRecords();
+        const current = records.find((record) => record.id === actor.id);
+        // A racing adopter rewrote the lineage since we loaded it; they win.
+        if (!current || current.rootId !== expectedRootId) return false;
+        // A live owner opinion appeared while we waited for the lock.
+        if (this.#canManageActor?.(actor.id) !== undefined) return false;
+        // The lineage root turned out to be alive after all.
+        if (this.#lineageAlive?.(expectedRootId) === true) return false;
+        // Another adoption just landed; its adopter deserves the grace window.
+        if (
+          typeof current.adoptedAt === "number" &&
+          Date.now() - current.adoptedAt < this.#adoptionGraceMs
+        ) {
+          return false;
+        }
+        for (const record of records) {
+          if (typeof record.rootId === "string") this.#persistedRoots.set(record.id, record.rootId);
+        }
+        actor.rootId = this.#rootId;
+        actor.adoptedAt = Date.now();
+        actor.updatedAt = Date.now();
+        const preserved = records.filter((record) => record.id !== actor.id);
+        atomicWrite(this.#registryPath, {
+          format: 1,
+          actors: [...preserved, this.#serializedActor(actor)],
+        });
+        this.#registryFingerprint = this.#currentRegistryFingerprint();
+        return true;
+      });
+      if (adopted) {
+        this.#persistedRoots.set(actor.id, this.#rootId);
+      } else {
+        const current = this.#registryRecords().find((record) => record.id === actor.id);
+        if (!current) {
+          this.#persistedRoots.delete(actor.id);
+        } else if (typeof current.rootId === "string" && current.rootId !== this.#rootId) {
+          // Resync to the lineage the racing winner persisted; its fresh
+          // adoptedAt then fences our retry for the grace window.
+          this.#persistedRoots.set(actor.id, current.rootId);
+          actor.rootId = current.rootId;
+          if (typeof current.adoptedAt === "number") actor.adoptedAt = current.adoptedAt;
+        }
+      }
+    } catch {
+      // Lock timeout or IO failure: state untouched; a later refresh retries.
+    } finally {
+      this.#adoptionPending.delete(actor.id);
+    }
+    this.#refreshOwnership();
+    this.#emitChange();
   }
 
   #refreshOwnership(): void {
     if (!this.#canManageActor || this.#reloadingOwnership) return;
     let acquired = false;
-    let rebound = false;
     for (const actor of this.#actors.values()) {
       const previous = this.#ownership.get(actor.id) ?? false;
       const next = this.#ownershipDecision(actor.id);
@@ -2022,13 +2128,8 @@ export class ActorManager {
         if (actor.status !== "stopped") actor.status = "idle";
       } else if (!previous && next) {
         acquired = true;
-        if (this.#rebindOwnedRoot(actor)) rebound = true;
-      } else if (next && this.#rebindOwnedRoot(actor)) {
-        rebound = true;
       }
-    }
-    if (rebound && this.#persistent && !this.#closing) {
-      void this.#saveActors().catch(() => undefined);
+      if (!next) this.#maybeAdoptOrphan(actor);
     }
     if (!acquired || !this.#persistent || this.#closing) return;
     this.#reloadingOwnership = true;
@@ -2038,14 +2139,8 @@ export class ActorManager {
       this.#ownership.clear();
       this.#locallyCreated.clear();
       this.#loadActors();
-      let reloadedRebound = false;
       for (const actor of this.#actors.values()) {
-        const owns = this.#ownershipDecision(actor.id);
-        this.#ownership.set(actor.id, owns);
-        if (owns && this.#rebindOwnedRoot(actor)) reloadedRebound = true;
-      }
-      if (reloadedRebound) {
-        void this.#saveActors().catch(() => undefined);
+        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
       }
     } finally {
       this.#reloadingOwnership = false;
