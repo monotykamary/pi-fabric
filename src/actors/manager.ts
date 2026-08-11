@@ -740,11 +740,12 @@ export class ActorManager {
   }
 
   #observesHostEvent(actor: ManagedActor, event: FabricActorHostEvent): boolean {
-    if (
-      actor.status === "stopped" ||
-      !actor.events.includes(event) ||
-      actor.rootId !== this.#rootId
-    ) {
+    if (actor.status === "stopped" || !actor.events.includes(event)) {
+      return false;
+    }
+    // After orphan takeover, ownership may flip before rootId is rebound/persisted.
+    // Prefer the live ownership decision over a stale creating-root stamp.
+    if (actor.rootId !== this.#rootId && !this.#canManageCached(actor.id)) {
       return false;
     }
     return this.#canManageCached(actor.id) || actor.residency === "durable";
@@ -1966,9 +1967,27 @@ export class ActorManager {
   #ownershipDecision(id: string): boolean {
     if (this.#ceded.has(id)) return false;
     const actor = this.#actors.get(id);
-    if (actor && this.#claimResidency && actor.rootId !== this.#rootId) return false;
     const decision = this.#canManageActor?.(id);
-    if (decision !== undefined) return decision;
+
+    // The participant directory is authoritative when it has a live opinion.
+    if (decision === false) return false;
+    if (decision === true) return true;
+
+    // No live directory signal.
+    // Without a canManageActor hook, preserve creating-root lineage locks
+    // (resident brokers and unit tests that opt out of directory integration).
+    // With a hook that returned undefined, there is no live owner advertisement
+    // for this actor — treat it as orphaned and allow residency-matched takeover
+    // so project-scoped actors can reload after the creating session exits.
+    if (
+      actor &&
+      this.#claimResidency &&
+      actor.rootId !== this.#rootId &&
+      this.#canManageActor === undefined
+    ) {
+      return false;
+    }
+
     if (this.#locallyCreated.has(id)) return true;
     if (actor && this.#claimResidency !== undefined) {
       return actor.residency === this.#claimResidency;
@@ -1976,9 +1995,17 @@ export class ActorManager {
     return this.#canManageActor === undefined;
   }
 
+  #rebindOwnedRoot(actor: ManagedActor): boolean {
+    if (actor.rootId === this.#rootId) return false;
+    actor.rootId = this.#rootId;
+    actor.updatedAt = Date.now();
+    return true;
+  }
+
   #refreshOwnership(): void {
     if (!this.#canManageActor || this.#reloadingOwnership) return;
     let acquired = false;
+    let rebound = false;
     for (const actor of this.#actors.values()) {
       const previous = this.#ownership.get(actor.id) ?? false;
       const next = this.#ownershipDecision(actor.id);
@@ -1995,7 +2022,13 @@ export class ActorManager {
         if (actor.status !== "stopped") actor.status = "idle";
       } else if (!previous && next) {
         acquired = true;
+        if (this.#rebindOwnedRoot(actor)) rebound = true;
+      } else if (next && this.#rebindOwnedRoot(actor)) {
+        rebound = true;
       }
+    }
+    if (rebound && this.#persistent && !this.#closing) {
+      void this.#saveActors().catch(() => undefined);
     }
     if (!acquired || !this.#persistent || this.#closing) return;
     this.#reloadingOwnership = true;
@@ -2005,8 +2038,14 @@ export class ActorManager {
       this.#ownership.clear();
       this.#locallyCreated.clear();
       this.#loadActors();
+      let reloadedRebound = false;
       for (const actor of this.#actors.values()) {
-        this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
+        const owns = this.#ownershipDecision(actor.id);
+        this.#ownership.set(actor.id, owns);
+        if (owns && this.#rebindOwnedRoot(actor)) reloadedRebound = true;
+      }
+      if (reloadedRebound) {
+        void this.#saveActors().catch(() => undefined);
       }
     } finally {
       this.#reloadingOwnership = false;

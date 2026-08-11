@@ -131,6 +131,109 @@ describe("ActorManager", () => {
     expect(other.owns(actor.id)).toBe(false);
   });
 
+  it("adopts orphaned project actors after the creating root is gone", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "orphaned",
+      instructions: "Survive the creating session.",
+      events: ["agent_settled"],
+      residency: "session",
+    });
+    expect(actor.rootId).toBe(state.identity.id);
+    await state.actors.close();
+
+    // No live participant-directory owner (undefined): Main-shaped manager with
+    // claimResidency + canManageActor must take over and rebind rootId.
+    const successorIdentity: MeshIdentity = {
+      id: "session:successor",
+      name: "main",
+      kind: "main",
+      sessionId: "successor",
+    };
+    const liveOwners = new Map<string, string>();
+    const successor = new ActorManager(
+      "successor",
+      successorIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.agents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        claimResidency: "session",
+        rootId: successorIdentity.id,
+        canManageActor: (id) => {
+          const owner = liveOwners.get(id);
+          if (!owner) return undefined;
+          return owner === successorIdentity.id;
+        },
+      },
+    );
+    actorManagers.push(successor);
+
+    expect(successor.owns(actor.id)).toBe(true);
+    expect(successor.status(actor.id).rootId).toBe(successorIdentity.id);
+    expect(successor.tell(actor.id, "run after orphan takeover")).toMatchObject({
+      queued: true,
+    });
+    await successor.setModel(actor.id, "provider/after-takeover");
+    expect(successor.status(actor.id).model).toBe("provider/after-takeover");
+
+    // create/import must not be bricked by the orphaned row
+    const imported = await successor.create({
+      name: "fresh",
+      instructions: "Created after orphan takeover.",
+      residency: "session",
+    });
+    expect(imported.rootId).toBe(successorIdentity.id);
+
+    const registry = JSON.parse(
+      fs.readFileSync(path.join(state.root, "actors", "actors.json"), "utf8"),
+    ) as { actors: Array<{ id: string; rootId: string; model?: string }> };
+    const saved = registry.actors.find((row) => row.id === actor.id);
+    expect(saved?.rootId).toBe(successorIdentity.id);
+    expect(saved?.model).toBe("provider/after-takeover");
+  });
+
+  it("still refuses takeover while another host live-owns the actor", async () => {
+    const state = setup(true);
+    const actor = await state.actors.create({
+      name: "live-owned",
+      instructions: "Stay with the live owner.",
+      residency: "session",
+    });
+    const peerIdentity: MeshIdentity = {
+      id: "session:peer",
+      name: "main",
+      kind: "main",
+      sessionId: "peer",
+    };
+    const peer = new ActorManager(
+      "peer",
+      peerIdentity,
+      state.mesh,
+      state.meshConfig,
+      state.agents,
+      () => {},
+      {
+        actorRoot: path.join(state.root, "actors"),
+        persistent: true,
+        claimResidency: "session",
+        rootId: peerIdentity.id,
+        // Live foreign owner advertised by the participant directory.
+        canManageActor: () => false,
+      },
+    );
+    actorManagers.push(peer);
+
+    expect(peer.owns(actor.id)).toBe(false);
+    expect(() => peer.tell(actor.id, "blocked")).toThrow("owned by another host");
+    await expect(
+      peer.create({ name: "blocked-create", instructions: "Should fail." }),
+    ).rejects.toThrow("registry is owned by another host");
+  });
+
   it("preserves current remote actor records when saving a locally owned actor", async () => {
     let localId: string | undefined;
     const state = setup(true, (id) => localId === undefined || id === localId);
