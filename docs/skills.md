@@ -38,7 +38,7 @@ A mandatory pointer is disclosure for legibility and single-source maintenance, 
 - `/skill:fabric-guide` — choose a workflow.
 - `/skill:fabric-workflow` — finite fan-out/pipeline work with verification.
 - `/skill:fabric-council` — same-model role diversity.
-- `/skill:fabric-fusion` — multi-model deliberation.
+- `/skill:fabric-fusion` — multi-model deliberation (compare) or acting (read-only references + one actor).
 - `/skill:fabric-rlm` — recursive context decomposition.
 - `/skill:fabric-schema` — evidence-gated mutation.
 - `/skill:fabric-advisor` — persistent peer advice.

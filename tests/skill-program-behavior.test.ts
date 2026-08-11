@@ -427,6 +427,262 @@ describe("expensive skill program behavior", () => {
     });
   });
 
+  it("acts with one read-only reference and an explicit actor, hiding advice on success", async () => {
+    const referenceOptions: Array<Record<string, unknown>> = [];
+    const actorOptions: Array<Record<string, unknown>> = [];
+    const calls: string[] = [];
+    const result = await runSkill("fabric-fusion", {
+      π: {
+        mode: "act",
+        task: "fix the parser",
+        panel: JSON.stringify([{ model: "one", label: "ref" }]),
+        actor: "claude/sonnet",
+        judge: "ignored-in-act",
+        tools: "not-json",
+        thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" },
+      ] },
+      agents: { models: async () => [
+        { key: "claude/sonnet", id: "sonnet", name: "Sonnet" },
+      ] },
+      agent: async (_prompt: string, options: { label: string }) => {
+        calls.push(options.label);
+        if (options.label === "reference · ref") {
+          referenceOptions.push(options);
+          return {
+            approach: "rewrite the parser",
+            material_risks: ["loses comments"],
+            concrete_checks: ["run the fixture suite"],
+          };
+        }
+        actorOptions.push(options);
+        return "parser fixed and verified";
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "success",
+      coverage: { requested: 1, completed: 1 },
+      failures: [],
+      result: "parser fixed and verified",
+    });
+    expect(result).not.toHaveProperty("fallback");
+    expect(JSON.stringify(result)).not.toContain("approach");
+    expect(JSON.stringify(result)).not.toContain("material_risks");
+    expect(JSON.stringify(result)).not.toContain("concrete_checks");
+    expect(referenceOptions[0]).toMatchObject({
+      model: "p/one",
+      tools: ["read", "grep", "find", "ls"],
+    });
+    const schema = (referenceOptions[0] as {
+      schema: { required?: string[]; properties?: Record<string, { maxLength?: number }> };
+    }).schema;
+    expect(schema.required).toContain("approach");
+    expect(schema.properties?.approach?.maxLength).toBe(600);
+    expect(actorOptions[0]).toMatchObject({
+      model: "claude/sonnet",
+      runner: "claude",
+      tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+    });
+    expect(calls).toEqual(["reference · ref", "fusion actor"]);
+    expect(calls).not.toContain("fusion judge");
+  });
+
+  it("runs the actor after a partial act reference failure and honors strings.actorTools", async () => {
+    const calls: string[] = [];
+    let actorPrompt = "";
+    let actorTools: string[] | undefined;
+    const result = await runSkill("fabric-fusion", {
+      π: {
+        mode: "act",
+        task: "harden the login flow",
+        panel: JSON.stringify([{ model: "one" }, { model: "two" }]),
+        actor: "three",
+        actorTools: JSON.stringify(["read", "bash"]),
+        tools: "",
+        thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" },
+        { key: "p/two", id: "two", name: "Two" },
+        { key: "p/three", id: "three", name: "Three" },
+      ] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async (prompt: string, options: { label: string; tools?: string[] }) => {
+        calls.push(options.label);
+        if (options.label === "reference · two") throw new Error("reference unavailable");
+        if (options.label === "fusion actor") {
+          actorPrompt = prompt;
+          actorTools = options.tools;
+          return "fusion actor outcome";
+        }
+        return {
+          approach: `${options.label} plan`,
+          material_risks: [],
+          concrete_checks: ["run focused tests"],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      coverage: { requested: 2, completed: 1 },
+      result: "fusion actor outcome",
+    });
+    expect(result.failures).toEqual([
+      { label: "two", model: "p/two", runner: "pi", status: "failed", error: "reference unavailable" },
+    ]);
+    expect(actorTools).toEqual(["read", "bash"]);
+    expect(actorPrompt).toContain("reference · one plan");
+    expect(actorPrompt).not.toContain("reference unavailable");
+    expect(calls).toEqual(["reference · one", "reference · two", "fusion actor"]);
+  });
+
+  it("fails act mode without spending an actor when no reference completes", async () => {
+    const calls: string[] = [];
+    const result = await runSkill("fabric-fusion", {
+      π: {
+        mode: "act",
+        task: "migrate the store",
+        panel: JSON.stringify([{ model: "one" }, { model: "two" }]),
+        actor: "three",
+        tools: "",
+        thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" },
+        { key: "p/two", id: "two", name: "Two" },
+        { key: "p/three", id: "three", name: "Three" },
+      ] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async (_prompt: string, options: { label: string }) => {
+        calls.push(options.label);
+        throw new Error("provider down");
+      },
+    });
+    expect(result).toMatchObject({
+      status: "failed",
+      coverage: { requested: 2, completed: 0 },
+      result: null,
+    });
+    expect(result.failures).toHaveLength(2);
+    expect(calls).not.toContain("fusion actor");
+  });
+
+  it("returns compact reference advice when the act actor fails, without rerunning references", async () => {
+    const calls: string[] = [];
+    const result = await runSkill("fabric-fusion", {
+      π: {
+        mode: "act",
+        task: "refactor auth",
+        panel: JSON.stringify([{ model: "one" }]),
+        actor: "two",
+        tools: "",
+        thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" },
+        { key: "p/two", id: "two", name: "Two" },
+      ] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async (_prompt: string, options: { label: string }) => {
+        calls.push(options.label);
+        if (options.label === "fusion actor") throw new Error("actor crashed");
+        return {
+          approach: "extract middleware",
+          material_risks: ["breaking change"],
+          concrete_checks: ["typecheck"],
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "partial",
+      coverage: { requested: 1, completed: 1 },
+      result: null,
+      actorError: "actor crashed",
+    });
+    expect(result.fallback).toEqual([
+      {
+        label: "one",
+        model: "p/one",
+        runner: "pi",
+        status: "completed",
+        advice: {
+          approach: "extract middleware",
+          material_risks: ["breaking change"],
+          concrete_checks: ["typecheck"],
+        },
+      },
+    ]);
+    expect(calls).toEqual(["reference · one", "fusion actor"]);
+  });
+
+  it("preflights act mode before spending calls", async () => {
+    let agentCalls = 0;
+    await expect(runSkill("fabric-fusion", {
+      π: {
+        mode: "merge", task: "x", panel: JSON.stringify([{ model: "one" }]),
+        actor: "one", tools: "", thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [{ key: "p/one", id: "one", name: "One" }] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async () => { agentCalls += 1; return "unexpected"; },
+    })).rejects.toThrow('"compare" or "act"');
+
+    await expect(runSkill("fabric-fusion", {
+      π: {
+        mode: "act", task: "x", panel: JSON.stringify([{ model: "one" }]),
+        actor: "", tools: "", thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [{ key: "p/one", id: "one", name: "One" }] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async () => { agentCalls += 1; return "unexpected"; },
+    })).rejects.toThrow("strings.actor");
+
+    await expect(runSkill("fabric-fusion", {
+      π: {
+        mode: "act", task: "x",
+        panel: JSON.stringify([
+          { model: "one" }, { model: "two" }, { model: "three" },
+          { model: "four" }, { model: "five" },
+        ]),
+        actor: "one", tools: "", thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" }, { key: "p/two", id: "two", name: "Two" },
+        { key: "p/three", id: "three", name: "Three" }, { key: "p/four", id: "four", name: "Four" },
+        { key: "p/five", id: "five", name: "Five" },
+      ] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async () => { agentCalls += 1; return "unexpected"; },
+    })).rejects.toThrow("1–4");
+
+    await expect(runSkill("fabric-fusion", {
+      π: {
+        mode: "act", task: "x", panel: JSON.stringify([{ model: "one" }]),
+        actor: "two", actorTools: JSON.stringify({ read: true }), tools: "", thinking: "",
+      },
+      workflow, phase, parallel,
+      tools: { models: async () => [
+        { key: "p/one", id: "one", name: "One" },
+        { key: "p/two", id: "two", name: "Two" },
+      ] },
+      agents: { models: async () => { throw new Error("no claude"); } },
+      agent: async () => { agentCalls += 1; return "unexpected"; },
+    })).rejects.toThrow("strings.actorTools");
+    expect(agentCalls).toBe(0);
+  });
+
   it("rejects unsafe RLM paths before delegation", async () => {
     let delegated = 0;
     const result = await runSkill("fabric-rlm", {

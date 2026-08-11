@@ -99,7 +99,7 @@ Advanced patterns are user-invoked and are not advertised for automatic selectio
 | A strict auditor for one feature design spec | `/skill:fabric-spec Implement docs/specs/checkout.md to the tee; nothing missing, nothing extra.` |
 | A quiet decision-point reviewer | `/skill:fabric-advisor Focus on migration correctness.` |
 | Same-model independent reviewers and one decision | `/skill:fabric-council Review this design for correctness, security, and operability.` |
-| Multi-model compare-not-merge deliberation | `/skill:fabric-fusion Deliberate this design across models.` |
+| Multi-model compare-not-merge deliberation or act mode | `/skill:fabric-fusion Deliberate this design across models.` |
 | One command that infers advisor versus supervisor | `/skill:fabric-ambient advisor Focus on migration correctness.` |
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
 | Evidence-gated edits with postconditions | `/skill:fabric-schema Make this parser change only if focused tests stay green.` |
