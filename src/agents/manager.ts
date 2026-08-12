@@ -482,6 +482,11 @@ export class AgentManager {
         "Claude runner does not support recursive Fabric. Use a Pi runner for recursive: true, or omit recursive for Claude Code tools.",
       );
     }
+    if (runner === "veda" && request.recursive) {
+      throw new Error(
+        "Veda runner does not support recursive Fabric. Use a Pi runner for recursive: true — Veda executes one headless prompt per invocation.",
+      );
+    }
     if (request.sessionSeed && runner !== "pi") {
       throw new Error("Trajectory handoff sessions are only supported by the Pi runner");
     }
@@ -858,11 +863,24 @@ export class AgentManager {
   }
 
   steer(id: string, message: string, data?: unknown): AgentSteerResult {
+    this.#requireSteerable(id);
     return this.#appendSteer(id, { type: "steer", message, data });
   }
 
   followUp(id: string, message: string, data?: unknown): AgentSteerResult {
+    this.#requireSteerable(id);
     return this.#appendSteer(id, { type: "follow_up", message, data });
+  }
+
+  // Veda children run one headless prompt per invocation; there is no stdin
+  // turn channel to steer into. Reject steer/follow-up here so callers learn
+  // at call time instead of the command being silently dropped by the worker.
+  #requireSteerable(id: string): void {
+    if (this.#requireRun(id).runner === "veda") {
+      throw new Error(
+        "The Veda runner does not support steering or follow-ups: Veda executes one headless prompt per invocation. Start a new run instead.",
+      );
+    }
   }
 
   setSteeringMode(id: string, mode: FabricSteeringMode): AgentSteerResult {

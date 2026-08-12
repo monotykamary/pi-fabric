@@ -134,7 +134,7 @@ const rootHarness = async (name: string): Promise<RootHarness> => {
       fabricExtensionPath: path.resolve("dist/index.js"),
       piBinary: "pi",
       claudeBinary: "claude",
-        vedaBinary: "veda",
+      vedaBinary: "veda",
     },
   };
 };

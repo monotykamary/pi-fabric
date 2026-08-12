@@ -20,6 +20,17 @@ process.stdin.on("end", () => {
       );
       process.exit(1);
       break;
+    case "design-fail":
+      process.stdout.write(
+        JSON.stringify({
+          text: "no program here",
+          sessionId: "conv-1",
+          usage: { inputTokens: 10, outputTokens: 5 },
+          design: { ok: false, errors: ["[missing] no <program> block found"] },
+        }, null, 2) + "\n",
+      );
+      process.exit(1);
+      break;
     case "no-json":
       process.exit(0);
       break;

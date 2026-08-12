@@ -173,6 +173,14 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
       },
     },
     {
+      behavior: "design-fail",
+      check: (r: AgentRunResult) => {
+        expect(r.status).toBe("failed");
+        expect(r.error ?? "").toMatch(/design failed/);
+        expect(r.error ?? "").toMatch(/missing.*program/);
+      },
+    },
+    {
       behavior: "no-json",
       check: (r: AgentRunResult) => {
         expect(r.status).toBe("failed");
@@ -196,6 +204,36 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
       );
     }
   }, 30_000);
+
+  it("rejects recursive Fabric for the Veda runner", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const manager = new AgentManager(
+      process.cwd(),
+      { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2_000, maxConcurrent: 1 },
+      { workerPath, piBinary, runRoot: root },
+    );
+    managers.push(manager);
+    await expect(
+      manager.run({ task: "do it", transport: "process", runner: "veda", recursive: true }),
+    ).rejects.toThrow(/does not support recursive Fabric/);
+  });
+
+  it("rejects steering and follow-ups for Veda children at call time", async () => {
+    process.env.FAKE_VEDA_BEHAVIOR = "hang";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const manager = new AgentManager(
+      process.cwd(),
+      { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 10_000, maxConcurrent: 1 },
+      { workerPath, piBinary, vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"), runRoot: root },
+    );
+    managers.push(manager);
+    const handle = await manager.spawn({ task: "do it", transport: "process", runner: "veda" });
+    expect(() => manager.steer(handle.id, "redirect")).toThrow(/does not support steering/);
+    expect(() => manager.followUp(handle.id, "one more pass")).toThrow(/does not support steering/);
+    await manager.stop(handle.id);
+  });
 
   it("rejects persona for non-Veda runners", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));

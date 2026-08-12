@@ -1,7 +1,8 @@
 import type { FabricThinking } from "../thinking.js";
 
-const VEDA_BACKENDS = ["agy", "codex", "claude-code", "droid", "pi"] as const;
-export type VedaBackend = (typeof VEDA_BACKENDS)[number];
+// Well-known Veda backends per the CLI registry: agy, codex, claude-code,
+// droid, pi. The configured value passes through unchanged so backends
+// registered by a custom Veda build keep working.
 
 // Fabric portable tool allowlist → Veda tool ids. find/ls both map to Veda's
 // glob tool (the same convention the Claude runner uses). The Veda CLI passes

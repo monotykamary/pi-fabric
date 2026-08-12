@@ -1114,10 +1114,27 @@ const main = async (): Promise<void> => {
             record.usage = { input, output, cacheRead, cacheWrite: 0, cost };
             emitTokenUsage({ input, output, cacheRead, cacheWrite: 0, cost });
           }
+          const envelopeErrors: string[] = [];
           const error = stringField(vedaParsed.error);
-          if (error) {
+          if (error) envelopeErrors.push(error);
+          // navigator-plan gates the response on a <program> design block and
+          // the worker persona on a <worker_report>; both exit non-zero and
+          // report failure only via design/worker fields, not envelope.error.
+          for (const key of ["design", "worker"] as const) {
+            const gate = vedaParsed[key];
+            if (typeof gate !== "object" || gate === null || Array.isArray(gate)) continue;
+            const status = gate as Record<string, unknown>;
+            if (status.ok !== false) continue;
+            const details = Array.isArray(status.errors)
+              ? status.errors.filter((entry): entry is string => typeof entry === "string").join("; ")
+              : [stringField(status.reason), stringField(status.detail)]
+                  .filter((entry): entry is string => entry !== undefined)
+                  .join(": ");
+            envelopeErrors.push(`Veda ${key} failed${details ? `: ${details}` : ""}`);
+          }
+          if (envelopeErrors.length > 0) {
             sawAgentError = true;
-            terminalError = error;
+            terminalError = envelopeErrors.join("\n");
           }
           record.turns += 1;
           update();
