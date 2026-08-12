@@ -195,6 +195,22 @@ describe("AgentsProvider runner support", () => {
     expect(runProperties).not.toHaveProperty("residency");
   });
 
+  it("exposes the Veda runner and per-run persona on run and spawn", async () => {
+    const { provider } = setup();
+    const run = await provider.describe("run", context);
+    const spawn = await provider.describe("spawn", context);
+    const runProperties = (run?.inputSchema as { properties: Record<string, { enum?: string[] }> }).properties;
+    const spawnProperties = (spawn?.inputSchema as { properties: Record<string, { enum?: string[] }> }).properties;
+    expect(runProperties.runner?.enum).toEqual(["pi", "claude", "veda"]);
+    expect(spawnProperties.runner?.enum).toEqual(["pi", "claude", "veda"]);
+    const persona = { type: "string", description: expect.stringContaining("Veda persona") };
+    expect(runProperties.persona).toMatchObject(persona);
+    expect(spawnProperties.persona).toMatchObject(persona);
+    // Veda forwards any -m value to the backend, so model discovery is an
+    // empty advisory list rather than a runtime enumeration.
+    await expect(provider.invoke("models", { runner: "veda" }, context)).resolves.toEqual([]);
+  });
+
   it("rejects unavailable durable actor residency before creating an actor", async () => {
     const { provider, actors } = setup();
 

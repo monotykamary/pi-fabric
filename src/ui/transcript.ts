@@ -36,7 +36,7 @@ export interface FabricAgentToolPreviewNode {
   id: string;
   name: string;
   status?: string;
-  runner?: "pi" | "claude";
+  runner?: "pi" | "claude" | "veda";
   owner?: "agent" | "actor";
   /** Most recent tool the agent was observed running, when known. */
   currentTool?: string;

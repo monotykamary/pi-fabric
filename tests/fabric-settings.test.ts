@@ -180,7 +180,9 @@ describe("FabricSettingsComponent", () => {
     const lines = agents.submenu!("", () => {}).render(80).join("\n");
     expect(lines).toContain("Default model ›");
     expect(lines).toContain("Max concurrent ›");
-    expect(lines).toContain("Default tools ›");
+    expect(lines).toContain("Veda backend ›");
+    expect(lines).toContain("Veda persona ›");
+    expect(lines).toContain("Veda model ›");
     // Inline value-cycle rows stay plain.
     expect(lines).toContain("Transport");
     expect(lines).not.toContain("Transport ›");
@@ -710,8 +712,10 @@ describe("FabricSettingsComponent", () => {
   it("renders the list-editor rows with counts in their sections", () => {
     const items = buildItems(["fabric_exec", "custom-tool"]);
     const agents = items.find((item) => item.id === "agents")!;
-    expect(agents.submenu!("", () => {}).render(80).join("\n")).toContain("Default tools");
-    expect(agents.submenu!("", () => {}).render(80).join("\n")).toContain("7 tools");
+    const agentsLines = agents.submenu!("", () => {}).render(80).join("\n");
+    expect(agentsLines).toContain("Veda backend");
+    expect(agentsLines).toContain("Veda persona");
+    expect(agentsLines).toContain("Veda model");
     const capture = items.find((item) => item.id === "capture")!;
     const captureLines = capture.submenu!("", () => {}).render(80).join("\n");
     expect(captureLines).toContain("Keep visible");

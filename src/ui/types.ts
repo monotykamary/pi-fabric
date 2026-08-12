@@ -18,7 +18,7 @@ export interface FabricUiAgent {
   id: string;
   name: string;
   status: string;
-  runner?: "pi" | "claude";
+  runner?: "pi" | "claude" | "veda";
   residency?: FabricParticipantResidency;
   transport: string;
   cwd: string;

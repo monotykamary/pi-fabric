@@ -36,6 +36,7 @@ export interface ResidentHostConfig {
   fabricExtensionPath: string;
   piBinary: string;
   claudeBinary: string;
+  vedaBinary: string;
 }
 
 export interface ResidentHostOwner {

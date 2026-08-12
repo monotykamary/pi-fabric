@@ -134,6 +134,83 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     }
   }, 30_000);
 
+  const runVeda = async (
+    behavior: string,
+    task = "do it",
+    timeoutMs = 4_000,
+  ): Promise<AgentRunResult> => {
+    process.env.FAKE_VEDA_BEHAVIOR = behavior;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const config = { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs, maxConcurrent: 1 };
+    const manager = new AgentManager(process.cwd(), config, {
+      workerPath,
+      piBinary,
+      vedaBinary: path.resolve("tests/fixtures/fake-veda.mjs"),
+      runRoot: root,
+    });
+    managers.push(manager);
+    return manager.run({ task, transport: "process", runner: "veda" });
+  };
+
+  it.each([
+    {
+      behavior: "success",
+      check: (r: AgentRunResult) => {
+        expect(r.status).toBe("completed");
+        expect(r.runner).toBe("veda");
+        expect(r.text).toContain("echo:");
+        expect(r.usage).toMatchObject({ input: 10, output: 5, cacheRead: 2, cacheWrite: 0 });
+        expect(r.runnerSessionId).toBe("conv-1");
+        expect(r.turns).toBe(1);
+      },
+    },
+    {
+      behavior: "error",
+      check: (r: AgentRunResult) => {
+        expect(r.status).toBe("failed");
+        expect(r.error ?? "").toMatch(/quota exceeded/);
+      },
+    },
+    {
+      behavior: "no-json",
+      check: (r: AgentRunResult) => {
+        expect(r.status).toBe("failed");
+        expect(r.error ?? "").toMatch(/Veda agent reported an error before exiting/);
+      },
+    },
+    {
+      behavior: "hang",
+      timeoutMs: 2_000,
+      check: (r: AgentRunResult) => {
+        expect(r.status).toBe("timed_out");
+      },
+    },
+  ])("maps veda child behavior $behavior to the correct run outcome", async ({ behavior, timeoutMs, check }) => {
+    const result = await runVeda(behavior, "do it", timeoutMs);
+    try {
+      check(result);
+    } catch (error) {
+      throw new Error(
+        `${behavior}: ${(error as Error).message} (status=${result.status} error=${result.error ?? ""})`,
+      );
+    }
+  }, 30_000);
+
+  it("rejects persona for non-Veda runners", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-e2e-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), { ...DEFAULT_FABRIC_CONFIG.agents, timeoutMs: 2_000, maxConcurrent: 1 }, {
+      workerPath,
+      piBinary,
+      runRoot: root,
+    });
+    managers.push(manager);
+    await expect(
+      manager.run({ task: "do it", transport: "process", runner: "pi", persona: "frontend" }),
+    ).rejects.toThrow(/persona option is only supported by the Veda runner/);
+  });
+
   it.each([
     { behavior: "compact-success", outcome: "completed", error: undefined },
     { behavior: "compact-failure", outcome: "failed", error: "child summary failed" },

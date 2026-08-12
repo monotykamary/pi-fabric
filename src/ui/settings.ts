@@ -54,7 +54,7 @@ const SUBMENU_LAYOUT: SelectListLayoutOptions = {
 
 const BOOLEANS = ["true", "false"] as const;
 const APPROVAL_MODES = ["allow", "ask", "auto", "deny"] as const;
-const RUNNERS = ["pi", "claude"] as const;
+const RUNNERS = ["pi", "claude", "veda"] as const;
 const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "herdr"] as const;
 const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 const ADVISORY_MODES = ["hidden", "enabled", "disabled"] as const satisfies readonly FabricCapabilityAdvisoryMode[];
@@ -306,7 +306,8 @@ const coerceValue = (id: string, value: string, config: FabricConfig): unknown =
     id === "approvals.model" ||
     id === "prewalk.model" ||
     id === "agents.model" ||
-    id === "agents.claude.model"
+    id === "agents.claude.model" ||
+    id === "agents.veda.model"
   ) {
     return value === INHERIT_VALUE || value === PREWALK_MODEL_UNSET_LABEL ? "" : value;
   }
@@ -409,6 +410,13 @@ const nonNegativeIntegerSubmenu = (
   description: string,
 ): SettingsSubmenu => (currentValue, done) =>
   new IntegerInputSubmenu(theme, title, description, currentValue, done, () => done());
+
+const stringInputSubmenu = (
+  theme: Theme,
+  title: string,
+  description: string,
+): SettingsSubmenu => (currentValue, done) =>
+  new StringInputSubmenu(theme, title, description, currentValue, done, () => done());
 
 const compactionThresholdSubmenu = (theme: Theme): SettingsSubmenu => (currentValue, done) =>
   new CompactionThresholdSubmenu(theme, currentValue, done);
@@ -525,6 +533,43 @@ class IntegerInputSubmenu extends Container {
 
   handleInput(data: string): void {
     this.validationText.setText("");
+    this.input.handleInput(data);
+  }
+
+  render(width: number): string[] {
+    this.input.focused = true;
+    return super.render(width);
+  }
+}
+
+class StringInputSubmenu extends Container {
+  readonly input: Input;
+
+  constructor(
+    theme: Theme,
+    title: string,
+    description: string,
+    currentValue: string,
+    onSelect: (value: string) => void,
+    onCancel: () => void,
+  ) {
+    super();
+    this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
+    this.addChild(new Spacer(1));
+    this.addChild(new Text(theme.fg("muted", description), 0, 0));
+    this.addChild(new Spacer(1));
+
+    this.input = new Input();
+    this.input.handleInput(currentValue);
+    this.input.focused = true;
+    this.input.onSubmit = (value) => onSelect(value.trim());
+    this.input.onEscape = onCancel;
+    this.addChild(this.input);
+    this.addChild(new Spacer(1));
+    this.addChild(new Text(theme.fg("dim", "  Enter to save · Esc to go back"), 0, 0));
+  }
+
+  handleInput(data: string): void {
     this.input.handleInput(data);
   }
 
@@ -1191,6 +1236,33 @@ export const buildFabricSettingsItems = (
               ),
             },
           ),
+          setting("agents.veda.backend", "Veda backend", config.agents.veda.backend, {
+            description:
+              "External backend driven by the Veda CLI: agy, codex, claude-code, droid, pi, or a backend registered by the installed Veda build.",
+            submenu: stringInputSubmenu(
+              theme,
+              "Veda backend",
+              "External CLI backend the Veda runner drives for agent runs.",
+            ),
+          }),
+          setting("agents.veda.persona", "Veda persona", config.agents.veda.persona, {
+            description:
+              "Veda persona: navigator-plan, navigator-chat, reviewer, worker, or a custom persona under ~/.config/veda/personas/<name>/AGENTS.md.",
+            submenu: stringInputSubmenu(
+              theme,
+              "Veda persona",
+              "Persona controlling the Veda agent's behavior. Leave as navigator-chat for the default.",
+            ),
+          }),
+          setting("agents.veda.model", "Veda model", config.agents.veda.model || INHERIT_VALUE, {
+            description:
+              "Default model forwarded to the Veda backend when a call does not specify one. Leave empty for the backend default.",
+            submenu: stringInputSubmenu(
+              theme,
+              "Veda model",
+              "Model or alias forwarded to the Veda backend. Empty uses the backend default.",
+            ),
+          }),
           setting("agents.thinking", "Default thinking", thinkingLabel(config.agents.thinking), {
             description:
               "Reasoning effort forwarded to spawned agents and actors when a call does not specify one. Clamped to each model's supported levels (next highest if unsupported).",

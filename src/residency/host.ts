@@ -91,7 +91,8 @@ const validateConfig = (value: unknown, configPath: string): ResidentHostConfig 
     typeof config.workerPath !== "string" ||
     typeof config.fabricExtensionPath !== "string" ||
     typeof config.piBinary !== "string" ||
-    typeof config.claudeBinary !== "string"
+    typeof config.claudeBinary !== "string" ||
+    typeof config.vedaBinary !== "string"
   ) {
     throw new Error("Fabric resident host config is incomplete");
   }
@@ -167,6 +168,7 @@ export class ResidentHost {
       fabricExtensionPath: config.fabricExtensionPath,
       piBinary: config.piBinary,
       claudeBinary: config.claudeBinary,
+      vedaBinary: config.vedaBinary,
       runRoot: path.join(config.residencyRoot, "runs"),
       fullCodeMode: config.fullCodeMode,
       mainAgentId: config.rootId,

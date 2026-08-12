@@ -82,7 +82,10 @@ export const tokenUsagePayloadFromValue = (
   value: unknown,
 ): FabricTokenUsagePayload | undefined => {
   if (!isObject(value)) return undefined;
-  const runner = value.runner === "pi" || value.runner === "claude" ? value.runner : undefined;
+  const runner =
+    value.runner === "pi" || value.runner === "claude" || value.runner === "veda"
+      ? value.runner
+      : undefined;
   if (
     typeof value.runId !== "string" ||
     typeof value.name !== "string" ||
@@ -161,7 +164,10 @@ export const lifecycleEventFromMesh = (
   }
   const source = event.data.source;
   const kind = participantKind(source.kind);
-  const runner = source.runner === "pi" || source.runner === "claude" ? source.runner : undefined;
+  const runner =
+    source.runner === "pi" || source.runner === "claude" || source.runner === "veda"
+      ? source.runner
+      : undefined;
   if (
     !kind ||
     !runner ||

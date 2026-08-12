@@ -162,6 +162,24 @@ Unknown tools fail before launch. `extensions: false` starts Claude in safe mode
 
 Claude-backed children are intentionally **not recursively Fabric-equipped**: `recursive: true`, `fabric_exec`, and direct `mesh.*` access are rejected. Use `runner: "pi"` for RLM/recursive Fabric, or use a Claude-backed persistent actor for host-managed mailbox/event coordination.
 
+### Veda runner
+
+The `veda` runner drives the [Veda CLI](https://github.com/kennyfrc/veda) as a one-shot headless child. Install and authenticate the configured backend CLI normally — Veda can drive `agy`, `codex`, `claude-code`, `droid`, `pi`, and any backend registered by the installed Veda build. Fabric invokes `agents.veda.binary` with `-b <backend> -p <persona> --json` and delivers the task over stdin:
+
+```ts
+return agents.run({
+  runner: "veda",
+  persona: "frontend", // built-in or custom Veda persona
+  model: "agy/gemini-3.1-pro-high", // forwarded to the configured backend
+  task: "Review the current implementation for architectural risks. Do not edit files.",
+  tools: ["read", "grep", "find", "ls"],
+});
+```
+
+Veda models are forwarded literally to the selected backend. Set `agents.veda.model` for a backend-specific default; an explicit `agents.run({ model })` takes precedence, and omitting both lets Veda choose its own backend default. Personas are independent of models: add custom personas as `~/.config/veda/personas/<name>/AGENTS.md`, set the global default with `agents.veda.persona`, or select one per run with `agents.run({ persona })`. `agents.models({ runner: "veda" })` currently returns an empty advisory list. Usage (`inputTokens`/`outputTokens`/`cachedTokens`), the backend conversation id, turns, and errors from Veda's `--json` envelope are normalized into the ordinary Fabric result, dashboard, lifecycle events, and budget ledger. Each run uses an isolated `fabric-<run-id>` Veda session (`-S` + `--no-sel`), so parallel children never share selection or conversation state.
+
+Veda children are **not recursively Fabric-equipped** (`recursive: true` is rejected), steering is unsupported (a steer/follow-up is dropped), and Veda cannot back persistent actors — it executes one headless prompt per invocation. Use `runner: "pi"` for recursive Fabric or persistent coordination.
+
 ### Transports
 
 | Transport   | Behavior                                                   | Attach command               |

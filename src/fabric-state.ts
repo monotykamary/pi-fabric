@@ -428,6 +428,8 @@ export class FabricState {
             piBinary: process.env.PI_FABRIC_PI_BINARY ?? "pi",
             claudeBinary:
               process.env.PI_FABRIC_CLAUDE_BINARY ?? this.#config.agents.claude.binary,
+            vedaBinary:
+              process.env.PI_FABRIC_VEDA_BINARY ?? this.#config.agents.veda.binary,
           },
           mesh: this.#mesh,
           participants: this.#participants,

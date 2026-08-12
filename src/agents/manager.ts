@@ -19,6 +19,7 @@ import {
   normalizeClaudeModel,
   type ClaudeModelInfo,
 } from "./claude-cli.js";
+import { mapVedaTools, normalizeVedaModel } from "./veda-cli.js";
 import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
 import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
 import { Semaphore } from "./semaphore.js";
@@ -172,7 +173,15 @@ const readRecord = (filePath: string): AgentRunRecord | undefined => {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
     const record = parsed as AgentRunRecord;
-    return { ...record, runner: record.runner === "claude" ? "claude" : "pi" };
+    return {
+      ...record,
+      runner:
+        record.runner === "claude"
+          ? "claude"
+          : record.runner === "veda"
+            ? "veda"
+            : "pi",
+    };
   } catch {
     return undefined;
   }
@@ -323,6 +332,7 @@ export class AgentManager {
   readonly #fabricExtensionPath: string;
   readonly #piBinary: string;
   readonly #claudeBinary: string;
+  readonly #vedaBinary: string;
   readonly #currentDepth: number;
   readonly #fullCodeMode: boolean;
   readonly #mainAgentId: string | undefined;
@@ -356,6 +366,7 @@ export class AgentManager {
       fabricExtensionPath?: string;
       piBinary?: string;
       claudeBinary?: string;
+      vedaBinary?: string;
       runRoot?: string;
       fullCodeMode?: boolean;
       mainAgentId?: string;
@@ -381,6 +392,8 @@ export class AgentManager {
     this.#piBinary = options.piBinary ?? process.env.PI_FABRIC_PI_BINARY ?? "pi";
     this.#claudeBinary =
       options.claudeBinary ?? process.env.PI_FABRIC_CLAUDE_BINARY ?? config.claude.binary;
+    this.#vedaBinary =
+      options.vedaBinary ?? process.env.PI_FABRIC_VEDA_BINARY ?? config.veda.binary;
     this.#onBackgroundComplete = options.onBackgroundComplete;
     this.#onLifecycle = options.onLifecycle;
     this.#preparePiModel = options.preparePiModel;
@@ -458,8 +471,11 @@ export class AgentManager {
       throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
     }
     const runner = request.runner ?? this.config.runner;
-    if (runner !== "pi" && runner !== "claude") {
+    if (runner !== "pi" && runner !== "claude" && runner !== "veda") {
       throw new Error(`Unsupported Fabric agent runner: ${String(runner)}`);
+    }
+    if (request.persona && runner !== "veda") {
+      throw new Error(`The persona option is only supported by the Veda runner, not ${runner}`);
     }
     if (runner === "claude" && request.recursive) {
       throw new Error(
@@ -474,9 +490,16 @@ export class AgentManager {
     }
     const tools = this.#childTools(request, runner);
     if (runner === "claude") mapClaudeTools(tools);
+    if (runner === "veda") mapVedaTools(tools);
     const model =
-      request.model ?? (runner === "claude" ? this.config.claude.model : this.config.model);
+      request.model ??
+      (runner === "claude"
+        ? this.config.claude.model
+        : runner === "veda"
+          ? this.config.veda.model
+          : this.config.model);
     if (runner === "claude" && model) normalizeClaudeModel(model);
+    if (runner === "veda" && model) normalizeVedaModel(model);
     if (runner === "pi" && model) await this.#prepareModel(model);
     if (this.#budget) {
       const spent = readBudgetLedger(this.#budget.file).cost;
@@ -569,6 +592,12 @@ export class AgentManager {
         this.#piBinary,
         "--claude-binary",
         this.#claudeBinary,
+        "--veda-binary",
+        this.#vedaBinary,
+        "--veda-backend",
+        this.config.veda.backend,
+        "--veda-persona",
+        request.persona?.trim() || this.config.veda.persona,
         "--timeout-ms",
         String(timeoutMs),
         "--depth",
@@ -852,9 +881,9 @@ export class AgentManager {
   // RPC; a fresh run is the only way to reset a Claude child's context.
   compact(id: string, instructions?: string): AgentSteerResult {
     const managed = this.#requireRun(id);
-    if (managed.runner === "claude") {
+    if (managed.runner === "claude" || managed.runner === "veda") {
       throw new Error(
-        "Fabric agent compaction is only supported for Pi-runner children; Claude Code sessions cannot be compacted through Fabric.",
+        "Fabric agent compaction is only supported for Pi-runner children; Claude Code and Veda sessions cannot be compacted through Fabric.",
       );
     }
     return this.#appendSteer(id, {

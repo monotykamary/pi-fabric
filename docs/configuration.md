@@ -70,6 +70,11 @@ Configuration documents are versioned with `configVersion`. Fabric migrates each
     "claude": {
       "binary": "claude"
     },
+    "veda": {
+      "binary": "veda",
+      "backend": "agy",
+      "persona": "navigator-chat"
+    },
     "thinking": "medium",
     "maxConcurrent": 4,
     "maxPerExecution": 100,
@@ -272,7 +277,9 @@ Cleanup runs during active Fabric sessions and when a new top-level run manager 
 
 ## Agents
 
-`agents.runner` selects the default harness (`"pi"` or `"claude"`). `agents.model` is the optional Pi `provider/id` override; `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently.
+`agents.runner` selects the default harness (`"pi"`, `"claude"`, or `"veda"`). `agents.model` is the optional Pi `provider/id` override; `agents.claude.model` is the optional canonical Claude runtime key. `agents.claude.binary` defaults to `claude` and can be an absolute path or wrapper; `PI_FABRIC_CLAUDE_BINARY` overrides it for the current process. `/fabric settings` enumerates Claude models from that binary in the background and stores the two runner defaults independently.
+
+The `veda` runner drives the [Veda CLI](https://github.com/kennyfrc/veda) as the child harness. `agents.veda.binary` defaults to `veda` (an absolute path or wrapper works, and `PI_FABRIC_VEDA_BINARY` overrides it for the current process). `agents.veda.backend` selects which backend Veda wraps — `agy` (Antigravity CLI, the default), `codex`, `claude-code`, `droid`, `pi`, or another backend registered by the installed Veda build. Fabric passes this value through unchanged and does not hardcode AGY. `agents.veda.model` is an optional backend-specific model or Veda alias; if omitted, Veda selects its own backend default. `agents.veda.persona` picks the global Veda persona: `navigator-plan`, `navigator-chat` (default), `reviewer`, `worker`, or a custom persona under `~/.config/veda/personas/<name>/AGENTS.md`. Per-run selection overrides it via `agents.run({ persona })`. The Veda backend, persona, and model are also editable from the Fabric settings panel under Agents. Each child runs one headless `veda --json` prompt with an isolated `fabric-<run-id>` session, so parallel children never share Veda selection or conversation state. Veda sessions are not persistent and steering is unsupported; Veda children are **not** recursively Fabric-equipped (`recursive: true` is rejected) and cannot back persistent actors.
 
 Fabric worker processes are JavaScript modules launched by a JS runtime. When Pi runs as a generic Node.js or Bun runtime (`process.execPath` is `node`/`bun`), that runtime is reused. When Pi ships as a Bun-compiled single-file binary (`process.execPath` is the `pi` executable, not node/bun), Fabric resolves a runtime from `PI_FABRIC_NODE_BINARY`, otherwise from the first `node` or `bun` on `PATH`, and only the resolved runtime launches workers — never the bundled binary itself. `PI_FABRIC_NODE_BINARY` overrides this for the current process. The Node-process executor (`executor.runtime: "node-process"`) always requires Node.js specifically, since its `--eval`/`--input-type=module` flags are Node-only.
 

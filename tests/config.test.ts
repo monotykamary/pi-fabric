@@ -216,6 +216,39 @@ describe("Fabric configuration", () => {
     expect(invalid.agents.claude).toEqual({ binary: "claude" });
   });
 
+  it("normalizes the Veda runner settings", () => {
+    expect(DEFAULT_FABRIC_CONFIG.agents.veda).toEqual({
+      binary: "veda",
+      backend: "agy",
+      persona: "navigator-chat",
+    });
+    const configured = normalizeFabricConfig({
+      agents: {
+        runner: "veda",
+        veda: { binary: "/opt/veda", backend: "codex", model: "gpt-5.2", persona: "worker" },
+      },
+    });
+    expect(configured.agents.runner).toBe("veda");
+    expect(configured.agents.veda).toEqual({
+      binary: "/opt/veda",
+      backend: "codex",
+      model: "gpt-5.2",
+      persona: "worker",
+    });
+    const partial = normalizeFabricConfig({ agents: { veda: { binary: " " } } });
+    expect(partial.agents.veda.binary).toBe("veda");
+    expect(partial.agents.veda.backend).toBe("agy");
+    expect(partial.agents.veda.persona).toBe("navigator-chat");
+    const customBackend = normalizeFabricConfig({ agents: { veda: { backend: "my-backend" } } });
+    expect(customBackend.agents.veda.backend).toBe("my-backend");
+    const backendModel = normalizeFabricConfig({ agents: { veda: { model: "opus" } } });
+    expect(backendModel.agents.veda.model).toBe("opus");
+    const blankBackend = normalizeFabricConfig({ agents: { veda: { backend: " " } } });
+    expect(blankBackend.agents.veda.backend).toBe("agy");
+    const invalidRunner = normalizeFabricConfig({ agents: { runner: "other" } });
+    expect(invalidRunner.agents.runner).toBe("pi");
+  });
+
   it("defaults the agent thinking level to medium and validates the value", () => {
     expect(DEFAULT_FABRIC_CONFIG.agents.thinking).toBe("medium");
     const set = normalizeFabricConfig({ agents: { thinking: "high" } });

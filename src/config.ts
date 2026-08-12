@@ -23,7 +23,7 @@ export type FabricAgentTransport =
   | "screen"
   | "localterm"
   | "herdr";
-export type FabricAgentRunner = "pi" | "claude";
+export type FabricAgentRunner = "pi" | "claude" | "veda";
 export type FabricUiWidgetMode = "auto" | "always" | "hidden";
 export type FabricResultFormat = "auto" | "yaml" | "json" | "text";
 export type FabricPrewalkMode = "in-place" | "trajectory";
@@ -63,6 +63,20 @@ interface FabricClaudeRunnerConfig {
   model?: string;
 }
 
+/** Veda CLI options for the `veda` agent runner. The Veda CLI wraps external
+ * backends (agy, codex, claude-code, droid, pi, and any backend registered by
+ * the installed Veda build); the backend is selected here and the persona
+ * controls read-only vs write-capable behavior. */
+interface FabricVedaRunnerConfig {
+  binary: string;
+  /** Veda backend to drive. Defaults to the Antigravity CLI (agy). */
+  backend: string;
+  /** Optional backend-specific model or Veda model alias. */
+  model?: string;
+  /** Veda persona: navigator-plan, navigator-chat, reviewer, or worker. */
+  persona: string;
+}
+
 interface FabricPrewalkConfig {
   mode: FabricPrewalkMode;
   model?: string;
@@ -80,6 +94,7 @@ export interface FabricAgentConfig {
   transport: FabricAgentTransport;
   model?: string;
   claude: FabricClaudeRunnerConfig;
+  veda: FabricVedaRunnerConfig;
   thinking: FabricThinking;
   maxConcurrent: number;
   maxPerExecution: number;
@@ -266,6 +281,7 @@ export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
     runner: "pi",
     transport: "process",
     claude: { binary: "claude" },
+    veda: { binary: "veda", backend: "agy", persona: "navigator-chat" },
     thinking: DEFAULT_FABRIC_THINKING,
     maxConcurrent: 4,
     maxPerExecution: 100,
@@ -434,7 +450,7 @@ const stringValue = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value : undefined;
 
 const runnerValue = (value: unknown, fallback: FabricAgentRunner): FabricAgentRunner =>
-  value === "pi" || value === "claude" ? value : fallback;
+  value === "pi" || value === "claude" || value === "veda" ? value : fallback;
 
 const prewalkModeValue = (
   value: unknown,
@@ -514,6 +530,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const prewalk = objectValue(input.prewalk);
   const agents = objectValue(input.agents);
   const claude = objectValue(agents.claude);
+  const veda = objectValue(agents.veda);
   const capture = objectValue(input.capture);
   const ui = objectValue(input.ui);
   const compaction = objectValue(input.compaction);
@@ -565,6 +582,10 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   const agentModel = stringValue(agents.model);
   const claudeBinary = stringValue(claude.binary);
   const claudeModel = stringValue(claude.model);
+  const vedaBinary = stringValue(veda.binary);
+  const vedaBackend = stringValue(veda.backend);
+  const vedaModel = stringValue(veda.model);
+  const vedaPersona = stringValue(veda.persona);
   const agentThinking = thinkingValue(agents.thinking, DEFAULT_FABRIC_CONFIG.agents.thinking);
   const configuredVisible = Array.isArray(capture.keepVisible)
     ? capture.keepVisible.filter(
@@ -677,6 +698,12 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
       claude: {
         binary: claudeBinary ?? DEFAULT_FABRIC_CONFIG.agents.claude.binary,
         ...(claudeModel ? { model: claudeModel } : {}),
+      },
+      veda: {
+        binary: vedaBinary ?? DEFAULT_FABRIC_CONFIG.agents.veda.binary,
+        backend: vedaBackend ?? DEFAULT_FABRIC_CONFIG.agents.veda.backend,
+        ...(vedaModel ? { model: vedaModel } : {}),
+        persona: vedaPersona ?? DEFAULT_FABRIC_CONFIG.agents.veda.persona,
       },
       thinking: agentThinking,
       maxConcurrent: boundedInteger(

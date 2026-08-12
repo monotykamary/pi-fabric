@@ -681,7 +681,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           `runner: ${config.agents.runner} · transport: ${config.agents.transport} · model: ${
             config.agents.runner === "claude"
               ? config.agents.claude.model || "Claude default"
-              : config.agents.model || "inherit"
+              : config.agents.runner === "veda"
+                ? `${config.agents.veda.model || "Veda default"} · backend ${config.agents.veda.backend} · persona ${config.agents.veda.persona}`
+                : config.agents.model || "inherit"
           }`,
           `agent limits: concurrency ${config.agents.maxConcurrent}, per execution ${config.agents.maxPerExecution}, depth ${config.agents.maxDepth}`,
           (() => {

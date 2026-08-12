@@ -22,6 +22,22 @@ describe("Fabric guest type checker", () => {
     expect(result.javascript).not.toContain("path: string");
   });
 
+  it("accepts a Veda persona and backend model on agents.run", () => {
+    const result = typeCheckFabricCode(
+      `
+const run = await agents.run({
+  runner: "veda",
+  persona: "frontend",
+  model: "claude-opus-4-6-thinking",
+  task: "Polish the landing page",
+});
+return run.status;
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
   it("accepts dynamic MCP namespaces and orchestration helpers", () => {
     const result = typeCheckFabricCode(
       `

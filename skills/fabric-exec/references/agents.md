@@ -11,9 +11,9 @@ Every method takes a single options object.
 - `agents.list({ scope? })` returns agent participants. `scope` defaults to `"local"`; use `"lineage"` for every agent under the same root across recursive runtimes, or `"project"` for all live project agents. Local entries retain full run detail; remote entries are bounded participant summaries.
 - `agents.cleanup({ id, deleteBranch? })` returns `{ cleaned }` and removes a worktree branch.
 
-`args` is a `FabricAgentRequest`: `{ task, name?, runner?, transport?, model?, thinking?, tools?, timeoutMs?, extensions?, recursive?, worktree?, schema? }`.
+`args` is a `FabricAgentRequest`: `{ task, name?, runner?, transport?, model?, persona?, thinking?, tools?, timeoutMs?, extensions?, recursive?, worktree?, schema? }`. `persona` selects a Veda persona for that invocation and is rejected for Pi/Claude runners.
 
-- `runner` is `pi` or `claude` and defaults to `agents.runner` (`pi`).
+- `runner` is `pi`, `claude`, or `veda` and defaults to `agents.runner` (`pi`). The `veda` runner drives the Veda CLI as a one-shot headless child; `agents.veda.backend` selects Veda’s underlying CLI (`agy`, `codex`, `claude-code`, `droid`, `pi`, or another backend registered by the installed Veda build), while `persona` selects its behavior. An explicit `agents.run({ model })` overrides `agents.veda.model`; if both are omitted, Veda selects its backend default (see `docs/agents.md`).
 - `transport` is one of `auto`, `process`, `tmux`, `screen`, `localterm`, `herdr` (default `process`). `auto` tries Herdr when the parent runs inside a Herdr workspace, then LocalTerm, tmux, screen, and process.
 - Pi `model` values are `provider/id` keys from `tools.models()`; omitted uses `agents.model` or inherits the host model. Claude values are `claude/<value>` keys from `agents.models({ runner: "claude" })`; omitted uses `agents.claude.model` or Claude Code's runtime default. `agents.models()` defaults to the configured runner; Claude discovery is a local CLI control handshake and makes no model inference request.
 - `thinking` is the reasoning effort (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`); defaults to `agents.thinking` (`medium`) and is clamped to the model's supported levels (next highest when unsupported).

@@ -45,6 +45,8 @@ export interface AgentRunRequest {
   runner?: FabricAgentRunner;
   transport?: FabricAgentTransport;
   model?: string;
+  /** Veda persona name; only used when runner is "veda". */
+  persona?: string;
   thinking?: FabricThinking;
   tools?: string[];
   timeoutMs?: number;
@@ -169,6 +171,9 @@ export interface AgentWorkerOptions {
   cwd: string;
   piBinary: string;
   claudeBinary: string;
+  vedaBinary: string;
+  vedaBackend: string;
+  vedaPersona: string;
   timeoutMs: number;
   depth: number;
   fullCodeMode: boolean;

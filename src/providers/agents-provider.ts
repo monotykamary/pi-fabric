@@ -69,7 +69,7 @@ const runProperties = {
   name: { type: "string" },
   runner: {
     type: "string",
-    enum: ["pi", "claude"],
+    enum: ["pi", "claude", "veda"],
     description: "Execution harness. Defaults to agents.runner.",
   },
   transport: {
@@ -78,7 +78,11 @@ const runProperties = {
   },
   model: {
     type: "string",
-    description: "Pi provider/id key or Claude claude/<runtime-value> key from agents.models().",
+    description: "Pi provider/id, Claude runtime value, or a Veda backend model/alias; for Veda this is forwarded to the configured backend.",
+  },
+  persona: {
+    type: "string",
+    description: "Veda persona name for this run, such as frontend, reviewer, worker, or a custom persona.",
   },
   thinking: {
     type: "string",
@@ -350,7 +354,7 @@ const descriptors: FabricActionDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
-        runner: { type: "string", enum: ["pi", "claude"] },
+        runner: { type: "string", enum: ["pi", "claude", "veda"] },
         refresh: { type: "boolean" },
       },
       additionalProperties: false,
@@ -770,7 +774,10 @@ const runRequest = (
   const thinking = isFabricThinking(args.thinking) ? args.thinking : undefined;
   const tools = stringArray(args.tools);
   const timeoutMs = longerTimeoutOverride(args.timeoutMs, manager);
-  const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
+  const runner =
+    args.runner === "pi" || args.runner === "claude" || args.runner === "veda"
+      ? args.runner
+      : manager.config.runner;
   const inheritedModel =
     runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
@@ -785,6 +792,9 @@ const runRequest = (
       : inheritedModel
         ? { model: inheritedModel }
         : {}),
+    ...(typeof args.persona === "string" && args.persona.trim()
+      ? { persona: args.persona.trim() }
+      : {}),
     ...(thinking ? { thinking } : {}),
     ...(tools ? { tools } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -853,7 +863,15 @@ const actorRequest = (
     typeof (args.validWhile as { source?: unknown }).source === "string"
     ? { version: 1 as const, source: (args.validWhile as { source: string }).source }
     : undefined;
-  const runner = args.runner === "pi" || args.runner === "claude" ? args.runner : manager.config.runner;
+  const runner =
+    args.runner === "pi" || args.runner === "claude" || args.runner === "veda"
+      ? args.runner
+      : manager.config.runner;
+  if (runner === "veda") {
+    throw new Error(
+      'The Veda runner does not support persistent actors: Veda executes one headless prompt per invocation. Use a Pi or Claude actor, or agents.run({ runner: "veda" }).',
+    );
+  }
   const inheritedModel =
     inheritModel && runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
@@ -930,7 +948,9 @@ export const collectAgentToolPreviewNodes = (
       id: record.id,
       name: record.actorName ?? record.name,
       status: record.status,
-      ...(record.runner === "pi" || record.runner === "claude" ? { runner: record.runner } : {}),
+      ...(record.runner === "pi" || record.runner === "claude" || record.runner === "veda"
+        ? { runner: record.runner }
+        : {}),
       owner: record.actorId ? "actor" : "agent",
       ...(record.currentTool ? { currentTool: record.currentTool } : {}),
       ...(record.text
@@ -1398,6 +1418,13 @@ export class AgentsProvider implements FabricProvider {
           args.runner === "pi" || args.runner === "claude"
             ? args.runner
             : this.manager.config.runner;
+        if (runner === "veda") {
+          // Veda forwards any -m value to the configured backend; model
+          // discovery would require parsing `veda models <backend>`. Return an
+          // empty advisory list so callers can still pass model strings
+          // directly to agents.run({ runner: "veda", model }).
+          return [];
+        }
         if (runner === "claude") {
           const models = await this.manager.claudeModels(args.refresh === true);
           return models.map((model) => ({

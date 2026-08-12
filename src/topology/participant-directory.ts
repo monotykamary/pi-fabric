@@ -51,7 +51,7 @@ const participantFromEntry = (entry: MeshStateEntry): FabricParticipantRecord | 
     entry.updatedBy.id !== value.ownerIdentityId ||
     typeof value.name !== "string" ||
     typeof value.status !== "string" ||
-    (value.runner !== "pi" && value.runner !== "claude") ||
+    (value.runner !== "pi" && value.runner !== "claude" && value.runner !== "veda") ||
     typeof value.transport !== "string" ||
     !transports.has(value.transport) ||
     !Array.isArray(value.capabilities) ||
@@ -171,7 +171,7 @@ const legacyActorFromEntry = (
   if (
     typeof value.id !== "string" ||
     typeof value.name !== "string" ||
-    (value.runner !== "pi" && value.runner !== "claude") ||
+    (value.runner !== "pi" && value.runner !== "claude" && value.runner !== "veda") ||
     typeof value.status !== "string"
   ) {
     return undefined;
