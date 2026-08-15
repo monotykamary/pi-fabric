@@ -9,6 +9,7 @@ import {
   type FabricExecutionTraceV1,
 } from "./audit/trace.js";
 import { FabricActivityStore } from "./activity/store.js";
+import type { CapturedToolCatalog } from "./capture/catalog.js";
 import type {
   FabricActivityEventInput,
   FabricActivityItemInput,
@@ -52,6 +53,7 @@ let runtimeDependencies:
       typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
       guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
       buildDynamicGuestDeclarations: typeof import("./runtime/dynamic-guest-types.js").buildDynamicGuestDeclarations;
+      buildCoreOverrideGuestDeclarations: typeof import("./runtime/core-override-guest-types.js").buildCoreOverrideGuestDeclarations;
     }>
   | undefined;
 
@@ -62,12 +64,14 @@ const loadRuntimeDependencies = () =>
     import("./runtime/type-checker.js"),
     import("./runtime/guest-types.js"),
     import("./runtime/dynamic-guest-types.js"),
-  ]).then(([quickjs, nodeProcess, checker, guest, dynamicGuest]) => ({
+    import("./runtime/core-override-guest-types.js"),
+  ]).then(([quickjs, nodeProcess, checker, guest, dynamicGuest, coreOverrides]) => ({
     QuickJsRuntime: quickjs.QuickJsRuntime,
     NodeProcessRuntime: nodeProcess.NodeProcessRuntime,
     typeCheckFabricCode: checker.typeCheckFabricCode,
     guestTypeDeclarations: guest.guestTypeDeclarations,
     buildDynamicGuestDeclarations: dynamicGuest.buildDynamicGuestDeclarations,
+    buildCoreOverrideGuestDeclarations: coreOverrides.buildCoreOverrideGuestDeclarations,
   }));
 
 const executionOutcomeFromTermination = (
@@ -153,6 +157,7 @@ export class FabricExecutionService {
     readonly authorizer?: FabricExecutionAuthorizer,
     readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
     readonly sessionApprovals = new FabricSessionApprovals(),
+    readonly capturedTools?: CapturedToolCatalog,
   ) {}
 
   setCapabilityView(view: FabricCommittedCapabilityView | undefined): void {
@@ -187,11 +192,21 @@ export class FabricExecutionService {
       update() {},
       ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
     });
+    const coreOverrideDeclarations =
+      effectiveFullCodeMode && this.config.schema.mode !== "enforce"
+        ? dependencies.buildCoreOverrideGuestDeclarations(
+            this.capturedTools?.list().map((entry) => ({
+              name: entry.name,
+              inputSchema: entry.definition.parameters,
+            })) ?? [],
+          )
+        : undefined;
     const checked = dependencies.typeCheckFabricCode(
       options.code,
       dependencies.guestTypeDeclarations(effectiveFullCodeMode, {
         excludeGlobals: [...unavailable.keys()],
         dynamic: dependencies.buildDynamicGuestDeclarations(guestTypeSources),
+        ...(coreOverrideDeclarations ? { coreOverrides: coreOverrideDeclarations } : {}),
       }),
     );
     if (checked.errors.length > 0) {

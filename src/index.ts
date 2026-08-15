@@ -35,6 +35,7 @@ import {
   expandSkillDirMarkersForRead,
   expandSkillDirMarkersInSkillBlock,
 } from "./core/skill-dir.js";
+import { coreOverridePromptGuidance } from "./core/core-override-guidance.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
 import {
   FabricDirectToolApproval,
@@ -694,6 +695,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           ? "\n\nSchema audit mode reports actions that enforce mode would block, but preserves their current behavior."
           : "")
       + (skillReferenceGuidance ? `\n\n${skillReferenceGuidance}` : "");
+    const overrideGuidance = effectiveFullCodeMode && schemaMode !== "enforce"
+      ? coreOverridePromptGuidance(capturedTools)
+      : "";
     // One-shot capability steering: when the prompt's vocabulary matches a
     // capability source's fingerprint, name the tools once so the model
     // reaches for extensions.* / mcp.* instead of re-implementing them. Slice
@@ -708,7 +712,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // message below is the transcript record a session replay recovers after
     // a reload.
     return {
-      systemPrompt: `${systemPrompt}\n\n${guidance}`,
+      systemPrompt: `${systemPrompt}\n\n${guidance}${overrideGuidance}`,
       ...(advisory
         ? {
             message: {

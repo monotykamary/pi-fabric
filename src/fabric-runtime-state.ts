@@ -752,6 +752,7 @@ export class FabricRuntimeState {
       this.#schema,
       undefined,
       this.sessionApprovals,
+      this.capturedTools,
     );
     const discovery: FabricProviderDiscovery = {
       version: 1,

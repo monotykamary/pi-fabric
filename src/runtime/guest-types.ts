@@ -1125,6 +1125,7 @@ const FULL_CODE_GLOBAL_DECLARATIONS = [
   "declare const extensions: FabricExtensionsApi;\n",
 ];
 
+const PI_LOOSE_DECLARATION = "declare const pi: PiToolsApi;\n";
 const MCP_LOOSE_DECLARATION = "declare const mcp: FabricMcpApi;\n";
 const EXTENSIONS_LOOSE_DECLARATION = "declare const extensions: FabricExtensionsApi;\n";
 
@@ -1138,6 +1139,11 @@ export interface FabricGuestDeclarationOptions {
    * replace, and missing/undefined sections keep the loose surface.
    */
   dynamic?: FabricDynamicGuestDeclarations;
+  /**
+   * Additive overloads for the current captured exact-name core overrides.
+   * The block is applied only to the full-code `pi` declaration.
+   */
+  coreOverrides?: string;
 }
 
 const globalDeclarationLine = (name: string): RegExp =>
@@ -1160,6 +1166,12 @@ export const guestTypeDeclarations = (
     (declarations, name) => declarations.replace(globalDeclarationLine(name), ""),
     base,
   );
+  if (fullCodeMode && options.coreOverrides && result.includes(PI_LOOSE_DECLARATION)) {
+    result = result.replace(
+      PI_LOOSE_DECLARATION,
+      terminatedDeclaration(options.coreOverrides),
+    );
+  }
   if (options.dynamic?.mcp && result.includes(MCP_LOOSE_DECLARATION)) {
     result = result.replace(
       MCP_LOOSE_DECLARATION,
