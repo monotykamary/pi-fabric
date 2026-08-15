@@ -1,5 +1,28 @@
 import type { FabricDynamicGuestDeclarations } from "../protocol.js";
 
+// These names and compatibility fields are the single source of truth for
+// generated core-override overloads. Keep them beside PiToolsApi below so an
+// override extends the same guest contract rather than copying its signatures.
+export const PI_CORE_COMPATIBILITY_ARGUMENT_TYPE_NAMES = {
+  read: "PiReadCompatibilityArgument",
+  bash: "PiBashCompatibilityArgument",
+  edit: "PiEditCompatibilityArgument",
+  write: "PiWriteCompatibilityArgument",
+  grep: "PiGrepCompatibilityArgument",
+  find: "PiFindCompatibilityArgument",
+  ls: "PiLsCompatibilityArgument",
+} as const;
+
+export const PI_CORE_NUMERIC_FIELDS = {
+  read: ["offset", "limit"],
+  bash: ["timeout"],
+  edit: [],
+  write: [],
+  grep: ["context", "limit"],
+  find: ["limit"],
+  ls: ["limit"],
+} as const;
+
 export const GUEST_TYPE_DECLARATIONS = `
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -424,18 +447,35 @@ type PiBashOptions = { timeout?: number; timeoutMs?: number; settle?: boolean };
 type PiGrepOptions = { path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number; ctx?: number; limit?: number; max?: number };
 type PiFindOptions = { path?: string; limit?: number; max?: number };
 type PiLsOptions = { limit?: number; max?: number };
+type PiReadArgument = string | (PiPathArgument & PiReadOptions);
+type PiBashArgument = string | (PiCommandArgument & PiBashOptions);
+type PiEditFlatArgument = PiPathArgument & PiOldTextArgument & PiNewTextArgument & { all?: boolean };
+type PiEditArgument = PiPathArgument & ({ edits: PiEditOperation[]; all?: boolean } | PiEditFlatArgument);
+type PiWriteArgument = string | (PiPathArgument & PiContentArgument);
+type PiGrepArgument = string | (PiGrepPatternArgument & PiGrepOptions);
+type PiFindArgument = string | (PiFindPatternArgument & PiFindOptions);
+type PiLsArgument = string | (PiOptionalPathArgument & PiLsOptions);
+type PiNumericString<T> = T extends number ? T | string : T;
+type PiNumericStringOptions<T> = { [K in keyof T]: PiNumericString<T[K]> };
+type PiReadCompatibilityArgument = string | (PiPathArgument & PiNumericStringOptions<PiReadOptions>);
+type PiBashCompatibilityArgument = string | (PiCommandArgument & PiNumericStringOptions<PiBashOptions>);
+type PiEditCompatibilityArgument = PiEditFlatArgument;
+type PiWriteCompatibilityArgument = PiWriteArgument;
+type PiGrepCompatibilityArgument = string | (PiGrepPatternArgument & PiNumericStringOptions<PiGrepOptions>);
+type PiFindCompatibilityArgument = string | (PiFindPatternArgument & PiNumericStringOptions<PiFindOptions>);
+type PiLsCompatibilityArgument = string | (PiOptionalPathArgument & PiNumericStringOptions<PiLsOptions>);
 interface PiToolsApi {
-  read(args: string | (PiPathArgument & PiReadOptions), options?: PiReadOptions): Promise<string>;
-  bash(args: string | (PiCommandArgument & PiBashOptions), options?: PiBashOptions): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
-  edit(args: PiPathArgument & ({ edits: PiEditOperation[]; all?: boolean } | (PiOldTextArgument & PiNewTextArgument & { all?: boolean }))): Promise<{ ok: true; output: string; details: unknown }>;
+  read(args: PiReadArgument, options?: PiReadOptions): Promise<string>;
+  bash(args: PiBashArgument, options?: PiBashOptions): Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>;
+  edit(args: PiEditArgument): Promise<{ ok: true; output: string; details: unknown }>;
   edit(path: string, oldText: string, newText: string): Promise<{ ok: true; output: string; details: unknown }>;
-  write(args: PiPathArgument & PiContentArgument): Promise<{ ok: true; output: string; details: unknown }>;
+  write(args: PiWriteArgument): Promise<{ ok: true; output: string; details: unknown }>;
   write(path: string, content: string): Promise<{ ok: true; output: string; details: unknown }>;
-  grep(args: string | (PiGrepPatternArgument & PiGrepOptions)): Promise<string>;
+  grep(args: PiGrepArgument): Promise<string>;
   grep(pattern: string, path?: string | PiGrepOptions, limit?: number): Promise<string>;
-  find(args: string | (PiFindPatternArgument & PiFindOptions)): Promise<string>;
+  find(args: PiFindArgument): Promise<string>;
   find(pattern: string, path?: string | PiFindOptions, limit?: number): Promise<string>;
-  ls(args?: string | (PiOptionalPathArgument & PiLsOptions), options?: PiLsOptions): Promise<string>;
+  ls(args?: PiLsArgument, options?: PiLsOptions): Promise<string>;
 }
 type FabricActorHostEvent =
   | "resources_discover"

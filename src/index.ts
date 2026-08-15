@@ -695,7 +695,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
           ? "\n\nSchema audit mode reports actions that enforce mode would block, but preserves their current behavior."
           : "")
       + (skillReferenceGuidance ? `\n\n${skillReferenceGuidance}` : "");
-    const overrideGuidance = effectiveFullCodeMode && schemaMode !== "enforce"
+    const overrideGuidance = effectiveFullCodeMode
       ? coreOverridePromptGuidance(capturedTools)
       : "";
     // One-shot capability steering: when the prompt's vocabulary matches a

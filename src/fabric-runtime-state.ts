@@ -340,8 +340,12 @@ export class FabricRuntimeState {
     };
     const enforceSchema = this.#config.schema.mode === "enforce";
     const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
+    // Enforce keeps this provider private to the Pi adapter: core overrides
+    // still resolve through pi.* while the schema authorizer blocks protected
+    // mutations and external effects. Do not expose the generic extensions.*
+    // namespace in enforce mode.
     const capturedToolsProvider =
-      effectiveFullCodeMode && this.#config.capture.enabled && !enforceSchema
+      effectiveFullCodeMode && (this.#config.capture.enabled || enforceSchema)
         ? new CapturedToolsProvider(this.capturedTools, this.#onCapturedToolUse)
         : undefined;
     if (effectiveFullCodeMode) {
@@ -350,7 +354,7 @@ export class FabricRuntimeState {
         description: "Pi core tools adapter",
         create: () => new PiToolsProvider(
           context.cwd,
-          enforceSchema ? undefined : this.capturedTools,
+          this.capturedTools,
           capturedToolsProvider,
         ),
       }));
@@ -385,7 +389,7 @@ export class FabricRuntimeState {
       },
       start: (provider) => { provider.warmup(); },
     }));
-    if (capturedToolsProvider) {
+    if (capturedToolsProvider && !enforceSchema) {
       await installBuiltin(createProviderComponent({
         provider: "extensions",
         description: "Captured extension tool catalog",

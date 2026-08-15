@@ -193,7 +193,7 @@ export class FabricExecutionService {
       ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
     });
     const coreOverrideDeclarations =
-      effectiveFullCodeMode && this.config.schema.mode !== "enforce"
+      effectiveFullCodeMode
         ? dependencies.buildCoreOverrideGuestDeclarations(
             this.capturedTools?.list().map((entry) => ({
               name: entry.name,

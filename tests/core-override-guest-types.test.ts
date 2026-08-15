@@ -53,6 +53,27 @@ return { shorthand, builtin, text };
     expect(misspelled.errors.length).toBeGreaterThan(0);
   });
 
+  it("retains every built-in core call form alongside an additive override", () => {
+    const declarations = declarationsFor({
+      name: "read",
+      inputSchema: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+    });
+    const checked = typeCheckFabricCode(
+      `
+const readText: string = await pi.read("src/index.ts");
+const bashOutput: string = (await pi.bash("echo ok")).output;
+const editOutput: string = (await pi.edit("src/index.ts", "old", "new")).output;
+const writeOutput: string = (await pi.write("src/index.ts", "content")).output;
+const grepText: string = await pi.grep("TODO", "src", 10);
+const findText: string = await pi.find("*.ts", "src", 10);
+const lsText: string = await pi.ls("src");
+return { readText, bashOutput, editOutput, writeOutput, grepText, findText, lsText };
+`,
+      declarations,
+    );
+    expect(checked.errors).toEqual([]);
+  });
+
   it("adds edit batch and symbol forms while keeping positional edits and envelopes", () => {
     const declarations = declarationsFor({
       name: "edit",

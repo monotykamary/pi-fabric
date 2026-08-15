@@ -13,7 +13,10 @@ import { describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
-import { FabricExecutionService } from "../src/execution-service.js";
+import {
+  FabricExecutionService,
+  type FabricExecutionAuthorizer,
+} from "../src/execution-service.js";
 import { CapturedToolsProvider } from "../src/providers/captured-tools-provider.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 
@@ -59,6 +62,7 @@ const makeOverride = (
 const setup = (
   cwd: string,
   registeredTools: RegisteredTool[],
+  authorizer?: FabricExecutionAuthorizer,
 ): {
   catalog: CapturedToolCatalog;
   service: FabricExecutionService;
@@ -83,7 +87,7 @@ const setup = (
     registry,
     config,
     undefined,
-    undefined,
+    authorizer,
     undefined,
     undefined,
     catalog,
@@ -148,6 +152,55 @@ return { shorthand, structure };
       expect(runtimeInvalid.success).toBe(false);
       expect(runtimeInvalid.error).toContain("Invalid arguments for pi.read");
       expect(calls).toHaveLength(2);
+    } finally {
+      catalog.clear();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("uses override forms in effective full-code enforce mode without bypassing its host guard", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-core-enforce-"));
+    const readCalls: Array<Record<string, unknown>> = [];
+    const editCalls: Array<Record<string, unknown>> = [];
+    const authorizer: FabricExecutionAuthorizer = {
+      authorize: vi.fn(async (ref) => {
+        if (ref === "pi.edit") throw new Error("Schema enforce blocked pi.edit");
+      }),
+    };
+    const { catalog, service } = setup(cwd, [
+      makeOverride("read", Type.Object({
+        path: Type.String(),
+        structure: Type.Optional(Type.Literal("symbols")),
+      }, { additionalProperties: false }), readCalls, "enforced-read"),
+      makeOverride("edit", Type.Object({
+        path: Type.String(),
+        symbolId: Type.Optional(Type.String()),
+      }, { additionalProperties: false }), editCalls, "enforced-edit"),
+    ], authorizer);
+    service.config.fullCodeMode = false;
+    service.config.schema.mode = "enforce";
+    try {
+      const read = await service.execute({
+        code: 'return pi.read({ path: "source.ts", structure: "symbols" });',
+        signal: undefined,
+        parentToolCallId: "core-enforce-read",
+        context: makeContext(cwd),
+        onPartial() {},
+      });
+      expect(read.success).toBe(true);
+      expect(read.value).toBe("enforced-read:source.ts");
+      expect(readCalls).toEqual([{ path: "source.ts", structure: "symbols" }]);
+
+      const edit = await service.execute({
+        code: 'return pi.edit({ path: "source.ts", symbolId: "opaque" });',
+        signal: undefined,
+        parentToolCallId: "core-enforce-edit",
+        context: makeContext(cwd),
+        onPartial() {},
+      });
+      expect(edit.success).toBe(false);
+      expect(edit.trace.operations[0]).toMatchObject({ ref: "pi.edit", failureStage: "guard" });
+      expect(editCalls).toEqual([]);
     } finally {
       catalog.clear();
       fs.rmSync(cwd, { recursive: true, force: true });

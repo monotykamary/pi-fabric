@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { coreOverridePromptGuidance } from "../src/core/core-override-guidance.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { FabricState } from "../src/fabric-state.js";
 
 const runner = {
   createContext: () => ({ cwd: process.cwd() }),
@@ -115,6 +116,26 @@ describe("core override prompt guidance", () => {
       expect(prompt).toContain("structure-aware reads");
       expect(prompt).toContain("Prefer symbol IDs when available.");
       expect(prompt).not.toContain("extensions.read");
+
+      const enforceConfig = structuredClone(DEFAULT_FABRIC_CONFIG);
+      enforceConfig.fullCodeMode = false;
+      enforceConfig.schema.mode = "enforce";
+      const cwd = vi.spyOn(FabricState.prototype, "cwd", "get").mockReturnValue("/tmp");
+      const config = vi.spyOn(FabricState.prototype, "config", "get").mockReturnValue(enforceConfig);
+      try {
+        const enforcedResult = await handler({
+          systemPrompt: "base system",
+          prompt: "inspect source",
+          systemPromptOptions: { skills: [] },
+        }, {});
+        const enforcedPrompt = (enforcedResult as { systemPrompt: string }).systemPrompt;
+        expect(enforcedPrompt).toContain("structure-aware reads");
+        expect(enforcedPrompt).toContain("Prefer symbol IDs when available.");
+        expect(enforcedPrompt).not.toContain("extensions.read");
+      } finally {
+        config.mockRestore();
+        cwd.mockRestore();
+      }
     } finally {
       get.mockRestore();
     }

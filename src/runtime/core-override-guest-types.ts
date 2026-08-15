@@ -1,4 +1,8 @@
 import { PI_CORE_TOOL_NAMES, type PiCoreToolName } from "../core/pi-tools.js";
+import {
+  PI_CORE_COMPATIBILITY_ARGUMENT_TYPE_NAMES,
+  PI_CORE_NUMERIC_FIELDS,
+} from "./guest-types.js";
 
 /** The small source shape needed to render a captured core override. */
 export interface FabricCoreOverrideTypeSource {
@@ -16,39 +20,14 @@ const MAX_UNION_MEMBERS = 16;
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-const CORE_RETURN_TYPES: Record<PiCoreToolName, string> = {
-  read: "Promise<string>",
-  bash: "Promise<{ ok: true; output: string; details: unknown } | { ok: false; output: string; details: null; exitCode: number; error: string }>",
-  edit: "Promise<{ ok: true; output: string; details: unknown }>",
-  write: "Promise<{ ok: true; output: string; details: unknown }>",
-  grep: "Promise<string>",
-  find: "Promise<string>",
-  ls: "Promise<string>",
-};
-
 // The extra overload must also accept Fabric's existing built-in forms. In
-// particular, the runtime accepts numeric strings before host validation; a
-// typed compatibility branch prevents the added overload from turning an old
-// accepted call into a multi-overload diagnostic.
-const CORE_NUMERIC_FIELDS: Record<PiCoreToolName, ReadonlySet<string>> = {
-  read: new Set(["offset", "limit"]),
-  bash: new Set(["timeout"]),
-  edit: new Set(),
-  write: new Set(),
-  grep: new Set(["context", "limit"]),
-  find: new Set(["limit"]),
-  ls: new Set(["limit"]),
-};
+// particular, the runtime accepts numeric strings before host validation; the
+// compatibility aliases beside PiToolsApi keep those forms in the same SSOT.
+const compatibilityArgumentTypeFor = (name: PiCoreToolName): string =>
+  PI_CORE_COMPATIBILITY_ARGUMENT_TYPE_NAMES[name];
 
-const CORE_BUILTIN_ARGUMENT_TYPES: Record<PiCoreToolName, string> = {
-  read: "string | (PiPathArgument & { offset?: number | string; limit?: number | string; start?: number | string; max?: number | string })",
-  bash: "string | (PiCommandArgument & { timeout?: number | string; timeoutMs?: number | string; settle?: boolean })",
-  edit: "PiPathArgument & PiOldTextArgument & PiNewTextArgument & { all?: boolean }",
-  write: "string | (PiPathArgument & PiContentArgument)",
-  grep: "string | (PiGrepPatternArgument & { path?: string; glob?: string; globPattern?: string; ignoreCase?: boolean; ic?: boolean; caseInsensitive?: boolean; literal?: boolean; context?: number | string; ctx?: number | string; limit?: number | string; max?: number | string })",
-  find: "string | (PiFindPatternArgument & { path?: string; limit?: number | string; max?: number | string })",
-  ls: "string | (PiOptionalPathArgument & { limit?: number | string; max?: number | string })",
-};
+const returnTypeFor = (name: PiCoreToolName): string =>
+  `ReturnType<PiToolsApi["${name}"]>`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -325,7 +304,7 @@ const renderArgumentType = (
   return { type, required };
 };
 
-const sourceFor = (
+const resolveValidCoreOverrideSource = (
   source: FabricCoreOverrideTypeSource,
 ): { name: PiCoreToolName; inputSchema: unknown } | undefined => {
   if (!PI_CORE_TOOL_NAMES.includes(source.name as PiCoreToolName)) return undefined;
@@ -345,7 +324,7 @@ export const buildCoreOverrideGuestDeclarations = (
 ): string | undefined => {
   const byName = new Map<PiCoreToolName, FabricCoreOverrideTypeSource>();
   for (const source of sources) {
-    const resolved = sourceFor(source);
+    const resolved = resolveValidCoreOverrideSource(source);
     if (resolved && !byName.has(resolved.name)) byName.set(resolved.name, source);
   }
   if (byName.size === 0) return undefined;
@@ -358,21 +337,24 @@ export const buildCoreOverrideGuestDeclarations = (
     let argumentType = LOOSE_ARGUMENT_TYPE;
     let required = false;
     try {
-      const rendered = renderArgumentType(source.inputSchema, CORE_NUMERIC_FIELDS[name]);
+      const rendered = renderArgumentType(
+        source.inputSchema,
+        new Set(PI_CORE_NUMERIC_FIELDS[name]),
+      );
       argumentType = rendered.type;
       required = rendered.required;
     } catch {
       // A loose overload keeps override-specific calls reachable while the
       // registry still validates the effective schema at dispatch.
     }
-    let compatibility = `Partial<${argumentType}> & (${CORE_BUILTIN_ARGUMENT_TYPES[name]})`;
-    let method = `  ${name}(args${required ? "" : "?"}: ${argumentType} | (${compatibility})): ${CORE_RETURN_TYPES[name]};`;
+    let compatibility = `Partial<${argumentType}> & (${compatibilityArgumentTypeFor(name)})`;
+    let method = `  ${name}(args${required ? "" : "?"}: ${argumentType} | (${compatibility})): ${returnTypeFor(name)};`;
     outputChars += method.length;
     if (outputChars > MAX_DECLARATION_OUTPUT_CHARS) {
       argumentType = LOOSE_ARGUMENT_TYPE;
       required = false;
-      compatibility = `Partial<${argumentType}> & (${CORE_BUILTIN_ARGUMENT_TYPES[name]})`;
-      method = `  ${name}(args?: ${argumentType} | (${compatibility})): ${CORE_RETURN_TYPES[name]};`;
+      compatibility = `Partial<${argumentType}> & (${compatibilityArgumentTypeFor(name)})`;
+      method = `  ${name}(args?: ${argumentType} | (${compatibility})): ${returnTypeFor(name)};`;
     }
     methods.push(method);
   }
