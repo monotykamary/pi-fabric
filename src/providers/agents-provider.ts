@@ -40,6 +40,7 @@ import type {
 import {
   effectiveAgentTimeoutMs,
   AgentManager,
+  validateAgentCwdRequest,
 } from "../agents/manager.js";
 import { checkedHandoffCompaction } from "../agents/handoff.js";
 import type {
@@ -54,8 +55,6 @@ import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
-
-const REMOTE_ASK_ACK_GRACE_MS = 30_000;
 import {
   AgentTranscriptReader,
   recentTranscriptTools,
@@ -63,6 +62,20 @@ import {
   type FabricAgentToolPreviewNode,
   type FabricTranscriptEntry,
 } from "../ui/transcript.js";
+
+const REMOTE_ASK_ACK_GRACE_MS = 30_000;
+const MAX_ACTIVITY_CWD_CHARS = 240;
+
+const displaySafeCwd = (cwd: string): string => {
+  const safe = cwd.replace(/[\u0000-\u001f\u007f]/g, (character) =>
+    `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+  );
+  if (safe.length <= MAX_ACTIVITY_CWD_CHARS) return safe;
+  return `…${safe.slice(-(MAX_ACTIVITY_CWD_CHARS - 1))}`;
+};
+
+const agentStartedMessage = (handle: AgentHandleInfo): string =>
+  `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""} · cwd ${displaySafeCwd(handle.cwd)}`;
 
 // Resolve source and executor reasoning channels for the trajectory handoff
 // boundary. The executor model must be registered to transfer at all; an
@@ -142,6 +155,7 @@ const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
   manager: AgentManager,
+  options: { allowCwd?: boolean } = {},
 ): AgentRunRequest => {
   const transport =
     args.transport === "auto" ||
@@ -181,6 +195,7 @@ const runRequest = (
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
+    ...(options.allowCwd !== false && typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
     ...(args.residency === "session" || args.residency === "durable"
       ? { residency: args.residency }
@@ -625,7 +640,9 @@ export class AgentsProvider implements FabricProvider {
         "agents.handoff must be scheduled from inside fabric_exec and completed at its outer result boundary",
       );
     }
-    return context.deferHandoff({ ...args, model });
+    const handoffArgs = { ...args };
+    delete handoffArgs.cwd;
+    return context.deferHandoff({ ...handoffArgs, model });
   }
 
   async executeHandoff(
@@ -648,6 +665,7 @@ export class AgentsProvider implements FabricProvider {
       },
       context,
       this.manager,
+      { allowCwd: false },
     );
     request.runner = "pi";
     request.sessionSeed = sessionSeed;
@@ -701,9 +719,7 @@ export class AgentsProvider implements FabricProvider {
           kind: "agent",
           name: handle.name,
         });
-        context.update(
-          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
-        );
+        context.update(agentStartedMessage(handle));
         return waitWithProgress(
           this.manager,
           this.#transcripts,
@@ -716,9 +732,13 @@ export class AgentsProvider implements FabricProvider {
         return this.handoff(args, context);
       case "spawn": {
         const request = runRequest(args, context, this.manager);
-        const handle = request.residency === "durable"
-          ? await this.#resident().spawnAgent(request, context.signal)
-          : await this.manager.spawn(request, context.signal);
+        validateAgentCwdRequest(request);
+        const durableRequest = request.residency === "durable" && request.cwd !== undefined
+          ? { ...request, cwd: this.manager.resolveCwd(request.cwd) }
+          : request;
+        const handle = durableRequest.residency === "durable"
+          ? await this.#resident().spawnAgent(durableRequest, context.signal)
+          : await this.manager.spawn(durableRequest, context.signal);
         if (request.residency !== "durable") this.manager.detachSignal(handle.id);
         this.participants.scheduleRefresh();
         context.activity?.({
@@ -727,9 +747,7 @@ export class AgentsProvider implements FabricProvider {
           kind: "agent",
           name: handle.name,
         });
-        context.update(
-          `Agent ${handle.name} started via ${handle.runner}/${handle.transport}${handle.attachCommand ? ` · ${handle.attachCommand}` : ""}`,
-        );
+        context.update(agentStartedMessage(handle));
         return handle;
       }
       case "wait": {

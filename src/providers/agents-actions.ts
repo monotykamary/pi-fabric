@@ -39,6 +39,10 @@ const runProperties = {
   },
   extensions: { type: "boolean" },
   recursive: { type: "boolean" },
+  cwd: {
+    type: "string",
+    description: "Filesystem execution directory; relative paths resolve from the parent Fabric agent cwd.",
+  },
   worktree: { type: "boolean" },
   schema: { type: "object", description: "Optional JSON Schema for validated structured output" },
 };

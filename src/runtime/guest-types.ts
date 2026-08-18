@@ -60,6 +60,8 @@ interface FabricAgentRequest {
   timeoutMs?: number;
   extensions?: boolean;
   recursive?: boolean;
+  /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
+  cwd?: string;
   worktree?: boolean;
   schema?: Record<string, unknown>;
   prompt?: string;
@@ -712,6 +714,8 @@ interface FabricCouncilRunOptions {
   thinking?: FabricThinking;
   tools?: string[];
   timeoutMs?: number;
+  /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
+  cwd?: string;
   worktree?: boolean;
 }
 interface FabricCouncilApi {
@@ -1151,7 +1155,7 @@ declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Prom
 declare function phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
-type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };
+type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive" | "cwd"> & { runner?: "pi" };
 declare const rlm: { query(args: FabricRlmRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
   log(...args: unknown[]): void;

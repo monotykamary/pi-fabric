@@ -538,6 +538,31 @@ await Promise.all([
     ]);
   });
 
+  it("forwards cwd through workflow and council leaf helpers", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const result = await new QuickJsRuntime().execute(
+      `
+await workflow.agent("workflow task", { cwd: "workflow-target" });
+await council.run({ task: "council task", roles: ["reviewer"], synthesize: false, cwd: "council-target" });
+return "done";
+`,
+      async (ref, args) => {
+        if (ref === "agents.run") {
+          requests.push(args);
+          return { status: "completed", text: "done", usage: { input: 1, output: 1 } };
+        }
+        throw new Error(`Unexpected call: ${ref}`);
+      },
+      { ...options, tokenBudget: 100 },
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.value).toBe("done");
+    expect(requests).toEqual([
+      expect.objectContaining({ task: "workflow task", cwd: "workflow-target" }),
+      expect.objectContaining({ task: expect.stringContaining("council task"), cwd: "council-target" }),
+    ]);
+  });
+
   it("counts council.run role usage toward budget.spent()", async () => {
     const result = await new QuickJsRuntime().execute(
       `await council.run({ task: "review", roles: ["a", "b"], synthesize: false }); return budget.spent();`,
@@ -551,6 +576,23 @@ await Promise.all([
     );
     expect(result.error).toBeUndefined();
     expect(result.value).toBe(30);
+  });
+
+  it("forwards a dynamic rlm cwd to the recursive host request", async () => {
+    let request: Record<string, unknown> | undefined;
+    const result = await new QuickJsRuntime().execute(
+      `return rlm.query({ task: "map", cwd: "target" });`,
+      async (ref, args) => {
+        if (ref === "agents.run") {
+          request = args;
+          throw new Error("recursive cwd guard");
+        }
+        throw new Error(`Unexpected call: ${ref}`);
+      },
+      options,
+    );
+    expect(result.error).toContain("recursive cwd guard");
+    expect(request).toMatchObject({ task: "map", cwd: "target", runner: "pi", recursive: true });
   });
 
   it("counts rlm.query usage and forces the Pi runner", async () => {

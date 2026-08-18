@@ -38,6 +38,32 @@ return run.status;
     expect(result.errors).toEqual([]);
   });
 
+  it("types cwd through one-shot helpers but not handoff or actors", () => {
+    const accepted = typeCheckFabricCode(
+      `
+await agents.run({ task: "run elsewhere", cwd: "../other" });
+await agents.spawn({ task: "spawn elsewhere", cwd: "/tmp/other" });
+await workflow.agent("workflow elsewhere", { cwd: "worktree" });
+await council.run({ task: "council elsewhere", roles: ["reviewer"], cwd: "council" });
+return rlm.query({ task: "recursive elsewhere" });
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(accepted.errors).toEqual([]);
+
+    const rejected = typeCheckFabricCode(
+      `
+await agents.handoff({ model: "provider/model", cwd: "other" });
+await agents.create({ name: "actor", instructions: "watch", cwd: "other" });
+await rlm.query({ task: "recursive elsewhere", cwd: "other" });
+return "never";
+`,
+      GUEST_TYPE_DECLARATIONS,
+    );
+    expect(rejected.errors.length).toBeGreaterThan(0);
+    expect(rejected.errors.map((error) => error.message).join(" ")).toMatch(/cwd|known properties/i);
+  });
+
   it("accepts dynamic MCP namespaces and orchestration helpers", () => {
     const result = typeCheckFabricCode(
       `

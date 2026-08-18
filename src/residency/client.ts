@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
+import { resolveAgentCwd, validateAgentCwdRequest } from "../agents/manager.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
@@ -139,6 +140,10 @@ export class ResidencyClient {
   }
 
   async spawnAgent(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
+    validateAgentCwdRequest(request);
+    const resolvedRequest = request.cwd === undefined
+      ? request
+      : { ...request, cwd: resolveAgentCwd(this.options.config.cwd, request.cwd) };
     await this.ensureHost();
     const response = await this.#command(
       {
@@ -146,7 +151,7 @@ export class ResidencyClient {
         operation: "spawn",
         requestId: randomUUID(),
         rootId: this.options.config.rootId,
-        request: { ...request, residency: "durable" },
+        request: { ...resolvedRequest, residency: "durable" },
         createdAt: Date.now(),
       },
       signal,
@@ -167,6 +172,7 @@ export class ResidencyClient {
     if (!record || record.id !== metadata.id) return structuredClone(metadata.handle);
     return {
       ...record,
+      cwd: metadata.handle.cwd,
       residency: "durable",
       logFile: path.join(metadata.runDirectory, "events.jsonl"),
       ...(metadata.handle.sessionId ? { sessionId: metadata.handle.sessionId } : {}),
@@ -221,7 +227,7 @@ export class ResidencyClient {
       id,
       runDirectory: metadata.runDirectory,
       logFile,
-      ...(status ? { status: { ...status, residency: "durable" } } : {}),
+      ...(status ? { status: { ...status, cwd: metadata.handle.cwd, residency: "durable" } } : {}),
       events: page.lines,
       hasMore: page.hasMore,
       ...(page.before !== undefined ? { before: page.before } : {}),
@@ -275,16 +281,17 @@ export class ResidencyClient {
       throw new Error(`Cannot clean up running durable Fabric agent ${metadata.id}`);
     }
     if (metadata.handle.worktree) {
+      const gitRoot = metadata.worktreeGitRoot ?? this.options.config.projectRoot;
       await executeFile(
         "git",
         ["worktree", "remove", "--force", metadata.handle.worktree],
-        { cwd: this.options.config.projectRoot, timeoutMs: 60_000 },
+        { cwd: gitRoot, timeoutMs: 60_000 },
       );
       if (deleteBranch && metadata.handle.branch) {
         await executeFile(
           "git",
           ["branch", "-D", metadata.handle.branch],
-          { cwd: this.options.config.projectRoot, timeoutMs: 30_000 },
+          { cwd: gitRoot, timeoutMs: 30_000 },
         );
       }
     } else if (deleteBranch) {

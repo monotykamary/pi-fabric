@@ -175,6 +175,35 @@ afterEach(async () => {
   }
 });
 
+describe("durable cwd validation", () => {
+  it("rejects recursive cwd before creating a resident host or request", async () => {
+    const state = await rootHarness("resident-cwd-rejection");
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+
+    try {
+      await expect(
+        client.spawnAgent({
+          task: "must remain recursive",
+          cwd: state.root,
+          recursive: true,
+          residency: "durable",
+        }),
+      ).rejects.toThrow(/only for non-recursive agents/);
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "owner.json"))).toBe(false);
+      expect(fs.existsSync(path.join(state.config.residencyRoot, "requests"))).toBe(false);
+    } finally {
+      await client.close();
+      await state.participants.close();
+    }
+  });
+});
+
 describe.skipIf(!hasResidentHost)("durable participant residency", () => {
   it("keeps a durable actor responsive after its originating Main closes", { timeout: 20_000 }, async () => {
     const state = await rootHarness("resident-actor");
@@ -503,5 +532,37 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await expect(reconnect.cleanupAgent(handle.id)).resolves.toEqual({ cleaned: true });
     expect(reconnect.hasAgent(handle.id)).toBe(false);
     await reconnect.close();
+  });
+
+  it("forwards and reports a canonical durable agent cwd", { timeout: 20_000 }, async () => {
+    const state = await rootHarness("resident-agent-cwd");
+    state.config.cwd = state.root;
+    state.config.projectRoot = state.root;
+    const target = path.join(state.root, "child");
+    fs.mkdirSync(target);
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+
+    const handle = await client.spawnAgent({
+      task: "STREAM_PREVIEW",
+      cwd: "child",
+      transport: "process",
+      residency: "durable",
+    });
+    const canonical = fs.realpathSync(target);
+    expect(handle.cwd).toBe(canonical);
+
+    const result = await client.waitAgent(handle.id);
+    expect(result.cwd).toBe(canonical);
+    expect(client.statusAgent(handle.id)).toMatchObject({ cwd: canonical });
+    expect(client.readAgentLog(handle.id).status?.cwd).toBe(canonical);
+    await expect(client.cleanupAgent(handle.id)).resolves.toEqual({ cleaned: true });
+    await client.close();
+    await state.participants.close();
   });
 });

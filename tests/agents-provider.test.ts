@@ -597,6 +597,73 @@ describe("AgentsProvider runner support", () => {
     expect(schema.properties).not.toHaveProperty("checkpoint");
   });
 
+  it("exposes cwd on one-shot schemas but not handoff or actor definitions", async () => {
+    const { provider } = setup();
+    const run = await provider.describe("run", context);
+    const spawn = await provider.describe("spawn", context);
+    const handoff = await provider.describe("handoff", context);
+    const create = await provider.describe("create", context);
+    const properties = (descriptor: typeof run) =>
+      (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
+
+    expect(properties(run)).toHaveProperty("cwd");
+    expect(properties(spawn)).toHaveProperty("cwd");
+    expect(properties(handoff)).not.toHaveProperty("cwd");
+    expect(properties(create)).not.toHaveProperty("cwd");
+  });
+
+  it("rejects durable recursive cwd before the provider can transfer ownership", async () => {
+    const { provider, root } = setup();
+
+    await expect(
+      provider.invoke(
+        "spawn",
+        { task: "must remain recursive", cwd: process.cwd(), recursive: true, residency: "durable" },
+        context,
+      ),
+    ).rejects.toThrow(/only for non-recursive agents/);
+    expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
+  });
+
+  it("shows the bounded, escaped effective cwd in run and spawn launch activity", async () => {
+    const { provider } = setup();
+    const updates: string[] = [];
+    const invocationContext = { ...context, update: (message: string) => updates.push(message) };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agent-activity-"));
+    roots.push(root);
+    const longPart = "x".repeat(96);
+    const target = path.join(root, longPart, longPart, `leaf-\u001b-${"y".repeat(96)}`);
+    fs.mkdirSync(target, { recursive: true });
+    const requested = path.join(root, "leaf-link");
+    fs.symlinkSync(target, requested, "dir");
+    const canonical = fs.realpathSync(target);
+    const safe = canonical.replace(/[\u0000-\u001f\u007f]/g, (character) =>
+      `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+    );
+    const shown = safe.length <= 240 ? safe : `…${safe.slice(-239)}`;
+
+    const runResult = await provider.invoke(
+      "run",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { cwd: string };
+    expect(runResult.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${shown}`))).toBe(true);
+
+    updates.length = 0;
+    const handle = await provider.invoke(
+      "spawn",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { id: string; cwd: string };
+    expect(handle.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${shown}`))).toBe(true);
+    expect(updates.every((message) => !/[\u0000-\u001f\u007f]/.test(message))).toBe(true);
+    expect(updates.every((message) => message.length < 512)).toBe(true);
+    await provider.invoke("wait", { id: handle.id }, invocationContext);
+    await provider.invoke("cleanup", { id: handle.id }, invocationContext);
+  });
+
   it("exposes the compact option on handoff only and validates it before deferring", async () => {
     const { provider, root } = setup();
     const source = SessionManager.inMemory(root);

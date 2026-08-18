@@ -561,12 +561,14 @@ export class ResidentHost {
         this.agents.detachSignal(handle.id);
         const runDirectory = this.agents.runDirectory(handle.id);
         if (!runDirectory) throw new Error(`Resident agent ${handle.id} has no run directory`);
+        const worktreeGitRoot = this.agents.worktreeGitRoot(handle.id);
         const metadata: ResidentAgentMetadata = {
           format: RESIDENT_HOST_FORMAT,
           rootId: this.config.rootId,
           id: handle.id,
           runDirectory,
           handle: { ...handle, residency: "durable" },
+          ...(worktreeGitRoot ? { worktreeGitRoot } : {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };

@@ -108,6 +108,7 @@ export interface ResidentAgentMetadata {
   id: string;
   runDirectory: string;
   handle: AgentHandleInfo;
+  worktreeGitRoot?: string;
   createdAt: number;
   updatedAt: number;
 }

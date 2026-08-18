@@ -111,6 +111,37 @@ type AgentParticipantGuidanceResolver = (
   request: AgentParticipantGuidanceRequest,
 ) => string | undefined;
 
+/** Reject the cwd combination excluded from the leaf-agent release. */
+export const validateAgentCwdRequest = (
+  request: Pick<AgentRunRequest, "cwd" | "recursive">,
+): void => {
+  if (request.cwd !== undefined && request.recursive === true) {
+    throw new Error("Fabric agent cwd is supported only for non-recursive agents; omit cwd when recursive is true");
+  }
+};
+
+/** Resolve and validate a one-shot agent's filesystem execution directory. */
+export const resolveAgentCwd = (parentCwd: string, requestedCwd?: string): string => {
+  if (requestedCwd === undefined) return parentCwd;
+  const requested = requestedCwd;
+  if (typeof requested !== "string" || requested.trim().length === 0) {
+    throw new Error(`Invalid Fabric agent cwd ${JSON.stringify(requested)}: path must not be empty`);
+  }
+  const candidate = path.isAbsolute(requested)
+    ? requested
+    : path.resolve(parentCwd, requested);
+  try {
+    const canonical = fs.realpathSync(candidate);
+    fs.accessSync(canonical, fs.constants.R_OK | fs.constants.X_OK);
+    if (!fs.statSync(canonical).isDirectory()) {
+      throw new Error("path is not a directory");
+    }
+    return canonical;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid Fabric agent cwd ${JSON.stringify(requested)}: ${reason}`);
+  }
+};
 interface ManagedAgent {
   id: string;
   name: string;
@@ -475,12 +506,17 @@ export class AgentManager {
     return () => this.#uiListeners.delete(listener);
   }
 
+  resolveCwd(requestedCwd?: string): string {
+    return resolveAgentCwd(this.cwd, requestedCwd);
+  }
+
   async spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
     if (!this.config.enabled) throw new Error("Agents are disabled in Fabric configuration");
     if (this.#currentDepth >= this.config.maxDepth) {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
     }
     if (!request.task.trim()) throw new Error("Agent task must not be empty");
+    validateAgentCwdRequest(request);
     const residency = request.residency ?? "session";
     if (residency !== "session" && residency !== "durable") {
       throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
@@ -508,6 +544,7 @@ export class AgentManager {
     if (request.sessionSeed && request.sessionFile) {
       throw new Error("A agent request cannot combine sessionSeed with sessionFile");
     }
+    const selectedCwd = this.resolveCwd(request.cwd);
     const tools = this.#childTools(request, runner);
     if (runner === "claude") mapClaudeTools(tools);
     if (runner === "veda") mapVedaTools(tools);
@@ -557,13 +594,13 @@ export class AgentManager {
       });
     }
 
-    let agentCwd = this.cwd;
+    let agentCwd = selectedCwd;
     let branch: string | undefined;
     let worktree: string | undefined;
     if (request.worktree) {
       try {
-        const lease = await this.#worktrees.create(id, this.cwd, name);
-        agentCwd = lease.path;
+        const lease = await this.#worktrees.create(id, selectedCwd, name);
+        agentCwd = lease.cwd;
         branch = lease.branch;
         worktree = lease.path;
       } catch (error) {
@@ -835,6 +872,10 @@ export class AgentManager {
     return this.#runs.get(id)?.runDirectory;
   }
 
+  worktreeGitRoot(id: string): string | undefined {
+    return this.#worktrees.get(id)?.gitRoot;
+  }
+
   async claudeModels(refresh = false): Promise<ClaudeModelInfo[]> {
     const now = Date.now();
     if (!refresh && this.#claudeModelsCache && now - this.#claudeModelsCache.at < 60_000) {
@@ -894,7 +935,7 @@ export class AgentManager {
       events: page.lines,
       hasMore: page.hasMore,
       ...(page.before !== undefined ? { before: page.before } : {}),
-      ...(statusRecord ? { status: statusRecord } : {}),
+      ...(statusRecord ? { status: { ...statusRecord, cwd: managed.cwd } } : {}),
     };
   }
 
@@ -1483,6 +1524,7 @@ export class AgentManager {
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
     return {
       ...safeRecord,
+      cwd: managed.cwd,
       runner: managed.runner,
       ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
       logFile: path.join(managed.runDirectory, "events.jsonl"),
