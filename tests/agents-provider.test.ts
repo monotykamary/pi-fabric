@@ -625,7 +625,39 @@ describe("AgentsProvider runner support", () => {
     expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
   });
 
-  it("shows the bounded, escaped effective cwd in run and spawn launch activity", async () => {
+  it("shows the effective cwd in run and spawn launch activity", async () => {
+    const { provider } = setup();
+    const updates: string[] = [];
+    const invocationContext = { ...context, update: (message: string) => updates.push(message) };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-agent-activity-"));
+    roots.push(root);
+    const target = path.join(root, "leaf");
+    fs.mkdirSync(target);
+    const requested = path.join(root, "leaf-link");
+    fs.symlinkSync(target, requested, "dir");
+    const canonical = fs.realpathSync(target);
+
+    const runResult = await provider.invoke(
+      "run",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { cwd: string };
+    expect(runResult.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${canonical}`))).toBe(true);
+
+    updates.length = 0;
+    const handle = await provider.invoke(
+      "spawn",
+      { task: "report the launch directory", cwd: requested },
+      invocationContext,
+    ) as { id: string; cwd: string };
+    expect(handle.cwd).toBe(canonical);
+    expect(updates.some((message) => message.endsWith(`cwd ${canonical}`))).toBe(true);
+    await provider.invoke("wait", { id: handle.id }, invocationContext);
+    await provider.invoke("cleanup", { id: handle.id }, invocationContext);
+  });
+
+  it.skipIf(process.platform === "win32")("bounds and escapes control characters in cwd launch activity", async () => {
     const { provider } = setup();
     const updates: string[] = [];
     const invocationContext = { ...context, update: (message: string) => updates.push(message) };

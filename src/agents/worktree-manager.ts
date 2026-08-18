@@ -23,19 +23,36 @@ const isInside = (root: string, target: string): boolean => {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 };
 
+const worktreePrefixParts = (prefix: string): string[] | undefined => {
+  const parts = prefix.split(/[\\/]+/).filter(Boolean);
+  return parts.every((part) => part !== "." && part !== "..") ? parts : undefined;
+};
+
 export class WorktreeManager {
   readonly #leases = new Map<string, WorktreeLease>();
 
-  async create(id: string, cwd: string, name: string): Promise<WorktreeLease> {
+  async create(
+    id: string,
+    cwd: string,
+    name: string,
+    preserveSourceSubdirectory = false,
+  ): Promise<WorktreeLease> {
     let gitRoot: string;
+    let sourcePrefix = "";
     try {
-      const output = (await executeFile("git", ["rev-parse", "--show-toplevel"], { cwd })).stdout.trim();
+      const [root, prefix] = await Promise.all([
+        executeFile("git", ["rev-parse", "--show-toplevel"], { cwd }),
+        preserveSourceSubdirectory
+          ? executeFile("git", ["rev-parse", "--show-prefix"], { cwd })
+          : Promise.resolve({ stdout: "" }),
+      ]);
+      const output = root.stdout.trim();
       if (!output) throw new Error("Git did not return a worktree root");
       gitRoot = fs.realpathSync(output);
+      sourcePrefix = prefix.stdout.trim();
     } catch {
       throw new Error("Worktree isolation requires a Git repository");
     }
-    const sourceCwd = fs.realpathSync(cwd);
     const branch = `pi-fabric/${safeLabel(name)}-${id.slice(0, 8)}`;
     const parent = path.join(os.tmpdir(), "pi-fabric-worktrees");
     fs.mkdirSync(parent, { recursive: true });
@@ -45,10 +62,13 @@ export class WorktreeManager {
       timeoutMs: 60_000,
     });
     const canonicalWorktreePath = fs.realpathSync(worktreePath);
-    const relative = path.relative(gitRoot, sourceCwd);
+    const prefix = preserveSourceSubdirectory ? worktreePrefixParts(sourcePrefix) : undefined;
     let effectiveCwd = canonicalWorktreePath;
-    if (isInside(gitRoot, sourceCwd) && relative) {
-      const candidate = path.join(canonicalWorktreePath, relative);
+    if (prefix && prefix.length > 0) {
+      // Git reports its own worktree-relative prefix with `/` on every platform.
+      // This avoids comparing independently canonicalized Windows paths, whose
+      // volume/casing representation can differ even for the same directory.
+      const candidate = path.resolve(canonicalWorktreePath, ...prefix);
       try {
         const canonicalCandidate = fs.realpathSync(candidate);
         if (fs.statSync(canonicalCandidate).isDirectory() && isInside(canonicalWorktreePath, canonicalCandidate)) {

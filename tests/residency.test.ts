@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +30,19 @@ const roots: string[] = [];
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+const git = (cwd: string, ...args: string[]): string =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+
+const initRepository = (directory: string): void => {
+  fs.mkdirSync(directory, { recursive: true });
+  git(directory, "init", "-q");
+  git(directory, "config", "user.email", "pi-fabric-tests@example.invalid");
+  git(directory, "config", "user.name", "Pi Fabric tests");
+  fs.writeFileSync(path.join(directory, "README.md"), "test repository\n");
+  git(directory, "add", ".");
+  git(directory, "commit", "-qm", "initial");
+};
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 7_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -532,6 +546,93 @@ describe.skipIf(!hasResidentHost)("durable participant residency", () => {
     await expect(reconnect.cleanupAgent(handle.id)).resolves.toEqual({ cleaned: true });
     expect(reconnect.hasAgent(handle.id)).toBe(false);
     await reconnect.close();
+  });
+
+  it("rejects tampered durable worktree metadata before destructive cleanup", async () => {
+    const state = await rootHarness("resident-worktree-tamper");
+    const source = path.join(state.root, "source");
+    const unrelated = path.join(state.root, "unrelated");
+    initRepository(source);
+    initRepository(unrelated);
+    const id = randomId().padEnd(32, "0").slice(0, 32);
+    const branch = `pi-fabric/tampered-${id.slice(0, 8)}`;
+    const worktree = path.join(os.tmpdir(), "pi-fabric-worktrees", id);
+    fs.mkdirSync(path.dirname(worktree), { recursive: true });
+    git(source, "worktree", "add", "-q", "-b", branch, worktree, "HEAD");
+    const runDirectory = path.join(state.config.residencyRoot, "runs", id);
+    fs.mkdirSync(runDirectory, { recursive: true });
+    fs.writeFileSync(path.join(runDirectory, "status.json"), JSON.stringify({
+      id,
+      name: "tampered worktree",
+      task: "test",
+      status: "completed",
+      runner: "pi",
+      transport: "process",
+      cwd: worktree,
+      startedAt: 1,
+      updatedAt: 1,
+      finishedAt: 1,
+      turns: 0,
+      toolCalls: 0,
+      text: "complete",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    }));
+    const metadataPath = path.join(state.config.residencyRoot, "agents", `${id}.json`);
+    const metadata = {
+      format: RESIDENT_HOST_FORMAT,
+      rootId: state.identity.id,
+      id,
+      runDirectory,
+      handle: {
+        id,
+        name: "tampered worktree",
+        status: "completed",
+        runner: "pi",
+        transport: "process",
+        cwd: worktree,
+        residency: "durable",
+        branch,
+        worktree,
+      },
+      worktreeGitRoot: unrelated,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    const client = new ResidencyClient({
+      config: state.config,
+      mesh: state.mesh,
+      participants: state.participants,
+      mainAgent: state.mainAgent,
+      hostPath,
+    });
+
+    try {
+      await expect(client.cleanupAgent(id, true)).rejects.toThrow(/not registered/);
+      expect(git(source, "worktree", "list", "--porcelain")).toContain(worktree);
+      expect(git(source, "branch", "--list", branch)).toContain(branch);
+      expect(fs.existsSync(runDirectory)).toBe(true);
+
+      fs.writeFileSync(metadataPath, JSON.stringify({ ...metadata, worktreeGitRoot: source }));
+      await expect(client.cleanupAgent(id, true)).resolves.toEqual({ cleaned: true });
+      expect(git(source, "worktree", "list", "--porcelain")).not.toContain(worktree);
+      expect(git(source, "branch", "--list", branch)).toBe("");
+      expect(fs.existsSync(runDirectory)).toBe(false);
+    } finally {
+      try {
+        git(source, "worktree", "remove", "--force", worktree);
+      } catch {
+        // A failed assertion may follow an implementation that already removed it.
+      }
+      try {
+        git(source, "branch", "-D", branch);
+      } catch {
+        // The worktree removal may already have removed its branch.
+      }
+      await client.close();
+      await state.participants.close();
+    }
   });
 
   it("forwards and reports a canonical durable agent cwd", { timeout: 20_000 }, async () => {

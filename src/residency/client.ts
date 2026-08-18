@@ -47,6 +47,39 @@ const readJson = <T>(filePath: string): T | undefined => {
 const terminal = (status: string): status is AgentRunResult["status"] =>
   status === "completed" || status === "failed" || status === "stopped" || status === "timed_out";
 
+const samePath = (left: string, right: string): boolean => {
+  try {
+    return path.relative(fs.realpathSync.native(left), fs.realpathSync.native(right)) === "";
+  } catch {
+    return false;
+  }
+};
+
+/** Refuse cleanup unless the selected repository still owns this worktree. */
+const registeredWorktree = async (gitRoot: string, worktreePath: string): Promise<string> => {
+  let output: string;
+  try {
+    output = (await executeFile("git", ["worktree", "list", "--porcelain"], {
+      cwd: gitRoot,
+      timeoutMs: 30_000,
+    })).stdout;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot validate durable worktree ${JSON.stringify(worktreePath)}: ${reason}`);
+  }
+  const registered = output
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length));
+  const match = registered.find((candidate) => samePath(candidate, worktreePath));
+  if (!match) {
+    throw new Error(
+      `Refusing durable worktree cleanup: ${JSON.stringify(worktreePath)} is not registered by ${JSON.stringify(gitRoot)}`,
+    );
+  }
+  return match;
+};
+
 export interface ResidencyClientOptions {
   config: ResidentHostConfig;
   mesh: MeshStore;
@@ -282,9 +315,10 @@ export class ResidencyClient {
     }
     if (metadata.handle.worktree) {
       const gitRoot = metadata.worktreeGitRoot ?? this.options.config.projectRoot;
+      const worktree = await registeredWorktree(gitRoot, metadata.handle.worktree);
       await executeFile(
         "git",
-        ["worktree", "remove", "--force", metadata.handle.worktree],
+        ["worktree", "remove", "--force", worktree],
         { cwd: gitRoot, timeoutMs: 60_000 },
       );
       if (deleteBranch && metadata.handle.branch) {
@@ -350,6 +384,7 @@ export class ResidencyClient {
       metadata.rootId !== this.options.config.rootId ||
       metadata.id !== id ||
       metadata.handle.id !== id ||
+      (metadata.worktreeGitRoot !== undefined && typeof metadata.worktreeGitRoot !== "string") ||
       path.resolve(metadata.runDirectory) !==
         path.resolve(this.options.config.residencyRoot, "runs", id)
     ) {

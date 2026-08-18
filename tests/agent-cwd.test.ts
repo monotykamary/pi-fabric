@@ -187,14 +187,22 @@ describe("one-shot agent cwd", () => {
     roots.push(root);
     const runRoot = path.join(root, "runs");
     const worker = createWorker(root);
-    const manager = createManager(root, runRoot, worker);
+    let prepared = false;
+    const manager = createManager(root, runRoot, worker, {
+      preparePiModel: async () => {
+        prepared = true;
+      },
+    });
     const missing = path.join(root, "missing-target");
     const file = path.join(root, "not-a-directory");
     fs.writeFileSync(file, "file");
 
-    await expect(manager.spawn({ task: "missing", cwd: missing, transport: "process" })).rejects.toThrow(missing);
+    await expect(
+      manager.spawn({ task: "missing", cwd: missing, model: "test/model", transport: "process" }),
+    ).rejects.toThrow(JSON.stringify(missing));
     await expect(manager.spawn({ task: "empty", cwd: "   ", transport: "process" })).rejects.toThrow(/path must not be empty/);
-    await expect(manager.spawn({ task: "file", cwd: file, transport: "process" })).rejects.toThrow(file);
+    await expect(manager.spawn({ task: "file", cwd: file, transport: "process" })).rejects.toThrow(JSON.stringify(file));
+    expect(prepared).toBe(false);
     expect(fs.existsSync(runRoot)).toBe(false);
   });
 
@@ -252,6 +260,26 @@ describe("one-shot agent cwd", () => {
       expect((result as unknown as { meshRoot: string }).meshRoot).toBe(path.join(root, "mesh"));
       expect(git(parent, "worktree", "list", "--porcelain")).toBe(parentWorktreesBefore);
       expect(git(target, "worktree", "list", "--porcelain")).toContain(worktree!);
+    } finally {
+      if (result) await manager.cleanup(result.id, true);
+    }
+  });
+
+  it("keeps the generated worktree root when cwd is omitted from a subdirectory manager", async () => {
+    const repository = initRepository("pi-fabric-default-worktree-repo-", path.join("packages", "app"));
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-default-worktree-"));
+    roots.push(root);
+    const manager = createManager(
+      path.join(repository, "packages", "app"),
+      path.join(root, "runs"),
+      createWorker(root),
+    );
+    let result: Awaited<ReturnType<AgentManager["run"]>> | undefined;
+
+    try {
+      result = await manager.run({ task: "use the default worktree root", worktree: true, transport: "process" });
+      expect(result.worktree).toBeDefined();
+      expect(result.cwd).toBe(fs.realpathSync(result.worktree!));
     } finally {
       if (result) await manager.cleanup(result.id, true);
     }

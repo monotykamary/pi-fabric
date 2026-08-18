@@ -517,6 +517,9 @@ export class AgentManager {
     }
     if (!request.task.trim()) throw new Error("Agent task must not be empty");
     validateAgentCwdRequest(request);
+    // Validate explicit execution targets before any model preparation or budget side effects.
+    // With no override this deliberately preserves the manager cwd without canonicalizing it.
+    const selectedCwd = this.resolveCwd(request.cwd);
     const residency = request.residency ?? "session";
     if (residency !== "session" && residency !== "durable") {
       throw new Error(`Invalid Fabric agent residency: ${String(request.residency)}`);
@@ -544,7 +547,6 @@ export class AgentManager {
     if (request.sessionSeed && request.sessionFile) {
       throw new Error("A agent request cannot combine sessionSeed with sessionFile");
     }
-    const selectedCwd = this.resolveCwd(request.cwd);
     const tools = this.#childTools(request, runner);
     if (runner === "claude") mapClaudeTools(tools);
     if (runner === "veda") mapVedaTools(tools);
@@ -599,7 +601,7 @@ export class AgentManager {
     let worktree: string | undefined;
     if (request.worktree) {
       try {
-        const lease = await this.#worktrees.create(id, selectedCwd, name);
+        const lease = await this.#worktrees.create(id, selectedCwd, name, request.cwd !== undefined);
         agentCwd = lease.cwd;
         branch = lease.branch;
         worktree = lease.path;
