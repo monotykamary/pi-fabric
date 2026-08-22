@@ -24,6 +24,8 @@ One type-checked TS program in a fresh executor (isolated QuickJS by default). O
 | `edit` | `{path,edits:[{oldText,newText,all?}],all?}` \| `{path,oldText,newText,all?}` \| `(path, oldText, newText)` | `{ok,output,details}` |
 | `write` | `{path,content}` \| `(path, content)` | `{ok,output,details}` |
 
+`pi.bash` has no `cwd` or `stdin` option. Put an explicit directory change in the command, for example `await pi.bash("cd apps/daemon && pnpm test")`. When a command needs content input, write it to a file with `pi.write(path, content)`, then pass that path to the command or redirect the file into it; do not interpolate untrusted content into shell code.
+
 For `pi.edit`, entry-level `all:true` applies that replacement to every non-overlapping occurrence; top-level `all:true` applies every entry that way. Omit it for unique anchors.
 
 `bash` rejects on an ordinary nonzero exit; pass `settle:true` to get `{ok:false,output,details:null,exitCode,error}` instead of a rejection. Timeout, cancellation, approval, security, and spawn failures still reject. Other Pi core tool errors reject normally.

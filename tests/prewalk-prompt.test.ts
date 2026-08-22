@@ -64,6 +64,7 @@ describe("prewalk prompt isolation", () => {
     expect(guidelines).toContain("not raw logs or unused intermediate results");
     expect(guidelines).toContain("pass payloads through top-level `strings`");
     expect(guidelines).toContain("prefer `pi.edit`/`pi.write`");
+    expect(guidelines).toContain("`pi.bash`: no cwd/stdin");
     expect(guidelines).toContain("`display.name` and objective `display.description`");
     expect(guidelines).toContain("pairs them with verified outcomes");
     expect(guidelines).toContain("deterministic compaction");

@@ -38,6 +38,7 @@ describe("fabric-exec skill provider contracts", () => {
     const extension = fs.readFileSync("src/index.ts", "utf8");
 
     expect(skill).toContain("multiline or syntax-heavy payloads");
+    expect(skill).toContain("`pi.bash` has no `cwd` or `stdin` option");
     expect(skill).toContain("Omit `timeoutMs` for agents and actors");
     expect(extension).not.toContain("Shorthands (all accepted)");
     expect(extension).not.toContain("mcp.fal_ai.get_model_schema");
