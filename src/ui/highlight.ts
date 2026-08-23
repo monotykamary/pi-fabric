@@ -7,6 +7,7 @@ import { bundledLanguages } from "shiki/langs";
 import { bundledThemesInfo } from "shiki/themes";
 import type { GrammarState, Highlighter } from "shiki";
 import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
+import { resolveShikiThemeObject } from "./shiki-theme.js";
 
 const configuredMaxHighlightChars = Number.parseInt(
   process.env.CODE_PREVIEW_MAX_HIGHLIGHT_CHARS ?? "",
@@ -352,8 +353,16 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
   initializingTheme = theme;
   try {
     const { createHighlighter } = await import("shiki");
+    // Resolve the theme object from pi-fabric's own module graph and hand
+    // createHighlighter the *object*, not a bare id string. Shiki's internal
+    // lazy `import("@shikijs/themes/<id>)` for string ids cannot be resolved
+    // inside Pi's extension host (issue #46); passing the object sidesteps it.
+    const themeObject = await resolveShikiThemeObject(theme);
+    if (!themeObject) {
+      throw new Error(`Unknown shiki theme: ${theme}`);
+    }
     const next = await createHighlighter({
-      themes: [theme],
+      themes: [themeObject],
       langs: [...PRELOADED_LANGUAGES],
     });
     if (version !== initVersion) {
