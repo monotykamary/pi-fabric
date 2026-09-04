@@ -202,7 +202,9 @@ describe("PiToolsProvider lifecycle", () => {
   });
 
   it("preserves shell cwd through pi 0.85 argument preparation", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-provider-cwd-"));
+    const root = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-provider-cwd-")),
+    );
     const nested = path.join(root, "nested");
     fs.mkdirSync(nested);
     try {
@@ -210,7 +212,10 @@ describe("PiToolsProvider lifecycle", () => {
       registry.register(new PiToolsProvider(root, undefined, undefined));
       const result = await registry.invoke(
         "pi.bash",
-        { command: "pwd", cwd: "nested" },
+        {
+          command: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} -e "process.stdout.write(process.cwd())"`,
+          cwd: "nested",
+        },
         {
           ...baseContext,
           cwd: root,
@@ -218,7 +223,9 @@ describe("PiToolsProvider lifecycle", () => {
           audits: [],
         },
       ) as { output: string };
-      expect(result.output.trim()).toBe(fs.realpathSync(nested));
+      expect(fs.realpathSync.native(result.output.trim())).toBe(
+        fs.realpathSync.native(nested),
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
