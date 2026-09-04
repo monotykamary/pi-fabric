@@ -64,6 +64,7 @@ describe("shiki host-loader theme resolution (#46)", () => {
     expect(createHighlighterMock).toHaveBeenCalledTimes(1);
     const options = createHighlighterMock.mock.calls[0]?.[0] as {
       themes: unknown[];
+      langs: unknown[];
     };
     const firstTheme = options.themes[0];
     expect(typeof firstTheme).toBe("object");
