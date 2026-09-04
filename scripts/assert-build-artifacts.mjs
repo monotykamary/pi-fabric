@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -20,10 +20,30 @@ const stable = [
   "memory/normalize.js",
   "providers/memory-provider.js",
 ];
-const declarations = stable.map((file) => file.replace(/\.js$/, ".d.ts"));
+const lazy = [
+  "agents/claude-cli.js",
+  "agents/compact-control.js",
+  "agents/veda-cli.js",
+  "fabric-runtime-state.js",
+  "runtime/core-override-guest-types.js",
+  "runtime/dynamic-guest-types.js",
+  "runtime/guest-types.js",
+  "runtime/node-process-runtime.js",
+  "runtime/quickjs-runtime.js",
+  "runtime/type-checker.js",
+  "speculation/scanner.js",
+  "ui/dashboard.js",
+  "ui/model-picker.js",
+  "ui/settings.js",
+  "worker/options.js",
+  "worker/run-record.js",
+  "worker/session-export.js",
+];
+const entries = [...stable, ...lazy];
+const declarations = entries.map((file) => file.replace(/\.js$/, ".d.ts"));
 const required = [
-  ...stable,
-  ...stable.map((file) => `${file}.map`),
+  ...entries,
+  ...entries.map((file) => `${file}.map`),
   ...declarations,
   ...declarations.map((file) => `${file}.map`),
 ];
@@ -42,30 +62,40 @@ for (const chunk of chunkFiles) {
 }
 
 const staticImport = /(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?["']([^"']+)["']/g;
-const visited = new Set();
-const stack = [join(dist, "index.js")];
-while (stack.length > 0) {
-  const file = stack.pop();
-  if (!file || visited.has(file)) continue;
-  visited.add(file);
-  const source = readFileSync(file, "utf8");
-  for (const match of source.matchAll(staticImport)) {
-    const specifier = match[1];
-    if (specifier?.startsWith(".")) stack.push(resolve(dirname(file), specifier));
+const staticClosure = (roots) => {
+  const visited = new Set();
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const file = stack.pop();
+    if (!file || visited.has(file)) continue;
+    visited.add(file);
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(staticImport)) {
+      const specifier = match[1];
+      if (specifier?.startsWith(".")) stack.push(resolve(dirname(file), specifier));
+    }
   }
-}
-const initialSource = [...visited].map((file) => readFileSync(file, "utf8")).join("\n");
+  return visited;
+};
+
+const startupFiles = staticClosure([join(dist, "index.js")]);
+const initialSource = [...startupFiles]
+  .map((file) => readFileSync(file, "utf8"))
+  .join("\n");
 for (const forbidden of ["src/fabric-runtime-state.ts", "src/ui/settings.ts", 'from "mcporter"']) {
   if (initialSource.includes(forbidden)) {
     throw new Error(`Startup static graph contains lazy module marker: ${forbidden}`);
   }
 }
-const allChunks = chunkFiles.map((file) => readFileSync(join(chunks, file), "utf8")).join("\n");
+const lazyFiles = staticClosure(lazy.map((file) => join(dist, file)));
+const lazySource = [...lazyFiles].map((file) => readFileSync(file, "utf8")).join("\n");
 for (const expected of ["src/fabric-runtime-state.ts", "src/ui/settings.ts", 'import("mcporter")']) {
-  if (!allChunks.includes(expected)) throw new Error(`Expected lazy chunk marker not found: ${expected}`);
+  if (!lazySource.includes(expected)) {
+    throw new Error(`Expected lazy entry marker not found: ${expected}`);
+  }
 }
 
-for (const file of stable) {
+for (const file of entries) {
   const checked = spawnSync(process.execPath, ["--check", join(dist, file)], { encoding: "utf8" });
   if (checked.status !== 0) throw new Error(checked.stderr || `Syntax check failed: ${file}`);
 }
@@ -74,4 +104,6 @@ await Promise.all(
     import(new URL(`../dist/${file}`, import.meta.url)),
   ),
 );
-console.log(`build artifacts and lazy startup graph verified (${visited.size} startup files, ${chunkFiles.length} chunks)`);
+console.log(
+  `build artifacts and lazy startup graph verified (${startupFiles.size} startup files, ${lazy.length} stable lazy entries, ${chunkFiles.length} chunks)`,
+);

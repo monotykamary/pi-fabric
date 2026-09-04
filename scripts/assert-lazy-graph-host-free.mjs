@@ -1,18 +1,18 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
-const chunks = join(dist, "chunks");
 const hostPackage = "@earendil-works/pi-coding-agent";
-const entries = existsSync(chunks)
-  ? readdirSync(chunks)
-      .filter((file) => /^(dashboard|model-picker)-.*\.js$/.test(file))
-      .map((file) => join(chunks, file))
-  : [];
-if (entries.length === 0) throw new Error("Lazy dashboard chunks were not built");
+const entries = ["ui/dashboard.js", "ui/model-picker.js", "ui/settings.js"].map((file) =>
+  join(dist, file),
+);
+const missing = entries.filter((file) => !existsSync(file));
+if (missing.length > 0) {
+  throw new Error(`Lazy UI entries were not built:\n${missing.join("\n")}`);
+}
 
 const importRe = /(?:import|export)\s+(?:[^"'()]*?\s+from\s+)?["']([^"']+)["']/g;
 const visited = new Set();
@@ -33,7 +33,7 @@ const offenders = [...visited].filter((file) => {
 });
 if (offenders.length > 0) {
   throw new Error(
-    `Lazy dashboard graph must not import ${hostPackage}:\n${offenders.join("\n")}`,
+    `Lazy UI graph must not import ${hostPackage}:\n${offenders.join("\n")}`,
   );
 }
-console.log(`lazy dashboard graph is host-package-free (${visited.size} files checked)`);
+console.log(`lazy UI graph is host-package-free (${visited.size} files checked)`);
