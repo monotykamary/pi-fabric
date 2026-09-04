@@ -19,6 +19,7 @@ const initRepository = (): string => {
   git(repository, "init", "-q");
   git(repository, "config", "user.email", "pi-fabric-tests@example.invalid");
   git(repository, "config", "user.name", "Pi Fabric tests");
+  git(repository, "config", "core.autocrlf", "false");
   fs.writeFileSync(path.join(repository, "README.md"), "tracked head\n");
   fs.writeFileSync(path.join(repository, ".gitignore"), "node_modules/\n");
   fs.mkdirSync(path.join(repository, "node_modules", "pkg"), { recursive: true });
@@ -26,7 +27,7 @@ const initRepository = (): string => {
   git(repository, "add", ".");
   git(repository, "commit", "-qm", "initial");
   fs.writeFileSync(path.join(repository, "README.md"), "dirty working tree\n");
-  return fs.realpathSync(repository);
+  return fs.realpathSync.native(repository);
 };
 
 afterEach(() => {

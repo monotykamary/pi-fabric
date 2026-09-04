@@ -38,7 +38,7 @@ const initRepository = (prefix: string, relativeDirectory?: string): string => {
   }
   git(repository, "add", ".");
   git(repository, "commit", "-qm", "initial");
-  return fs.realpathSync(repository);
+  return fs.realpathSync.native(repository);
 };
 
 const workerSource = `
