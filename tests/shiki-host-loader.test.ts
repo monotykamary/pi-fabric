@@ -33,6 +33,7 @@ beforeEach(() => {
   createHighlighterMock.mockReset();
   createHighlighterMock.mockImplementation(async (options: {
     themes: unknown[];
+    langs: unknown[];
   }) => {
     const first = options.themes[0];
     if (typeof first === "string") {
@@ -67,6 +68,8 @@ describe("shiki host-loader theme resolution (#46)", () => {
     const firstTheme = options.themes[0];
     expect(typeof firstTheme).toBe("object");
     expect((firstTheme as { name: string }).name).toBe("dark-plus");
+    expect(options.langs).toHaveLength(10);
+    expect(options.langs.every((language) => typeof language === "object")).toBe(true);
   });
 
   it("initializes a working highlighter under the host-loader failure mode", async () => {
