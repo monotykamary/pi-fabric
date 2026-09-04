@@ -12,6 +12,18 @@ const packageName = (specifier: string): string =>
     : (specifier.split("/")[0] ?? specifier);
 
 describe("package manifest", () => {
+  it("declares Shiki's lazily loaded language package", () => {
+    const root = path.resolve(import.meta.dirname, "..");
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(root, "package.json"), "utf8"),
+    ) as PackageManifest;
+
+    expect(
+      manifest.dependencies?.["@shikijs/langs"],
+      "Shiki loads bundled languages through this package at runtime",
+    ).toBeDefined();
+  });
+
   it("installs every standalone worker import as a runtime dependency", () => {
     const root = path.resolve(import.meta.dirname, "..");
     const manifest = JSON.parse(

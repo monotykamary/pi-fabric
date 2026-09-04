@@ -8,6 +8,7 @@ import { bundledThemesInfo } from "shiki/themes";
 import type { GrammarState, Highlighter } from "shiki";
 import { resolveShikiTheme, type ShikiThemeVariant } from "./code-preview.js";
 import { resolveShikiThemeObject } from "./shiki-theme.js";
+import { resolveShikiLanguageObjects } from "./shiki-language.js";
 
 const configuredMaxHighlightChars = Number.parseInt(
   process.env.CODE_PREVIEW_MAX_HIGHLIGHT_CHARS ?? "",
@@ -370,7 +371,7 @@ export async function initHighlighting(theme: string, syntaxEnabled = true): Pro
     }
     const next = await createHighlighter({
       themes: [themeObject],
-      langs: [...PRELOADED_LANGUAGES],
+      langs: await resolveShikiLanguageObjects(PRELOADED_LANGUAGES),
     });
     if (version !== initVersion) {
       next.dispose();
