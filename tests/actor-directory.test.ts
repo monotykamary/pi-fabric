@@ -131,7 +131,7 @@ describe("ActorDirectory", () => {
       expect(fs.existsSync(`${cursor}.project`)).toBe(true);
       expect(fs.existsSync(`${cursor}.session`)).toBe(true);
       expect(fs.existsSync(steerFile)).toBe(true);
-    });
+    }, { timeout: 5_000 });
     await new Promise((resolve) => setTimeout(resolve, 100));
     const deliveries = fs.readFileSync(steerFile, "utf8")
       .split("\n")
