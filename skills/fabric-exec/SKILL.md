@@ -53,6 +53,21 @@ An unbounded `pi.read('/x')` returns at most 2000 lines or 50KB (whichever is hi
 
 Keep multiline or syntax-heavy payloads out of `code`: pass them through `payloads` and read the exact matching key from `π`. For example, `payloads: { content: text }` is read as `π.content`; do not invent a different reference such as `π.task`. Every `π.key` must exist in the same call's top-level `payloads` map. TypeScript still parses template-literal contents, including shell heredocs. The legacy `strings` argument is accepted as an alias.
 
+## Shell payloads: `script`
+When the *whole* payload is one shell program, pass it as the outer `script` argument instead of `code`, and skip TypeScript string escaping entirely — heredocs, backticks, quotes, `$`-expansions, and sed backreferences travel literally:
+
+```json
+{ "script": "set -eu\ncat > out.txt <<'EOF'\n${literal} `text`\nEOF\nsed -E 's/([a-z]+)/[\\1]/' out.txt" }
+```
+
+`code` and `script` are mutually exclusive and exactly one is required. Fabric compiles `script` to a fixed `pi.bash` program over a reserved `strings` key; the payload is never rewritten, escaped, or interpolated.
+
+Two script-only scalars carry the `pi.bash` options that no script text can reproduce: `timeout` (whole seconds, max 86400) and `settle` (return a nonzero exit as `{ ok, exitCode, output }` rather than failing the call). Both require `script`; a `code` program passes them to `pi.bash` directly instead. To change directory, make `cd <path> || exit 1` the script's first line.
+
+Choose by shape, not by size. `script` is one complete shell program; anything that runs a second tool, branches on a result, or post-processes output is `code`. `strings`, `tokenBudget`, and `agentBudget` are rejected alongside `script` because none of them can reach a shell payload — passing one means the payload belonged in `code`.
+
+Two limits are real. The payload is not type-checked at all, so `set -eu` and correct quoting are yours; and neither compiled form returns `details`, so structured truncation metadata needs `code`. `script` requires full code mode: Schema enforce mode rejects it so protected mutations stay reviewable, and orchestration-only sessions use the native bash tool.
+
 ## First-class provider calls
 Use direct proxies when the action is known. Parallelize only independent calls: provider effect footprints record conflicts for overlapping or unknown non-commutative resources, and Fabric does not silently reorder them. No-argument actions such as `schema.status()`, `state.get()`, and `compact.status()` take no options object. Provider calls still cross the same registry validation, approval, audit, timeout, and cancellation path as generic calls.
 

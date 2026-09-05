@@ -29,6 +29,10 @@ Unique provider extra keys and unknown actions feed a [catalog repair table](rep
 
 In the default QuickJS runtime, guest code runs without `process`, `require`, filesystem, network, or subprocess globals. Every effect crosses the host bridge, and schemas, approvals, audit records, timeouts, and cancellation apply there. Each execution gets a fresh QuickJS context. Strings the caller names in the `payloads` tool parameter appear as `π.key`. Reading a missing key throws a clear, actionable error that lists the provided keys.
 
+For the model-facing distinction between TypeScript `code + payloads` and a
+first-class shell `script`, including the shared execution seam and mode gates,
+see [First-class shell programs in `fabric_exec`](script-input.md).
+
 The optional `node-process` executor runs the same type-checked guest API and host-call protocol inside a fresh child process with a configurable V8 heap. It serves workloads that exceed the WASM32 memory ceiling. This mode is not a security boundary, because Node's `vm` module cannot safely contain hostile code. Fabric restricts this mode to trusted configuration and describes it as unsafe in `/fabric settings`. Schema enforce mode disables it. Parent-side deadlines and cancellation terminate the whole child process.
 
 ## Component control plane

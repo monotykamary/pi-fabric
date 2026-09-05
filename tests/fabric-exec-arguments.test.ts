@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { prepareFabricExecArguments } from "../src/fabric-exec-arguments.js";
+import {
+  prepareFabricExecArguments,
+  resolveFabricExecProgram,
+} from "../src/fabric-exec-arguments.js";
 
 describe("prepareFabricExecArguments", () => {
   it("keeps canonical arguments unchanged", () => {
@@ -104,6 +107,168 @@ describe("prepareFabricExecArguments", () => {
     })).toEqual({
       code: "return 1;",
       payloads: '{"n":1}',
+    });
+  });
+});
+
+describe("prepareFabricExecArguments script mode", () => {
+  const scriptOf = (args: unknown): unknown =>
+    resolveFabricExecProgram(prepareFabricExecArguments(args)).strings;
+
+  it("keeps the authored script through preparation and compiles at the execution seam", () => {
+    const input = { script: "set -eu\nprintf 'done\\n'" };
+    const prepared = prepareFabricExecArguments(input);
+    expect(prepared).toBe(input);
+    expect(resolveFabricExecProgram(prepared)).toEqual({
+      kind: "script",
+      code: "const result = await pi.bash(π.__fabric_script); return result.output;",
+      strings: { __fabric_script: input.script },
+    });
+  });
+
+  it("preserves the payload byte-for-byte", () => {
+    const payload = "grep -oE '\\$\\{HOME\\}' <<'EOF'\n`x` \"y\" 'z' \\\\n\nEOF";
+    expect(scriptOf({ script: payload })).toEqual({ __fabric_script: payload });
+  });
+
+  it("compiles execution options into the nested option object", () => {
+    expect(resolveFabricExecProgram(
+      prepareFabricExecArguments({ script: "ls", timeout: 600 }),
+    )).toMatchObject({
+      kind: "script",
+      code: "const result = await pi.bash(π.__fabric_script, { timeout: 600 }); return result.output;",
+      strings: { __fabric_script: "ls" },
+    });
+    expect(resolveFabricExecProgram(
+      prepareFabricExecArguments({ script: "ls", settle: true }),
+    )).toMatchObject({
+      kind: "script",
+      code:
+        "const result = await pi.bash(π.__fabric_script, { settle: true }); "
+        + "return result.ok ? { ok: true, exitCode: 0, output: result.output } : "
+        + "{ ok: false, exitCode: result.exitCode, output: result.output };",
+      strings: { __fabric_script: "ls" },
+    });
+    expect(resolveFabricExecProgram(
+      prepareFabricExecArguments({ script: "ls", timeout: 600, settle: true }),
+    )).toMatchObject({
+      kind: "script",
+      code:
+        "const result = await pi.bash(π.__fabric_script, { timeout: 600, settle: true }); "
+        + "return result.ok ? { ok: true, exitCode: 0, output: result.output } : "
+        + "{ ok: false, exitCode: result.exitCode, output: result.output };",
+      strings: { __fabric_script: "ls" },
+    });
+  });
+
+  it("keeps display and resultFormat on the outer call", () => {
+    expect(prepareFabricExecArguments({
+      script: "ls",
+      resultFormat: "json",
+      display: "List",
+    })).toEqual({
+      script: "ls",
+      resultFormat: "json",
+      display: { name: "List" },
+    });
+  });
+
+  it("is idempotent over already prepared authored arguments", () => {
+    const input = { script: "ls", timeout: 30, settle: true };
+    const once = prepareFabricExecArguments(input);
+    expect(once).toBe(input);
+    expect(prepareFabricExecArguments(once)).toBe(once);
+  });
+
+  it("rejects code and script together", () => {
+    expect(() => prepareFabricExecArguments({ code: "return 1;", script: "ls" }))
+      .toThrow(/`code` or `script`, not both/);
+  });
+
+  it("rejects an argument object with no program", () => {
+    expect(() => prepareFabricExecArguments({})).toThrow(/either `code`.*or.*`script`/s);
+    expect(() => prepareFabricExecArguments({ display: "Probe" }))
+      .toThrow(/either `code`.*or.*`script`/s);
+  });
+
+  it("rejects a non-string script", () => {
+    expect(() => prepareFabricExecArguments({ script: 12 })).toThrow(/`script` must be a string/);
+    expect(() => prepareFabricExecArguments({ script: ["ls"] }))
+      .toThrow(/`script` must be a string/);
+  });
+
+  it("rejects keys a shell payload cannot reach", () => {
+    expect(() => prepareFabricExecArguments({ script: "ls", payloads: { a: "b" } }))
+      .toThrow(/`payloads` cannot be used with `script`/);
+    expect(() => prepareFabricExecArguments({ script: "ls", strings: { a: "b" } }))
+      .toThrow(/`payloads` cannot be used with `script`/);
+    expect(() => prepareFabricExecArguments({ script: "ls", tokenBudget: 10 }))
+      .toThrow(/`tokenBudget` cannot be used with `script`/);
+    expect(() => prepareFabricExecArguments({ script: "ls", agentBudget: 2 }))
+      .toThrow(/`agentBudget` cannot be used with `script`/);
+  });
+
+  it("rejects script options without a script", () => {
+    expect(() => prepareFabricExecArguments({ code: "return 1;", timeout: 60 }))
+      .toThrow(/`timeout` is a script-mode option and requires `script`/);
+    expect(() => prepareFabricExecArguments({ code: "return 1;", settle: true }))
+      .toThrow(/`settle` is a script-mode option and requires `script`/);
+  });
+
+  it("rejects malformed script option values", () => {
+    expect(() => prepareFabricExecArguments({ script: "ls", timeout: 0 }))
+      .toThrow(/whole number of seconds between 1 and 86400/);
+    expect(() => prepareFabricExecArguments({ script: "ls", timeout: 1.5 }))
+      .toThrow(/whole number of seconds between 1 and 86400/);
+    expect(() => prepareFabricExecArguments({ script: "ls", timeout: "600" }))
+      .toThrow(/whole number of seconds between 1 and 86400/);
+    expect(() => prepareFabricExecArguments({ script: "ls", settle: "true" }))
+      .toThrow(/`settle` must be a boolean/);
+  });
+
+  it("canonicalizes legacy strings without inferring script authorship", () => {
+    const input = {
+      code: "return π.__fabric_script;",
+      strings: { __fabric_script: "ls" },
+    };
+    const prepared = prepareFabricExecArguments(input);
+    expect(prepared).toEqual({
+      code: input.code,
+      payloads: input.strings,
+    });
+    expect(resolveFabricExecProgram(prepared)).toMatchObject({
+      kind: "code",
+      strings: input.strings,
+    });
+  });
+
+  it("treats null script options as absent", () => {
+    expect(prepareFabricExecArguments({ code: "return 1;", timeout: null, settle: null }))
+      .toEqual({ code: "return 1;" });
+  });
+});
+
+describe("resolveFabricExecProgram", () => {
+  it("maps canonical code payloads onto the internal guest bindings", () => {
+    expect(resolveFabricExecProgram({
+      code: "return π.body;",
+      payloads: { body: "ok" },
+    })).toEqual({
+      kind: "code",
+      code: "return π.body;",
+      strings: { body: "ok" },
+    });
+  });
+
+  it("keeps authorship explicit instead of inferring it from code and a magic key", () => {
+    expect(resolveFabricExecProgram({ script: "ls -la" })).toMatchObject({
+      kind: "script",
+    });
+    expect(resolveFabricExecProgram({
+      code: "return π.__fabric_script;",
+      strings: { __fabric_script: "ls" },
+    })).toMatchObject({
+      kind: "code",
     });
   });
 });

@@ -16,7 +16,9 @@ import {
   type FabricToolShellDecorator,
   withCodePreviewShell,
 } from "./ui/code-preview-shell.js";
-import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
+import {
+  fabricAuthoredTitleHintCached,
+} from "./ui/fabric-title-hint.js";
 import { Type } from "typebox";
 import {
   createFabricPersistedExecutionDetails,
@@ -28,8 +30,8 @@ import { formatFailureProgress } from "./failure-progress.js";
 import {
   prepareFabricExecArguments,
   resolveFabricExecPayloads,
+  resolveFabricExecProgram,
 } from "./fabric-exec-arguments.js";
-import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
 import { typeErrorRecoveryHint } from "./type-error-guidance.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import type { PendingFabricHandoff } from "./prewalk/handoff.js";
@@ -126,6 +128,27 @@ const compactResultHeader = (
 const countLabel = (count: number, singular: string): string =>
   `${count} ${count === 1 ? singular : `${singular}s`}`;
 
+// Script mode is withheld outside plain full code mode. Both refusals are
+// policy, not a technical limit: `pi.bash` is reachable from guest code in
+// enforce mode too (effectiveFullCodeMode is fullCodeMode || enforceSchema), so
+// the gate exists because an opaque shell payload defeats exactly the review
+// each mode is there to perform. Schema audit mode keeps its existing
+// pass-through behavior. The decision is read from live state on every call, so
+// a reload or configuration change cannot leave a stale authorization behind.
+const scriptModeRefusal = (state: FabricState): string | null => {
+  if (state.config.schema.mode === "enforce") {
+    return "fabric_exec `script` is unavailable in Schema enforce mode, which routes "
+      + "protected mutations through the schema transaction path. Write the shell call "
+      + "as `code` so the surrounding program stays reviewable, or use the schema "
+      + "transaction tools directly.";
+  }
+  if (!state.config.fullCodeMode) {
+    return "fabric_exec `script` requires full code mode. This session is "
+      + "orchestration-only: run shell through Pi's native bash tool instead.";
+  }
+  return null;
+};
+
 export const createFabricExecTool = (
   state: FabricState,
   codePreviewSettings: CodePreviewSettings,
@@ -164,10 +187,31 @@ export const createFabricExecTool = (
     // prepareArguments remaps `strings` and parses a JSON-object string
     // back to Record<string, string> before Pi validates.
     parameters: Type.Object({
-      code: Type.String({
-        description:
-          "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. `π` contains only the exact keys supplied by this call's `payloads`. See session guidance / `fabric-exec` skill for exact signatures.",
-      }),
+      code: Type.Optional(
+        Type.String({
+          description:
+            "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. `π` contains only the exact keys supplied by this call's `payloads`. See session guidance / `fabric-exec` skill for exact signatures. Use this, not `script`, whenever the work invokes multiple Fabric/Pi/MCP actions, branches on an action result, combines tools, or post-processes structured output. One shell program may contain any number of shell commands and still belongs in `script`.",
+        }),
+      ),
+      script: Type.Optional(
+        Type.String({
+          description:
+            "One complete shell program, run as a single pi.bash call. Use instead of `code` (never with it) when the whole payload is shell, to skip TypeScript string escaping: write heredocs, quotes, backticks, and $-expansions literally. Full code mode only; Schema enforce mode rejects it, so route protected mutations through `code`. Not type-checked — `set -eu` and correct quoting are yours.",
+        }),
+      ),
+      timeout: Type.Optional(
+        Type.Number({
+          minimum: 1,
+          description:
+            "Script-mode only: pi.bash timeout in seconds (whole seconds, max 86400). Requires `script`.",
+        }),
+      ),
+      settle: Type.Optional(
+        Type.Boolean({
+          description:
+            "Script-mode only: return a nonzero exit as { ok, exitCode, output } instead of failing the call. Requires `script`.",
+        }),
+      ),
       payloads: Type.Optional(
         Type.Record(Type.String(), Type.String(), {
           description:
@@ -225,7 +269,12 @@ export const createFabricExecTool = (
     },
     renderCall(params, theme, context) {
       observePiTheme(theme);
-      const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      const program = Array.isArray(params.code) ? params.code.join("\n") : params.code;
+      // `script` stays explicit through preparation, validation, persistence,
+      // and rendering. Only the execution seam compiles it, so the constant
+      // internal program is never presented as model-authored code.
+      const script = typeof params.script === "string" ? params.script : null;
+      const code = script ?? program ?? "";
       const mode = toolDisplayMode(state);
       const rendererState = context.state as FabricRendererState;
       toolDisplay?.observe(context.toolCallId, "call", context.invalidate);
@@ -235,9 +284,11 @@ export const createFabricExecTool = (
         context.invalidate,
       );
       const rowBalance = rendererState.fabricResultRowBalance ??= {};
+      // Write bindings are TypeScript call shapes. Scanning shell text for them
+      // could only produce a false positive that renders the payload twice.
       if (rendererState.fabricWriteBindingsCode !== code) {
         rendererState.fabricWriteBindingsCode = code;
-        rendererState.fabricWriteBindings = fabricWriteBindings(code);
+        rendererState.fabricWriteBindings = script === null ? fabricWriteBindings(code) : [];
       }
       // The write argument preview is a streaming affordance: it previews
       // pending writes while args are still arriving. Pi only flips
@@ -265,7 +316,7 @@ export const createFabricExecTool = (
         const display = normalizeRunDisplay(params.display);
         // Session-wide memo keyed by the program string: the same hint serves
         // the live card, the activity feed, and compaction intent.
-        const title = display?.name?.trim() || fabricExecTitleHintCached(code);
+        const title = display?.name?.trim() || fabricAuthoredTitleHintCached(params);
         const header = renderBoundedLines(
           [
             theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Fabric"))),
@@ -289,7 +340,7 @@ export const createFabricExecTool = (
       const displayName = runDisplay?.name ? safeTerminalText(runDisplay.name) : "";
       const title = `${theme.fg("toolTitle", theme.bold("fabric"))}${
         displayName ? ` ${theme.fg("accent", displayName)}` : ""
-      } ${theme.fg("dim", `TypeScript · ${countLabel(lines.length, "line")}`)}`;
+      } ${theme.fg("dim", `${script === null ? "TypeScript" : "Shell"} · ${countLabel(lines.length, "line")}`)}`;
       // Match the compact header: the declared objective sits between the
       // title and the code preview.
       const description = runDisplay?.description
@@ -789,22 +840,33 @@ export const createFabricExecTool = (
     },
     async execute(toolCallId, params, signal, onUpdate, context) {
       await state.ensure(context);
-      // prepareArguments joins code arrays / remaps `strings` → `payloads`
-      // and quotes unquoted pi path arguments before Pi validates this call;
-      // keep the same coercion here for direct internal invocations.
-      const joined = Array.isArray(params.code) ? params.code.join("\n") : params.code;
-      const code = repairFabricGuestCode(joined);
-      const runDisplay = normalizeRunDisplay(params.display);
-      const strings = resolveFabricExecPayloads(params);
+      // prepareArguments already ran for model-issued calls and is idempotent;
+      // repeating it here is what makes the same contract hold for direct
+      // internal invocations of the definition, which never pass through Pi's
+      // argument hook. Relaxing `code` to optional moved the "no program at
+      // all" case out of host schema validation, so it has to fail loudly here
+      // rather than reach QuickJS as an undefined program.
+      const prepared = prepareFabricExecArguments(params) as typeof params;
+      const program = resolveFabricExecProgram(prepared);
+      const titleHint = fabricAuthoredTitleHintCached(prepared);
+      // Thrown, not returned: this shares the argument-error path with the
+      // contract failures above, so the refusal reaches the model before
+      // QuickJS starts and before any nested lifecycle event is emitted.
+      if (program.kind === "script") {
+        const refusal = scriptModeRefusal(state);
+        if (refusal) throw new Error(refusal);
+      }
+      const runDisplay = normalizeRunDisplay(prepared.display);
       const result = await state.execution.execute({
-        code,
-        ...(strings ? { strings } : {}),
+        code: program.code,
+        ...(program.strings ? { strings: program.strings } : {}),
+        ...(titleHint ? { titleHint } : {}),
         signal,
         parentToolCallId: toolCallId,
         context,
-        ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
-        ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
-        ...(params.timeoutMs !== undefined ? { requestedTimeoutMs: params.timeoutMs } : {}),
+        ...(prepared.tokenBudget !== undefined ? { tokenBudget: prepared.tokenBudget } : {}),
+        ...(prepared.agentBudget !== undefined ? { maxAgentCalls: prepared.agentBudget } : {}),
+        ...(prepared.timeoutMs !== undefined ? { requestedTimeoutMs: prepared.timeoutMs } : {}),
         ...(runDisplay
           ? {
               display: {
@@ -826,7 +888,7 @@ export const createFabricExecTool = (
       });
 
       const selectedResultFormat =
-        params.resultFormat ?? state.config.executor.resultFormat;
+        prepared.resultFormat ?? state.config.executor.resultFormat;
       const pendingHandoff = await state.claimHandoff(
         result,
         context.sessionManager.getSessionId(),
@@ -897,7 +959,7 @@ export const createFabricExecTool = (
               : error.message,
           )
           .join("\n");
-        const recoveryHint = typeErrorRecoveryHint(code, result.typeErrors);
+        const recoveryHint = typeErrorRecoveryHint(program.code, result.typeErrors);
         const bounded = await boundModelOutput(
           `Type errors; code was not executed:\n${text}${
             recoveryHint ? `\n\n${recoveryHint}` : ""
