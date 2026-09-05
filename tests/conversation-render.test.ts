@@ -149,7 +149,7 @@ describe("focused conversation native component rendering", () => {
     expect(hidden).toContain("Answer");
   });
 
-  it("renders fabric_exec through the actual registered callbacks with Shiki truecolor and native tool card parity", async () => {
+  it("renders fabric_exec through the actual registered callbacks with native tool card parity", async () => {
     initTheme("dark", false);
     await initHighlighting("dark-plus", true);
     const fabricTool = fabricToolFor();
@@ -167,8 +167,10 @@ describe("focused conversation native component rendering", () => {
     const lines = render(renderer, makeTranscript({ tools: [tool] }), 80);
     const text = lines.join("\n");
     expect(text).toContain("Inspect example");
-    expect(text).toContain("\x1b[38;2;"); // Shiki truecolor from the real callbacks
+    expect(text).toContain("const result = await pi.read");
     // Same rows as constructing the native component like interactive-mode does.
+    // Do not assert a terminal color depth: the TUI adapts ANSI output to the
+    // runner capability, while highlight.test.ts covers Shiki truecolor itself.
     const native = new ToolExecutionComponent(
       "fabric_exec", "call-1", args,
       { showImages: true, imageWidthCells: 60 },

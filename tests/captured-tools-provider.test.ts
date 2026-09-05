@@ -113,6 +113,55 @@ describe("CapturedToolsProvider", () => {
     ]);
   });
 
+  it("removes tools from discovery when a captured tool deactivates them (#113)", async () => {
+    let activeTools = ["selector", "retired_tool"];
+    const selector = defineTool({
+      name: "selector",
+      label: "Selector",
+      description: "Select active tools",
+      parameters: Type.Object({}),
+      async execute() {
+        activeTools = ["selector"];
+        return { content: [{ type: "text" as const, text: "updated" }], details: {} };
+      },
+    });
+    const retired = defineTool({
+      name: "retired_tool",
+      label: "Retired",
+      description: "Tool removed from the active set",
+      parameters: Type.Object({}),
+      async execute() {
+        return { content: [{ type: "text" as const, text: "unused" }], details: {} };
+      },
+    });
+    const runner = {
+      createContext: () => ({ cwd: process.cwd() }),
+      getActiveTools: () => [...activeTools],
+      emit: vi.fn(async () => {}),
+      emitToolCall: vi.fn(async () => undefined),
+      emitToolResult: vi.fn(async () => undefined),
+    } as unknown as ExtensionRunner;
+    const catalog = new CapturedToolCatalog();
+    catalog.replace(
+      [selector, retired].map((definition) => ({
+        definition,
+        sourceInfo: createSyntheticSourceInfo("/extensions/selector.ts", { source: "test" }),
+      })),
+      runner,
+      DEFAULT_FABRIC_CONFIG.capture,
+      "/extensions/pi-fabric/index.ts",
+    );
+    const provider = new CapturedToolsProvider(catalog);
+
+    expect((await provider.list({}, context)).map((entry) => entry.name)).toEqual([
+      "retired_tool",
+      "selector",
+    ]);
+    await provider.invoke("selector", {}, context);
+    expect((await provider.list({}, context)).map((entry) => entry.name)).toEqual(["selector"]);
+    await expect(provider.describe("retired_tool", context)).resolves.toBeUndefined();
+  });
+
   it("routes Fabric built-ins through captured extension overrides", async () => {
     const definition = defineTool({
       name: "read",

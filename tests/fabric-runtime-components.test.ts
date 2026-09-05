@@ -187,6 +187,66 @@ describe("Fabric runtime provider components", () => {
     }
   });
 
+  it("initializes schema enforce mode without expecting the private extensions provider (#114)", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runtime-enforce-"));
+    fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(cwd, "agent"));
+    vi.stubEnv("PI_FABRIC_PROJECT_ROOT", cwd);
+
+    const pi = {
+      events: { emit: vi.fn() },
+      getThinkingLevel: vi.fn(() => "off"),
+      sendMessage: vi.fn(),
+    } as unknown as ExtensionAPI;
+    const context = {
+      cwd,
+      hasUI: false,
+      isProjectTrusted: () => true,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      modelRegistry: { find: vi.fn(), getApiKeyAndHeaders: vi.fn() },
+      sessionManager: {
+        getSessionId: () => "runtime-enforce-session",
+        getSessionFile: () => undefined,
+        getBranch: () => [],
+        getLeafId: () => undefined,
+      },
+      ui: { setStatus: vi.fn(), notify: vi.fn() },
+    } as unknown as ExtensionContext;
+    const config = normalizeFabricConfig({
+      schema: { mode: "enforce" },
+      capture: { enabled: false },
+      mcp: { enabled: false, cache: { enabled: false } },
+      mesh: { enabled: false },
+      memory: { enabled: false },
+      agents: { enabled: false },
+      residency: { enabled: false },
+      prewalk: { enabled: false, alwaysRearm: false },
+    });
+    const fixture = path.join(cwd, "unused.mjs");
+    fs.writeFileSync(fixture, "export default {};");
+    const runtime = new FabricRuntimeState(pi, new CapturedToolCatalog(), {
+      paths: {
+        extension: fixture,
+        worker: fixture,
+        residentHost: fixture,
+        skills: cwd,
+      },
+    });
+
+    try {
+      await expect(runtime.initialize(context, config)).resolves.toBeUndefined();
+      expect(runtime.registry.providers().map((provider) => provider.name)).toContain("pi");
+      expect(runtime.registry.providers().map((provider) => provider.name)).not.toContain(
+        "extensions",
+      );
+    } finally {
+      await runtime.shutdown();
+      vi.unstubAllEnvs();
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("freezes repair surfaces across capture suspension and reload", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runtime-repairs-"));
     fs.mkdirSync(path.join(cwd, ".pi"), { recursive: true });

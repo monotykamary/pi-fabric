@@ -46,6 +46,7 @@ const wrapToolDefinition = (
 export const wrapRegisteredToolForCapture = (
   registeredTool: RegisteredTool,
   runner: ExtensionRunner,
+  onToolsRemoved?: (names: string[]) => void,
 ): WrappedRegisteredTool => {
   const tool = wrapToolDefinition(
     registeredTool.definition as ToolDefinition<any, any, any>,
@@ -58,7 +59,10 @@ export const wrapRegisteredToolForCapture = (
       const activeBefore = runner.getActiveTools();
       const result = await execute(toolCallId, params, signal, onUpdate, ctx);
       const activeAfter = runner.getActiveTools();
-      if (!activeBefore.every((name) => activeAfter.includes(name))) {
+      const activeAfterNames = new Set(activeAfter);
+      const removedToolNames = activeBefore.filter((name) => !activeAfterNames.has(name));
+      if (removedToolNames.length > 0) {
+        onToolsRemoved?.(removedToolNames);
         return result;
       }
       const beforeNames = new Set(activeBefore);

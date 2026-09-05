@@ -945,7 +945,7 @@ export class FabricRuntimeState {
     }
     const expectedBuiltinProviders = new Set<string>([
       ...(effectiveFullCodeMode ? ["pi"] : []),
-      ...(capturedToolsProvider ? ["extensions"] : []),
+      ...(capturedToolsProvider && !enforceSchema ? ["extensions"] : []),
       "mcp",
       ...(this.#config.mesh.enabled ? ["mesh", "state"] : []),
       "schema",

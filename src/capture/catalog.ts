@@ -70,11 +70,19 @@ export class CapturedToolCatalog {
         registeredTool,
         sourceInfo,
         runner,
-        wrappedTool: wrapRegisteredToolForCapture(registeredTool, runner),
+        wrappedTool: wrapRegisteredToolForCapture(registeredTool, runner, (names) => {
+          this.remove(names);
+        }),
         risk: config.risks[definition.name] ?? config.defaultRisk,
       });
     }
     this.#emit();
+  }
+
+  remove(names: Iterable<string>): void {
+    let changed = false;
+    for (const name of names) changed = this.#tools.delete(name) || changed;
+    if (changed) this.#emit();
   }
 
   clear(): void {
