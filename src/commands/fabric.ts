@@ -8,6 +8,8 @@ import { saveFabricConfig } from "../config.js";
 import { armFabricPrewalkSession } from "../prewalk/arm.js";
 import { truncateMiddle } from "../util.js";
 import type { FabricUiController } from "../ui/controller.js";
+import { FABRIC_CONVERSATION_SHORTCUT } from "../ui/conversation-shortcut.js";
+import { safeText } from "../ui/format.js";
 import {
   FABRIC_PEER_AWAIT_SETTLE_EVENT,
   FABRIC_PEER_CARDS_EVENT,
@@ -277,12 +279,26 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
     ].join("\n");
   };
 
+  pi.registerShortcut?.(FABRIC_CONVERSATION_SHORTCUT, {
+    description: "Open Fabric conversation or return to Main",
+    handler: async (context) => {
+      if (context.mode !== "tui") return;
+      try {
+        await state.ensure(context);
+        await fabricUi.openConversation(context);
+      } catch (error) {
+        context.ui.notify(safeText(error instanceof Error ? error.message : String(error)), "error");
+      }
+    },
+  });
+
   pi.registerCommand("fabric", {
-    description: "Open Fabric, arm prewalk, reload, or manage agents and actors",
+    description: "Open Fabric dashboard or chat, arm prewalk, reload, or manage agents and actors",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] | null => {
       const subcommands = [
         "status",
         "dashboard",
+        "chat",
         "settings",
         "schema",
         "prewalk",
@@ -324,6 +340,21 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       const subcommand = argumentPrefix.slice(0, firstSpace);
       const idPrefix = argumentPrefix.slice(firstSpace + 1);
       if (!state.initialized) return null;
+      if (subcommand === "chat") {
+        const snapshot = fabricUi.snapshot();
+        const seen = new Set<string>();
+        const targets = [snapshot.main, ...snapshot.peers, ...snapshot.actors, ...snapshot.agents, ...(snapshot.participants ?? [])];
+        const matches = targets.filter((target) => {
+          if (seen.has(target.id)) return false;
+          seen.add(target.id);
+          return `${target.id} ${target.name}`.toLowerCase().includes(idPrefix.toLowerCase());
+        });
+        return matches.length > 0 ? matches.map((target) => ({
+          value: target.id,
+          label: safeText(target.name),
+          description: safeText(`${target.status} · ${target.id.slice(0, 8)}`),
+        })) : null;
+      }
       if (subcommand === "schema") {
         const modes = ["off", "audit", "enforce"].filter((mode) => mode.startsWith(idPrefix));
         return modes.length > 0 ? modes.map((value) => ({ value, label: value })) : null;
@@ -517,6 +548,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
         }
         const task = argumentsText.trim().slice(command.length).trim();
         await armPrewalk(state, context, pi, task);
+        return;
+      }
+      if (command === "chat") {
+        await fabricUi.openConversation(context, argumentsList.join(" ") || undefined);
         return;
       }
       if (command === "dashboard" || command === "ui") {
@@ -1108,7 +1143,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       }
       if (command !== "status") {
         context.ui.notify(
-          "Usage: /fabric [status|dashboard|prewalk [task]|prewalk --off|--disable|--enable|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>|repairs|entropy]",
+          "Usage: /fabric [status|dashboard|chat [id-or-name]|prewalk [task]|prewalk --off|--disable|--enable|reload|providers|agents|actors|global|import <name> [as <new>]|export <id> [--overwrite]|messages <id>|clear-messages <id>|events <id> [event...]|log <id>|export-log <id>|attach <id>|stop <id>|remove <id>|kill <id>|repairs|entropy]",
           "warning",
         );
         return;

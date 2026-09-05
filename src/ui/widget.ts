@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { FabricUiWidgetMode } from "../config.js";
 import { spinnerFrame } from "./spinner.js";
+import { FABRIC_CONVERSATION_HINT } from "./conversation-shortcut.js";
 import type {
   FabricActivityRun,
   FabricActivityStatus,
@@ -231,7 +232,9 @@ export class FabricWidget implements Component {
       "muted",
       safeText(title),
     )}${parts.length > 0 ? this.theme.fg("dim", ` · ${parts.join(" · ")}`) : ""}`;
-    const lines = [header];
+    const hasActiveConversations = activeAgents.some((agent) => !agent.stale) ||
+      activeActorWorkers.length > 0 || visibleActors.some((actor) => isActiveStatus(actor.status));
+    const lines = [hasActiveConversations ? `${header} · ${this.theme.fg("dim", FABRIC_CONVERSATION_HINT)}` : header];
 
     lines.push(
       ...activeAgents.flatMap((agent) => agentLines(this.theme, agent, snapshot.now)),

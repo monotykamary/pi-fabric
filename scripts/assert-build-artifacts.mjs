@@ -33,6 +33,10 @@ const lazy = [
   "runtime/type-checker.js",
   "speculation/scanner.js",
   "ui/dashboard.js",
+  "ui/conversation.js",
+  "ui/conversation-targets.js",
+  "ui/conversation-chrome.js",
+  "ui/conversation-native-reader.js",
   "ui/model-picker.js",
   "ui/settings.js",
   "worker/options.js",
@@ -82,7 +86,7 @@ const startupFiles = staticClosure([join(dist, "index.js")]);
 const initialSource = [...startupFiles]
   .map((file) => readFileSync(file, "utf8"))
   .join("\n");
-for (const forbidden of ["src/fabric-runtime-state.ts", "src/ui/settings.ts", 'from "mcporter"']) {
+for (const forbidden of ["src/fabric-runtime-state.ts", "src/ui/settings.ts", "src/ui/conversation.ts", "src/ui/conversation-chrome.ts", 'from "mcporter"']) {
   if (initialSource.includes(forbidden)) {
     throw new Error(`Startup static graph contains lazy module marker: ${forbidden}`);
   }

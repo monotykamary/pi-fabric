@@ -1,5 +1,6 @@
 import type { FabricLogLine } from "../agents/types.js";
 import type { FabricAgentTranscript, FabricTranscriptEntry } from "./transcript.js";
+import { unwrapActorEnvelopeText } from "./conversation-transcript.js";
 import {
   clip,
   compactRedactedValue,
@@ -25,6 +26,8 @@ export class TranscriptAccumulator {
   #assistant: FabricTranscriptEntry | undefined;
   #retry: FabricTranscriptEntry | undefined;
   #compaction: FabricTranscriptEntry | undefined;
+  readonly #userMessages = new Map<string, FabricTranscriptEntry>();
+  readonly #userBoundaries = new Map<string, { serial: number; ended: boolean }>();
   #sequence = 0;
 
   append(events: Array<Record<string, unknown>>): void {
@@ -67,10 +70,41 @@ export class TranscriptAccumulator {
     text: string,
     status: FabricTranscriptEntryStatus = "completed",
     label = kind === "assistant" ? "Agent" : "User",
+    identity?: string,
   ): void {
-    const safe = clip(text, MAX_TRANSCRIPT_MESSAGE_CHARS);
+    const display = kind === "user" ? (unwrapActorEnvelopeText(text) ?? text) : text;
+    const safe = clip(display, MAX_TRANSCRIPT_MESSAGE_CHARS, kind !== "user");
     if (!safe) return;
-    this.entries.push({ id, kind, label, text: safe, status });
+    const entry: FabricTranscriptEntry = { id, kind, label, text: safe, status };
+    if (kind === "user" && identity) {
+      // Identity-aware start/end correlation: message_start and message_end
+      // carry the same timestamp/content within one lifecycle. The boundary
+      // serial distinguishes repeated turns even if their timestamps collide.
+      const existing = this.#userMessages.get(identity);
+      if (existing) {
+        existing.text = safe;
+        return;
+      }
+      this.#userMessages.set(identity, entry);
+    }
+    this.entries.push(entry);
+  }
+
+  #userIdentity(event: Record<string, unknown>, message: Record<string, unknown>): string | undefined {
+    if (event.type === "message_start" || event.type === "message_end" || event.type === "message") {
+      const timestamp = message.timestamp;
+      if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+        const base = JSON.stringify([timestamp, contentText(message.content)]);
+        let boundary = this.#userBoundaries.get(base);
+        if (!boundary || (event.type === "message_start" && boundary.ended)) {
+          boundary = { serial: (boundary?.serial ?? -1) + 1, ended: false };
+          this.#userBoundaries.set(base, boundary);
+        }
+        if (event.type === "message_end") boundary.ended = true;
+        return `user:${base}:${boundary.serial}`;
+      }
+    }
+    return undefined;
   }
 
   #toolParent(id: string): FabricTranscriptEntry | undefined {
@@ -149,7 +183,7 @@ export class TranscriptAccumulator {
   #appendSessionMessage(event: Record<string, unknown>, message: Record<string, unknown>): void {
     const id = this.#nextId(event, "message");
     if (message.role === "user") {
-      this.#pushMessage("user", id, contentText(message.content));
+      this.#pushMessage("user", id, contentText(message.content), "completed", "User", this.#userIdentity(event, message));
       return;
     }
     if (message.role === "assistant") {
@@ -341,7 +375,9 @@ export class TranscriptAccumulator {
       const message = recordOf(event.message);
       if (!message) return;
       if (message.role === "user") {
-        if (event.type === "message_start") this.#pushMessage("user", id, contentText(message.content));
+        if (event.type === "message_start") {
+          this.#pushMessage("user", id, contentText(message.content), "completed", "User", this.#userIdentity(event, message));
+        }
         return;
       }
       if (message.role !== "assistant") return;
@@ -367,7 +403,7 @@ export class TranscriptAccumulator {
       const message = recordOf(event.message);
       if (!message) return;
       if (message.role === "user") {
-        this.#pushMessage("user", id, contentText(message.content));
+        this.#pushMessage("user", id, contentText(message.content), "completed", "User", this.#userIdentity(event, message));
         return;
       }
       if (message.role !== "assistant") return;
@@ -479,11 +515,15 @@ export class TranscriptAccumulator {
           : typeof event.text === "string"
             ? event.text
             : "Extension error";
+      const warningLines = text.split(/\r?\n/).filter((line) => line.trim());
+      const warningCount = event.type === "worker_stderr" && warningLines.length > 0 &&
+        warningLines.every((line) => /^\s*Warning:/.test(line)) ? warningLines.length : 0;
       this.entries.push({
         id,
         kind: "error",
         label: event.type === "worker_stderr" ? "Worker stderr" : "Error",
-        text: clip(text, MAX_TOOL_SUMMARY_CHARS),
+        text: clip(text, warningCount > 0 ? MAX_TRANSCRIPT_MESSAGE_CHARS : MAX_TOOL_SUMMARY_CHARS),
+        ...(event.type === "worker_stderr" ? { warningCount } : {}),
         status: "failed",
       });
     }

@@ -3,6 +3,9 @@ import { resolveAgentDir } from "../core/agent-dir.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
+import type { FabricConversationState, FabricConversationView } from "./conversation.js";
+import type { NativeConversationReader, NativeConversationSource } from "./conversation-native-reader.js";
+import type { FabricConversationTranscriptRendererOptions } from "./conversation-render.js";
 import type { FabricActivityRun } from "../activity/types.js";
 import type {
   FabricActorBindingScope,
@@ -15,6 +18,7 @@ import type { MeshEvent } from "../mesh/store.js";
 import type { FabricDashboardMessageTarget } from "./dashboard.js";
 import type { ModelSource } from "./model-picker.js";
 import { createDashboardSnapshot } from "./snapshot.js";
+import { safeText } from "./format.js";
 import { isActiveStatus, type FabricDashboardSnapshot, type FabricUiActor, type FabricUiAgent } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
 import { AgentTranscriptReader, type FabricTranscriptSource } from "./transcript.js";
@@ -67,6 +71,12 @@ export class FabricUiController {
   #lastRefreshErrorAt = 0;
   #lastRefreshAt = 0;
   #dashboardOpen = false;
+  #conversationOpen = false;
+  #conversationState: FabricConversationState | undefined;
+  #conversationView: FabricConversationView | undefined;
+  #conversationTui: TUI | undefined;
+  #closeConversation: (() => void) | undefined;
+  #epoch = 0;
   #activityRevision: number | undefined;
   // Tracks whether #activityRuns was last fetched with full payloads. The
   // dashboard needs args/result/preview to render call detail; the periodic
@@ -75,10 +85,12 @@ export class FabricUiController {
   #activityRunsDetailed = true;
   #activityRuns: FabricActivityRun[] = [];
   readonly #transcripts = new AgentTranscriptReader();
+  readonly #conversationReaders = new Map<string, NativeConversationReader>();
 
   constructor(
     readonly state: FabricState,
     readonly codePreviewSettings?: CodePreviewSettings,
+    readonly conversationRenderers?: FabricConversationTranscriptRendererOptions,
   ) {}
 
   start(context: ExtensionContext): void {
@@ -97,6 +109,15 @@ export class FabricUiController {
   }
 
   stop(): void {
+    this.#epoch++;
+    this.#closeConversation?.();
+    this.#closeConversation = undefined;
+    this.#conversationView?.dispose();
+    this.#conversationView = undefined;
+    this.#conversationTui = undefined;
+    this.#conversationOpen = false;
+    this.#conversationState?.clear();
+    this.#conversationState = undefined;
     if (this.#timer) clearTimeout(this.#timer);
     if (this.#scheduledRefresh) clearTimeout(this.#scheduledRefresh);
     this.#timer = undefined;
@@ -125,9 +146,152 @@ export class FabricUiController {
     this.#activityRunsDetailed = true;
     this.#activityRuns = [];
     this.#transcripts.clear();
+    for (const reader of this.#conversationReaders.values()) reader.clear();
+    this.#conversationReaders.clear();
+  }
+
+  /** True while Fabric owns keyboard input, including asynchronous view setup. */
+  get ownsInput(): boolean {
+    return this.#dashboardOpen || this.#conversationOpen;
+  }
+
+  async openConversation(context: ExtensionContext, query?: string): Promise<void> {
+    if (context.mode !== "tui") {
+      context.ui.notify("Fabric conversations are available in TUI mode", "warning");
+      return;
+    }
+    if (!this.state.config.ui.enabled) {
+      context.ui.notify("The Fabric UI is disabled by ui.enabled", "warning");
+      return;
+    }
+    if (this.#dashboardOpen) {
+      context.ui.notify("Close the dashboard or press Shift+C on a participant to chat", "info");
+      return;
+    }
+    if (!this.#context) this.start(context);
+    if (this.#conversationOpen && !this.#conversationView) return;
+    const alreadyOpen = this.#conversationOpen;
+    this.#conversationOpen = true;
+    const epoch = this.#epoch;
+    try {
+      const [{ FabricConversationView, FabricConversationState }, { conversationTargets, resolveConversationTarget }, { readConversationAppearance }, { NativeConversationReader }] =
+        await Promise.all([import("./conversation.js"), import("./conversation-targets.js"), import("./conversation-chrome.js"), import("./conversation-native-reader.js")]);
+      if (epoch !== this.#epoch) return;
+      this.#refresh();
+      const initialTarget = query?.trim()
+        ? resolveConversationTarget(conversationTargets(this.#snapshot), query.trim())
+        : undefined;
+      if (alreadyOpen) {
+        if (initialTarget) this.#conversationView?.selectTarget(initialTarget.id);
+        else this.#closeConversation?.();
+        return;
+      }
+      if (initialTarget?.kind === "main") return;
+      this.#conversationState ??= new FabricConversationState();
+      const source = (id: string): NativeConversationSource => {
+        const actor = this.#snapshot.actors.find((candidate) => candidate.id === id);
+        if (actor) return { ...this.#actorTranscriptSource(actor), id, ...(actor.sessionFile ? { sessionFile: actor.sessionFile } : {}) };
+        const agent = this.#snapshot.agents.find((candidate) => candidate.id === id);
+        return agent ? this.#agentTranscriptSource(agent) : { id, status: "unavailable" };
+      };
+      const readerFor = (id: string): NativeConversationReader => {
+        let reader = this.#conversationReaders.get(id);
+        if (!reader) {
+          reader = new NativeConversationReader();
+          this.#conversationReaders.set(id, reader);
+        }
+        return reader;
+      };
+      const requireTarget = (id: string, action: "steer" | "followUp" | "stop"): void => {
+        if (epoch !== this.#epoch || !this.#conversationOpen || !this.state.initialized) {
+          throw new Error("This Fabric conversation is no longer attached");
+        }
+        this.#refresh();
+        const target = conversationTargets(this.#snapshot).find((candidate) => candidate.id === id);
+        const allowed = action === "stop" ? target?.canStop
+          : action === "steer" ? target?.canSteer : target?.canFollowUp;
+        if (!target || target.kind === "main" || !allowed) {
+          throw new Error(target?.readOnlyReason ?? `Participant ${id} cannot receive ${action}`);
+        }
+      };
+      this.#schedulePoll(true);
+      await context.ui.custom<void>((tui, theme, keybindings, done) => {
+        if (epoch !== this.#epoch) {
+          done(undefined);
+          return { render: () => [], invalidate: () => {} };
+        }
+        this.#conversationTui = tui;
+        this.#closeConversation = () => done(undefined);
+        const view = new FabricConversationView(tui, theme, {
+          targets: () => conversationTargets(this.#snapshot).map((target) => {
+            const split = target.model?.indexOf("/") ?? -1;
+            if (split < 1 || !target.model) return target;
+            const model = context.modelRegistry?.find?.(target.model.slice(0, split), target.model.slice(split + 1));
+            return model ? { ...target, contextWindow: model.contextWindow } : target;
+          }),
+          appearance: readConversationAppearance(context.cwd, resolveAgentDir(), context.isProjectTrusted?.() ?? false),
+          ...(initialTarget ? { initialTargetId: initialTarget.id } : {}),
+          state: this.#conversationState!,
+          keybindings,
+          rendererOptions: this.conversationRenderers,
+          queueEvents: this.state.pi?.events,
+          ...(this.codePreviewSettings ? { codePreviewSettings: this.codePreviewSettings } : {}),
+          transcript: (id, followLatest) => readerFor(id).read(source(id), followLatest),
+          loadOlder: (id) => {
+            const reader = readerFor(id);
+            const before = reader.read(source(id), false);
+            if (!before.hasMore) return false;
+            const next = reader.loadOlder();
+            return !!next && (next.revision !== before.revision || !next.hasMore);
+          },
+          loadNewer: (id) => {
+            const reader = readerFor(id);
+            const before = reader.read(source(id), false);
+            const next = reader.loadNewer();
+            return !!next && next.revision !== before.revision;
+          },
+          loadLatest: (id) => {
+            const reader = readerFor(id);
+            const before = reader.read(source(id), false);
+            const next = reader.loadLatest();
+            return !!next && next.revision !== before.revision;
+          },
+          send: async (id, message, delivery) => {
+            requireTarget(id, delivery);
+            const result = await this.state.queueUserMessage(id, message, delivery);
+            if (epoch === this.#epoch) this.#refresh();
+            return result;
+          },
+          stop: async (id) => {
+            requireTarget(id, "stop");
+            const result = await this.state.stopParticipant(id);
+            if (epoch === this.#epoch) this.#refresh();
+            return result;
+          },
+          close: () => done(undefined),
+        });
+        this.#conversationView = view;
+        return view;
+      }, {
+        overlay: true,
+        overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left", margin: 0 },
+      });
+    } catch (error) {
+      if (epoch === this.#epoch) context.ui.notify(safeText(error instanceof Error ? error.message : String(error)), "error");
+    } finally {
+      if (!alreadyOpen && epoch === this.#epoch) {
+        this.#conversationView?.dispose();
+        this.#conversationView = undefined;
+        this.#conversationTui = undefined;
+        this.#closeConversation = undefined;
+        this.#conversationOpen = false;
+        this.#schedulePoll(true);
+      }
+    }
   }
 
   async openDashboard(context: ExtensionContext): Promise<void> {
+    if (this.ownsInput) return;
     if (context.mode !== "tui") {
       context.ui.notify("The Fabric dashboard is available in TUI mode", "warning");
       return;
@@ -287,6 +451,8 @@ export class FabricUiController {
       }
     };
     this.#schedulePoll(true);
+    let conversationTarget: string | undefined;
+    const epoch = this.#epoch;
     try {
       await context.ui.custom<void>(
         (tui, theme, keybindings, done) => {
@@ -300,6 +466,10 @@ export class FabricUiController {
             ...(claudeModelSource ? { claudeModelSource } : {}),
             onTargetMessage,
             onAgentStop,
+            onConversation: (id) => {
+              conversationTarget = id;
+              done(undefined);
+            },
             agentTranscript: (agent, followLatest) =>
               this.#transcripts.read(this.#agentTranscriptSource(agent), followLatest),
             actorTranscript: (actor, followLatest) =>
@@ -337,10 +507,15 @@ export class FabricUiController {
         },
       );
     } finally {
-      this.#dashboardOpen = false;
-      this.#dashboardTui = undefined;
-      this.#refresh();
-      this.#schedulePoll(true);
+      if (epoch === this.#epoch) {
+        this.#dashboardOpen = false;
+        this.#dashboardTui = undefined;
+        this.#refresh();
+        this.#schedulePoll(true);
+      }
+    }
+    if (conversationTarget && epoch === this.#epoch) {
+      await this.openConversation(context, conversationTarget);
     }
   }
 
@@ -363,7 +538,7 @@ export class FabricUiController {
           isActiveStatus(actor.status) ||
           Boolean(actor.worker && isActiveStatus(actor.worker.status)),
       );
-    if (!this.#dashboardOpen && !active) return;
+    if (!this.ownsInput && !active) return;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
       this.#refresh();
@@ -445,6 +620,7 @@ export class FabricUiController {
         this.#activityRuns,
       );
       this.#renderWidget(context);
+      if (this.#conversationTui) this.#conversationTui.requestRender();
       if (this.#dashboardTui) this.#dashboardTui.requestRender();
       else if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();
     } catch (error) {

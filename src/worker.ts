@@ -363,6 +363,11 @@ const main = async (): Promise<void> => {
       ...(options.fabricSessionId ? { PI_FABRIC_SESSION_ID: options.fabricSessionId } : {}),
       PI_FABRIC_GRANTED_RISKS: options.grantedRisks.join(","),
       PI_FABRIC_FULL_CODE_MODE: String(options.fullCodeMode),
+      // Native tool allowlist for nested-call enforcement: full-code children
+      // reach pi.* through fabric_exec, which is not gated by the --tools
+      // allowlist, so both Pi and captured-tool providers enforce this
+      // child-side allowlist before preparation, discovery, and invocation.
+      PI_FABRIC_TOOL_ALLOWLIST: JSON.stringify(options.tools),
       ...(options.actorId ? { PI_FABRIC_ACTOR_ID: options.actorId } : {}),
       ...(options.actorName ? { PI_FABRIC_ACTOR_NAME: options.actorName } : {}),
       PI_FABRIC_CAPABILITY_REQUIREMENTS: JSON.stringify(

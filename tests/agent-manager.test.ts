@@ -18,6 +18,14 @@ import type { AgentRunRecord, AgentRunResult } from "../src/agents/types.js";
 
 const managers: AgentManager[] = [];
 const roots: string[] = [];
+type FabricSurfaceResult = AgentRunResult & {
+  fullCodeMode?: string;
+  tools?: string[];
+  extensions?: string;
+  mainAgentId?: string;
+  fabricExtension?: string;
+  grantedRisks?: string[];
+};
 const handoffSeed = (fact = "Rare handoff fact 43117") => {
   const source = SessionManager.inMemory();
   source.appendMessage({ role: "user", content: fact, timestamp: 1 });
@@ -565,7 +573,7 @@ describe("AgentManager", () => {
     await manager.stop(handle.id);
   });
 
-  it("keeps direct tools native for ordinary children and full code mode for recursion", async () => {
+  it("inherits full code mode for ordinary extension-enabled children", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
     const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
@@ -575,32 +583,151 @@ describe("AgentManager", () => {
       mainAgentId: "session:root-main",
     });
     managers.push(manager);
-    type ObservedResult = AgentRunResult & {
-      fullCodeMode?: string;
-      tools?: string[];
-      extensions?: string;
-      mainAgentId?: string;
-    };
-
     const direct = (await manager.run({
-      task: "Use native tools",
+      task: "Use Fabric tools",
       transport: "process",
       tools: ["read", "grep"],
-    })) as ObservedResult;
-    expect(direct.fullCodeMode).toBe("false");
-    expect(direct.tools).toEqual(["read", "grep"]);
+    })) as FabricSurfaceResult;
+    expect(direct.fullCodeMode).toBe("true");
+    expect(direct.tools).toEqual(["read", "grep", "fabric_exec"]);
     expect(direct.extensions).toBe("true");
     expect(direct.mainAgentId).toBe("session:root-main");
+    expect(direct.fabricExtension).toContain("index");
+    expect(direct.grantedRisks).toEqual([]);
 
     const recursive = (await manager.run({
       task: "Delegate recursively",
       transport: "process",
       tools: ["read"],
       recursive: true,
-    })) as ObservedResult;
+    })) as FabricSurfaceResult;
     expect(recursive.fullCodeMode).toBe("true");
     expect(recursive.tools).toEqual(["read", "fabric_exec"]);
     expect(recursive.mainAgentId).toBe("session:root-main");
+    expect(recursive.grantedRisks).toEqual(["agent"]);
+  });
+
+  it("keeps explicit extensions:false children native in a full-code parent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: true,
+    });
+    managers.push(manager);
+    const native = (await manager.run({
+      task: "Native opt-out",
+      transport: "process",
+      tools: ["read"],
+      extensions: false,
+    })) as FabricSurfaceResult;
+    expect(native.fullCodeMode).toBe("false");
+    expect(native.tools).toEqual(["read"]);
+    expect(native.fabricExtension).toBeUndefined();
+    expect(native.grantedRisks).toEqual([]);
+  });
+
+  it("keeps ordinary children native when the parent is not full-code", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: false,
+    });
+    managers.push(manager);
+    const direct = (await manager.run({
+      task: "Native child of native parent",
+      transport: "process",
+      tools: ["read"],
+    })) as FabricSurfaceResult;
+    expect(direct.fullCodeMode).toBe("false");
+    expect(direct.tools).toEqual(["read"]);
+    expect(direct.fabricExtension).toBeUndefined();
+
+    // Recursive children keep their recursive surface even from a native parent.
+    const recursive = (await manager.run({
+      task: "Delegate recursively from a native parent",
+      transport: "process",
+      tools: ["read"],
+      recursive: true,
+    })) as FabricSurfaceResult;
+    expect(recursive.fullCodeMode).toBe("false");
+    expect(recursive.tools).toEqual(["read", "fabric_exec"]);
+    expect(recursive.fabricExtension).toContain("index");
+    expect(recursive.grantedRisks).toEqual(["agent"]);
+  });
+
+  it("allows a cwd leaf agent to inherit the Fabric surface", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const leafCwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-leaf-cwd-"));
+    roots.push(leafCwd);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("tests/fixtures/fake-worker.mjs"),
+      runRoot: root,
+      fullCodeMode: true,
+    });
+    managers.push(manager);
+    const result = (await manager.run({
+      task: "Leaf agent with a custom cwd",
+      transport: "process",
+      tools: ["read"],
+      cwd: leafCwd,
+    })) as FabricSurfaceResult;
+    expect(result.status).toBe("completed");
+    expect(result.cwd).toBe(fs.realpathSync(leafCwd));
+    expect(result.fullCodeMode).toBe("true");
+    expect(result.tools).toEqual(["read", "fabric_exec"]);
+    expect(result.grantedRisks).toEqual([]);
+  });
+
+  it("launches inherited children with the full-code surface through the real worker", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
+    roots.push(root);
+    const fakePi = path.resolve("tests/fixtures/fake-pi-launch-probe.mjs");
+    fs.chmodSync(fakePi, 0o755);
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+      workerPath: path.resolve("src/worker.ts"),
+      piBinary: fakePi,
+      runRoot: root,
+      fullCodeMode: true,
+    });
+    managers.push(manager);
+
+    const inherited = await manager.run({
+      task: "REPORT_LAUNCH_SURFACE",
+      transport: "process",
+      tools: ["read"],
+      timeoutMs: 5_000,
+    });
+    expect(inherited.status).toBe("completed");
+    expect(JSON.parse(inherited.text)).toEqual({
+      extensions: true,
+      extensionPath: expect.stringContaining("index"),
+      tools: ["read", "fabric_exec"],
+      fullCodeModeEnv: "true",
+      toolAllowlistEnv: ["read", "fabric_exec"],
+      grantedRisksEnv: [],
+    });
+
+    const native = await manager.run({
+      task: "REPORT_LAUNCH_SURFACE",
+      transport: "process",
+      tools: ["read"],
+      extensions: false,
+      timeoutMs: 5_000,
+    });
+    expect(native.status).toBe("completed");
+    expect(JSON.parse(native.text)).toEqual({
+      extensions: false,
+      extensionPath: undefined,
+      tools: ["read"],
+      fullCodeModeEnv: "false",
+      toolAllowlistEnv: ["read"],
+      grantedRisksEnv: [],
+    });
   });
 
   it("validates structured output through the real Fabric worker", async () => {

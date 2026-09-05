@@ -170,6 +170,7 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onAgentSteer: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentFollowUp: ((agentId: string, message: string) => void) | undefined;
   private readonly onAgentStop: ((agentId: string) => void) | undefined;
+  private readonly onConversation: ((id: string) => void) | undefined;
   private readonly onTargetMessage:
     | ((
         target: FabricDashboardMessageTarget,
@@ -238,6 +239,7 @@ export class FabricDashboard implements Component, Focusable {
       onAgentSteer?: (agentId: string, message: string) => void;
       onAgentFollowUp?: (agentId: string, message: string) => void;
       onAgentStop?: (agentId: string) => void;
+      onConversation?: (id: string) => void;
       onTargetMessage?: (
         target: FabricDashboardMessageTarget,
         message: string,
@@ -293,6 +295,7 @@ export class FabricDashboard implements Component, Focusable {
     this.onAgentSteer = options.onAgentSteer;
     this.onAgentFollowUp = options.onAgentFollowUp;
     this.onAgentStop = options.onAgentStop;
+    this.onConversation = options.onConversation;
     this.onTargetMessage = options.onTargetMessage;
     this.agentTranscript = options.agentTranscript;
     this.actorTranscript = options.actorTranscript;
@@ -380,6 +383,15 @@ export class FabricDashboard implements Component, Focusable {
       (entity) => entity.kind === "main" || matchesFilter(entity.status, this.filter),
     );
     this.syncEntitySelection(entities, this.overviewView !== "activity");
+
+    if (data === "C" && this.onConversation) {
+      const entity = this.detailId
+        ? allEntities.find((candidate) => candidate.id === this.detailId)
+        : entities[this.entityIndex];
+      const target = entity ? this.messageTarget(entity) : undefined;
+      if (target) this.onConversation(target.id);
+      return;
+    }
 
     if (data === "?") {
       this.mode = "help";
@@ -1101,6 +1113,7 @@ export class FabricDashboard implements Component, Focusable {
     const help = [
       ["Navigate", "Topology: arrows/h/l move spatially · j/k ordered selection · tab next · enter inspect · esc back"],
       ["Views", "1 Activity · 2 unified Topology"],
+      ...(this.onConversation ? [["Chat", "Shift+C opens the selected participant conversation · Esc returns to Main"]] : []),
       ["Topology", "Main branches into Participants (sessions, agents, actors) and Mesh (namespaced topics and hierarchical state); traffic travels on decaying edges"],
       ["Motion", "r replay/live · space pause/play · ←/→ step · +/- speed · H history · M reduced motion"],
       ["Runs", "[ older · ] newer · f cycle status filter"],

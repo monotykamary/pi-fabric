@@ -15,6 +15,8 @@ export interface FabricTranscriptEntry {
   result?: unknown;
   parentId?: string;
   depth?: number;
+  /** Count only when the original stderr chunk contains warnings exclusively. */
+  warningCount?: number;
 }
 
 export interface FabricAgentTranscript {

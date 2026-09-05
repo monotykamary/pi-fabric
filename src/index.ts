@@ -93,6 +93,7 @@ import {
 } from "./protocol.js";
 import type { AgentToolResultMessage } from "./agents/types.js";
 import { FabricUiController } from "./ui/controller.js";
+import { installFabricEscapeHalt } from "./ui/escape-halt.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
 import { formatFabricValue } from "./ui/structured.js";
@@ -174,7 +175,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const pendingHandoffs = new Map<string, PendingFabricHandoff>();
   const toolOwnership = new FabricToolOwnership(pi);
-  const fabricUi = new FabricUiController(state, codePreviewSettings);
+  const fabricUi = new FabricUiController(state, codePreviewSettings, {
+    getToolDefinition: (name) => name === "fabric_exec" ? fabricTool : capturedTools.get(name)?.definition,
+    get markdownTransformers() { return capturedTools.runner?.getMarkdownTransformers(); },
+    getMessageRenderer: (type) => capturedTools.runner?.getMessageRenderer(type),
+  });
   const toolDisplay = new FabricToolDisplayController();
 
   const capturePolicy = () => effectiveToolCaptureConfig(state.config);
@@ -306,52 +311,12 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   };
   const installHaltOnEscape = (context: ExtensionContext): void => {
     uninstallHaltOnEscape();
-    if (context.mode !== "tui") return;
     if (!state.config.ui.haltOnEscape || !state.config.mesh.enabled) return;
-    if (typeof context.ui.onTerminalInput !== "function") return;
-    const ESC = "\x1b";
-    const DEBOUNCE_MS = 60;
-    let escTimer: NodeJS.Timeout | undefined;
-    const trigger = (): void => {
-      if (!state.initialized || !state.config.mesh.enabled) return;
-      let halted = 0;
-      try {
-        // A lone Esc that lands while Fabric is already in a stop-the-world
-        // halt is a no-op: the gate is armed and resumes on the next message,
-        // so don't repeat the notice — a double-Esc to open /tree would
-        // otherwise pop it on every press. Only the first Esc of a halt
-        // session notifies.
-        if (state.actors.halted) return;
-        halted = state.actors.haltAll().halted;
-      } catch {
-        return;
-      }
-      // Nothing had work to abort: the gate armed silently, so skip the
-      // notice — a lone Esc with no active actors should not pop a
-      // "halted 0 actors" line.
-      if (halted === 0) return;
-      context.ui.notify(
-        `Fabric: halted ${halted} actor${halted === 1 ? "" : "s"} (Esc) · resumes on next message`,
-        "warning",
-      );
-    };
-    haltOnEscapeUnsubscribe = context.ui.onTerminalInput((data: string) => {
-      if (data === ESC) {
-        if (escTimer) clearTimeout(escTimer);
-        escTimer = setTimeout(() => {
-          escTimer = undefined;
-          trigger();
-        }, DEBOUNCE_MS);
-        escTimer.unref?.();
-        return undefined;
-      }
-      // Any other input cancels a pending lone-Esc debounce — the Esc byte was
-      // most likely the start of an escape sequence that arrived split.
-      if (escTimer) {
-        clearTimeout(escTimer);
-        escTimer = undefined;
-      }
-      return undefined;
+    haltOnEscapeUnsubscribe = installFabricEscapeHalt(context, {
+      enabled: () => state.initialized && state.config.mesh.enabled && state.config.ui.haltOnEscape,
+      ownsInput: () => fabricUi.ownsInput,
+      halted: () => state.actors.halted,
+      halt: () => state.actors.haltAll().halted,
     });
   };
 

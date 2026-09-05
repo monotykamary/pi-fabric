@@ -296,6 +296,40 @@ describe("Fabric dynamic UI", () => {
     expect(shouldShowFabricWidget(current, "auto")).toBe(true);
   });
 
+  it("discloses the chat shortcut only while a child is active", () => {
+    const current = snapshot();
+    current.runs = [];
+    const agent = current.agents[0]!;
+    const actor = current.actors[0]!;
+    current.agents = [{ ...agent, status: "completed" }];
+    current.actors = [{ ...actor, status: "idle", worker: { ...agent, status: "completed" } }];
+    const widget = new FabricWidget(theme, () => current, 8);
+    const hint = "Ctrl+Shift+A chat";
+    expect(widget.render(200).join("\n")).not.toContain(hint);
+    current.agents[0]!.status = "running";
+    expect(widget.hasChanged()).toBe(true);
+    expect(widget.render(200).join("\n")).toContain(hint);
+    current.agents[0]!.status = "completed";
+    expect(widget.hasChanged()).toBe(true);
+    expect(widget.render(200).join("\n")).not.toContain(hint);
+    current.actors[0]!.status = "queued";
+    expect(widget.hasChanged()).toBe(true);
+    expect(widget.render(200).join("\n")).toContain(hint);
+    current.actors[0]!.status = "idle";
+    current.actors[0]!.worker!.status = "running";
+    widget.invalidate();
+    expect(widget.render(200).join("\n")).toContain(hint);
+    current.actors = [];
+    current.agents[0]!.status = "running";
+    current.agents[0]!.stale = true;
+    widget.invalidate();
+    expect(widget.render(200).join("\n")).not.toContain(hint);
+    current.agents = [];
+    current.runs = snapshot().runs;
+    widget.invalidate();
+    expect(widget.render(200).join("\n")).not.toContain(hint);
+  });
+
   it("renders the widget header title and agent names in muted grey, matching pi core status lines", () => {
     const recordingTheme = {
       fg: (color: string, text: string) => `<${color}>${text}</>`,

@@ -639,6 +639,13 @@ export class AgentManager {
       const thinking = request.thinking ?? this.config.thinking;
       const recursive = runner === "pi" && request.recursive === true;
       const extensions = recursive ? true : (request.extensions ?? this.config.extensions);
+      // In a full-code parent every extension-enabled Pi child runs Fabric
+      // through fabric_exec — not only recursively spawned agents. An explicit
+      // extensions: false request opts the child back out to the native tool
+      // surface, and a non-full-code parent keeps the historical behavior.
+      // Recursive children additionally keep their recursive permission
+      // surface (the "agent" granted risk) below.
+      const inheritedFullCodeMode = runner === "pi" && this.#fullCodeMode && extensions;
       const componentGuidance = recursive
         ? undefined
         : this.#resolveParticipantGuidance?.({ ...(model ? { model } : {}), runner })?.trim();
@@ -682,7 +689,7 @@ export class AgentManager {
         "--depth",
         String(this.#currentDepth + 1),
         "--full-code-mode",
-        String(recursive && this.#fullCodeMode),
+        String(inheritedFullCodeMode),
         ...(this.#mainAgentId ? ["--main-agent-id", this.#mainAgentId] : []),
         ...(this.#fabricSessionId ? ["--fabric-session-id", this.#fabricSessionId] : []),
         "--extensions",
@@ -696,7 +703,9 @@ export class AgentManager {
           : []),
         "--transport",
         adapter.kind,
-        ...(recursive ? ["--fabric-extension", this.#fabricExtensionPath] : []),
+        ...(recursive || inheritedFullCodeMode
+          ? ["--fabric-extension", this.#fabricExtensionPath]
+          : []),
         ...(model ? ["--model", model] : []),
         ...(thinking ? ["--thinking", thinking] : []),
         ...(systemPrompt ? ["--system-prompt", systemPrompt] : []),
@@ -1419,7 +1428,12 @@ export class AgentManager {
     const tools = [...(request.tools ?? this.config.defaultTools)].filter(
       (tool) => tool !== "fabric_exec",
     );
-    if (runner === "pi" && request.recursive) tools.push("fabric_exec");
+    const extensions = request.recursive === true
+      ? true
+      : (request.extensions ?? this.config.extensions);
+    if (runner === "pi" && (request.recursive || (this.#fullCodeMode && extensions))) {
+      tools.push("fabric_exec");
+    }
     return [...new Set(tools)];
   }
 

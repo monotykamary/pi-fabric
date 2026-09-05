@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentRunResult } from "../src/agents/types.js";
 import { AgentManager } from "../src/agents/manager.js";
@@ -37,6 +38,51 @@ describe.skipIf(!hasWorker)("AgentManager real worker e2e", () => {
     managers.push(manager);
     return manager.run({ task, transport: "process" });
   };
+
+  // Regression for the LocalTerm shim contract: when the manager resolves the
+  // child pi binary to the shim (~/.localterm/shims/pi), the shim injects the
+  // wired secret env vars into pi's own process.env, and the worker must pass
+  // that environment through to the child it spawns ({ ...process.env }). This
+  // test seeds synthetic sentinel vars in the owner process (the same channel
+  // the shim uses — env presence, never values) and asserts the child sees
+  // them, through the real dist/worker.js spawn path.
+  it("inherits the owner environment (shim-injected secrets) in the child Pi process", async () => {
+    const present = "FAKE_PI_SENTINEL_SHIM_KEY";
+    const absent = "FAKE_PI_SENTINEL_MISSING_KEY";
+    process.env.FAKE_PI_BEHAVIOR = "shim-env-inheritance";
+    process.env.FAKE_PI_SENTINEL_VARS = `${present},${absent}`;
+    process.env[present] = "sentinel";
+    delete process.env[absent];
+    try {
+      const result = await run("report env presence booleans");
+      expect(result.status).toBe("completed");
+      expect(result.text).toBe(`${present}=present ${absent}=absent`);
+    } finally {
+      delete process.env.FAKE_PI_SENTINEL_VARS;
+      delete process.env[present];
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("executes the configured Pi shim so it can inject a child-only sentinel", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-shim-"));
+    roots.push(root);
+    const key = "FAKE_PI_CHILD_ONLY_SHIM_SENTINEL";
+    const shim = path.join(root, "pi-shim.mjs");
+    fs.writeFileSync(shim, [
+      "#!/usr/bin/env node",
+      'process.env.FAKE_PI_BEHAVIOR = "shim-env-inheritance";',
+      `process.env.FAKE_PI_SENTINEL_VARS = ${JSON.stringify(key)};`,
+      `process.env[${JSON.stringify(key)}] = "synthetic-test-value";`,
+      `await import(${JSON.stringify(pathToFileURL(piBinary).href)});`,
+    ].join("\n"), { mode: 0o755 });
+    const before = process.env[key];
+    const manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, { workerPath, piBinary: shim, runRoot: root });
+    managers.push(manager);
+    const result = await manager.run({ task: "probe shim execution", transport: "process" });
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe(`${key}=present`);
+    expect(process.env[key]).toBe(before);
+  });
 
   it("propagates the root Fabric session identity through the worker", async () => {
     process.env.FAKE_PI_BEHAVIOR = "fabric-session-env";

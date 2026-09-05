@@ -116,6 +116,8 @@ if (task.includes("HANG")) {
     mainAgentId: args.get("main-agent-id"),
     tools: JSON.parse(args.get("tools") ?? "[]"),
     extensions: args.get("extensions"),
+    fabricExtension: args.get("fabric-extension"),
+    grantedRisks: JSON.parse(args.get("granted-risks") ?? "[]"),
     imageCount: images.length,
     cwd: args.get("cwd"),
     startedAt: now,

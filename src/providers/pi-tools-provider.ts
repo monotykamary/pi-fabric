@@ -44,6 +44,8 @@ import {
 import { writeContentForPreview } from "./write-diff-limits.js";
 import { createPreviewWriteToolDefinition } from "./write-preview.js";
 
+import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+
 const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
 const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
 
@@ -191,6 +193,7 @@ interface PiToolResult {
 
 export class PiToolsProvider implements FabricProvider {
   readonly name = "pi";
+  readonly #allowedTools = readChildToolAllowlist();
   readonly description = "Pi's built-in coding tools";
   readonly #tools: Partial<Record<PiCoreToolName, ToolDefinition<any, any, any>>>;
   readonly #catalog: CapturedToolCatalog | undefined;
@@ -244,6 +247,7 @@ export class PiToolsProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     const name = actionName as PiCoreToolName;
+    if (this.#allowedTools && !this.#allowedTools.has(name)) return undefined;
     const tool = this.#tools[name];
     if (!tool) return undefined;
     const override = await this.#capturedTools?.describe(name, _context);
@@ -252,6 +256,7 @@ export class PiToolsProvider implements FabricProvider {
   }
 
   prepareArguments(actionName: string, args: Record<string, unknown>): Record<string, unknown> {
+    this.#assertAllowed(actionName);
     if (this.#catalog?.get(actionName)) {
       return this.#capturedTools!.prepareArguments(actionName, args);
     }
@@ -283,6 +288,12 @@ export class PiToolsProvider implements FabricProvider {
     return actionName === "edit" && (args.all === true || hasPerEditAll)
       ? expandReplaceAllEdit(this.#cwd, record, args.all === true)
       : record;
+  }
+
+  #assertAllowed(name: string): void {
+    if (this.#allowedTools && !this.#allowedTools.has(name)) {
+      throw new Error(`Pi tool ${name} is not permitted by this child's tool allowlist`);
+    }
   }
 
   // Keep a cwd-bound definition for pi <=0.84, while pi 0.85+ receives the
@@ -319,6 +330,7 @@ export class PiToolsProvider implements FabricProvider {
     context: FabricInvocationContext,
   ): Promise<unknown> {
     const name = actionName as PiCoreToolName;
+    this.#assertAllowed(name);
     if (!this.#tools[name]) throw new Error(`Unknown Pi tool: ${actionName}`);
     if (name === "bash") {
       const intercepted = await tryExecuteGitWorktreeAdd(args, this.#cwd);

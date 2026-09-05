@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { runAbortable, throwIfAborted } from "../async-settlement.js";
 import type { AgentToolResult, SourceInfo } from "@earendil-works/pi-coding-agent";
 import { CapturedToolCatalog, type CapturedToolEntry } from "../capture/catalog.js";
@@ -93,6 +94,7 @@ export class CapturedToolsProvider implements FabricProvider {
     "Tools captured from other Pi extensions and invoked lazily through Fabric";
 
   readonly #scheduler = new CapturedToolScheduler();
+  readonly #allowedTools = readChildToolAllowlist();
 
   constructor(readonly catalog: CapturedToolCatalog) {}
 
@@ -101,7 +103,7 @@ export class CapturedToolsProvider implements FabricProvider {
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor[]> {
     const query = request.query?.trim().toLowerCase();
-    const descriptors = this.catalog.list().map(descriptorFrom);
+    const descriptors = this.catalog.list().filter((entry) => !this.#allowedTools || this.#allowedTools.has(entry.name)).map(descriptorFrom);
     if (!query) return descriptors;
     return descriptors.filter((descriptor) =>
       `${descriptor.name} ${descriptor.description} ${descriptor.namespace ?? ""}`
@@ -114,11 +116,13 @@ export class CapturedToolsProvider implements FabricProvider {
     actionName: string,
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
+    if (this.#allowedTools && !this.#allowedTools.has(actionName)) return undefined;
     const entry = this.catalog.get(actionName);
     return entry ? descriptorFrom(entry) : undefined;
   }
 
   prepareArguments(actionName: string, args: Record<string, unknown>): Record<string, unknown> {
+    this.#assertAllowed(actionName);
     const prepare = this.catalog.require(actionName).wrappedTool.prepareArguments;
     if (!prepare) return args;
     const prepared = prepare(args);
@@ -133,10 +137,17 @@ export class CapturedToolsProvider implements FabricProvider {
     args: Record<string, unknown>,
     context: FabricInvocationContext,
   ): Promise<CapturedToolInvocationResult> {
+    this.#assertAllowed(actionName);
     const entry = this.catalog.require(actionName);
     return this.#scheduler.run(entry.definition.executionMode, () =>
       runAbortable(context.signal, () => this.#invokeCaptured(entry, args, context)),
     );
+  }
+
+  #assertAllowed(name: string): void {
+    if (this.#allowedTools && !this.#allowedTools.has(name)) {
+      throw new Error(`Extension tool ${name} is not permitted by this child's tool allowlist`);
+    }
   }
 
   async #invokeCaptured(

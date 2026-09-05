@@ -10,6 +10,34 @@ Nested `pi.read`, `pi.bash`, `pi.powershell`, `pi.grep`, `pi.find`, `pi.ls`, `pi
 
 Fabric keeps its orchestration-specific behavior around those previews. Multi-call rows stay compact, and live write composition with phase/call progress stays visible during the run. Agent and actor audits can expose their current child tools directly in the parent card, with owner, runner, and run metadata. One execution-wide throttle coalesces parallel nested-call updates before they reach Pi, and continuous streams are not starved. Long ANSI rows are bounded without clearing the enclosing tool background. The widget lease plus result-to-source row transfer keep completion height stable. The highlighter initializes lazily and falls back to plain text until it is ready. When Pi switches between its light and dark variants, the highlighter swaps themes live. Collapsed previews use the configured expand keybinding, for example `Ctrl-O`.
 
+## Focused conversations
+
+Press **Ctrl+Shift+A** or run **`/fabric chat`** to open a full-screen conversation without going through the dashboard. `/fabric chat <id-or-name>` opens a specific agent or actor; Tab completes exact participant IDs, including nested agents. Ambiguous names or ID prefixes are rejected; use an exact participant ID to select the intended target. In the dashboard, **Shift+C** opens the selected participant.
+
+The first implicit open prefers a currently active child over stale history; later opens remember a valid selection. The view keeps a lossless native Pi transcript and a multiline Pi editor together, independently of the dashboard’s bounded transcript projection. It uses Pi’s real user, assistant, thinking, tool, skill, custom-message, and summary components, including registered tool renderers such as `fabric_exec`, with complete tool details and native expansion behavior. User backgrounds and editor rules span the terminal width, with Pi's configured output padding, editor padding, and code-block indentation inside them. Markdown and tool previews use the configured Shiki theme. The footer below the editor shows the selected participant's directory, known branch, model, thinking level, and run-scoped token/cache/cost statistics. Unknown usage and context occupancy are marked explicitly; Main's statistics are never substituted. Breadcrumbs preserve `Main → child → grandchild` lineage. Main and other participants keep running: opening, navigating, and closing the view never calls Pi's session-replacement API or starts another worker. Selecting Main restores the original Pi conversation, including its editor. Child drafts and scroll positions survive switching targets and reopening the view for the lifetime of this Pi session.
+
+| Control | Action |
+| --- | --- |
+| Enter | Send a steering message to the selected live participant |
+| Follow-up key (Alt+Enter by default; Ctrl+Q on Windows) | Queue a follow-up for the selected participant |
+| Shift+Enter | Insert a newline |
+| Ctrl+N or `/agents` | Open the searchable participant picker |
+| Alt+Left / Alt+Right at an empty editor | Navigate to parent / first child |
+| Ctrl+Tab / Ctrl+Shift+Tab | Cycle conversations |
+| Mouse wheel / configured Pi scroll keys | Scroll locally and fetch older history; prompt, line, and page jumps work in both TUI modes |
+| End | Follow the latest output |
+| Pi's tool-expand key (Ctrl+O by default) | Toggle tool details |
+| `/stop` | Explicitly stop the selected participant after confirmation |
+| Esc or `/back` | Return to Main without interrupting any agent |
+
+Direct actor messages appear as normal user text, with paired RPC start/end events shown once. Session branches and compaction remain authoritative over overlapping RPC history. Native message errors remain visible. Use `/fabric log <id>` to inspect worker startup diagnostics. The widget advertises `Ctrl+Shift+A chat` only while an agent or actor is active, and removes the hint when work settles. The command and shortcut remain available for idle and historical conversations.
+
+Pending messages use Pi’s native labels and spacing. When a compatible loaded `pi-queue-steer` provides `queue-steer:conversation-queue:request:v1`, the view uses its actual per-target queue, execution-outline widget, and inline editor. A stopped actor’s Alt+Enter input is parked for editing or explicit Enter release. Accepted sends remain visible until native delivery is observed; they cannot be retracted or edited locally. Queues stay isolated from Main and other targets, survive preview close/reopen within the session, and are cleared on session reset. Older queue-extension releases without the bridge use the native display.
+
+Messages use the same ownership-aware route as `agents.steer` / `agents.followUp`. A failed delivery keeps the draft. Capability and lifecycle checks run again at dispatch, so a child that finishes while you type cannot silently receive a message in Main or be respawned. Persistent actors accept subsequent mailbox messages, including while idle. Finished one-shot runs remain readable but cannot continue; Veda one-shot runs do not support mid-run messaging. A remote participant without an accessible transcript shows an explicit transcript-unavailable notice.
+
+This is a focused view over the existing worker, not a second native Pi runtime. Other Pi slash commands, shell shortcuts (`!`), and child extension dialogs are not routed through this view. Unsupported commands are rejected visibly, never forwarded to Main. Native image attachment and full command/extension parity require a separate worker attachment protocol. The existing dashboard retains model, actor-policy, and configuration controls.
+
 ## Activity surface
 
 Fabric ships a general-purpose, theme-aware activity surface that works with any agent setup:
@@ -93,6 +121,7 @@ async invoke(actionName, args, context) {
 ```text
 /fabric status
 /fabric dashboard
+/fabric chat [participant-id-or-name]
 /fabric settings
 /fabric reload
 /fabric providers

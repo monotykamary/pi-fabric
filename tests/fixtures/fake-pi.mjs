@@ -147,6 +147,19 @@ switch (behavior) {
       process.exit(0);
     }, 50);
     break;
+  case "shim-env-inheritance": {
+    // Reports only presence booleans for the sentinel names listed in
+    // FAKE_PI_SENTINEL_VARS — never values — so the e2e can assert that env
+    // seeded in the owner process (what the LocalTerm shim injects into the
+    // parent pi) reaches the child pi the worker spawns.
+    const names = (process.env.FAKE_PI_SENTINEL_VARS || "").split(",").filter(Boolean);
+    const report = names
+      .map((name) => `${name}=${process.env[name] ? "present" : "absent"}`)
+      .join(" ");
+    emit({ type: "message_end", message: { role: "assistant", content: report } });
+    emit({ type: "agent_settled" });
+    process.exit(0);
+  }
   case "success":
   default:
     emit({ type: "message_end", message: { role: "assistant", content: "hi" } });

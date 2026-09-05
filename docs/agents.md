@@ -49,6 +49,8 @@ Set `cwd` on `agents.run()` or `agents.spawn()` to choose the leaf child's files
 
 For Pi children, selecting `cwd` neither grants nor requires project trust. Fabric adds no trust gate and passes neither `--approve` nor `--no-approve`; Pi loads `AGENTS.override.md`, `AGENTS.md`, and `CLAUDE.md` under its normal context rules, while protected project resources remain governed by Pi's saved decisions and `defaultProjectTrust`. Each runner keeps its native startup behavior. A generated worktree is evaluated at its own canonical path.
 
+Extension-enabled Pi children inherit the parent’s full-code mode, including ordinary non-recursive leaves. They retain `fabric_exec` as the outer tool, and their optional `tools` allowlist also constrains nested Pi and captured-tool calls. `extensions: false` explicitly opts out; Claude/Veda and parents outside full-code mode keep their existing tool surfaces. Recursive children additionally receive the delegated `agent` risk. A launch-policy change requires `/reload` and newly launched children; it does not hot-swap an already running worker’s tools.
+
 ### Durable participant residency
 
 `agents.spawn()` and `agents.create()` accept `residency: "session" | "durable"`. The default is `session`. It keeps the usual lifecycle: the current Pi host owns the participant and stops or suspends it when the host shuts down. The model chooses `durable` during execution. Users do not configure it as a setting.
