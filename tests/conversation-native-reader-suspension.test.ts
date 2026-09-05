@@ -78,10 +78,13 @@ describe("native reader disk suspension", () => {
     expect(reader.suspend()).toBe(true);
     expect(restore).not.toHaveBeenCalled();
     const directory = temporary.mock.results[0]!.value as string;
-    expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
     expect(fs.readdirSync(directory)).toEqual(["checkpoint"]);
     const checkpoint = path.join(directory, "checkpoint");
-    expect(fs.statSync(checkpoint).mode & 0o777).toBe(0o600);
+    // Windows accepts chmod/mode options but does not expose POSIX permission bits.
+    if (process.platform !== "win32") {
+      expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(checkpoint).mode & 0o777).toBe(0o600);
+    }
     expect(fs.statSync(checkpoint).size).toBeGreaterThan(256000);
     fs.unlinkSync(file);
     const resumed = reader.last!;
