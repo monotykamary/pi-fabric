@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.84.2",
+  "version": "0.84.3",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -78,7 +78,7 @@
     "image": "https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/banner.svg"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "0.85.0",
+    "@earendil-works/pi-ai": "0.85.1",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@shikijs/langs": "4.4.3",
     "@shikijs/themes": "4.4.3",
@@ -96,9 +96,8 @@
     "@earendil-works/pi-tui": ">=0.80.6"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.85.0",
-    "@earendil-works/pi-server": "0.85.0",
-    "@earendil-works/pi-tui": "0.85.0",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.1.2",
     "esbuild": "^0.25.12",
