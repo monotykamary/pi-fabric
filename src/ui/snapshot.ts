@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { FabricActivityRun } from "../activity/types.js";
 import type { FabricState } from "../fabric-state.js";
@@ -65,17 +66,54 @@ const stateEntry = (entry: MeshStateEntry): FabricUiStateEntry => {
   };
 };
 
+/** Poll-only memoization. Event-driven refreshes and dispatch bypass this cache. */
+export class FabricDashboardSnapshotCache {
+  private inputs: unknown;
+  private snapshot: FabricDashboardSnapshot | undefined;
+
+  get(inputs: unknown): FabricDashboardSnapshot | undefined {
+    return this.snapshot && isDeepStrictEqual(this.inputs, inputs)
+      ? { ...this.snapshot, now: Date.now() } : undefined;
+  }
+
+  set(inputs: unknown, snapshot: FabricDashboardSnapshot): void {
+    this.inputs = structuredClone(inputs);
+    this.snapshot = snapshot;
+  }
+
+  clear(): void {
+    this.inputs = undefined;
+    this.snapshot = undefined;
+  }
+}
+
 export const createDashboardSnapshot = (
   state: FabricState,
   events: MeshEvent[],
   context?: ExtensionContext,
   activityRuns?: FabricActivityRun[],
+  cache?: FabricDashboardSnapshotCache,
 ): FabricDashboardSnapshot => {
   const runs = activityRuns ?? state.activity.runs();
   const agentRecords =
     typeof state.agents.listForUi === "function"
       ? state.agents.listForUi()
       : state.agents.list();
+  // Observe externally owned domains on every poll, including remote lease
+  // expiry and model/usage updates that need not emit a local manager event.
+  const participants = typeof state.participantInfos === "function"
+    ? state.participantInfos({ scope: "project" }) : [];
+  const actorRecords = state.actors.list();
+  const main = state.mainAgentInfo(context);
+  const peers = typeof state.peerInfos === "function" ? state.peerInfos() : [];
+  const globalActors = state.globalActors.list();
+  const componentGraph = typeof state.componentGraph === "function"
+    ? state.componentGraph() : { components: [], edges: [], cycles: [] };
+  const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
+  const inputs = { runs, agentRecords, actorRecords, participants, main, peers,
+    globalActors, componentGraph, meshEntries, events, widgetDismissedAt: state.widgetDismissedAt };
+  const previous = cache?.get(inputs);
+  if (previous) return previous;
   const agentLinks: Array<{ runId: string; call: FabricActivityRun["calls"][number] }> = [];
   for (const run of runs) {
     for (const call of run.calls) {
@@ -158,26 +196,23 @@ export const createDashboardSnapshot = (
   };
   for (const record of agentRecords) appendAgent(record, 0);
 
-  const participants =
-    typeof state.participantInfos === "function"
-      ? state.participantInfos({ scope: "project" })
-      : [];
+  const workerByActor = new Map<string, FabricUiAgent>();
+  for (const agent of allAgents) {
+    if (!agent.actorId) continue;
+    const previous = workerByActor.get(agent.actorId);
+    const active = Number(activeStatuses.has(agent.status)) -
+      Number(previous !== undefined && activeStatuses.has(previous.status));
+    const recency = (numberFrom(agent.updatedAt) ?? numberFrom(agent.startedAt) ?? 0) -
+      (numberFrom(previous?.updatedAt) ?? numberFrom(previous?.startedAt) ?? 0);
+    // Strict improvement retains the first source-order worker on exact ties,
+    // matching the previous stable filter/sort selection.
+    if (!previous || (active || recency) > 0) workerByActor.set(agent.actorId, agent);
+  }
   const participantById = new Map(participants.map((participant) => [participant.id, participant]));
-  const actors = state.actors
-    .list()
+  const actors = actorRecords
     .map((actor) => {
       const participant = participantById.get(actor.id);
-      const worker = allAgents
-        .filter((agent) => agent.actorId === actor.id)
-        .sort((left, right) => {
-          const active =
-            Number(activeStatuses.has(right.status)) -
-            Number(activeStatuses.has(left.status));
-          const recency =
-            (numberFrom(right.updatedAt) ?? numberFrom(right.startedAt) ?? 0) -
-            (numberFrom(left.updatedAt) ?? numberFrom(left.startedAt) ?? 0);
-          return active || recency;
-        })[0];
+      const worker = workerByActor.get(actor.id);
       return {
         ...actor,
         instructions: state.actors.instructions(actor.id),
@@ -250,7 +285,6 @@ export const createDashboardSnapshot = (
     })
     .map(({ run }) => run);
 
-  const meshEntries = state.config.mesh.enabled ? state.mesh.list("", 200) : [];
   const stateEntries = meshEntries
     .filter(
       (entry) =>
@@ -266,18 +300,16 @@ export const createDashboardSnapshot = (
     })
     .slice(0, 120);
 
-  return {
+  const snapshot: FabricDashboardSnapshot = {
     now: Date.now(),
     runs: orderedRuns,
-    main: state.mainAgentInfo(context),
-    peers: typeof state.peerInfos === "function" ? state.peerInfos() : [],
+    main,
+    peers,
     participants,
     widgetDismissedAt: state.widgetDismissedAt,
-    globalActors: state.globalActors.list(),
+    globalActors,
     agents: visibleAgents,
-    componentGraph: typeof state.componentGraph === "function"
-      ? state.componentGraph()
-      : { components: [], edges: [], cycles: [] },
+    componentGraph,
     actors: actors.sort((left, right) => {
       const leftActive = activeStatuses.has(left.status) ? 1 : 0;
       const rightActive = activeStatuses.has(right.status) ? 1 : 0;
@@ -286,4 +318,6 @@ export const createDashboardSnapshot = (
     state: stateEntries,
     events: events.map((event) => structuredClone(event)),
   };
+  cache?.set(inputs, snapshot);
+  return snapshot;
 };

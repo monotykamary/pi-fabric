@@ -1,3 +1,4 @@
+import { copyToClipboard } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, KeyId, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import {
@@ -7,6 +8,8 @@ import {
   getKeybindings,
   Input,
   Key,
+  Loader,
+  Text,
   matchesKey,
   truncateToWidth,
   visibleWidth,
@@ -19,6 +22,9 @@ import { safeText } from "./format.js";
 import type { CodePreviewSettings } from "./code-preview.js";
 import type { NativeConversationTranscript } from "./conversation-native-reader.js";
 import { defaultConversationTarget } from "./conversation-targets.js";
+import { ConversationTextSelection } from "./conversation-selection.js";
+import { appendConversationPrompt, conversationPromptHistory } from "./conversation-history.js";
+import { conversationAssistantText, conversationCommandCompletion, CONVERSATION_COMMAND_HELP } from "./conversation-commands.js";
 import { ConversationQueueStore } from "./conversation-queue-store.js";
 import type { ConversationQueue } from "./conversation-queue.js";
 import { isActiveStatus } from "./types.js";
@@ -56,6 +62,8 @@ export interface FabricConversationStateEntry {
   toolsExpanded: boolean;
   hideThinking?: boolean;
   lastSeenUpdatedAt: number;
+  /** Session-local composer history, oldest first; lazily seeded, like Pi. */
+  promptHistory?: string[];
 }
 
 const STATE_ENTRY_LIMIT = 128;
@@ -155,8 +163,11 @@ export class FabricConversationState {
       for (const key of this.entries.keys()) {
         if (key === this.selectedId) continue;
         const entry = this.entries.get(key);
-        // Never evict non-empty drafts just because many targets were viewed.
-        if (entry && entry.draft === "") {
+        // Only discard untouched lightweight navigation state. Pinned scroll,
+        // loaded-page anchors, queues and in-flight sends outlive reader suspension.
+        if (entry && entry.draft === "" && entry.following && !entry.pageAnchor &&
+          !entry.toolsExpanded && entry.hideThinking === undefined &&
+          !this.queues.get(key) && ![...this.pendingSends].some((pending) => pending.id === key)) {
           this.entries.delete(key);
           evicted = true;
           break;
@@ -178,6 +189,8 @@ export interface FabricConversationOptions {
   send: (id: string, message: string, delivery: FabricConversationDelivery) => Promise<unknown>;
   stop: (id: string) => Promise<unknown>;
   close: () => void;
+  copyToClipboard?: (text: string) => Promise<void>;
+  onTargetChange?: (id: string) => void;
   keybindings?: Pick<KeybindingsManager, "matches" | "getKeys">;
   codePreviewSettings?: CodePreviewSettings;
   appearance?: FabricConversationAppearance;
@@ -233,12 +246,16 @@ export class FabricConversationView implements Component, Focusable {
   private readonly state: FabricConversationState;
   private readonly renderer: FabricConversationTranscriptRenderer;
   private editor: Editor | undefined;
+  private suspendedEditor: Editor | undefined;
+  private editorEpoch = -1;
   private pickerInput: Input | undefined;
   private pickerRows: PickerRow[] = [];
   private pickerSelectedId: string | undefined;
   private mode: "conversation" | "picker" = "conversation";
   private currentId: string | undefined;
   private feedback: Feedback | undefined;
+  private commandNotification: { component: Text; epoch: number; pendingResult?: Text } | undefined;
+  private notificationScope = 0;
   private stopConfirmId: string | undefined;
   private disposed = false;
   private lastBodyLength = 0;
@@ -247,6 +264,23 @@ export class FabricConversationView implements Component, Focusable {
   private editorTop = 0;
   private editorHeight = 0;
   private ownsMouseMode = false;
+  private targets: FabricConversationTarget[] = [];
+  private targetsKey = "";
+  private readonly targetsById = new Map<string, FabricConversationTarget>();
+  private nonMain: FabricConversationTarget[] = [];
+  private main: FabricConversationTarget | undefined;
+  private observationKey = "";
+  private observedTranscript: NativeConversationTranscript | undefined;
+  private pickerKey = "";
+  private working: Loader | undefined;
+  private workingTargetId: string | undefined;
+  private readonly textSelection = new ConversationTextSelection();
+  private selectionWidth = 0;
+  private selectionWasFollowing = false;
+  private bodyTop = 0;
+  private bodyHeight = 0;
+  private copyVersion = 0;
+  private copyTask: Promise<void> = Promise.resolve();
 
   constructor(
     tui: TUI,
@@ -257,23 +291,19 @@ export class FabricConversationView implements Component, Focusable {
     this.theme = theme;
     this.options = options;
     this.state = options.state;
+    this.updateTargets();
     this.renderer = new FabricConversationTranscriptRenderer(tui, theme, {
       ...options.rendererOptions,
       imageWidthCells: options.appearance?.imageWidthCells,
     });
-    this.editor = new Editor(tui, conversationEditorTheme(theme, () => this.currentTarget()?.thinking), {
-      paddingX: options.appearance?.editorPaddingX ?? 0,
-    });
-    this.editor.focused = true;
-    this.editor.onChange = (text) => {
-      if (this.currentId && !this.state.queues.get(this.currentId)?.editingActive) this.state.view(this.currentId).draft = text;
-    };
+    this.editor = this.createEditor();
+    this.editorEpoch = this.state.epoch;
     // An explicit initialTargetId must win over state.selectedId so reissuing
     // "/fabric chat B" focuses B instead of reopening the previously selected A.
     const nonMain = this.nonMainTargets();
     const requested = options.initialTargetId ?? defaultConversationTarget(nonMain, options.state.selectedId)?.id;
     const requestedTarget = requested
-      ? this.currentTargets().find((candidate) => candidate.id === requested)
+      ? this.targetById(requested)
       : undefined;
     const resolved =
       requested && requestedTarget && !isMainTarget(requestedTarget)
@@ -282,11 +312,98 @@ export class FabricConversationView implements Component, Focusable {
     if (resolved) this.applySelection(resolved, false);
     if (!this.currentId) this.currentId = nonMain[0]?.id;
     // Regular Pi leaves mouse input to terminal scrollback. This preview owns
-    // a separate viewport; capture its wheel input and restore on close.
+    // a separate viewport; capture wheel and drag input and restore on close.
     if (tui.mode === "regular") {
-      tui.terminal.write("\x1b[?1000h\x1b[?1006h");
+      tui.terminal.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
       this.ownsMouseMode = true;
     }
+  }
+
+  private createEditor(withHistory = true): Editor {
+    // Own method only: assignment through Pi's live proxy would mutate Main.
+    const editorTui = Object.create(this.tui, { requestRender: { value: () => {
+      if (!this.disposed && this.editor === editor) this.tui.requestRender();
+    } } }) as TUI;
+    const editor = new Editor(editorTui, conversationEditorTheme(this.theme, () => this.currentTarget()?.thinking), {
+      paddingX: this.options.appearance?.editorPaddingX ?? 0,
+    });
+    editor.focused = this.focusState && this.mode === "conversation";
+    if (!withHistory) return editor;
+    editor.setAutocompleteProvider(conversationCommandCompletion(() =>
+      !this.disposed && this.editor === editor && this.mode === "conversation" && !this.state.queues.get(this.currentId ?? "")?.editingActive));
+    editor.onSubmit = (text) => {
+      if (this.disposed || this.editor !== editor) return;
+      // Native completion submits after clearing the editor; restore for routing.
+      editor.setText(text);
+      this.submit("steer");
+    };
+    editor.onChange = (text) => {
+      if (this.editor === editor && this.currentId && !this.state.queues.get(this.currentId)?.editingActive) this.state.view(this.currentId).draft = text;
+    };
+    for (const text of this.currentId ? this.state.peek(this.currentId)?.promptHistory ?? [] : []) editor.addToHistory(text);
+    return editor;
+  }
+
+  private releaseEditor(editor: Editor | undefined): void {
+    if (!editor) return;
+    editor.setAutocompleteProvider(conversationCommandCompletion(() => false));
+    editor.focused = false;
+    delete editor.onSubmit;
+    delete editor.onChange;
+  }
+
+  private resetEditor(): void {
+    this.releaseEditor(this.editor);
+    this.releaseEditor(this.suspendedEditor);
+    this.suspendedEditor = undefined;
+    this.editor = this.createEditor();
+    this.editorEpoch = this.state.epoch;
+  }
+
+  private ensureEditorEpoch(): void {
+    if (this.editorEpoch === this.state.epoch) return;
+    this.observedTranscript = undefined;
+    this.observationKey = "";
+    this.resetEditor();
+    if (this.currentId) this.editor?.setText(this.state.view(this.currentId).draft);
+  }
+
+  private initializePromptHistory(): void {
+    if (!this.currentId || !this.editor || this.suspendedEditor) return;
+    const entry = this.state.view(this.currentId);
+    if (entry.promptHistory !== undefined) return;
+    const transcript = this.observedTranscript ?? this.options.transcript(this.currentId, entry.following);
+    // A worker may not have written its initial transcript yet; retry later.
+    if (transcript.unavailable) return;
+    entry.promptHistory = conversationPromptHistory(transcript);
+    for (const text of entry.promptHistory) this.editor.addToHistory(text);
+  }
+
+  private rememberPrompt(text: string): void {
+    if (!this.currentId) return;
+    this.initializePromptHistory();
+    const entry = this.state.view(this.currentId);
+    appendConversationPrompt(entry.promptHistory ??= [], text);
+    this.editor?.addToHistory(text);
+  }
+
+  private setQueueEditorText(text: string): void {
+    let restoredText = text;
+    const editing = this.currentId && this.state.queues.get(this.currentId)?.editingActive;
+    if (editing && !this.suspendedEditor) {
+      // Preserve the composer's native history/draft; queued rows never browse it.
+      this.suspendedEditor = this.editor;
+      if (this.suspendedEditor) this.suspendedEditor.focused = false;
+      this.editor = this.createEditor(false);
+    } else if (!editing && this.suspendedEditor) {
+      this.releaseEditor(this.editor);
+      this.editor = this.suspendedEditor;
+      this.suspendedEditor = undefined;
+      this.editor.focused = this.focusState && this.mode === "conversation";
+      // An acknowledgement may have cleared the composer while a row was open.
+      restoredText = this.currentId ? this.state.view(this.currentId).draft : text;
+    }
+    this.editor?.setText(restoredText);
   }
 
   get focused(): boolean {
@@ -305,20 +422,25 @@ export class FabricConversationView implements Component, Focusable {
 
   /** Re-focus a target while the view is open; selecting Main closes to the native session. */
   selectTarget(id: string): void {
+    this.updateTargets();
     this.applySelection(id, true);
   }
 
   handleInput(data: string): void {
     if (this.disposed) return;
+    this.ensureEditorEpoch();
+    this.updateTargets();
     // Fullscreen Pi dispatches normalized events; regular mode forwards SGR.
     const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data);
     if (mouse) {
       const button = Number(mouse[1]);
-      if ((button & 64) !== 0 && mouse[4] === "M") {
-        this.handleMouse({ type: "wheel", button: "none", wheelDelta: (button & 1) === 0 ? -3 : 3,
-          x: Number(mouse[2]) - 1, y: Number(mouse[3]) - 1, screenX: Number(mouse[2]) - 1, screenY: Number(mouse[3]) - 1,
-          width: this.tui.terminal.columns, height: this.terminalRows(), shift: !!(button & 4), alt: !!(button & 8), ctrl: !!(button & 16) });
-      }
+      const wheel = (button & 64) !== 0;
+      const release = mouse[4] === "m" || (!wheel && (button & 3) === 3 && !(button & 32));
+      this.handleMouse({ type: wheel ? "wheel" : release ? "release" : (button & 32) ? "drag" : "press",
+        button: wheel ? "none" : (button & 3) === 0 ? "left" : (button & 3) === 1 ? "middle" : (button & 3) === 2 ? "right" : "none",
+        ...(wheel ? { wheelDelta: (button & 1) === 0 ? -3 : 3 } : {}),
+        x: Number(mouse[2]) - 1, y: Number(mouse[3]) - 1, screenX: Number(mouse[2]) - 1, screenY: Number(mouse[3]) - 1,
+        width: this.tui.terminal.columns, height: this.terminalRows(), shift: !!(button & 4), alt: !!(button & 8), ctrl: !!(button & 16) });
       return;
     }
     if (this.mode === "picker") {
@@ -332,26 +454,58 @@ export class FabricConversationView implements Component, Focusable {
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (this.disposed) return undefined;
+    this.ensureEditorEpoch();
+    this.updateTargets();
     if (event.type === "wheel") {
       if (this.mode === "picker") this.movePickerSelection((event.wheelDelta ?? 0) < 0 ? -1 : 1);
       else this.scrollBy(event.wheelDelta ?? 0);
       this.tui.requestRender();
       return { handled: true };
     }
-    if (this.mode === "conversation" && event.y >= this.editorTop && event.y < this.editorTop + this.editorHeight) {
-      return this.editor?.handleMouse({ ...event, y: event.y - this.editorTop, height: this.editorHeight });
+    if (this.mode !== "conversation" || !this.currentId) return { handled: true };
+    const entry = this.state.view(this.currentId);
+    const inBody = event.y >= this.bodyTop && event.y < this.bodyTop + this.bodyHeight;
+    const row = entry.scroll + Math.max(0, Math.min(this.bodyHeight - 1, event.y - this.bodyTop));
+    if (event.type === "press" && event.button === "left" && inBody) {
+      this.selectionWasFollowing = entry.following;
+      entry.following = false;
+      this.textSelection.start(this.lastBody, row, event.x);
+      this.tui.requestRender();
+      return { handled: true, capture: true };
     }
-    return undefined;
+    if (this.textSelection.dragging && (event.type === "drag" || event.type === "release")) {
+      if (event.type === "drag") this.textSelection.move(row, event.x);
+      else {
+        this.textSelection.finish(row, event.x);
+        if (!this.textSelection.active && this.selectionWasFollowing) entry.following = true;
+        if (this.textSelection.active && (this.options.appearance?.copyOnSelect ?? true)) this.copySelection();
+      }
+      this.tui.requestRender();
+      return { handled: true, render: true };
+    }
+    if (event.type === "press") this.textSelection.clear();
+    if (event.y >= this.editorTop && event.y < this.editorTop + this.editorHeight) {
+      return this.editor?.handleMouse({ ...event, y: event.y - this.editorTop, height: this.editorHeight }) ?? { handled: true };
+    }
+    // Never fall back to the host's selection or paste handlers behind an overlay.
+    return { handled: true };
   }
 
   render(width: number): string[] {
     if (this.disposed || width <= 0) return [];
+    this.updateTargets();
+    if (width !== this.selectionWidth) {
+      this.textSelection.clear();
+      this.selectionWidth = width;
+    }
     const rows = Math.max(1, this.terminalRows());
     this.markCurrentTargetSeen();
     this.reconcileEditor();
     const target = this.currentTarget();
     const queue = this.mode === "conversation" ? this.currentQueue() : undefined;
-    const transcriptLines = this.mode === "conversation" ? this.transcriptLines(width) : [];
+    this.observe();
+    const liveTranscriptLines = this.mode === "conversation" ? this.transcriptLines(width) : [];
+    const transcriptLines = this.textSelection.source ?? liveTranscriptLines;
     let queueLines = queue?.render(width) ?? [];
     // Native components own their interior padding. Giving them the full width
     // keeps user backgrounds and editor rules flush with both terminal edges.
@@ -372,10 +526,6 @@ export class FabricConversationView implements Component, Focusable {
       head.push(this.breadcrumbLine(width));
       remaining--;
     }
-    if (target?.readOnlyReason && remaining > 1) {
-      head.push(this.statusLine(width));
-      remaining--;
-    }
     const feedback = this.currentFeedbackLine(width);
     if (feedback !== undefined && remaining > 1) {
       head.push(feedback);
@@ -394,14 +544,81 @@ export class FabricConversationView implements Component, Focusable {
     this.editorHeight = editorLines.length;
     const body = remaining <= 0 ? [] : this.mode === "picker"
       ? this.pickerLines(width, remaining)
-      : this.windowBody(transcriptLines, remaining);
+      : this.windowBody(transcriptLines, remaining, this.transcriptTail(width, remaining));
+    this.bodyTop = head.length;
+    const scroll = this.currentId ? this.state.view(this.currentId).scroll : 0;
+    this.bodyHeight = this.mode === "conversation" ? Math.max(0, Math.min(remaining, this.lastBody.length - scroll)) : 0;
+    if (this.textSelection.active) {
+      for (let row = 0; row < this.bodyHeight; row++) body[row] = this.textSelection.highlight(body[row]!, scroll + row, this.theme);
+    }
     while (body.length < remaining) body.push("");
     return [...head, ...body.slice(0, remaining), ...queueLines, ...editorLines, ...footer, ...hints]
       .slice(0, rows)
       .map((line) => visibleWidth(line) <= width ? line : truncateToWidth(line, width, ""));
   }
 
+  /** Observe files without rendering native history; true means a visible change
+   * or a live animation still needs the normal TUI render path. */
+  refresh(): boolean {
+    if (this.disposed) return false;
+    this.updateTargets();
+    const changed = this.observe();
+    return changed || (this.mode === "conversation" && this.selectedTargetIsWorking());
+  }
+
+  private observe(): boolean {
+    const entry = this.currentId ? this.state.view(this.currentId) : undefined;
+    const transcript = this.mode === "conversation" && this.currentTarget() && this.currentId && entry
+      ? this.options.transcript(this.currentId, entry.following) : undefined;
+    if (transcript && this.currentId) this.state.queues.sync(this.currentId, transcript);
+    const key = JSON.stringify([this.targetsKey, this.currentId, this.mode, entry?.draft,
+      this.feedback && Date.now() - this.feedback.at <= FEEDBACK_TTL_MS ? this.feedback : undefined,
+      transcript && [transcript.sourceId, transcript.sessionId, transcript.sessionFile, transcript.eventsFile,
+        transcript.revision, transcript.status, transcript.leafId, transcript.historyComplete, transcript.hasMore,
+        transcript.hasNewer, transcript.unavailable, transcript.error, transcript.pendingMessages]]);
+    const previous = this.observedTranscript;
+    const changed = key !== this.observationKey || previous?.messages !== transcript?.messages ||
+      previous?.entries !== transcript?.entries || previous?.streaming !== transcript?.streaming;
+    this.observationKey = key;
+    this.observedTranscript = transcript;
+    this.syncWorkingIndicator();
+    return changed;
+  }
+
+  private selectedTargetIsWorking(): boolean {
+    const target = this.currentTarget();
+    if (!target || target.stale) return false;
+    // A killed worker can leave a partial message/tool in its log forever.
+    // That retained tail must not override terminal or unavailable ownership.
+    return isActiveStatus(target.status);
+  }
+
+  private syncWorkingIndicator(): void {
+    const active = !this.disposed && this.mode === "conversation" && this.currentId && this.selectedTargetIsWorking();
+    if (!active) {
+      this.stopWorkingIndicator();
+      return;
+    }
+    if (this.working && this.workingTargetId === this.currentId) return;
+    this.stopWorkingIndicator();
+    const id = this.currentId;
+    this.workingTargetId = id;
+    // Pi's standalone WorkingStatusIndicator delegates to this public Loader.
+    this.working = new Loader({ requestRender: () => {
+      if (!this.disposed && this.mode === "conversation" && this.currentId === id) this.tui.requestRender();
+    } } as TUI, (text) => this.theme.fg("accent", text), (text) => this.theme.fg("muted", text), "Working");
+  }
+
+  private stopWorkingIndicator(): void {
+    this.working?.stop();
+    this.working = undefined;
+    this.workingTargetId = undefined;
+  }
+
   invalidate(): void {
+    this.working?.invalidate();
+    this.commandNotification?.component.invalidate();
+    this.commandNotification?.pendingResult?.invalidate();
     this.renderer.invalidate();
     this.editor?.invalidate();
     this.pickerInput?.invalidate();
@@ -410,18 +627,28 @@ export class FabricConversationView implements Component, Focusable {
   dispose(): void {
     if (this.currentId) this.state.queues.detach(this.currentId);
     this.disposed = true;
+    this.clearCommandNotification();
+    this.copyVersion++;
+    this.textSelection.clear();
+    this.stopWorkingIndicator();
+    this.releaseEditor(this.editor);
+    this.releaseEditor(this.suspendedEditor);
+    this.suspendedEditor = undefined;
     this.editor = undefined;
     this.pickerInput = undefined;
+    this.observedTranscript = undefined;
+    this.lastBody = [];
     this.renderer.dispose();
     if (this.ownsMouseMode) {
       this.ownsMouseMode = false;
-      this.tui.terminal.write("\x1b[?1000l\x1b[?1006l");
+      this.tui.terminal.write("\x1b[?1002l\x1b[?1000l\x1b[?1006l");
     }
   }
 
   /** Keep the editor in sync with the shared session draft (e.g. after an ack
    * that landed while a previous view instance was disposed). */
   private reconcileEditor(): void {
+    this.ensureEditorEpoch();
     if (this.mode !== "conversation" || !this.editor || !this.currentId) return;
     if (this.state.queues.get(this.currentId)?.editingActive) return;
     if (this.state.hasPendingSend(this.currentId, this.editor.getText())) return;
@@ -431,7 +658,7 @@ export class FabricConversationView implements Component, Focusable {
 
   private applySelection(id: string, requestRender: boolean): void {
     if (this.currentId && this.currentId !== id) this.state.queues.detach(this.currentId);
-    const target = this.currentTargets().find((candidate) => candidate.id === id);
+    const target = this.targetById(id);
     if (!target) {
       this.feedback = {
         text: `Unknown target ${safeText(id)}`,
@@ -445,8 +672,22 @@ export class FabricConversationView implements Component, Focusable {
       this.options.close();
       return;
     }
+    const changed = this.currentId !== id;
+    if (changed) {
+      this.clearCommandNotification();
+      this.copyVersion++;
+      this.textSelection.clear();
+      this.stopWorkingIndicator();
+      this.observedTranscript = undefined;
+      this.observationKey = "";
+      this.lastBody = [];
+      this.lastBodyLength = 0;
+      this.renderer.invalidate();
+      this.options.onTargetChange?.(id);
+    }
     this.currentId = id;
     this.state.selectedId = id;
+    if (changed) this.resetEditor();
     const entry = this.state.view(id);
     entry.lastSeenUpdatedAt = target.updatedAt ?? Date.now();
     this.stopConfirmId = undefined;
@@ -464,24 +705,40 @@ export class FabricConversationView implements Component, Focusable {
     if (entry.lastSeenUpdatedAt < target.updatedAt) entry.lastSeenUpdatedAt = target.updatedAt;
   }
 
+  private updateTargets(): void {
+    // One provider observation per frame/input, including providers that mutate
+    // their roster in place. The fingerprint contains metadata, never history.
+    const targets = this.options.targets();
+    const key = JSON.stringify(targets);
+    if (key === this.targetsKey) return;
+    this.targetsKey = key;
+    this.targets = targets;
+    this.targetsById.clear();
+    for (const target of targets) {
+      if (!this.targetsById.has(target.id)) this.targetsById.set(target.id, target);
+    }
+    this.nonMain = targets.filter((target) => !isMainTarget(target));
+    this.main = targets.find(isMainTarget);
+  }
+
   private currentTargets(): FabricConversationTarget[] {
-    return this.options.targets();
+    return this.targets;
   }
 
   private nonMainTargets(): FabricConversationTarget[] {
-    return this.currentTargets().filter((target) => !isMainTarget(target));
+    return this.nonMain;
   }
 
   private currentTarget(): FabricConversationTarget | undefined {
-    return this.currentTargets().find((target) => target.id === this.currentId);
+    return this.currentId ? this.targetById(this.currentId) : undefined;
   }
 
   private mainTarget(): FabricConversationTarget | undefined {
-    return this.currentTargets().find((target) => isMainTarget(target));
+    return this.main;
   }
 
   private targetById(id: string): FabricConversationTarget | undefined {
-    return this.currentTargets().find((target) => target.id === id);
+    return this.targetsById.get(id);
   }
 
   private terminalRows(): number {
@@ -495,7 +752,7 @@ export class FabricConversationView implements Component, Focusable {
    */
   private bindingMatches(
     data: string,
-    binding: "app.message.followUp" | "app.tools.expand" | "app.thinking.toggle",
+    binding: "app.message.followUp" | "app.message.copy" | "app.tools.expand" | "app.thinking.toggle",
     fallbackKeys: KeyId[],
   ): boolean {
     if (this.options.keybindings) {
@@ -509,7 +766,7 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   private bindingHint(
-    binding: "app.message.followUp" | "app.tools.expand" | "app.thinking.toggle",
+    binding: "app.message.followUp" | "app.message.copy" | "app.tools.expand" | "app.thinking.toggle",
     fallbackLabel: string,
   ): string {
     const manager = this.options.keybindings ?? getKeybindings();
@@ -522,7 +779,25 @@ export class FabricConversationView implements Component, Focusable {
     const editor = this.editor;
     if (!editor) return;
     this.feedback = undefined;
-    if (this.stopConfirmId === undefined && this.currentQueue()?.handleInput(data)) return;
+    if (this.stopConfirmId === undefined && this.bindingMatches(data, "app.message.copy", ["ctrl+shift+c"])) {
+      this.copyResponse(undefined, true);
+      return;
+    }
+    if (this.stopConfirmId === undefined && this.textSelection.active && matchesKey(data, Key.ctrl("c"))) {
+      this.copySelection();
+      return;
+    }
+    if (this.stopConfirmId === undefined && this.textSelection.source && matchesKey(data, Key.escape)) {
+      this.textSelection.clear();
+      return;
+    }
+    const queue = this.currentQueue();
+    if (this.stopConfirmId === undefined && !queue?.editingActive && editor.isShowingAutocomplete() &&
+        [Key.enter, Key.tab, Key.up, Key.down, Key.escape].some((key) => matchesKey(data, key))) {
+      editor.handleInput(data);
+      return;
+    }
+    if (this.stopConfirmId === undefined && queue?.handleInput(data)) return;
 
     if (this.stopConfirmId !== undefined) {
       if (matchesKey(data, Key.enter)) {
@@ -533,10 +808,11 @@ export class FabricConversationView implements Component, Focusable {
       }
       if (matchesKey(data, Key.escape)) {
         this.stopConfirmId = undefined;
-        this.feedback = { text: "Stop cancelled", kind: "info", at: Date.now() };
+        this.notifyCommand("Stop cancelled");
         return;
       }
       this.stopConfirmId = undefined;
+      this.notifyCommand("Stop cancelled");
     }
 
     if (this.bindingMatches(data, "app.message.followUp", FOLLOW_UP_FALLBACK)) {
@@ -595,6 +871,7 @@ export class FabricConversationView implements Component, Focusable {
     if (viewportKeys.matches(data, "tui.altScreen.top")) { this.scrollToTop(); return; }
     if (viewportKeys.matches(data, "tui.altScreen.bottom")) { this.followLatest(); return; }
     if (this.bindingMatches(data, "app.thinking.toggle", ["ctrl+t"])) {
+      this.textSelection.clear();
       if (this.currentId) {
         const entry = this.state.view(this.currentId);
         entry.hideThinking = !(entry.hideThinking ?? this.options.appearance?.hideThinkingBlock ?? false);
@@ -602,13 +879,108 @@ export class FabricConversationView implements Component, Focusable {
       return;
     }
     if (this.bindingMatches(data, "app.tools.expand", TOOLS_EXPAND_FALLBACK)) {
+      this.textSelection.clear();
       if (this.currentId) {
         const entry = this.state.view(this.currentId);
         entry.toolsExpanded = !entry.toolsExpanded;
       }
       return;
     }
+    if (viewportKeys.matches(data, "tui.editor.cursorUp") || viewportKeys.matches(data, "tui.editor.cursorDown") ||
+        viewportKeys.matches(data, "tui.editor.historyPrevious") || viewportKeys.matches(data, "tui.editor.historyNext")) this.initializePromptHistory();
     editor.handleInput(data);
+  }
+
+  private clearCommandNotification(): void {
+    this.commandNotification = undefined;
+    this.notificationScope++;
+  }
+
+  private notifyCommand(message: string, kind: Feedback["kind"] = "info",
+    options: { reserve?: string; reveal?: boolean } = {}): void {
+    if (this.disposed || this.mode !== "conversation" || !this.currentId || !this.currentTarget()) return;
+    this.feedback = undefined;
+    // Pi showStatus/showError use Spacer(1) + Text, not the input/status dock.
+    // Retain one local result, rather than implement a full notification history.
+    const text = safeText(message).slice(0, 4096);
+    this.commandNotification = {
+      component: new Text(this.theme.fg(kind === "error" ? "error" : "dim", kind === "error" ? `Error: ${text}` : text),
+        kind === "error" ? this.options.appearance?.outputPad ?? 1 : 1, 0),
+      epoch: this.state.epoch,
+      ...(options.reserve !== undefined ? { pendingResult: new Text(this.theme.fg("dim", safeText(options.reserve).slice(0, 4096)), 1, 0) } : {}),
+    };
+    // Reveal the result in the loaded window; do not fetch newer history or
+    // change following/selection when the user is inspecting an older page.
+    if (options.reveal !== false) {
+      const entry = this.state.view(this.currentId);
+      entry.pageAnchor = entry.following ? undefined : "end";
+      entry.anchorLength = undefined;
+    }
+    this.tui.requestRender();
+  }
+
+  private copyFeedback(text: string, kind: Feedback["kind"], command?: string, reveal = true): void {
+    if (command !== undefined) this.notifyCommand(text, kind, { reveal });
+    else {
+      // A shortcut superseding a slash copy must not leave a pending result.
+      if (this.commandNotification?.pendingResult) this.clearCommandNotification();
+      this.feedback = { text: safeText(text), kind, at: Date.now() };
+    }
+  }
+
+  private copySelection(command?: string): void {
+    const text = this.textSelection.text();
+    if (!text) {
+      this.copyFeedback("No transcript text selected. Drag to select first.", "error", command);
+      return;
+    }
+    this.copyText(text, "Copied selected transcript text", command);
+  }
+
+  private copyResponse(command?: string, preferSelection = false): void {
+    if (preferSelection && this.textSelection.active) { this.copySelection(command); return; }
+    if (!this.currentId) return;
+    const transcript = this.options.transcript(this.currentId, false);
+    if (transcript.hasNewer) {
+      this.copyFeedback("Use /latest before /copy to load the latest response.", "error", command);
+      return;
+    }
+    const text = conversationAssistantText(transcript);
+    if (!text) {
+      this.copyFeedback("No assistant response to copy yet.", "error", command);
+      return;
+    }
+    this.copyText(text, "Copied last assistant response", command);
+  }
+
+  private copyText(text: string, message: string, command?: string): void {
+    const id = this.currentId;
+    const epoch = this.state.epoch;
+    const version = ++this.copyVersion;
+    const editor = this.editor;
+    // Completion removes the suggestion rows synchronously. Reserve the final
+    // result now, so clipboard latency cannot produce a blank, shifting frame.
+    if (command !== undefined) this.notifyCommand("Copying…", "info", { reserve: message });
+    const notification = this.commandNotification;
+    const current = (): boolean => !this.disposed && this.currentId === id && this.state.epoch === epoch && this.copyVersion === version;
+    // A newer command owns the notification, but does not cancel the copy itself.
+    const currentResult = (): boolean => current() && (command === undefined || this.commandNotification === notification);
+    // Serialize writes so a slower older copy cannot overwrite a newer one.
+    this.copyTask = this.copyTask.then(() => {
+      if (current()) return (this.options.copyToClipboard ?? copyToClipboard)(text);
+    }).then(() => {
+      if (!currentResult()) return;
+      if (command !== undefined && id) {
+        if (this.state.peek(id)?.draft === command) this.state.view(id).draft = "";
+        if (editor?.getText() === command) editor.setText("");
+      }
+      this.copyFeedback(message, "info", command, false);
+      this.tui.requestRender();
+    }, (error: unknown) => {
+      if (!currentResult()) return;
+      this.copyFeedback(`Copy failed: ${errorText(error)}`, "error", command, false);
+      this.tui.requestRender();
+    });
   }
 
   private submit(delivery: FabricConversationDelivery): void {
@@ -616,43 +988,45 @@ export class FabricConversationView implements Component, Focusable {
     const target = this.currentTarget();
     if (!editor || !target || isMainTarget(target)) return;
     const raw = editor.getText();
-    if (!raw.trim()) return;
+    const message = editor.getExpandedText();
+    if (!message.trim()) return;
+    const command = message.trim().replace(/[\t ]+/g, " ");
+    // Commands belong only to this target's in-memory editor history, including
+    // failed attempts. Remember before navigation/validation, never via send.
+    if (command.startsWith("/")) this.rememberPrompt(message);
+    if (command === "/copy") { this.copyResponse(raw); return; }
+    if (command === "/copy selection") { this.copySelection(raw); return; }
+    if (command === "/help") {
+      editor.setText("");
+      this.notifyCommand(CONVERSATION_COMMAND_HELP);
+      return;
+    }
+    if (command === "/latest") {
+      editor.setText("");
+      this.followLatest();
+      this.notifyCommand("Following latest output");
+      return;
+    }
 
-    if (raw.trim() === "/back") {
+    if (command === "/back") {
       this.options.close();
       return;
     }
-    if (raw.trim() === "/agents") {
+    if (command === "/agents") {
       this.openPicker();
       return;
     }
-    if (raw.trim() === "/stop") {
+    if (command === "/stop") {
       if (!target.canStop) {
-        this.feedback = {
-          text: safeText(
-            `Stop unavailable for ${target.name}: the selected target cannot be stopped from here.`,
-          ),
-          kind: "error",
-          at: Date.now(),
-        };
+        this.notifyCommand(`Stop unavailable for ${target.name}: the selected target cannot be stopped from here.`, "error");
         return;
       }
       this.stopConfirmId = target.id;
-      this.feedback = {
-        text: safeText(`Press enter again to stop ${target.name} · esc cancels`),
-        kind: "info",
-        at: Date.now(),
-      };
+      this.notifyCommand(`Press enter again to stop ${target.name} · esc cancels`);
       return;
     }
-    if (raw.trim().startsWith("/") || raw.trim().startsWith("!")) {
-      this.feedback = {
-        text: safeText(
-          `Unsupported command "${raw.trim()}" is not forwarded from this view. Supported: /stop /back /agents.`,
-        ),
-        kind: "error",
-        at: Date.now(),
-      };
+    if (message.trim().startsWith("/") || message.trim().startsWith("!")) {
+      this.notifyCommand(`Unsupported command "${message.trim()}" is not forwarded from this view. Use /help for preview commands.`, "error");
       return;
     }
     if (target.readOnlyReason) {
@@ -681,15 +1055,17 @@ export class FabricConversationView implements Component, Focusable {
     }
     const queue = this.currentQueue();
     if (!queue) return;
+    this.textSelection.clear();
     this.state.queues.sync(target.id, this.options.transcript(target.id, true));
     if (queue.mode === "extension" && delivery === "followUp" && !isActiveStatus(target.status)) {
-      const parked = queue.park(raw, delivery);
-      if (parked.ok) { this.state.view(target.id).draft = ""; editor.setText(""); }
+      const parked = queue.park(message, delivery);
+      if (parked.ok) { this.rememberPrompt(message); this.state.view(target.id).draft = ""; editor.setText(""); }
       return;
     }
     // Session-owned pending marker: blocks duplicate submission of the same
     // raw draft for the same target across view close/reopen.
     if (this.state.hasPendingSend(target.id, raw)) return;
+    this.rememberPrompt(message);
     const pending: FabricConversationPendingSend = { id: target.id, message: raw, delivery };
     this.state.addPendingSend(pending);
     const epoch = this.state.epoch;
@@ -699,15 +1075,15 @@ export class FabricConversationView implements Component, Focusable {
       at: Date.now(),
     };
     void Promise.resolve()
-      .then(() => queue.dispatch(raw, delivery))
+      .then(() => queue.dispatch(message, delivery))
       .then(() => {
         // Same-session acks mutate shared state even if this view was closed;
         // only a session clear (epoch change) invalidates the result.
         if (this.state.epoch !== epoch) return;
         this.state.resolvePendingSend(target.id, raw);
         if (this.disposed) return;
-        if (this.currentId === target.id && this.editor?.getText() === raw) {
-          this.editor.setText("");
+        if (this.currentId === target.id && this.editor === editor && editor.getText() === raw) {
+          editor.setText("");
         }
         this.feedback = {
           text: safeText(`Queued ${delivery} → ${target.name}`),
@@ -734,30 +1110,17 @@ export class FabricConversationView implements Component, Focusable {
 
   private dispatchStop(target: FabricConversationTarget): void {
     const epoch = this.state.epoch;
-    this.feedback = {
-      text: safeText(`Stopping ${target.name}…`),
-      kind: "info",
-      at: Date.now(),
-    };
+    const scope = this.notificationScope;
+    const current = (): boolean => !this.disposed && epoch === this.state.epoch &&
+      scope === this.notificationScope && this.currentId === target.id;
+    this.notifyCommand(`Stopping ${target.name}…`);
     void Promise.resolve()
       .then(() => this.options.stop(target.id))
       .then(() => {
-        if (this.disposed || epoch !== this.state.epoch) return;
-        this.feedback = {
-          text: safeText(`Stop requested for ${target.name}`),
-          kind: "info",
-          at: Date.now(),
-        };
-        this.tui.requestRender();
+        if (current()) this.notifyCommand(`Stop requested for ${target.name}`);
       })
       .catch((error: unknown) => {
-        if (this.disposed || epoch !== this.state.epoch) return;
-        this.feedback = {
-          text: safeText(`Stop failed for ${target.name}: ${errorText(error)}`),
-          kind: "error",
-          at: Date.now(),
-        };
-        this.tui.requestRender();
+        if (current()) this.notifyCommand(`Stop failed for ${target.name}: ${errorText(error)}`, "error");
       });
   }
 
@@ -792,20 +1155,23 @@ export class FabricConversationView implements Component, Focusable {
 
   private scrollBy(delta: number): void {
     if (!this.currentId || !Number.isFinite(delta) || delta === 0) return;
+    if (!this.textSelection.dragging) this.textSelection.clear();
     const entry = this.state.view(this.currentId);
     const maxScroll = Math.max(0, this.lastBodyLength - this.lastBodyBudget);
     const position = entry.following ? maxScroll : entry.scroll;
+    // A wheel/key gesture wins over an unpainted command-result reveal.
+    if (entry.pageAnchor === "end") entry.pageAnchor = undefined;
     const next = position + Math.trunc(delta);
     entry.following = false;
-    if (next < 0 && this.options.loadOlder(this.currentId)) {
+    if (next < 0 && !this.textSelection.dragging && this.options.loadOlder(this.currentId)) {
       // Native history pages prepend records instead of replacing the tail.
       // Preserve the old viewport anchor, then apply the requested movement.
       entry.pageAnchor = "prepend";
-      entry.anchorLength = this.lastBodyLength;
+      entry.anchorLength = this.lastBody.length;
       entry.scroll = next;
       return;
     }
-    if (next > maxScroll && this.options.loadNewer(this.currentId)) {
+    if (next > maxScroll && !this.textSelection.dragging && this.options.loadNewer(this.currentId)) {
       entry.scroll = next;
       return;
     }
@@ -824,6 +1190,7 @@ export class FabricConversationView implements Component, Focusable {
 
   private scrollToTop(): void {
     if (!this.currentId) return;
+    this.textSelection.clear();
     const entry = this.state.view(this.currentId);
     entry.following = false;
     entry.scroll = 0;
@@ -831,6 +1198,7 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   private followLatest(): void {
+    this.textSelection.clear();
     if (!this.currentId) return;
     this.options.loadLatest(this.currentId);
     const entry = this.state.view(this.currentId);
@@ -840,6 +1208,10 @@ export class FabricConversationView implements Component, Focusable {
   }
 
   private openPicker(): void {
+    this.clearCommandNotification();
+    this.copyVersion++;
+    this.textSelection.clear();
+    this.stopWorkingIndicator();
     this.mode = "picker";
     this.pickerInput = new Input({ prompt: "search targets: " });
     this.pickerInput.focused = this.focusState;
@@ -853,17 +1225,27 @@ export class FabricConversationView implements Component, Focusable {
     this.mode = "conversation";
     this.pickerInput = undefined;
     this.pickerRows = [];
+    this.pickerKey = "";
     this.pickerSelectedId = undefined;
     if (this.editor) this.editor.focused = this.focusState;
   }
 
   private refreshPicker(): void {
     const search = this.pickerInput?.getValue() ?? "";
+    const key = JSON.stringify([this.targetsKey, search]);
+    if (key === this.pickerKey) return;
+    this.pickerKey = key;
     const rows: PickerRow[] = [];
     const targets = this.currentTargets();
-    const byId = new Map(targets.map((target) => [target.id, target]));
+    const children = new Map<string, FabricConversationTarget[]>();
+    for (const target of targets) {
+      if (!target.parentId) continue;
+      const siblings = children.get(target.parentId) ?? [];
+      siblings.push(target);
+      children.set(target.parentId, siblings);
+    }
     const roots = targets.filter(
-      (target) => !target.parentId || !byId.has(target.parentId),
+      (target) => !target.parentId || !this.targetsById.has(target.parentId),
     );
     roots.sort((left, right) =>
       Number(isMainTarget(right)) - Number(isMainTarget(left)),
@@ -873,9 +1255,7 @@ export class FabricConversationView implements Component, Focusable {
       if (visited.has(target.id)) return;
       visited.add(target.id);
       rows.push({ target, depth });
-      for (const child of targets) {
-        if (child.parentId === target.id) pushTree(child, depth + 1);
-      }
+      for (const child of children.get(target.id) ?? []) pushTree(child, depth + 1);
     };
     for (const root of roots) pushTree(root, 0);
     for (const orphan of targets) {
@@ -978,22 +1358,6 @@ export class FabricConversationView implements Component, Focusable {
     return truncateToWidth(parts.join(this.theme.fg("dim", " > ")), width, "");
   }
 
-  private statusLine(width: number): string {
-    const target = this.currentTarget();
-    if (!target) return "";
-    const parts = [
-      this.theme.fg("muted", target.kind),
-      colorizeStatus(this.theme, target.status),
-    ];
-    if (target.runner) parts.push(this.theme.fg("muted", safeText(target.runner)));
-    if (target.model) parts.push(this.theme.fg("muted", safeText(target.model)));
-    if (target.thinking) parts.push(this.theme.fg("muted", `thinking:${safeText(target.thinking)}`));
-    if (target.readOnlyReason) {
-      parts.push(this.theme.fg("warning", safeText(`read-only: ${target.readOnlyReason}`)));
-    }
-    return truncateToWidth(parts.join(this.theme.fg("dim", " · ")), width, "");
-  }
-
   private currentFeedbackLine(width: number): string | undefined {
     if (this.mode === "picker") return undefined;
     if (!this.feedback) return undefined;
@@ -1015,7 +1379,7 @@ export class FabricConversationView implements Component, Focusable {
           this.theme.fg("dim", "ctrl+n"),
           "targets",
           this.theme.fg("dim", "pgup/pgdn"),
-          "scroll",
+          "scroll · drag select · /help",
           this.theme.fg("dim", "esc"),
           "close",
         ];
@@ -1035,10 +1399,15 @@ export class FabricConversationView implements Component, Focusable {
     return this.state.queues.attach({
       targetId: target.id, targetName: target.name,
       piEvents: this.options.queueEvents ?? { emit() {} }, theme: this.theme,
-      send: (message, delivery) => this.options.send(target.id, message, delivery),
+      send: (message, delivery) => {
+        if (message.trimStart().startsWith("/") || message.trimStart().startsWith("!")) {
+          return Promise.reject(new Error("Commands cannot be sent from queued edits; use the preview composer."));
+        }
+        return this.options.send(target.id, message, delivery);
+      },
       editor: {
         getText: () => this.editor?.getText() ?? "",
-        setText: (text) => this.editor?.setText(text),
+        setText: (text) => this.setQueueEditorText(text),
         handleInput: (data) => this.editor?.handleInput(data),
         render: (width) => this.editor?.render(width) ?? [],
         paddingX: this.options.appearance?.editorPaddingX ?? 0,
@@ -1056,8 +1425,7 @@ export class FabricConversationView implements Component, Focusable {
     const target = this.currentTarget();
     if (!target || !this.currentId) return [this.theme.fg("dim", "No target selected.")];
     const entry = this.state.view(this.currentId);
-    const transcript = this.options.transcript(this.currentId, entry.following);
-    this.state.queues.sync(this.currentId, transcript);
+    const transcript = this.observedTranscript ?? this.options.transcript(this.currentId, entry.following);
     return this.renderer.render(transcript, innerWidth, {
       target,
       toolsExpanded: entry.toolsExpanded,
@@ -1069,24 +1437,46 @@ export class FabricConversationView implements Component, Focusable {
     });
   }
 
-  private windowBody(body: string[], budget: number): string[] {
-    this.lastBodyLength = body.length;
+  private transcriptTail(width: number, budget: number): string[] {
+    if (this.commandNotification && this.commandNotification.epoch !== this.state.epoch) this.clearCommandNotification();
+    const notification = this.commandNotification;
+    if (this.observedTranscript?.hasNewer && !notification) return [];
+    // These rows belong to the end of history, never to the fixed input dock.
+    const tail = notification ? ["", ...notification.component.render(width)] : [];
+    // Reserve wrapped success geometry too, including after a resize.
+    if (notification?.pendingResult) {
+      const reserved = 1 + notification.pendingResult.render(width).length;
+      while (tail.length < reserved) tail.push("");
+    }
+    if (!this.observedTranscript?.hasNewer) tail.push(...this.working?.render(width) ?? []);
+    if (budget > 1) tail.push("");
+    return tail;
+  }
+
+  private windowBody(body: string[], budget: number, tail: string[]): string[] {
+    this.lastBodyLength = body.length + tail.length;
     this.lastBody = body;
     this.lastBodyBudget = budget;
     const entry = this.currentId ? this.state.view(this.currentId) : undefined;
-    if (!entry) return body.slice(0, Math.max(0, budget));
-    const maxScroll = Math.max(0, body.length - budget);
-    if (entry.following) {
-      entry.scroll = maxScroll;
-    } else if (entry.pageAnchor) {
-      entry.scroll = entry.pageAnchor === "prepend"
-        ? entry.scroll + Math.max(0, body.length - (entry.anchorLength ?? body.length))
-        : entry.pageAnchor === "end" ? maxScroll : 0;
-      entry.pageAnchor = undefined;
-      entry.anchorLength = undefined;
+    const maxScroll = Math.max(0, this.lastBodyLength - budget);
+    if (entry) {
+      if (entry.following) {
+        entry.scroll = maxScroll;
+      } else if (entry.pageAnchor) {
+        entry.scroll = entry.pageAnchor === "prepend"
+          ? entry.scroll + Math.max(0, body.length - (entry.anchorLength ?? body.length))
+          : entry.pageAnchor === "end" ? maxScroll : 0;
+        entry.pageAnchor = undefined;
+        entry.anchorLength = undefined;
+      }
+      entry.scroll = Math.max(0, Math.min(entry.scroll, maxScroll));
     }
-    entry.scroll = Math.max(0, Math.min(entry.scroll, maxScroll));
-    return body.slice(entry.scroll, entry.scroll + budget);
+    // Slice the virtual body + tail without copying retained history per frame.
+    const start = entry?.scroll ?? 0;
+    const end = start + budget;
+    const lines = body.slice(start, end);
+    if (end > body.length) lines.push(...tail.slice(Math.max(0, start - body.length), end - body.length));
+    return lines;
   }
 
   private pickerLines(innerWidth: number, budget: number): string[] {
@@ -1131,14 +1521,3 @@ export class FabricConversationView implements Component, Focusable {
     return lines.slice(0, budget);
   }
 }
-
-const colorizeStatus = (theme: Theme, status: string): string => {
-  if (status === "completed" || status === "done") return theme.fg("success", status);
-  if (status === "failed" || status === "error" || status === "timed_out") {
-    return theme.fg("error", status);
-  }
-  if (status === "running" || status === "in_progress" || status === "active") {
-    return theme.fg("accent", status);
-  }
-  return theme.fg("muted", status);
-};

@@ -111,6 +111,40 @@ describe("native conversation chrome", () => {
     }
   });
 
+  it("keeps read-only context in the existing path row, even when the path is long", () => {
+    const readonly = { ...target, kind: "agent" as const, status: "completed",
+      cwd: `/repo/${"long-directory/".repeat(12)}`, readOnlyReason: "Target finished (completed); one-shot runs are read-only" };
+    for (const width of [1, 2, 8, 9, 12, 20, 80, 120]) {
+      const lines = conversationFooter(readonly, theme, width);
+      expect(lines).toHaveLength(2);
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      if (width >= 9) expect(lines[0]).toContain("read-only");
+      expect(lines[0]).not.toContain("Target finished");
+    }
+    expect(conversationFooter(target, theme, 120)[0]).not.toContain("read-only");
+  });
+
+  it("removes the redundant metadata header while retaining breadcrumbs and footer stats", () => {
+    const readonly = { ...target, kind: "agent" as const, status: "completed",
+      readOnlyReason: "Target finished (completed); one-shot runs are read-only" };
+    const render = vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(["history starts here"]);
+    const view = new FabricConversationView(tui, theme, {
+      state: new FabricConversationState(), targets: () => [readonly], initialTargetId: readonly.id,
+      transcript: () => nativeTranscript(), loadOlder: () => false, loadNewer: () => false, loadLatest: () => false,
+      send: vi.fn(), stop: vi.fn(), close: vi.fn(),
+    });
+    try {
+      const lines = plain(view.render(120));
+      expect(lines[0]).toBe("chat-test");
+      expect(lines[1]).toBe("history starts here");
+      const footer = lines.findIndex((line) => line.includes("/repo/child (feature/chat)"));
+      expect(lines[footer]).toBe("/repo/child (feature/chat) • chat-test • read-only");
+      expect(lines[footer + 1]).toContain("completed run ↑1.2k");
+      expect(lines.filter((line) => line.includes("openai/child-model"))).toHaveLength(1);
+      expect(lines.join("\n")).not.toContain("Target finished");
+    } finally { view.dispose(); render.mockRestore(); }
+  });
+
   it("reads native padding and code settings only from trusted layers", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-chrome-"));
     const cwd = path.join(root, "project");

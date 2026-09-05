@@ -12,6 +12,7 @@ export interface FabricConversationAppearance {
   hideThinkingBlock?: boolean;
   showImages?: boolean;
   imageWidthCells?: number;
+  copyOnSelect?: boolean;
 }
 
 /** Read the host's public Pi settings without changing its editor or footer. */
@@ -21,6 +22,7 @@ export function readConversationAppearance(cwd: string, agentDir: string, projec
     editorPaddingX: settings.getEditorPaddingX(), outputPad: settings.getOutputPad(),
     codeBlockIndent: settings.getCodeBlockIndent(), hideThinkingBlock: settings.getHideThinkingBlock(),
     showImages: settings.getShowImages(), imageWidthCells: settings.getImageWidthCells(),
+    copyOnSelect: settings.getFullscreenCopyOnSelect(),
   };
 }
 
@@ -36,6 +38,12 @@ export function conversationFooter(target: FabricConversationTarget | undefined,
   const location = target.cwd ? footerPath(target.cwd) : "cwd unavailable";
   const branch = target.branch ? ` (${target.branch})` : "";
   const pwd = safeText(`${location}${branch} • ${target.name}`);
+  const access = target.readOnlyReason ? theme.fg("warning", "read-only") : "";
+  const separator = theme.fg("dim", " • ");
+  const locationWidth = width - (access ? visibleWidth(separator) + visibleWidth(access) : 0);
+  const pathLine = locationWidth > 0
+    ? theme.fg("dim", truncateToWidth(pwd, locationWidth, "…")) + (access ? separator + access : "")
+    : truncateToWidth(access, width, "…");
   const stats = [safeText(target.status)];
   if (target.usage) {
     const usage = target.usage;
@@ -55,7 +63,7 @@ export function conversationFooter(target: FabricConversationTarget | undefined,
   const right = truncateToWidth(`${model}${thinking}`, Math.max(0, width - visibleWidth(left) - 2), "");
   const gap = " ".repeat(Math.max(0, width - visibleWidth(left) - visibleWidth(right)));
   return [
-    truncateToWidth(theme.fg("dim", pwd), width, "…"),
+    pathLine,
     theme.fg("dim", `${left}${gap}${right}`),
   ];
 }

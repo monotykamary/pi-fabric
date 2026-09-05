@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { NativeReaderEventReplay } from "./conversation-native-reader-replay.js";
+import { NativeReaderCheckpoint } from "./conversation-native-reader-checkpoint.js";
 import {
   buildContextEntries,
   sessionEntryToContextMessages,
@@ -101,7 +103,7 @@ interface NativeConversationStreaming {
 export interface NativeConversationTranscript {
   /** Native AgentMessage union: active-branch display sequence + live tail. */
   messages: NativeAgentMessage[];
-  /** Bumped whenever new records were applied; renderers can skip unchanged reads. */
+  /** Monotonic per reader, including source, availability and window changes. */
   revision: number;
   /** Active branch entries (root → leaf), compaction-applied, native and whole. */
   entries: NativeTranscriptEntry[];
@@ -129,7 +131,6 @@ export interface NativeConversationTranscript {
 const INITIAL_PAGE_BYTES = 256 * 1024;
 const OLDER_PAGE_BYTES = 256 * 1024;
 const GROWTH_PAGE_BYTES = 1024 * 1024;
-const MAX_PAGE_BYTES = 64 * 1024 * 1024;
 const CLASSIFY_PROBE_BYTES = 4096;
 const MAX_ERROR_CHARS = 200;
 
@@ -204,7 +205,7 @@ const readBackwardPage = (
   budget: number,
   includeFinalPartialLine: boolean,
 ): RecordPage => {
-  let windowBudget = Math.min(Math.max(budget, 1), MAX_PAGE_BYTES);
+  let windowBudget = Math.max(budget, 1);
   for (;;) {
     const candidate = Math.max(0, end - windowBudget);
     const buffer = Buffer.allocUnsafe(end - candidate);
@@ -214,14 +215,15 @@ const readBackwardPage = (
     const firstNewline = data.indexOf(0x0a);
     if (firstNewline === -1) {
       if (candidate === 0) {
-        // The whole window is one unterminated record (single-record file
-        // caught mid-write). Include it; JSON validity is decided by the parser.
+        // Leave an incomplete first record unconsumed so the next append
+        // can complete it, just like a trailing partial line in a larger file.
         const raw = data.toString("utf8").replace(/\r$/, "");
-        return { start: 0, end, records: raw ? [raw] : [] };
+        return includeFinalPartialLine && raw && parseRecord(raw)
+          ? { start: 0, end, records: [raw] }
+          : { start: 0, end: 0, records: [] };
       }
       // One record larger than the budget: grow and retry so it loads whole.
-      if (windowBudget >= MAX_PAGE_BYTES) return { start: end, end, records: [] };
-      windowBudget = Math.min(windowBudget * 2, MAX_PAGE_BYTES);
+      windowBudget = Math.min(windowBudget * 2, end);
       continue;
     }
     // At the file start (candidate === 0) the first line is a complete record;
@@ -240,8 +242,7 @@ const readBackwardPage = (
     if (records.length === 0 && candidate > 0) {
       // No complete record fit before the window end (one record larger than
       // the budget): grow and retry so it loads whole.
-      if (windowBudget >= MAX_PAGE_BYTES) return { start: end, end, records: [] };
-      windowBudget = Math.min(windowBudget * 2, MAX_PAGE_BYTES);
+      windowBudget = Math.min(windowBudget * 2, end);
       continue;
     }
     let endOffset = end;
@@ -269,7 +270,7 @@ const readForwardPage = (
   size: number,
   budget: number,
 ): RecordPage => {
-  let windowBudget = Math.min(Math.max(budget, 1), MAX_PAGE_BYTES);
+  let windowBudget = Math.max(budget, 1);
   for (;;) {
     const limit = Math.min(size, start + windowBudget);
     if (limit <= start) return { start, end: start, records: [] };
@@ -296,13 +297,26 @@ const readForwardPage = (
     }
     if (lastComplete === 0 && limit < size) {
       // One record larger than the budget: grow and retry so it loads whole.
-      if (windowBudget >= MAX_PAGE_BYTES) return { start, end: start, records: [] };
-      windowBudget = Math.min(windowBudget * 2, MAX_PAGE_BYTES);
+      windowBudget = Math.min(windowBudget * 2, size - start);
       continue;
     }
     return { start, end: start + lastComplete, records };
   }
 };
+
+interface NativeReaderState {
+  entries: SessionEntry[];
+  sessionEntryIds: string[];
+  eventEntryIds: string[];
+  streamed: NativeAgentMessage[];
+  partial: AssistantMessage | undefined;
+  pendingMessages: NativeConversationTranscript["pendingMessages"];
+  partialArgsRaw: Array<[number, string]>;
+  tools: NativeToolExecution[];
+  eventRecords: Record<string, unknown>[];
+}
+
+type NativeReaderMetadata = Omit<NativeConversationTranscript, "messages" | "entries" | "streaming" | "pendingMessages">;
 
 interface FileWindow {
   /** Oldest byte loaded so far (record-aligned); 0 once history start is reached. */
@@ -383,20 +397,59 @@ export class NativeConversationReader {
   readonly #streamed = new Map<string, NativeAgentMessage>();
   #streamedOrder: string[] = [];
   #partial: AssistantMessage | undefined;
-  #eventRecords: Record<string, unknown>[] = [];
+  #eventReplay = new NativeReaderEventReplay();
   #pendingMessages: NativeConversationTranscript["pendingMessages"];
   readonly #partialArgsRaw = new Map<number, string>();
   readonly #tools = new Map<string, NativeToolExecution>();
 
   readonly #windows = new Map<FileKind, FileWindow>();
   #followed = true;
-  #revision = 0;
+  #revision = -1;
   #error: string | undefined;
   #snapshot: NativeConversationTranscript | undefined;
+  #treeDirty = true;
+  #messagesDirty = true;
+  #streamingDirty = true;
+  #branch: NativeTranscriptEntry[] = [];
+  #branchMessages: NativeAgentMessage[] = [];
+  #messages: NativeAgentMessage[] = [];
+  #streaming: NativeConversationStreaming = { active: false, tools: [] };
+  #pathComplete = false;
+  #persisted = new Set<string>();
+  #messageKeys = new WeakMap<NativeAgentMessage, string>();
+  #entryProjections = new WeakMap<SessionEntry, { entry: NativeTranscriptEntry; messages: NativeAgentMessage[] }>();
+  #logClassification: { path: string; kind: FileKind; dev: number; ino: number; size: number; mtimeMs: number } | undefined;
+  #checkpoint: NativeReaderCheckpoint<NativeReaderState> | undefined;
+  #suspendedMetadata: NativeReaderMetadata | undefined;
+  readonly #loadedRanges = new Map<FileKind, Array<[number, number]>>();
 
   /** Last transcript produced; undefined before the first successful read. */
   get last(): NativeConversationTranscript | undefined {
+    this.#resume();
     return this.#snapshot;
+  }
+
+  /** True when decoded history is offloaded to a private disk checkpoint. */
+  get suspended(): boolean {
+    return this.#checkpoint !== undefined;
+  }
+
+  /** Release decoded history without depending on the original source files. */
+  suspend(): boolean {
+    if (this.#checkpoint) return true;
+    if (!this.#snapshot) return false;
+    let checkpoint: NativeReaderCheckpoint<NativeReaderState>;
+    try {
+      checkpoint = new NativeReaderCheckpoint(this.#captureState());
+    } catch {
+      // Establish the complete checkpoint before dropping any usable state.
+      return false;
+    }
+    const { messages: _messages, entries: _entries, streaming: _streaming, pendingMessages: _pending, ...metadata } = this.#snapshot;
+    this.#suspendedMetadata = metadata;
+    this.#checkpoint = checkpoint;
+    this.#dropDecodedState();
+    return true;
   }
 
   read(source: NativeConversationSource, followLatest = true): NativeConversationTranscript {
@@ -415,12 +468,23 @@ export class NativeConversationReader {
     let logUnresolved = false;
     if (logFile && logFile !== explicitSession && logFile !== explicitEvents) {
       // Retained-actor fallback: logFile may BE a native session file.
-      const kind = classifyFile(logFile);
+      const kind = this.#classifyLog(logFile);
       if (kind === "session") sessionFile ??= logFile;
       else if (kind === "events") eventsFile ??= logFile;
       else logUnresolved = true;
     }
 
+    if (sourceId === this.#sourceId && sessionFile === this.#sessionFile && !this.#resume()) {
+      // Even an unrecoverable backing-file failure must not freeze participant
+      // status. Keep the checkpoint and bookmarks available for later retries.
+      this.#status = status;
+      this.#followed = followLatest !== false;
+      if (this.#suspendedMetadata) this.#suspendedMetadata = { ...this.#suspendedMetadata, status };
+      if (this.#snapshot!.status !== status) {
+        this.#snapshot = { ...this.#snapshot!, status, revision: ++this.#revision, updatedAt: Date.now() };
+      }
+      return this.#snapshot!;
+    }
     if (sourceId !== this.#sourceId || sessionFile !== this.#sessionFile) {
       this.#resetPaths(sourceId, status, sessionFile, eventsFile);
     } else {
@@ -431,7 +495,6 @@ export class NativeConversationReader {
         // events-derived streaming state.
         this.#eventsFile = eventsFile;
         this.#resetEventsState();
-        this.#revision += 1;
       }
     }
     if (logUnresolved) {
@@ -447,6 +510,7 @@ export class NativeConversationReader {
 
   /** Load older whole-record pages of history. Repeated calls load all of it. */
   loadOlder(pages = 1): NativeConversationTranscript | undefined {
+    if (!this.#resume()) return this.#snapshot;
     if (!this.#snapshot) return undefined;
     for (let page = 0; page < Math.max(1, pages); page++) {
       let progressed = false;
@@ -455,13 +519,13 @@ export class NativeConversationReader {
       }
       if (!progressed) break;
     }
-    this.#revision += 1;
     this.#snapshot = this.#buildSnapshot();
     return this.#snapshot;
   }
 
   /** Consume any records newer than the current window (used when pinned). */
   loadNewer(): NativeConversationTranscript | undefined {
+    if (!this.#resume()) return this.#snapshot;
     if (!this.#snapshot) return undefined;
     this.#followed = true;
     this.#ingest(true);
@@ -470,6 +534,7 @@ export class NativeConversationReader {
 
   /** Drop the current windows and re-read from the tail of both files. */
   loadLatest(): NativeConversationTranscript | undefined {
+    if (!this.#resume()) return this.#snapshot;
     if (!this.#snapshot) return undefined;
     for (const [kind, filePath] of this.#windowFiles()) this.#initWindow(kind, filePath);
     this.#followed = true;
@@ -480,6 +545,131 @@ export class NativeConversationReader {
   /** Drop all cached state for a clean re-read. */
   clear(): void {
     this.#resetPaths("", "", undefined, undefined);
+  }
+
+  #captureState(): NativeReaderState {
+    return {
+      entries: this.#entries,
+      sessionEntryIds: [...this.#sessionEntryIds],
+      eventEntryIds: [...this.#eventEntryIds],
+      streamed: this.#streamedOrder.map((key) => this.#streamed.get(key)!),
+      partial: this.#partial,
+      pendingMessages: this.#pendingMessages,
+      partialArgsRaw: [...this.#partialArgsRaw],
+      tools: [...this.#tools.values()],
+      eventRecords: [...this.#eventReplay.records()],
+    };
+  }
+
+  #dropDecodedState(): void {
+    this.#entries = [];
+    this.#entryIds.clear();
+    this.#byId.clear();
+    this.#sessionEntryIds.clear();
+    this.#eventEntryIds.clear();
+    this.#eventReplay = new NativeReaderEventReplay();
+    this.#resetStreamingState();
+    this.#treeDirty = true;
+    this.#pathComplete = false;
+    this.#branch = [];
+    this.#branchMessages = [];
+    this.#messages = [];
+    this.#persisted.clear();
+    this.#messageKeys = new WeakMap();
+    this.#entryProjections = new WeakMap();
+    this.#snapshot = undefined;
+  }
+
+  #restoreState(state: NativeReaderState): void {
+    this.#dropDecodedState();
+    this.#entries = state.entries;
+    for (const entry of state.entries) {
+      this.#entryIds.add(entry.id);
+      this.#byId.set(entry.id, entry);
+    }
+    for (const id of state.sessionEntryIds) this.#sessionEntryIds.add(id);
+    for (const id of state.eventEntryIds) this.#eventEntryIds.add(id);
+    for (const message of state.streamed) this.#foldMessage(message);
+    this.#partial = state.partial;
+    this.#pendingMessages = state.pendingMessages;
+    for (const [index, raw] of state.partialArgsRaw) this.#partialArgsRaw.set(index, raw);
+    for (const tool of state.tools) this.#tools.set(tool.toolCallId, tool);
+    this.#eventReplay = new NativeReaderEventReplay(state.eventRecords);
+  }
+
+  #rememberRange(kind: FileKind, page: RecordPage): void {
+    if (page.end <= page.start) return;
+    const ranges = [...(this.#loadedRanges.get(kind) ?? []), [page.start, page.end] as [number, number]];
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const range of ranges) {
+      const previous = merged.at(-1);
+      if (previous && range[0] <= previous[1]) previous[1] = Math.max(previous[1], range[1]);
+      else merged.push([...range]);
+    }
+    this.#loadedRanges.set(kind, merged);
+  }
+
+  #restoreLoadedRanges(): NativeReaderState {
+    const restored = new NativeConversationReader();
+    for (const [kind, filePath] of this.#windowFiles()) {
+      const ranges = this.#loadedRanges.get(kind);
+      if (!ranges?.length) continue;
+      const opened = openDescriptor(filePath);
+      if (!opened || "error" in opened) throw new Error(`${filePath}: ${opened?.error ?? "unavailable"}`);
+      try {
+        for (const [head, tail] of ranges) {
+          if (opened.size < tail) throw new Error(`${filePath}: loaded range no longer available`);
+          let offset = head;
+          while (offset < tail) {
+            const page = readForwardPage(opened.descriptor, offset, tail, GROWTH_PAGE_BYTES);
+            if (page.end <= offset) throw new Error(`${filePath}: incomplete loaded range`);
+            restored.#applyRecords(kind, page.records, true);
+            offset = page.end;
+          }
+        }
+      } finally {
+        closeQuietly(opened.descriptor);
+      }
+    }
+    return restored.#captureState();
+  }
+
+  #resume(): boolean {
+    const checkpoint = this.#checkpoint;
+    if (!checkpoint) return true;
+    let state: NativeReaderState;
+    try {
+      try {
+        state = checkpoint.restore();
+      } catch {
+        // A damaged checkpoint can only fall back to the exact loaded ranges,
+        // never the current tail. Unreadable sources leave ownership intact.
+        state = this.#restoreLoadedRanges();
+      }
+    } catch (error) {
+      const reason = clipError(`Unable to restore reader history: ${clipError(error)}`);
+      if (this.#snapshot?.error !== reason) {
+        this.#snapshot = {
+          ...this.#suspendedMetadata!,
+          messages: [], entries: [], streaming: { active: false, tools: [] },
+          revision: ++this.#revision,
+          unavailable: {
+            ...(this.#sessionFile ? { sessionFile: true } : {}),
+            ...(this.#eventsFile ? { eventsFile: true } : {}),
+          },
+          error: reason,
+          updatedAt: Date.now(),
+        };
+      }
+      return false;
+    }
+    this.#restoreState(state);
+    this.#checkpoint = undefined;
+    this.#suspendedMetadata = undefined;
+    checkpoint.dispose();
+    this.#snapshot = this.#buildSnapshot();
+    return true;
   }
 
   #windowFiles(): Array<[FileKind, string]> {
@@ -499,6 +689,10 @@ export class NativeConversationReader {
     sessionFile: string | undefined,
     eventsFile: string | undefined,
   ): void {
+    this.#checkpoint?.dispose();
+    this.#checkpoint = undefined;
+    this.#suspendedMetadata = undefined;
+    this.#loadedRanges.clear();
     this.#sourceId = sourceId;
     this.#status = status;
     this.#sessionFile = sessionFile;
@@ -511,16 +705,26 @@ export class NativeConversationReader {
     this.#sessionLeafId = undefined;
     this.#eventLeafId = undefined;
     this.#sessionId = undefined;
-    this.#eventRecords = [];
+    this.#eventReplay = new NativeReaderEventReplay();
     this.#resetStreamingState();
     this.#windows.clear();
-    this.#revision = 0;
+    this.#treeDirty = true;
+    this.#messagesDirty = true;
+    this.#branch = [];
+    this.#branchMessages = [];
+    this.#messages = [];
+    this.#persisted.clear();
+    this.#messageKeys = new WeakMap();
+    this.#entryProjections = new WeakMap();
     this.#error = undefined;
     this.#snapshot = undefined;
     for (const [kind, filePath] of this.#windowFiles()) this.#initWindow(kind, filePath);
   }
 
   #resetStreamingState(): void {
+    this.#messagesDirty = true;
+    this.#streamingDirty = true;
+    this.#streaming = { active: false, tools: [] };
     this.#pendingMessages = undefined;
     this.#streamed.clear();
     this.#streamedOrder = [];
@@ -530,7 +734,8 @@ export class NativeConversationReader {
   }
 
   #resetEventsState(): void {
-    this.#eventRecords = [];
+    this.#treeDirty = true;
+    this.#eventReplay = new NativeReaderEventReplay();
     this.#resetStreamingState();
     this.#eventLeafId = undefined;
     for (const id of this.#eventEntryIds) {
@@ -545,6 +750,7 @@ export class NativeConversationReader {
     }
     this.#eventEntryIds.clear();
     this.#windows.delete("events");
+    this.#loadedRanges.delete("events");
     this.#error = undefined;
     if (this.#eventsFile) this.#initWindow("events", this.#eventsFile);
   }
@@ -565,6 +771,7 @@ export class NativeConversationReader {
     try {
       const page = readBackwardPage(opened.descriptor, opened.size, INITIAL_PAGE_BYTES, kind === "events");
       this.#applyRecords(kind, page.records, true);
+      this.#rememberRange(kind, page);
       this.#windows.set(kind, {
         head: page.start,
         tail: page.end,
@@ -601,6 +808,7 @@ export class NativeConversationReader {
       if (page.start >= window.head) return false;
       // Older records join the index without moving the authoritative leaf.
       this.#applyRecords(kind, page.records, false);
+      this.#rememberRange(kind, page);
       window.head = page.start;
       window.hasOlder = page.start > 0;
       window.unavailable = false;
@@ -627,6 +835,7 @@ export class NativeConversationReader {
       const page = readForwardPage(opened.descriptor, window.tail, opened.size, GROWTH_PAGE_BYTES);
       if (page.end <= window.tail) return false;
       this.#applyRecords(kind, page.records, true);
+      this.#rememberRange(kind, page);
       window.tail = Math.max(window.tail, page.end);
       return true;
     } finally {
@@ -635,11 +844,9 @@ export class NativeConversationReader {
   }
 
   #ingest(followLatest: boolean): void {
-    let changed = false;
     for (const [kind, filePath] of this.#windowFiles()) {
-      if (this.#growFile(kind, filePath, followLatest)) changed = true;
+      this.#growFile(kind, filePath, followLatest);
     }
-    if (changed) this.#revision += 1;
     this.#snapshot = this.#buildSnapshot();
   }
 
@@ -650,15 +857,19 @@ export class NativeConversationReader {
       return;
     }
     if (updateLeaf) {
-      this.#eventRecords.push(...parsed);
-      for (const record of parsed) this.#applyEventRecord(record);
+      for (const record of parsed) {
+        this.#eventReplay.append(record);
+        this.#applyEventRecord(record);
+      }
     } else {
       // Older event pages must prepend in arrival order, not append messages
       // after the live tail or overwrite live queue/partial/tool state.
-      this.#eventRecords = [...parsed, ...this.#eventRecords];
+      const replay = new NativeReaderEventReplay(parsed);
+      for (const record of this.#eventReplay.records()) replay.append(record);
+      this.#eventReplay = replay;
       this.#resetStreamingState();
       this.#eventLeafId = undefined;
-      for (const record of this.#eventRecords) this.#applyEventRecord(record);
+      for (const record of replay.records()) this.#applyEventRecord(record);
     }
   }
 
@@ -674,9 +885,15 @@ export class NativeConversationReader {
   // Entry list order is irrelevant: path construction walks byId from the leaf,
   // so older pages and live folds can append in any order.
   #appendEntry(entry: SessionEntry, origin: "session" | "events", updateLeaf = true): void {
+    this.#treeDirty = true;
+    this.#messagesDirty = true;
     if (this.#entryIds.has(entry.id)) {
       const existing = this.#byId.get(entry.id);
-      if (existing) Object.assign(existing, entry);
+      if (existing && existing !== entry) {
+        const replacement = { ...existing, ...entry } as SessionEntry;
+        this.#entries[this.#entries.indexOf(existing)] = replacement;
+        this.#byId.set(entry.id, replacement);
+      }
       (origin === "session" ? this.#sessionEntryIds : this.#eventEntryIds).add(entry.id);
       if (updateLeaf) {
         if (origin === "session") this.#sessionLeafId = entry.id;
@@ -704,6 +921,7 @@ export class NativeConversationReader {
         const message = event.message as NativeAgentMessage | undefined;
         if (!message || typeof message !== "object") return;
         if (message.role === "assistant") {
+          this.#streamingDirty = true;
           this.#partial = {
             ...message,
             content: message.content.map((part) => ({ ...part })),
@@ -722,6 +940,7 @@ export class NativeConversationReader {
         const message = event.message as NativeAgentMessage | undefined;
         if (!message || typeof message !== "object") return;
         if (message.role === "assistant") {
+          this.#streamingDirty = true;
           this.#partial = undefined;
           this.#partialArgsRaw.clear();
         }
@@ -730,6 +949,7 @@ export class NativeConversationReader {
       }
       case "tool_execution_start": {
         if (typeof event.toolCallId !== "string") return;
+        this.#streamingDirty = true;
         const args = event.args as Record<string, unknown> | undefined;
         this.#tools.set(event.toolCallId, {
           toolCallId: event.toolCallId,
@@ -744,6 +964,7 @@ export class NativeConversationReader {
       case "tool_execution_update": {
         const tool = this.#toolFor(event);
         if (!tool) return;
+        this.#streamingDirty = true;
         const partial = event.partialResult as { content?: unknown[]; details?: unknown } | undefined;
         if (partial && typeof partial === "object") {
           tool.partial = {
@@ -756,6 +977,7 @@ export class NativeConversationReader {
       case "tool_execution_end": {
         const tool = this.#toolFor(event);
         if (!tool) return;
+        this.#streamingDirty = true;
         const result = event.result as { content?: unknown[]; details?: unknown } | undefined;
         if (result && typeof result === "object") {
           tool.result = {
@@ -797,12 +1019,17 @@ export class NativeConversationReader {
 
   #toolFor(event: Record<string, unknown>): NativeToolExecution | undefined {
     if (typeof event.toolCallId !== "string") return undefined;
-    return this.#tools.get(event.toolCallId);
+    const previous = this.#tools.get(event.toolCallId);
+    if (!previous) return undefined;
+    const tool = { ...previous };
+    this.#tools.set(event.toolCallId, tool);
+    return tool;
   }
 
   #applyPartialDelta(event: Record<string, unknown>): void {
     const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
     if (!delta || typeof delta !== "object") return;
+    this.#streamingDirty = true;
     if (!this.#partial) {
       this.#partial = {
         role: "assistant",
@@ -874,7 +1101,7 @@ export class NativeConversationReader {
         this.#partialArgsRaw.set(contentIndex, accumulated);
         const parsed = parseRecord(accumulated);
         const block = partial.content[contentIndex];
-        if (block?.type === "toolCall" && parsed) block.arguments = parsed;
+        if (block?.type === "toolCall" && parsed) partial.content[contentIndex] = { ...block, arguments: parsed };
         return;
       }
       case "toolcall_end": {
@@ -890,10 +1117,40 @@ export class NativeConversationReader {
 
   #foldMessage(message: NativeAgentMessage): void {
     if (!message || typeof message !== "object" || typeof message.role !== "string") return;
-    const key = messageKey(message);
+    const key = this.#messageKey(message);
     if (this.#streamed.has(key)) return;
+    this.#messagesDirty = true;
     this.#streamed.set(key, message);
     this.#streamedOrder.push(key);
+  }
+
+  #messageKey(message: NativeAgentMessage): string {
+    let key = this.#messageKeys.get(message);
+    if (key === undefined) {
+      key = messageKey(message);
+      this.#messageKeys.set(message, key);
+    }
+    return key;
+  }
+
+  #classifyLog(filePath: string): FileKind | "unreadable" {
+    const cached = this.#logClassification;
+    try {
+      const stat = fs.lstatSync(filePath);
+      if (cached?.path === filePath && stat.isFile() && cached.dev === stat.dev && cached.ino === stat.ino &&
+        cached.size > 0 && (stat.size > cached.size || (stat.size === cached.size && stat.mtimeMs === cached.mtimeMs))) {
+        return cached.kind;
+      }
+      const kind = classifyFile(filePath);
+      if (kind !== "unreadable") {
+        this.#logClassification = { path: filePath, kind, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+        return kind;
+      }
+    } catch {
+      // Keep a previously classified source attached while it is unavailable.
+      // Dropping its path here would discard the user's cached loaded history.
+    }
+    return cached?.path === filePath ? cached.kind : "unreadable";
   }
 
   #buildSnapshot(): NativeConversationTranscript {
@@ -903,60 +1160,74 @@ export class NativeConversationReader {
     const hasNewer = !this.#followed &&
       ((sessionWindow !== undefined && sessionWindow.tail < sessionWindow.size) ||
         (eventsWindow !== undefined && eventsWindow.tail < eventsWindow.size));
-    // The session file is authoritative for the leaf; event-folded entries
-    // (entry_appended) only drive it when no session file exists (--no-session
-    // retained runs keep their whole tree in the events stream).
+    // Persisted entries are authoritative, including abandoned branches and
+    // compacted messages that must not be resurrected by their RPC copies.
     const leafId = this.#sessionLeafId ?? this.#eventLeafId ?? null;
-    const pathComplete = leafId !== null && this.#pathReachesRoot(leafId);
-    const historyComplete =
-      !hasMore && pathComplete && (sessionWindow?.head ?? 0) === 0 && (eventsWindow?.head ?? 0) === 0;
-
-    // Display projection identical to interactive-mode renderSessionItems:
-    // compaction-applied active branch, each native entry projected with
-    // sessionEntryToContextMessages (compaction → compactionSummary,
-    // branch_summary → branchSummary, custom_message → CustomMessage).
-    const sessionMessages = leafId !== null
-      ? buildContextEntries(this.#entries, leafId, this.#byId).flatMap(sessionEntryToContextMessages)
-      : [];
-    // Persisted entries remain authoritative even when compaction or a fork
-    // removes them from the active display. Never resurrect their RPC copies.
-    const persisted = new Set(this.#entries.flatMap((entry) => entry.type === "message" ? [messageKey(entry.message)] : []));
-    const streamed = this.#streamedOrder
-      .filter((key) => !persisted.has(key))
-      .map((key) => this.#streamed.get(key))
-      .filter((message): message is NativeAgentMessage => message !== undefined);
-    // Live tail messages append after the persisted branch sequence — arrival
-    // order, exactly as the events were observed.
-    const messages = [...sessionMessages, ...streamed];
-
-    const entries = leafId !== null
-      ? buildContextEntries(this.#entries, leafId, this.#byId).map((entry) => ({
-        entryId: entry.id,
-        parentId: entry.parentId,
-        entryType: entry.type,
-        timestamp: entry.timestamp,
-        ...(entry.type === "message" ? { message: entry.message } : {}),
-        entry,
-      }))
-      : [];
-
-    const tools = [...this.#tools.values()].map((tool) => ({ ...tool }));
-    const partialAssistant = this.#partial
-      ? { ...this.#partial, content: [...this.#partial.content] }
-      : undefined;
-    const unavailable: { sessionFile?: boolean; eventsFile?: boolean } = {};
-    if (sessionWindow?.unavailable) unavailable.sessionFile = true;
-    if (eventsWindow?.unavailable) unavailable.eventsFile = true;
-    return {
-      messages,
-      revision: this.#revision,
-      entries,
-      streaming: {
+    if (this.#treeDirty) {
+      this.#pathComplete = leafId !== null && this.#pathReachesRoot(leafId);
+      const branch = leafId !== null ? buildContextEntries(this.#entries, leafId, this.#byId) : [];
+      const projections = branch.map((entry) => {
+        let projected = this.#entryProjections.get(entry);
+        if (!projected) {
+          projected = {
+            entry: {
+              entryId: entry.id,
+              parentId: entry.parentId,
+              entryType: entry.type,
+              timestamp: entry.timestamp,
+              ...(entry.type === "message" ? { message: entry.message } : {}),
+              entry,
+            },
+            messages: sessionEntryToContextMessages(entry),
+          };
+          this.#entryProjections.set(entry, projected);
+        }
+        return projected;
+      });
+      this.#branch = projections.map((projection) => projection.entry);
+      this.#branchMessages = projections.flatMap((projection) => projection.messages);
+      this.#persisted = new Set(this.#entries.flatMap((entry) => entry.type === "message" ? [this.#messageKey(entry.message)] : []));
+      this.#treeDirty = false;
+      this.#messagesDirty = true;
+    }
+    if (this.#messagesDirty) {
+      const streamed = this.#streamedOrder
+        .filter((key) => !this.#persisted.has(key))
+        .map((key) => this.#streamed.get(key)!);
+      this.#messages = [...this.#branchMessages, ...streamed];
+      this.#messagesDirty = false;
+    }
+    if (this.#streamingDirty) {
+      const tools = [...this.#tools.values()];
+      const partialAssistant = this.#partial ? { ...this.#partial, content: [...this.#partial.content] } : undefined;
+      this.#streaming = {
         active: partialAssistant !== undefined || tools.some((tool) => tool.status === "running"),
         ...(partialAssistant ? { partialAssistant } : {}),
         tools,
-      },
-      ...(this.#pendingMessages ? { pendingMessages: { steering: [...this.#pendingMessages.steering], followUp: [...this.#pendingMessages.followUp] } } : {}),
+      };
+      this.#streamingDirty = false;
+    }
+    const historyComplete = !hasMore && this.#pathComplete &&
+      (sessionWindow?.head ?? 0) === 0 && (eventsWindow?.head ?? 0) === 0;
+    const unavailable: { sessionFile?: boolean; eventsFile?: boolean } = {};
+    if (sessionWindow?.unavailable) unavailable.sessionFile = true;
+    if (eventsWindow?.unavailable) unavailable.eventsFile = true;
+    const hasUnavailable = unavailable.sessionFile || unavailable.eventsFile;
+    const error = hasUnavailable ? this.#error : undefined;
+    const previous = this.#snapshot;
+    if (previous && previous.messages === this.#messages && previous.entries === this.#branch &&
+      previous.streaming === this.#streaming && previous.pendingMessages === this.#pendingMessages &&
+      previous.leafId === leafId && previous.sourceId === this.#sourceId && previous.status === this.#status &&
+      previous.sessionFile === this.#sessionFile && previous.eventsFile === this.#eventsFile && previous.sessionId === this.#sessionId &&
+      previous.historyComplete === historyComplete && previous.hasMore === hasMore && previous.hasNewer === hasNewer &&
+      previous.unavailable?.sessionFile === unavailable.sessionFile && previous.unavailable?.eventsFile === unavailable.eventsFile &&
+      previous.error === error) return previous;
+    return {
+      messages: this.#messages,
+      revision: ++this.#revision,
+      entries: this.#branch,
+      streaming: this.#streaming,
+      ...(this.#pendingMessages ? { pendingMessages: this.#pendingMessages } : {}),
       leafId,
       sourceId: this.#sourceId,
       status: this.#status,
@@ -966,8 +1237,8 @@ export class NativeConversationReader {
       historyComplete,
       hasMore,
       hasNewer,
-      ...(Object.keys(unavailable).length > 0 ? { unavailable } : {}),
-      ...(Object.keys(unavailable).length > 0 && this.#error ? { error: this.#error } : {}),
+      ...(hasUnavailable ? { unavailable } : {}),
+      ...(error ? { error } : {}),
       updatedAt: Date.now(),
     };
   }

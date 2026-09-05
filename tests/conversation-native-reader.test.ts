@@ -529,7 +529,7 @@ describe("native conversation reader — lifecycle", () => {
     expect(reader.last).toBeUndefined();
     const transcript = reader.read(source({ sessionFile: file }));
     expect(transcript.messages).toHaveLength(1);
-    expect(transcript.revision).toBe(0);
+    expect(transcript.revision).toBeGreaterThan(0);
   });
 
   it("pinned reads report hasNewer and loadNewer consumes them", () => {

@@ -3,7 +3,7 @@ import { resolveAgentDir } from "../core/agent-dir.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
-import type { FabricConversationState, FabricConversationView } from "./conversation.js";
+import type { FabricConversationState, FabricConversationTarget, FabricConversationView } from "./conversation.js";
 import type { NativeConversationReader, NativeConversationSource } from "./conversation-native-reader.js";
 import type { FabricConversationTranscriptRendererOptions } from "./conversation-render.js";
 import type { FabricActivityRun } from "../activity/types.js";
@@ -17,7 +17,7 @@ import type { FabricThinking } from "../thinking.js";
 import type { MeshEvent } from "../mesh/store.js";
 import type { FabricDashboardMessageTarget } from "./dashboard.js";
 import type { ModelSource } from "./model-picker.js";
-import { createDashboardSnapshot } from "./snapshot.js";
+import { createDashboardSnapshot, FabricDashboardSnapshotCache } from "./snapshot.js";
 import { safeText } from "./format.js";
 import { isActiveStatus, type FabricDashboardSnapshot, type FabricUiActor, type FabricUiAgent } from "./types.js";
 import { FabricWidget, shouldShowFabricWidget } from "./widget.js";
@@ -86,6 +86,9 @@ export class FabricUiController {
   #activityRuns: FabricActivityRun[] = [];
   readonly #transcripts = new AgentTranscriptReader();
   readonly #conversationReaders = new Map<string, NativeConversationReader>();
+  #activeConversationReader: string | undefined;
+  readonly #snapshotCache = new FabricDashboardSnapshotCache();
+  #refreshGeneration = 0;
 
   constructor(
     readonly state: FabricState,
@@ -148,6 +151,8 @@ export class FabricUiController {
     this.#transcripts.clear();
     for (const reader of this.#conversationReaders.values()) reader.clear();
     this.#conversationReaders.clear();
+    this.#activeConversationReader = undefined;
+    this.#snapshotCache.clear();
   }
 
   /** True while Fabric owns keyboard input, including asynchronous view setup. */
@@ -188,13 +193,64 @@ export class FabricUiController {
       }
       if (initialTarget?.kind === "main") return;
       this.#conversationState ??= new FabricConversationState();
+      let sourceAgents: FabricUiAgent[] | undefined;
+      let sourceActors: FabricUiActor[] | undefined;
+      let agentsById = new Map<string, FabricUiAgent>();
+      let actorsById = new Map<string, FabricUiActor>();
+      let targetDomains: unknown[] = [];
+      let baseTargets: FabricConversationTarget[] = [];
+      let enrichedTargets: FabricConversationTarget[] = [];
+      let targetsById = new Map<string, FabricConversationTarget>();
+      let modelGeneration = -1;
+      let modelWindows = new Map<string, number | undefined>();
+      const targets = (): FabricConversationTarget[] => {
+        const snapshot = this.#snapshot;
+        const domains = [snapshot.main, snapshot.agents, snapshot.actors, snapshot.peers, snapshot.participants];
+        const changed = domains.some((domain, index) => domain !== targetDomains[index]);
+        if (changed) {
+          targetDomains = domains;
+          baseTargets = conversationTargets(snapshot);
+        }
+        if (changed || modelGeneration !== this.#refreshGeneration) {
+          modelGeneration = this.#refreshGeneration;
+          const windows = new Map<string, number | undefined>();
+          for (const target of baseTargets) {
+            if (!target.model || windows.has(target.model)) continue;
+            const split = target.model.indexOf("/");
+            if (split < 1) continue;
+            windows.set(target.model, context.modelRegistry?.find?.(
+              target.model.slice(0, split), target.model.slice(split + 1),
+            )?.contextWindow);
+          }
+          if (changed || windows.size !== modelWindows.size ||
+            [...windows].some(([model, window]) => modelWindows.get(model) !== window)) {
+            enrichedTargets = baseTargets.map((target) => {
+              const contextWindow = target.model ? windows.get(target.model) : undefined;
+              return contextWindow !== undefined ? { ...target, contextWindow } : target;
+            });
+            targetsById = new Map(enrichedTargets.map((target) => [target.id, target]));
+          }
+          modelWindows = windows;
+        }
+        return enrichedTargets;
+      };
       const source = (id: string): NativeConversationSource => {
-        const actor = this.#snapshot.actors.find((candidate) => candidate.id === id);
+        if (sourceActors !== this.#snapshot.actors) {
+          sourceActors = this.#snapshot.actors;
+          actorsById = new Map(sourceActors.map((actor) => [actor.id, actor]));
+        }
+        if (sourceAgents !== this.#snapshot.agents) {
+          sourceAgents = this.#snapshot.agents;
+          agentsById = new Map(sourceAgents.map((agent) => [agent.id, agent]));
+        }
+        const actor = actorsById.get(id);
         if (actor) return { ...this.#actorTranscriptSource(actor), id, ...(actor.sessionFile ? { sessionFile: actor.sessionFile } : {}) };
-        const agent = this.#snapshot.agents.find((candidate) => candidate.id === id);
+        const agent = agentsById.get(id);
         return agent ? this.#agentTranscriptSource(agent) : { id, status: "unavailable" };
       };
       const readerFor = (id: string): NativeConversationReader => {
+        if (this.#activeConversationReader !== id) this.#suspendConversationReader();
+        this.#activeConversationReader = id;
         let reader = this.#conversationReaders.get(id);
         if (!reader) {
           reader = new NativeConversationReader();
@@ -207,7 +263,8 @@ export class FabricUiController {
           throw new Error("This Fabric conversation is no longer attached");
         }
         this.#refresh();
-        const target = conversationTargets(this.#snapshot).find((candidate) => candidate.id === id);
+        targets();
+        const target = targetsById.get(id);
         const allowed = action === "stop" ? target?.canStop
           : action === "steer" ? target?.canSteer : target?.canFollowUp;
         if (!target || target.kind === "main" || !allowed) {
@@ -223,12 +280,10 @@ export class FabricUiController {
         this.#conversationTui = tui;
         this.#closeConversation = () => done(undefined);
         const view = new FabricConversationView(tui, theme, {
-          targets: () => conversationTargets(this.#snapshot).map((target) => {
-            const split = target.model?.indexOf("/") ?? -1;
-            if (split < 1 || !target.model) return target;
-            const model = context.modelRegistry?.find?.(target.model.slice(0, split), target.model.slice(split + 1));
-            return model ? { ...target, contextWindow: model.contextWindow } : target;
-          }),
+          targets,
+          onTargetChange: (id) => {
+            if (this.#activeConversationReader !== id) this.#suspendConversationReader();
+          },
           appearance: readConversationAppearance(context.cwd, resolveAgentDir(), context.isProjectTrusted?.() ?? false),
           ...(initialTarget ? { initialTargetId: initialTarget.id } : {}),
           state: this.#conversationState!,
@@ -281,6 +336,7 @@ export class FabricUiController {
     } finally {
       if (!alreadyOpen && epoch === this.#epoch) {
         this.#conversationView?.dispose();
+        this.#suspendConversationReader();
         this.#conversationView = undefined;
         this.#conversationTui = undefined;
         this.#closeConversation = undefined;
@@ -541,7 +597,7 @@ export class FabricUiController {
     if (!this.ownsInput && !active) return;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
-      this.#refresh();
+      this.#refresh(false);
       this.#schedulePoll();
     }, this.state.config.ui.refreshMs);
     this.#timer.unref();
@@ -590,7 +646,16 @@ export class FabricUiController {
       : this.#agentTranscriptSource(target);
   }
 
-  #refresh(): void {
+  #suspendConversationReader(): void {
+    if (!this.#activeConversationReader) return;
+    const reader = this.#conversationReaders.get(this.#activeConversationReader);
+    // Readers retain lightweight loaded-range bookmarks. Never clear as a
+    // fallback: that would lose pinned history or unavailable-file content.
+    (reader as (NativeConversationReader & { suspend?: () => void }) | undefined)?.suspend?.();
+    this.#activeConversationReader = undefined;
+  }
+
+  #refresh(force = true): void {
     this.#lastRefreshAt = performance.now();
     const context = this.#context;
     if (!context || !this.state.initialized) return;
@@ -613,14 +678,21 @@ export class FabricUiController {
         this.#activityRevision = revision;
         this.#activityRunsDetailed = detailed;
       }
+      if (force || this.#dashboardOpen) this.#snapshotCache.clear();
+      this.#refreshGeneration++;
       this.#snapshot = createDashboardSnapshot(
         this.state,
         this.#events,
         context,
         this.#activityRuns,
+        this.#dashboardOpen ? undefined : this.#snapshotCache,
       );
       this.#renderWidget(context);
-      if (this.#conversationTui) this.#conversationTui.requestRender();
+      // Read the native source even when manager metadata is unchanged: log
+      // appends and pinned-window growth do not require a status revision.
+      if (this.#conversationTui && this.#conversationView?.refresh?.() !== false) {
+        this.#conversationTui.requestRender();
+      }
       if (this.#dashboardTui) this.#dashboardTui.requestRender();
       else if (this.#widgetTui && this.#widget?.hasChanged()) this.#widgetTui.requestRender();
     } catch (error) {

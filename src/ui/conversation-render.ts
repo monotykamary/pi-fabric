@@ -70,8 +70,6 @@ export interface FabricConversationTranscriptRenderOptions {
 
 type NativeToolResultContent = { type: string; text?: string; data?: string; mimeType?: string };
 
-const TOOL_CACHE_LIMIT = 128;
-const MESSAGE_CACHE_LIMIT = 192;
 const DEFAULT_IMAGE_WIDTH_CELLS = 60;
 
 const stableKey = (value: unknown): string => {
@@ -83,13 +81,30 @@ const stableKey = (value: unknown): string => {
   }
 };
 
+interface RenderedRow {
+  render: (width: number) => string[];
+  lines?: string[] | undefined;
+  spacer: boolean;
+  dynamic: boolean;
+  partial?: boolean;
+  input?: readonly unknown[];
+}
+
 interface ToolCacheRecord {
   component: ToolExecutionComponent;
+  name: string;
+  dynamicRenderer: boolean;
   started: boolean;
   argsComplete: boolean;
+  args: unknown;
   argsKey: string;
+  result: unknown;
   resultKey: string | undefined;
   partialKey: string | undefined;
+  imageKey: string;
+  isPartial: boolean;
+  isError: boolean;
+  error: string | undefined;
 }
 
 interface MessageCacheRecord {
@@ -99,6 +114,8 @@ interface MessageCacheRecord {
 
 interface AssistantCacheRecord {
   hideThinking: boolean;
+  message?: NativeAgentMessage;
+  streaming?: boolean;
   component: AssistantMessageComponent;
 }
 
@@ -121,10 +138,23 @@ export class FabricConversationTranscriptRenderer {
   private currentTargetId = "";
   private readonly rendererStates = new Map<string, Set<Record<string, unknown>>>();
   private readonly liveStates = new WeakSet<object>();
-  private lastToolsExpanded: boolean | undefined;
-  private lastShowImages: boolean | undefined;
-  private lastHideThinking: boolean | undefined;
-  private lastCodeBlockIndent: string | undefined;
+  private readonly messageRows = new Map<NativeAgentMessage, RenderedRow>();
+  private readonly toolRows = new Map<string, RenderedRow>();
+  private readonly toolTokens = new Map<string, object>();
+  private readonly messageIds = new WeakMap<NativeAgentMessage, number>();
+  private nextMessageId = 0;
+  private rows: RenderedRow[] = [];
+  private lastMessages: NativeAgentMessage[] = [];
+  private lastTools: NativeToolExecution[] = [];
+  private lastPartial: NativeConversationTranscript["streaming"]["partialAssistant"];
+  private lastVersion: number | undefined;
+  private sourceKey = "";
+  private optionsKey = "";
+  private lastRendererHooks: unknown[] = [];
+  private lastWidth = 0;
+  private frameLines: string[] | undefined;
+  private frameFlags = "";
+  private planDirty = true;
 
   constructor(
     private readonly tui: TUI,
@@ -133,19 +163,27 @@ export class FabricConversationTranscriptRenderer {
   ) {
     this.highlightInvalidate = (): void => {
       if (this.disposed) return;
-      this.assistantComponents.clear();
-      this.messageComponents.clear();
+      this.invalidate();
       this.tui.requestRender();
     };
   }
 
   /** Drop cached components; stray renderer timers/invalidations become no-ops. */
   invalidate(): void {
+    this.toolTokens.clear();
     for (const key of this.rendererStates.keys()) this.releaseRendererStates(key);
     this.toolComponents.clear();
     this.messageComponents.clear();
     this.assistantComponents.clear();
     this.markdownThemeCache.clear();
+    this.messageRows.clear();
+    this.toolRows.clear();
+    this.rows = [];
+    this.lastMessages = [];
+    this.lastTools = [];
+    this.lastPartial = undefined;
+    this.frameLines = undefined;
+    this.planDirty = true;
   }
 
   /** Finalize: live spinner/timing intervals may still fire once; guarded. */
@@ -160,66 +198,149 @@ export class FabricConversationTranscriptRenderer {
     options: FabricConversationTranscriptRenderOptions,
   ): string[] {
     if (this.disposed || width <= 0) return [];
+    width = Math.max(1, width);
+    // Revisions are reader-local, and a participant can roll to a new activation.
+    const sourceKey = stableKey([options.target.id, options.target.cwd ?? process.cwd(), transcript.sourceId,
+      transcript.sessionId, transcript.sessionFile, transcript.eventsFile]);
+    const optionsKey = stableKey([options.toolsExpanded, options.outputPad, options.codeBlockIndent,
+      options.hideThinking, options.showImages, options.codePreviewSettings,
+      this.rendererOptions.hiddenThinkingLabel, this.rendererOptions.imageWidthCells]);
+    const hooks = [this.rendererOptions.getToolDefinition, this.rendererOptions.getMessageRenderer,
+      ...(this.rendererOptions.markdownTransformers ?? [])];
+    if (sourceKey !== this.sourceKey || optionsKey !== this.optionsKey || !sameItems(hooks, this.lastRendererHooks)) {
+      this.invalidate();
+      this.sourceKey = sourceKey;
+      this.optionsKey = optionsKey;
+      this.lastRendererHooks = hooks;
+    }
     this.currentTargetId = options.target.id;
-    this.syncOptionCaches(options);
-    const lines: string[] = [];
-    const renderWidth = Math.max(1, width);
+    const version = (transcript as NativeConversationTranscript & { contentVersion?: number }).contentVersion
+      ?? transcript.revision;
     const streaming = transcript.streaming;
-    if (
-      transcript.messages.length === 0 &&
-      !streaming.partialAssistant &&
-      streaming.tools.length === 0
-    ) {
-      lines.push(
-        this.theme.fg(
-          "dim",
-          "No retained transcript yet; new agent activity will appear here.",
-        ),
-      );
-      return lines;
+    // Compare identities, not content keys: fixtures may replace a message without
+    // bumping revision, while reader metadata can change without replacing content.
+    if (this.planDirty || version !== this.lastVersion ||
+      !sameItems(transcript.messages, this.lastMessages) ||
+      !sameItems(streaming.tools, this.lastTools) || streaming.partialAssistant !== this.lastPartial) {
+      this.reconcileRows(transcript, options);
+      this.lastVersion = version;
     }
-    if (transcript.hasMore) {
-      lines.push(this.theme.fg("dim", "↑ older activity available · ctrl+↑ past the top to load"));
+    if (width !== this.lastWidth) {
+      this.lastWidth = width;
+      for (const row of this.rows) row.lines = undefined;
+      this.frameLines = undefined;
     }
-    const frameTools = new Set<string>();
-    for (const message of transcript.messages) {
-      this.renderMessage(message, renderWidth, options, lines, frameTools);
+    for (const row of this.rows) {
+      if (row.lines && !row.dynamic) continue;
+      row.lines = row.render(width);
+      this.frameLines = undefined;
     }
-    this.renderPartialAssistant(
-      streaming.partialAssistant,
-      renderWidth,
-      options,
-      lines,
-      frameTools,
-      new Set(streaming.tools.map((tool) => tool.toolCallId)),
-    );
-    this.renderStreamingTools(streaming.tools, renderWidth, options, lines, frameTools);
-    if (transcript.hasNewer) {
-      lines.push(this.theme.fg("dim", "↓ newer activity available · ctrl+↓ past the bottom to load"));
+    const flags = `${transcript.hasMore}:${transcript.hasNewer}`;
+    if (!this.frameLines || flags !== this.frameFlags) {
+      const lines: string[] = [];
+      if (!transcript.messages.length && !streaming.partialAssistant && !streaming.tools.length) {
+        lines.push(this.theme.fg("dim", "No retained transcript yet; new agent activity will appear here."));
+      } else {
+        if (transcript.hasMore) {
+          lines.push(this.theme.fg("dim", "↑ older activity available · ctrl+↑ past the top to load"));
+        }
+        for (const row of this.rows) {
+          if (!row.lines?.length) continue;
+          if (row.spacer && lines.length) lines.push("");
+          for (const line of row.lines) lines.push(line);
+        }
+        if (transcript.hasNewer) {
+          lines.push(this.theme.fg("dim", "↓ newer activity available · ctrl+↓ past the bottom to load"));
+        }
+      }
+      this.frameLines = lines;
+      this.frameFlags = flags;
     }
-    return lines;
+    // The public result is mutable; callers must not be able to corrupt cached rows.
+    return this.frameLines.slice();
   }
 
-  private syncOptionCaches(options: FabricConversationTranscriptRenderOptions): void {
-    if (options.codeBlockIndent !== this.lastCodeBlockIndent) {
-      this.lastCodeBlockIndent = options.codeBlockIndent;
-      this.markdownThemeCache.clear();
-      this.assistantComponents.clear();
-      this.messageComponents.clear();
+  private reconcileRows(
+    transcript: NativeConversationTranscript,
+    options: FabricConversationTranscriptRenderOptions,
+  ): void {
+    const rows: RenderedRow[] = [];
+    const messages = new Set<NativeAgentMessage>();
+    const keys = new Set<string>();
+    const tools = new Set<string>();
+    const results = new Map<string, ToolResultAgentMessage>();
+    const streaming = new Map(transcript.streaming.tools.map((tool) => [tool.toolCallId, tool]));
+    for (const message of transcript.messages) {
+      if (message.role === "toolResult") results.set(message.toolCallId, message);
     }
-    if (options.toolsExpanded !== this.lastToolsExpanded) {
-      this.lastToolsExpanded = options.toolsExpanded;
-      this.toolComponents.clear();
-      this.messageComponents.clear();
+    const addTool = (id: string, name: string, args: Record<string, unknown> | undefined, error?: string): void => {
+      if (tools.has(id)) return;
+      tools.add(id);
+      rows.push(this.reconcileTool(id, name, args, results.get(id), streaming.get(id), error, options));
+    };
+    const addMessage = (message: NativeAgentMessage, partial = false): void => {
+      if (message.role === "toolResult") return;
+      messages.add(message);
+      const key = partial ? ":streaming" : this.messageKey(message);
+      keys.add(key);
+      let row = this.messageRows.get(message);
+      const input = shallowInput(message);
+      if (!row || row.partial !== partial || !sameItems(row.input ?? [], input)) {
+        if (row) {
+          this.assistantComponents.delete(key);
+          this.messageComponents.delete(key);
+        }
+        row = {
+          input,
+          partial,
+          spacer: message.role !== "assistant",
+          // A custom component can read time or external state in render(width).
+          dynamic: message.role === "custom" && message.display,
+          render: (width) => {
+            const lines: string[] = [];
+            if (partial && message.role === "assistant") {
+              this.renderAssistantContent(message, key, true, width, options, lines);
+            } else {
+              this.renderMessage(message, width, options, lines);
+            }
+            return lines;
+          },
+        };
+        this.messageRows.set(message, row);
+      }
+      rows.push(row);
+      if (message.role === "assistant") {
+        const error = message.stopReason === "error" || message.stopReason === "aborted"
+          ? message.errorMessage || "Error" : undefined;
+        for (const call of message.content) {
+          if (call.type === "toolCall") addTool(call.id, call.name, call.arguments, error);
+        }
+      }
+    };
+    for (const message of transcript.messages) addMessage(message);
+    if (transcript.streaming.partialAssistant) addMessage(transcript.streaming.partialAssistant, true);
+    for (const tool of transcript.streaming.tools) addTool(tool.toolCallId, tool.toolName, tool.args);
+    // Retain the loaded window, not an undersized FIFO that thrashes on each scan.
+    for (const message of this.messageRows.keys()) if (!messages.has(message)) this.messageRows.delete(message);
+    for (const cache of [this.messageComponents, this.assistantComponents]) {
+      for (const key of cache.keys()) if (!keys.has(key)) cache.delete(key);
     }
-    if (options.showImages !== this.lastShowImages) {
-      this.lastShowImages = options.showImages;
-      this.toolComponents.clear();
+    for (const key of this.toolComponents.keys()) {
+      const id = key.slice(this.currentTargetId.length + 1);
+      if (!tools.has(id)) this.releaseTool(key);
     }
-    if (options.hideThinking !== this.lastHideThinking) {
-      this.lastHideThinking = options.hideThinking;
-      this.assistantComponents.clear();
-    }
+    this.rows = rows;
+    this.lastMessages = transcript.messages.slice();
+    this.lastTools = transcript.streaming.tools.slice();
+    this.lastPartial = transcript.streaming.partialAssistant;
+    this.planDirty = false;
+    this.frameLines = undefined;
+  }
+
+  private messageKey(message: NativeAgentMessage): string {
+    let id = this.messageIds.get(message);
+    if (id === undefined) { id = ++this.nextMessageId; this.messageIds.set(message, id); }
+    return `${this.currentTargetId}\u0000${id}`;
   }
 
   private markdownTheme(options: FabricConversationTranscriptRenderOptions): MarkdownTheme {
@@ -256,31 +377,16 @@ export class FabricConversationTranscriptRenderer {
     width: number,
     options: FabricConversationTranscriptRenderOptions,
     lines: string[],
-    frameTools: Set<string>,
   ): void {
     switch (message.role) {
       case "user":
         this.renderUserMessage(message, width, options, lines);
         return;
       case "assistant":
-        this.renderAssistantMessage(message, width, options, lines, frameTools);
+        this.renderAssistantContent(message, this.messageKey(message), false, width, options, lines);
         return;
-      case "toolResult": {
-        if (typeof message.toolCallId !== "string") return;
-        const record = this.toolRecord(
-          message.toolCallId, message.toolName ?? "tool", options,
-          () => new ToolExecutionComponent(
-            message.toolName ?? "tool", message.toolCallId, undefined,
-            { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
-            this.definitionFor(message.toolName ?? "tool"),
-            this.tui,
-            options.target.cwd ?? process.cwd(),
-          ),
-        );
-        record.component.setExpanded(options.toolsExpanded);
-        record.component.updateResult(message, false);
+      case "toolResult":
         return;
-      }
       case "bashExecution":
         this.pushSpacer(lines);
         this.renderBashExecution(message, width, options, lines);
@@ -292,11 +398,11 @@ export class FabricConversationTranscriptRenderer {
         return;
       case "compactionSummary":
         this.pushSpacer(lines);
-        this.renderBoxedMessage(`compaction:${message.timestamp}`, message, CompactionSummaryMessageComponent, width, options, lines);
+        this.renderBoxedMessage(this.messageKey(message), message, CompactionSummaryMessageComponent, width, options, lines);
         return;
       case "branchSummary":
         this.pushSpacer(lines);
-        this.renderBoxedMessage(`branch:${message.timestamp}`, message, BranchSummaryMessageComponent, width, options, lines);
+        this.renderBoxedMessage(this.messageKey(message), message, BranchSummaryMessageComponent, width, options, lines);
         return;
       default:
         return;
@@ -314,7 +420,7 @@ export class FabricConversationTranscriptRenderer {
     this.pushSpacer(lines);
     const skillBlock = parseSkillBlock(text);
     if (skillBlock) {
-      const record = this.messageRecord(`skill:${stableKey(text)}`, options, () =>
+      const record = this.messageRecord(this.messageKey(message), () =>
         new SkillInvocationMessageComponent(skillBlock, this.markdownTheme(options)));
       record.component.setExpanded(options.toolsExpanded);
       lines.push(...safeRender(record.component, width, () => this.plainTextFallback(text, width)));
@@ -341,150 +447,132 @@ export class FabricConversationTranscriptRenderer {
     return safeRender(component, width, () => this.plainTextFallback(text, width));
   }
 
-  private renderAssistantMessage(
+  private renderAssistantContent(
     message: Extract<NativeAgentMessage, { role: "assistant" }>,
+    key: string,
+    streaming: boolean,
     width: number,
     options: FabricConversationTranscriptRenderOptions,
     lines: string[],
-    frameTools: Set<string>,
   ): void {
-    const record = this.assistantRecord(`assistant:${message.timestamp}`, options);
-    record.component.updateContent(message, false);
-    lines.push(...safeRender(record.component, width, () => this.plainTextFallback(assistantText(message), width)));
-    const errored = message.stopReason === "aborted" || message.stopReason === "error";
-    for (const content of message.content) {
-      if (content.type !== "toolCall") continue;
-      const component = this.toolRecord(content.id, content.name, options, () =>
-        new ToolExecutionComponent(
-          content.name, content.id, content.arguments,
-          { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
-          this.definitionFor(content.name),
-          this.tui,
-          options.target.cwd ?? process.cwd(),
-        )).component;
-      component.setExpanded(options.toolsExpanded);
-      frameTools.add(content.id);
-      if (errored) {
-        component.updateResult(
-          { content: [{ type: "text", text: message.errorMessage || "Error" }], isError: true },
-          false,
-        );
-      }
-      lines.push(...safeRender(component, width, () => this.plainTextFallback(content.name, width)));
+    const record = this.assistantRecord(key, options);
+    if (record.message !== message || record.streaming !== streaming) {
+      record.component.updateContent(message, streaming);
+      record.message = message;
+      record.streaming = streaming;
     }
+    lines.push(...safeRender(record.component, width, () => this.plainTextFallback(assistantText(message), width)));
   }
 
-  private renderPartialAssistant(
-    message: NativeConversationTranscript["streaming"]["partialAssistant"],
-    width: number,
+  private reconcileTool(
+    id: string,
+    name: string,
+    callArgs: Record<string, unknown> | undefined,
+    result: ToolResultAgentMessage | undefined,
+    tool: NativeToolExecution | undefined,
+    error: string | undefined,
     options: FabricConversationTranscriptRenderOptions,
-    lines: string[],
-    frameTools: Set<string>,
-    streamingToolIds: Set<string>,
-  ): void {
-    if (!message) return;
-    const hideThinking = options.hideThinking ?? false;
-    let record = this.assistantComponents.get(":streaming");
-    if (!record || record.hideThinking !== hideThinking) {
-      record = {
-        hideThinking,
-        component: new AssistantMessageComponent(
-          undefined,
-          hideThinking,
-          this.markdownTheme(options),
-          this.rendererOptions.hiddenThinkingLabel,
-          options.outputPad ?? 1,
-          this.rendererOptions.markdownTransformers,
-        ),
+  ): RenderedRow {
+    const key = `${this.currentTargetId}\u0000${id}`;
+    const args = tool?.args ?? callArgs;
+    const value = result ?? tool?.result ?? tool?.partial;
+    const isPartial = !result && !tool?.result && !error;
+    const isError = result?.isError ?? tool?.isError ?? !!error;
+    const started = tool ? tool.executionStarted ?? true : false;
+    const argsComplete = !!result || !!tool?.result || !!tool?.argsComplete;
+    let record = this.toolComponents.get(key);
+    // Native converted-image caches are indexed by position, not image identity.
+    const images = record?.result === value ? undefined : value?.content?.filter(
+      (block): block is NativeToolResultContent => !!block && typeof block === "object" &&
+        (block as NativeToolResultContent).type === "image",
+    );
+    const imageKey = record && record.result === value ? record.imageKey : stableKey(images?.length ? images : undefined);
+    if (record && (record.name !== name || record.imageKey !== imageKey ||
+      (!record.isPartial && isPartial) || (record.argsComplete && !argsComplete) ||
+      (record.started && !started && !result))) {
+      this.releaseTool(key);
+      record = undefined;
+    }
+    let row = this.toolRows.get(key);
+    if (!record) {
+      const token = {};
+      this.toolTokens.set(key, token);
+      const definition = this.definitionFor(name, key, token);
+      // Pi's live TUI proxy forwards inherited assignments to the real host.
+      // Define an own callback so delegation cannot overwrite requestRender.
+      const ui = Object.create(this.tui, {
+        requestRender: {
+          configurable: true, enumerable: true, writable: true,
+          value: (): void => {
+            if (this.disposed || this.toolTokens.get(key) !== token) return;
+            const current = this.toolRows.get(key);
+            if (current) current.lines = undefined;
+            this.frameLines = undefined;
+            this.tui.requestRender();
+          },
+        },
+      }) as TUI;
+      const component = new ToolExecutionComponent(name, id, args,
+        { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
+        definition, ui, options.target.cwd ?? process.cwd());
+      if (options.toolsExpanded) component.setExpanded(true);
+      record = { component, name, dynamicRenderer: !!definition?.renderCall || !!definition?.renderResult, started: false, argsComplete: false, args, argsKey: "0",
+        result: undefined, resultKey: undefined, partialKey: undefined, imageKey,
+        isPartial: true, isError: false, error: undefined };
+      this.toolComponents.set(key, record);
+      row = {
+        spacer: false,
+        dynamic: !!definition?.renderCall || !!definition?.renderResult || isPartial || imageKey !== "undefined",
+        render: (width) => safeRender(component, width, () => this.plainTextFallback(name, width)),
       };
-      this.assistantComponents.set(":streaming", record);
-      this.boundCache(this.assistantComponents, MESSAGE_CACHE_LIMIT);
+      this.toolRows.set(key, row);
     }
-    record.component.updateContent(message, true);
-    lines.push(...safeRender(record.component, width, () => this.plainTextFallback(assistantText(message), width)));
-    for (const content of message.content) {
-      if (content.type !== "toolCall" || frameTools.has(content.id)) continue;
-      // A toolCall whose tool_execution_start has not arrived yet still renders
-      // immediately, like native pendingTools; once streaming.tools covers the
-      // id, that path owns creation, state, and row emission to avoid duplicates.
-      if (streamingToolIds.has(content.id)) continue;
-      const component = this.toolRecord(content.id, content.name, options, () =>
-        new ToolExecutionComponent(
-          content.name, content.id, content.arguments,
-          { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
-          this.definitionFor(content.name),
-          this.tui,
-          options.target.cwd ?? process.cwd(),
-        )).component;
-      component.setExpanded(options.toolsExpanded);
-      frameTools.add(content.id);
-      lines.push(...safeRender(component, width, () => this.plainTextFallback(content.name, width)));
+    const { component } = record;
+    let changed = false;
+    if (record.args !== args) {
+      component.updateArgs(args);
+      changed = true;
+      record.args = args;
+      record.argsKey = String(Number(record.argsKey) + 1);
     }
+    if (started && !record.started) {
+      record.started = true;
+      component.markExecutionStarted();
+      changed = true;
+    }
+    if (argsComplete && !record.argsComplete) {
+      record.argsComplete = true;
+      component.setArgsComplete();
+      changed = true;
+    }
+    if (record.result !== value || record.isPartial !== isPartial || record.isError !== isError || record.error !== error) {
+      // Details can contain opaque extension state; serialization is not an equality test.
+      const resultKey = String(Number(record.resultKey ?? 0) + 1);
+      if (value !== undefined || error !== undefined) {
+        component.updateResult({
+          content: error && !value ? [{ type: "text", text: error }] : (value?.content ?? []) as NativeToolResultContent[],
+          ...(value?.details !== undefined ? { details: value.details } : {}),
+          isError,
+        }, isPartial);
+        changed = true;
+      }
+      record.result = value;
+      record.resultKey = resultKey;
+      record.partialKey = isPartial ? resultKey : undefined;
+      record.isPartial = isPartial;
+      record.isError = isError;
+      record.error = error;
+    }
+    row!.dynamic = record.dynamicRenderer || isPartial || imageKey !== "undefined";
+    if (changed) row!.lines = undefined;
+    return row!;
   }
 
-  private renderStreamingTools(
-    tools: readonly NativeToolExecution[],
-    width: number,
-    options: FabricConversationTranscriptRenderOptions,
-    lines: string[],
-    frameTools: Set<string>,
-  ): void {
-    for (const tool of tools) {
-      if (frameTools.has(tool.toolCallId)) continue;
-      frameTools.add(tool.toolCallId);
-      const record = this.toolRecord(tool.toolCallId, tool.toolName, options, () =>
-        new ToolExecutionComponent(
-          tool.toolName, tool.toolCallId, tool.args,
-          { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
-          this.definitionFor(tool.toolName),
-          this.tui,
-          options.target.cwd ?? process.cwd(),
-        ));
-      const { component } = record;
-      component.setExpanded(options.toolsExpanded);
-      if (!record.started) {
-        record.started = true;
-        component.markExecutionStarted();
-      }
-      const argsKey = stableKey(tool.args);
-      if (argsKey !== record.argsKey) {
-        record.argsKey = argsKey;
-        component.updateArgs(tool.args);
-      }
-      if (tool.result !== undefined) {
-        if (!record.argsComplete) {
-          record.argsComplete = true;
-          component.setArgsComplete();
-        }
-        const resultKey = stableKey(tool.result);
-        if (resultKey !== record.resultKey) {
-          record.resultKey = resultKey;
-          record.partialKey = undefined;
-          component.updateResult(
-            {
-              content: (tool.result.content ?? []) as NativeToolResultContent[],
-              ...(tool.result.details !== undefined ? { details: tool.result.details } : {}),
-              isError: tool.isError ?? false,
-            },
-            false,
-          );
-        }
-      } else if (tool.partial !== undefined) {
-        const partialKey = stableKey(tool.partial);
-        if (partialKey !== record.partialKey) {
-          record.partialKey = partialKey;
-          component.updateResult(
-            {
-              content: (tool.partial.content ?? []) as NativeToolResultContent[],
-              ...(tool.partial.details !== undefined ? { details: tool.partial.details } : {}),
-              isError: false,
-            },
-            true,
-          );
-        }
-      }
-      lines.push(...safeRender(component, width, () => this.plainTextFallback(tool.toolName, width)));
-    }
+  private releaseTool(key: string): void {
+    this.toolTokens.delete(key);
+    this.releaseRendererStates(key);
+    this.toolComponents.delete(key);
+    this.toolRows.delete(key);
   }
 
   private renderBashExecution(
@@ -493,8 +581,8 @@ export class FabricConversationTranscriptRenderer {
     options: FabricConversationTranscriptRenderOptions,
     lines: string[],
   ): void {
-    const key = `bash:${message.timestamp}:${(message.output ?? "").length}`;
-    const record = this.messageRecord(key, options, () => {
+    const key = this.messageKey(message);
+    const record = this.messageRecord(key, () => {
       const component = new BashExecutionComponent(message.command, this.tui, message.excludeFromContext);
       component.appendOutput(terminalSafe(message.output ?? "", false));
       // Mirrors interactive-mode: only the truncated flag is known at this point.
@@ -512,7 +600,7 @@ export class FabricConversationTranscriptRenderer {
     options: FabricConversationTranscriptRenderOptions,
     lines: string[],
   ): void {
-    const record = this.messageRecord(`custom:${message.timestamp}:${stableKey(message.content)}`, options, () =>
+    const record = this.messageRecord(this.messageKey(message), () =>
       new CustomMessageComponent(
         message,
         this.rendererOptions.getMessageRenderer?.(message.customType),
@@ -531,7 +619,7 @@ export class FabricConversationTranscriptRenderer {
     options: FabricConversationTranscriptRenderOptions,
     lines: string[],
   ): void {
-    const record = this.messageRecord(key, options, () => new create(message, this.markdownTheme(options)));
+    const record = this.messageRecord(key, () => new create(message, this.markdownTheme(options)));
     record.component.setExpanded(options.toolsExpanded);
     lines.push(...safeRender(record.component, width, () => this.plainTextFallback(message.summary, width)));
   }
@@ -542,12 +630,11 @@ export class FabricConversationTranscriptRenderer {
    * firing after dispose cannot touch the TUI. ToolExecutionComponent has no
    * dispose; this finalizes its renderer subscriptions instead.
    */
-  private definitionFor(toolName: string): FabricToolDefinitionLike {
+  private definitionFor(toolName: string, key: string, token: object): FabricToolDefinitionLike {
     const definition = this.rendererOptions.getToolDefinition?.(toolName);
     if (!definition) return definition;
-    const targetId = this.currentTargetId;
-    const guard = <T extends { invalidate: () => void; toolCallId: string; state: Record<string, unknown> }>(context: T): T => {
-      const key = `${targetId}\u0000${context.toolCallId}`;
+    const live = (): boolean => !this.disposed && this.toolTokens.get(key) === token;
+    const guard = <T extends { invalidate: () => void; state: Record<string, unknown> }>(context: T): T => {
       const states = this.rendererStates.get(key) ?? new Set<Record<string, unknown>>();
       states.add(context.state);
       this.rendererStates.set(key, states);
@@ -555,53 +642,31 @@ export class FabricConversationTranscriptRenderer {
       return {
         ...context,
         invalidate: (): void => {
-          if (this.disposed || !this.liveStates.has(context.state)) return;
+          if (!live() || !this.liveStates.has(context.state)) return;
           context.invalidate();
         },
       };
     };
+    // An old native image conversion can call updateDisplay after eviction.
+    const empty = { render: () => [], invalidate: () => {} };
     return {
       ...definition,
       ...(definition.renderCall
-        ? { renderCall: (args: any, theme: Theme, context: any) => definition.renderCall!(args, theme, guard(context)) }
+        ? { renderCall: (args: any, theme: Theme, context: any) =>
+          live() ? definition.renderCall!(args, theme, guard(context)) : empty }
         : {}),
       ...(definition.renderResult
-        ? {
-          renderResult: (result: any, renderOptions: any, theme: Theme, context: any) =>
-            definition.renderResult!(result, renderOptions, theme, guard(context)),
-        }
+        ? { renderResult: (result: any, options: any, theme: Theme, context: any) =>
+          live() ? definition.renderResult!(result, options, theme, guard(context)) : empty }
         : {}),
     };
-  }
-
-  private toolRecord(
-    toolCallId: string,
-    toolName: string,
-    options: FabricConversationTranscriptRenderOptions,
-    create: () => ToolExecutionComponent,
-  ): ToolCacheRecord {
-    const key = `${options.target.id}\u0000${toolCallId}`;
-    let record = this.toolComponents.get(key);
-    if (!record) {
-      record = {
-        component: create(),
-        started: false,
-        argsComplete: false,
-        argsKey: stableKey(undefined),
-        resultKey: undefined,
-        partialKey: undefined,
-      };
-      this.toolComponents.set(key, record);
-      this.boundCache(this.toolComponents, TOOL_CACHE_LIMIT, (key) => this.releaseRendererStates(key));
-    }
-    return record;
   }
 
   private assistantRecord(
     key: string,
     options: FabricConversationTranscriptRenderOptions,
   ): AssistantCacheRecord {
-    const cacheKey = `${options.target.id}\u0000${key}`;
+    const cacheKey = key;
     const hideThinking = options.hideThinking ?? false;
     let record = this.assistantComponents.get(cacheKey);
     if (!record || record.hideThinking !== hideThinking) {
@@ -617,22 +682,19 @@ export class FabricConversationTranscriptRenderer {
         ),
       };
       this.assistantComponents.set(cacheKey, record);
-      this.boundCache(this.assistantComponents, MESSAGE_CACHE_LIMIT);
     }
     return record;
   }
 
   private messageRecord(
     key: string,
-    options: FabricConversationTranscriptRenderOptions,
     create: () => MessageCacheRecord["component"],
   ): MessageCacheRecord {
-    const cacheKey = `${options.target.id}\u0000${key}`;
+    const cacheKey = key;
     let record = this.messageComponents.get(cacheKey);
     if (!record) {
       record = { component: create() };
       this.messageComponents.set(cacheKey, record);
-      this.boundCache(this.messageComponents, MESSAGE_CACHE_LIMIT);
     }
     return record;
   }
@@ -650,15 +712,6 @@ export class FabricConversationTranscriptRenderer {
     this.rendererStates.delete(key);
   }
 
-  private boundCache<K, V>(cache: Map<K, V>, limit: number, release?: (key: K) => void): void {
-    while (cache.size > limit) {
-      const oldest = cache.keys().next().value;
-      if (oldest === undefined) break;
-      release?.(oldest);
-      cache.delete(oldest);
-    }
-  }
-
   private imageWidthCells(): number {
     return Math.max(1, Math.floor(this.rendererOptions.imageWidthCells ?? DEFAULT_IMAGE_WIDTH_CELLS));
   }
@@ -674,6 +727,13 @@ export class FabricConversationTranscriptRenderer {
     if (lines.length > 0) lines.push("");
   }
 }
+
+// Snapshot shallow fields on projection changes, including optional producer-side
+// content versions. Immutable nested payloads never need hashing on warm frames.
+const shallowInput = (value: object): unknown[] => [...Object.keys(value), ...Object.values(value)];
+
+const sameItems = <T>(a: readonly T[], b: readonly T[]): boolean =>
+  a.length === b.length && a.every((item, index) => item === b[index]);
 
 const userMessageText = (message: UserAgentMessage): string => {
   const blocks = typeof message.content === "string"

@@ -1,7 +1,8 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { WorkingStatusIndicator } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FabricConversationState,
   FabricConversationView,
@@ -9,6 +10,7 @@ import {
   type FabricConversationOptions,
   type FabricConversationTarget,
 } from "../src/ui/conversation.js";
+import { FabricConversationTranscriptRenderer } from "../src/ui/conversation-render.js";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { nativeTranscript, userMessage, assistantMessage } from "./fixtures/native-conversation.js";
 initTheme("dark", false);
@@ -101,7 +103,15 @@ interface Harness {
   keybindings: Pick<KeybindingsManager, "matches" | "getKeys">;
 }
 
+const views: FabricConversationView[] = [];
+afterEach(() => {
+  for (const view of views.splice(0)) view.dispose();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
 interface HarnessOverrides {
+  mode?: "regular" | "fullscreen";
   targets?: () => FabricConversationTarget[];
   initialTargetId?: string;
   send?: (id: string, message: string, delivery: FabricConversationDelivery) => Promise<unknown>;
@@ -113,8 +123,9 @@ interface HarnessOverrides {
 const makeHarness = (overrides: HarnessOverrides = {}): Harness => {
   const state = new FabricConversationState();
   const tui = {
+    mode: overrides.mode,
     requestRender: vi.fn(),
-    terminal: { rows: overrides.rows ?? 40 },
+    terminal: { rows: overrides.rows ?? 40, columns: 100, write: vi.fn() },
   } as unknown as TUI;
   const keybindings: Harness["keybindings"] = overrides.keybindings ?? {
     matches: () => false,
@@ -135,6 +146,7 @@ const makeHarness = (overrides: HarnessOverrides = {}): Harness => {
     keybindings,
   };
   const view = new FabricConversationView(tui, theme, options);
+  views.push(view);
   return {
     view,
     state,
@@ -148,6 +160,267 @@ const makeHarness = (overrides: HarnessOverrides = {}): Harness => {
     keybindings,
   };
 };
+
+describe.each(["regular", "fullscreen"] as const)("native conversation dock in %s mode", (mode) => {
+  it("scrolls the end gap away instead of concealing a history row", () => {
+    const history = Array.from({ length: 100 }, (_, i) => `history ${i}`);
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(history);
+    const targets = makeTargets();
+    delete targets[2]!.readOnlyReason;
+    const h = makeHarness({ mode, initialTargetId: "b", targets: () => targets });
+    h.view.render(100);
+    h.view.handleInput("\x1b[<64;4;4M");
+    const lines = h.view.render(100);
+    const border = lines.findIndex((line) => /^─+$/.test(line));
+    const scroll = h.state.view("b").scroll;
+    expect(h.state.view("b").following).toBe(false);
+    expect(lines.slice(1, border)).toEqual(history.slice(scroll, scroll + border - 1));
+    h.view.handleInput("\x1b[F");
+    const latest = h.view.render(100);
+    expect(latest.slice(border - 2, border)).toEqual(["history 99", ""]);
+    expect(history).toHaveLength(100);
+  });
+
+  it("scrolls Working away with the transcript tail and restores it at the end", () => {
+    vi.useFakeTimers();
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(
+      Array.from({ length: 100 }, (_, i) => `history ${i}`),
+    );
+    const h = makeHarness({ mode });
+    expect(h.view.render(100).join("\n")).toContain("Working");
+    h.view.handleInput("\x1b[<64;4;4M");
+    let lines = h.view.render(100);
+    const border = lines.findIndex((line) => /^─+$/.test(line));
+    expect(lines.join("\n")).not.toContain("Working");
+    expect(lines[border - 1]).toBe("history 99");
+    h.view.handleInput("\x1b[F");
+    lines = h.view.render(100);
+    expect(lines[border - 2]?.trim()).toBe("⠋ Working");
+    expect(lines[border - 1]).toBe("");
+  });
+
+  it("does not decorate an older page as if it were the transcript end", () => {
+    vi.useFakeTimers();
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(
+      Array.from({ length: 100 }, (_, i) => `history ${i}`),
+    );
+    const transcript = nativeTranscript([], { hasNewer: true });
+    const h = makeHarness({ mode, transcript: () => transcript });
+    const lines = h.view.render(100);
+    const border = lines.findIndex((line) => /^─+$/.test(line));
+    expect(lines.join("\n")).not.toContain("Working");
+    expect(lines[border - 1]).toBe("history 99");
+  });
+
+  it("preserves the prepend anchor when Working ends during a page load", () => {
+    vi.useFakeTimers();
+    let history = Array.from({ length: 100 }, (_, i) => `history ${i}`);
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockImplementation(() => history);
+    const targets = makeTargets();
+    const h = makeHarness({ mode, targets: () => targets });
+    Object.assign(h.state.view("a"), { following: false, scroll: 0 });
+    h.view.render(100);
+    h.loadOlder.mockImplementation(() => {
+      history = [...Array.from({ length: 10 }, (_, i) => `older ${i}`), ...history];
+      targets[1]!.status = "idle";
+      return true;
+    });
+    h.view.handleInput("\x1b[<64;4;4M");
+    expect(h.view.render(100)[1]).toBe("older 7");
+    expect(h.state.view("a").scroll).toBe(7);
+  });
+
+  it("slices only visible history rows when animating a virtual tail", async () => {
+    vi.useFakeTimers();
+    let reads = 0;
+    const rows = Array.from({ length: 100_000 }, (_, i) => `history ${i}`);
+    const history = new Proxy(rows, { get(target, key, receiver) {
+      if (key === Symbol.iterator) throw new Error("Do not copy the full transcript to append decorations");
+      if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+      return Reflect.get(target, key, receiver);
+    } });
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(history);
+    const h = makeHarness({ mode });
+    h.view.render(100);
+    reads = 0;
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.view.render(100).join("\n")).toContain("⠙ Working");
+    expect(reads).toBeLessThanOrEqual(40);
+    expect(rows).toHaveLength(100_000);
+  });
+
+  it("reserves exactly one gap at the transcript end without trimming native trailing rows", () => {
+    const tail = "\x1b[44m  \x1b[0m";
+    vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue([
+      ...Array.from({ length: 100 }, (_, i) => `history ${i}`), "history-last", tail,
+    ]);
+    const h = makeHarness({ mode, initialTargetId: "b" });
+    const lines = h.view.render(100);
+    const border = lines.findIndex((line) => /^─+$/.test(line));
+    expect(border).toBeGreaterThan(3);
+    expect(lines.slice(border - 3, border)).toEqual(["history-last", tail, ""]);
+  });
+
+  it("animates native Working inside the transcript and stops on idle, picker, switch and disposal", async () => {
+    vi.useFakeTimers();
+    const colors = vi.spyOn(theme, "fg");
+    const targets = makeTargets();
+    const transcript = nativeTranscript([userMessage("settled history"), assistantMessage("unchanged history")]);
+    const h = makeHarness({ mode, targets: () => targets, transcript: () => transcript });
+    const native = new WorkingStatusIndicator(h.tui, "Working");
+    const nativeLines = native.render(100).map(stripTerminalSequences);
+    native.dispose();
+    const invalidations = vi.spyOn(FabricConversationTranscriptRenderer.prototype, "invalidate");
+    let lines = h.view.render(100);
+    const workingRow = lines.findIndex((line) => line.includes("Working"));
+    const border = lines.findIndex((line) => /^─+$/.test(line));
+    expect(lines.slice(workingRow - 1, workingRow + 1).map(stripTerminalSequences)).toEqual(nativeLines);
+    expect(workingRow).toBeLessThan(border - 2);
+    expect(colors).toHaveBeenCalledWith("accent", "⠋");
+    expect(colors).toHaveBeenCalledWith("muted", "Working");
+    invalidations.mockClear();
+    vi.mocked(h.tui.requestRender).mockClear();
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.tui.requestRender).toHaveBeenCalledTimes(1);
+    lines = h.view.render(100);
+    expect(lines[workingRow]?.trim()).toBe("⠙ Working");
+    expect(invalidations).not.toHaveBeenCalled();
+    targets[1]!.status = "idle";
+    expect(h.view.refresh()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.view.render(100).join("\n")).not.toContain("Working");
+    targets[1]!.status = "running";
+    h.view.render(100);
+    expect(vi.getTimerCount()).toBe(1);
+    h.view.handleInput("\x0e");
+    expect(vi.getTimerCount()).toBe(0);
+    h.view.handleInput("\x1b");
+    h.view.render(100);
+    expect(vi.getTimerCount()).toBe(1);
+    h.view.selectTarget("b");
+    expect(vi.getTimerCount()).toBe(0);
+    h.view.selectTarget("a");
+    h.view.render(100);
+    expect(vi.getTimerCount()).toBe(1);
+    h.view.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.mocked(h.tui.requestRender).mockClear();
+    await vi.advanceTimersByTimeAsync(160);
+    expect(h.tui.requestRender).not.toHaveBeenCalled();
+  });
+
+  it.each(["idle", "stopped", "completed", "failed", "unavailable", "stale"])("does not animate an unfinished retained stream after the target becomes %s", (status) => {
+    vi.useFakeTimers();
+    const targets = makeTargets();
+    const transcript = nativeTranscript([], { streaming: { active: true, partialAssistant: assistantMessage("unfinished output"), tools: [] } });
+    const h = makeHarness({ mode, targets: () => targets, transcript: () => transcript });
+    expect(h.view.render(100).join("\n")).toContain("Working");
+    if (status === "stale") targets[1]!.stale = true;
+    else targets[1]!.status = status;
+    if (status === "idle") targets[1]!.kind = "actor";
+    h.view.refresh();
+    expect(h.view.render(100).join("\n")).not.toContain("Working");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.view.refresh()).toBe(false);
+  });
+
+  it("clips native Working rows at tiny widths without stealing editor keys", () => {
+    vi.useFakeTimers();
+    const h = makeHarness({ mode });
+    for (const width of [1, 2, 3, 4, 5, 8, 12]) {
+      const lines = h.view.render(width);
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      if (width >= 3) expect(lines.some((line) => line.includes("⠋"))).toBe(true);
+    }
+    h.view.handleInput("unchanged keyboard routing");
+    expect(h.state.peek("a")?.draft).toBe("unchanged keyboard routing");
+    h.view.handleInput("\x03");
+    expect(h.state.peek("a")?.draft).toBe("");
+  });
+});
+
+describe("conversation view change observation", () => {
+  it("observes the target provider once per frame/input and refreshes mutable hierarchy and permissions", () => {
+    const roster = makeTargets();
+    const targets = vi.fn(() => roster);
+    const h = makeHarness({ targets });
+    targets.mockClear();
+    h.view.render(100);
+    expect(targets).toHaveBeenCalledTimes(1);
+    targets.mockClear();
+    h.view.handleInput("x");
+    expect(targets).toHaveBeenCalledTimes(1);
+    roster[1] = { ...roster[1]!, name: "Changed", parentId: "b", canSteer: false, readOnlyReason: "owner stale" };
+    expect(h.view.render(100).join("\n")).toContain("Agent B > Changed");
+    h.view.handleInput("\r");
+    expect(h.send).not.toHaveBeenCalled();
+    h.view.dispose();
+  });
+
+  it("does not render during unchanged refresh but observes metadata, same-revision replacement and native growth", () => {
+    const targets = makeTargets().map((target) => ({ ...target, status: "idle" }));
+    let transcript = nativeTranscript([userMessage("first")]);
+    const source = vi.fn(() => transcript);
+    const h = makeHarness({ targets: () => targets, transcript: source });
+    h.view.render(100);
+    source.mockClear();
+    expect(h.view.refresh()).toBe(false);
+    expect(source).toHaveBeenCalledTimes(1);
+    transcript = { ...transcript, hasNewer: true };
+    expect(h.view.refresh()).toBe(true);
+    expect(h.view.refresh()).toBe(false);
+    transcript = { ...transcript, unavailable: { eventsFile: true }, error: "unavailable" };
+    expect(h.view.refresh()).toBe(true);
+    expect(h.view.refresh()).toBe(false);
+    transcript = nativeTranscript([userMessage("same revision, different reader")]);
+    expect(h.view.refresh()).toBe(true);
+    transcript = { ...transcript, messages: [...transcript.messages, assistantMessage("appended")], revision: transcript.revision + 1 };
+    expect(h.view.refresh()).toBe(true);
+    expect(h.view.render(100).join("\n")).toContain("appended");
+    h.view.dispose();
+    source.mockClear();
+    expect(h.view.refresh()).toBe(false);
+    expect(source).not.toHaveBeenCalled();
+  });
+
+  it("updates unread picker markers after cached roster changes without reading picker history", () => {
+    const targets = makeTargets();
+    targets[2]!.updatedAt = 100;
+    const transcript = vi.fn(() => nativeTranscript([]));
+    const h = makeHarness({ targets: () => targets, transcript });
+    h.view.render(100);
+    transcript.mockClear();
+    h.view.handleInput("\x0e");
+    expect(h.view.render(100).find((line) => line.includes("Agent B"))).toContain("●");
+    expect(transcript).not.toHaveBeenCalled();
+    h.view.selectTarget("b");
+    h.view.selectTarget("a");
+    h.view.handleInput("\x0e");
+    expect(h.view.render(100).find((line) => line.includes("Agent B"))).not.toContain("●");
+    targets[2]!.updatedAt = 101;
+    h.view.refresh();
+    expect(h.view.render(100).find((line) => line.includes("Agent B"))).toContain("●");
+  });
+
+  it("keeps pinned navigation, drafts and pending sends beyond the lightweight state limit", () => {
+    const state = new FabricConversationState();
+    const pinned = state.view("pinned");
+    pinned.following = false;
+    pinned.scroll = 777;
+    pinned.pageAnchor = "prepend";
+    pinned.anchorLength = 999;
+    state.view("draft").draft = "keep draft";
+    const pending = state.view("pending");
+    state.addPendingSend({ id: "pending", message: "accepted later", delivery: "steer" });
+    for (let index = 0; index < 300; index++) state.view(`other-${index}`);
+    expect(state.peek("pinned")).toBe(pinned);
+    expect(pinned).toMatchObject({ following: false, scroll: 777, pageAnchor: "prepend", anchorLength: 999 });
+    expect(state.peek("draft")?.draft).toBe("keep draft");
+    expect(state.peek("pending")).toBe(pending);
+    state.resolvePendingSend("pending", "accepted later");
+    expect(state.hasPendingSend("pending", "accepted later")).toBe(false);
+  });
+});
 
 const renderText = (view: FabricConversationView, width = 80): string =>
   view.render(width).join("\n");
@@ -464,6 +737,7 @@ describe("FabricConversationView", () => {
       close: h.close as unknown as () => void,
     });
     // The new view reconciles editor text from the shared session draft.
+    views.push(reopened);
     expect(renderText(reopened)).toContain("hello a");
     reopened.handleInput("\r");
     await flush();

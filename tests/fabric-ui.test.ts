@@ -304,7 +304,7 @@ describe("Fabric dynamic UI", () => {
     current.agents = [{ ...agent, status: "completed" }];
     current.actors = [{ ...actor, status: "idle", worker: { ...agent, status: "completed" } }];
     const widget = new FabricWidget(theme, () => current, 8);
-    const hint = "Ctrl+Shift+A chat";
+    const hint = "ctrl+shift+a chat";
     expect(widget.render(200).join("\n")).not.toContain(hint);
     current.agents[0]!.status = "running";
     expect(widget.hasChanged()).toBe(true);
