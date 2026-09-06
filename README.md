@@ -102,7 +102,7 @@ pi -e /absolute/path/to/pi-fabric
 
 ## What you can ask for
 
-Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guide` for one recommendation, or invoke the exact `/skill:<name>` yourself. An ordinary coding task keeps Pi on the core `fabric-exec` path.
+Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guide` for one recommendation, or invoke the exact `/skill:<name>` yourself. An ordinary coding task uses the kernel-matched execution reference (`fabric-exec` for TypeScript, `fabric-exec-python` for Python). The advanced workflows below currently require TypeScript.
 
 | You want | Run |
 | -------- | --- |
@@ -118,7 +118,7 @@ Pi loads advanced patterns after direct user invocation. Run `/skill:fabric-guid
 | A durable team coordinating through versioned tasks | `/skill:fabric-swarm Coordinate this migration across owned task partitions.` |
 | Evidence-gated edits with postconditions | `/skill:fabric-schema Make this parser change only if focused tests stay green.` |
 
-The foundation is the `fabric-exec` reference skill: the model loads it before its first `fabric_exec` call and again when a call errors on argument shape.
+Execution references stay progressive: the model loads the selected kernel's skill after argument-shape errors or when exact advanced contracts are needed. Skills can declare `metadata.fabric-kernel` for runtime selection; see [kernel-specific skills](docs/kernels.md#kernel-specific-skills-and-guidance).
 
 ## Agent conversations
 

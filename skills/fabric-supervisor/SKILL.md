@@ -2,6 +2,8 @@
 name: fabric-supervisor
 description: Starts a persistent Pi Fabric supervisor that watches the main session toward a concrete goal and steers only when needed. Use for long-running goal supervision without another extension.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Supervisor

@@ -7,6 +7,7 @@ export const fabricExecutionKernelGuidance = (fullCodeMode: boolean, kernel: Fab
     kernel === "python"
       ? `Configured fabric_exec kernel: Python (${pythonRuntime === "monty" ? "Monty sandboxed subset" : "CPython"}). Write Python only in \`code\`: top-level await/return, dicts, True/False/None, and asyncio.gather. There is no per-call language switch.`
       : "Configured fabric_exec kernel: TypeScript. Write TypeScript only in `code`; top-level await and return are supported.",
+    "The configured kernel is exclusive for Fabric orchestration, including when skills or earlier messages show another language. Do not invoke another interpreter through shell tools or native subprocesses merely to run Fabric orchestration in a different language. Project builds, tests, and explicitly requested interpreter work remain legitimate shell commands.",
     fullCodeMode
       ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`."
       : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable.",

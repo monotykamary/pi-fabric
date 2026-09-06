@@ -2,44 +2,18 @@
 name: fabric-exec
 description: >-
   Troubleshooting and advanced API reference for `fabric_exec` programs,
-  configured TypeScript/Python kernels, dynamic providers, agents, and schema recovery. Routine `pi.*`
+  the TypeScript kernel, dynamic providers, agents, and schema recovery. Routine `pi.*`
   coding calls are documented by ambient guidance; load this skill only after
   an argument-shape error or when an advanced surface needs exact contracts.
+metadata:
+  fabric-kernel: typescript
 ---
 
 # fabric_exec — core reference
 
-One program in the **configured kernel**: `executor.kernel` is `typescript` by default, or explicitly `python`. There is **no per-call kernel selector**, language autodetection, or fallback. Only the `return` value reaches the model; `print()` goes to activity logs. `π` is payload data, not a tool.
+One program in the **TypeScript kernel**. Write TypeScript only in `code`. There is **no per-call kernel selector**, language autodetection, or fallback. Only the `return` value reaches the model; `print()` goes to activity logs. `π` is payload data, not a tool.
 
-## Python kernel
-
-Select `executor.kernel: "python"` in global `~/.pi/agent/fabric.json` or trusted project `.pi/fabric.json`. Python defaults to **Monty**, a sandboxed Python subset—not CPython. `asyncio.gather` is supported, but arbitrary imports, third-party packages, ambient OS access, and some Python syntax are unavailable. Use host tools for I/O. Missing native Monty dependencies fail with an installation hint, never a CPython fallback. Explicit `executor.pythonRuntime: "cpython"` enables the trusted native escape hatch, requiring **CPython 3.10+** (`executor.cpython.binary`, default `python3`). No extra enabled flag. `executor.runtime` selects a TypeScript backend only. See [execution kernels](../../docs/kernels.md) for configuration, isolation, and examples.
-
-- `code` is a **Python async function body**: top-level `await` and `return`, no enclosing `async def` or `asyncio.run`. Use Python `True`/`False`/`None`, dictionaries, and `asyncio.gather` for independent calls.
-- Await host actions through the same `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, and registered provider namespaces; `pi`/`extensions` are full-code surfaces (also exposed under schema enforce). Host schema validation, approvals, audit, timeouts, and cancellation still apply; **no static TypeScript check** runs for Python.
-- `await pi.read("README.md")`, `await pi.read({"path": "README.md", "limit": 80})`, and `await pi.read(path="README.md", limit=80)` return strings. `r = await pi.bash({"command": "git status --short", "settle": True})` returns a native dict: use `r['output']`, **not** `r.output`. Other structured bridge results are native dicts/lists too. Prefer canonical schema fields. Shared core aliases (`cmd`, `file_path`, `old_string`, `text`), numeric-string coercion, and optional null removal also work in Python; canonical values win, declared override fields stay canonical, and unknown keys reject.
-- Pass multiline content in top-level `payloads`; read only exact supplied keys as `π.key` or `payloads['key']`. Search before bounded reads, batch only independent work, and return compact evidence.
-- Discover with `await tools.search({"query": "action"})`; inspect `await tools.describe({"ref": ref})`; invoke computed refs with `await tools.call({"ref": ref, "args": args})`. Recover from validation errors using the actual schema, not TypeScript syntax.
-- Do not assume guest-local callbacks such as `memory.walk(args, visitor)`, callback-based workflow helpers, or `agents.handoff` predicates exist in Python. Use explicit loops over host actions and `asyncio.gather` instead.
-- Monty requires acyclic JSON-compatible host arguments; recursive containers are unsupported. Underscore-prefixed direct capability names (for example `mcp._123._tool`) require `await tools.call(ref="mcp._123._tool", args={...})`. `π` is an attribute object, while `payloads` is a separate dict with the same keys; use dictionary access for private/non-identifier keys.
-- Monty is always sandboxed with VM-enforced resource limits, including in schema enforce mode. Outside schema enforce, explicit CPython is trusted native code with full OS privileges. `RLIMIT_AS` bounds address space where the OS supports it; process limits are **not a security sandbox**. Enforce preserves Python; explicit CPython additionally requires macOS `sandbox-exec` or Linux `bwrap`, failing closed without isolation. TypeScript enforce uses QuickJS.
-
-Python-only example:
-
-```python
-import asyncio
-manifest, readme = await asyncio.gather(
-    pi.read("package.json"),
-    pi.read(path="README.md", limit=60),
-)
-return {"manifest": manifest, "readme": readme, "ok": True}
-```
-
-Python errors include user-line diagnostics and bounded repair advice; fix the reported call or syntax without replaying successful effects blindly. Entropy/catalog repair compilers remain host-side and kernel-neutral. sPTC currently applies only to isolated TypeScript/QuickJS; Python and native TypeScript calls execute normally without speculative prefetch.
-
-## TypeScript reference scope
-
-**All remaining examples, signatures, and object-shape notation below are TypeScript-only.** Shared host action names also apply to Python through its async bridge, but guest-local callback helpers are not a cross-kernel promise. The TypeScript kernel runs in isolated QuickJS by default and receives static type checking; `console.log` also goes to activity logs.
+QuickJS is isolated by default and receives static type checking; native Node/Bun is an explicit trusted-code escape hatch. Do not switch interpreters through shell commands to perform Fabric orchestration. Only the returned value reaches the model; logs go to activity output.
 
 ## `pi` core tools (full code mode only)
 `pi.<tool>(arg)` — single arg: bare string (primary field) or options object, or a two-arg `(primary, options)` merge for the string-primary tools (`read`/`bash`/`powershell`/`ls`/`grep`/`find`): `pi.read('index.ts', { limit: 120 })` becomes `{ path: 'index.ts', limit: 120 }`, the positional string winning the primary field on conflict; a non-object second arg on those is still a type error. Positional tuple calls are accepted for `grep`/`find` (`pattern, path, limit`), `write` (`path, content`), and `edit` (`path, oldText, newText`).
@@ -128,7 +102,7 @@ Stable-provider arguments normalize near-miss spellings the way `pi.*` does: kno
 
 ### Dynamic provider return shapes
 
-- `mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to the server-defined result, commonly `{text:string,content:unknown[],structuredContent:unknown}`; for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`. `<skill-dir>/references/mcp.md` is a branch pointer for MCP naming and management only when the task needs MCP.
+- `mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to the server-defined result, commonly `{text:string,content:unknown[],structuredContent:unknown}`; for example `mcp.fal_ai.get_model_schema({ endpoint_id: "openai/gpt-image-2" })`. `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/mcp.md` is a branch pointer for MCP naming and management only when the task needs MCP.
 - `extensions.<tool>(args)` in full code mode resolves to `{content:Array<{type,text?,...}>,text:string,details?,isError:boolean,terminate?,source:{path,source,scope,origin,baseDir?}}`.
 - Captured Fovea tools therefore use refs such as `extensions.fovea_focus`. Discover dynamically with `await tools.search({ query: "fovea_focus" })` (the string shorthand `tools.search("fovea_focus")` is also accepted), then pass the returned `action.ref` to `tools.call({ ref, args })`; never invent a bare or `fovea.*` ref.
 
@@ -141,11 +115,11 @@ Refs are namespaced (`pi.grep`, `extensions.<tool>`, `mcp.<server>.<tool>`, `sch
 Read the line-numbered error → `await tools.describe({ref})` for the schema → match `inputSchema`, rerun (don't guess). Common mistakes: bare ref (`grep`→`pi.grep`); a non-object second arg on `read`/`bash`/`powershell`/`ls` (`(primary, optionsObject)` already merges on the string-primary tools; positional tuples exist only for `grep`/`find`/`write`/`edit`).
 
 ## Orchestration surfaces (opt-in)
-Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `<skill-dir>/references/agents.md` and `<skill-dir>/references/mesh.md` are branch pointers for low-level API detail.
+Advanced workflow skills are user-invoked; never load them autonomously. When the user has explicitly invoked an agent or mesh workflow, `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/agents.md` and `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/mesh.md` are branch pointers for low-level API detail.
 
 `agents.self()` and `agents.members({scope?,kinds?})` expose one leased directory of intrinsic roots, agents, and actors. `agents.main()` and `agents.peers()` are compatibility views of root participants. **Peer is a reserved Fabric term for another root Pi session, not a child agent.** When the user says “peer,” query `agents.peers()` first; do not infer peer state from `agents.list()` or from `agents.members({ kinds: ["agent"] })`. `agents.list()` defaults to local child agents; use `scope: "lineage" | "project"` for federated agent discovery. Cross-process `steer`, `followUp`, and `stop` resolve `ownerHostId` and return only after the owner acknowledges. `agents.subscribe()` creates a durable source-qualified Pi/run lifecycle route; use it instead of model-authored status polling when another participant boundary should notify Main or an agent. Detached `agents.spawn()` already sends Main a terminal follow-up by default unless the caller later waits. Set `residency: "durable"` on `agents.spawn()` or `agents.create()` only when the participant must outlive the current Pi host; Fabric lazily transfers it to the hidden resident host in a trusted mesh-enabled project.
 
-For an explicit implementation handoff, `agents.handoff({ model, task?, when? })` schedules a visible Pi child at the completed outer `fabric_exec` boundary; later calls in the same program still run, and Main blocks only after the finalized native outer result is ready. `when` is a guest-only pure synchronous predicate over immutable earlier successful-call facts from any resolved Fabric provider and is stripped before the host call. `/fabric prewalk [task]` defaults to in-place Main model switching plus a hidden same-session continuation; child trajectory mode is an opt-in setting. See `<skill-dir>/references/agents.md`.
+For an explicit implementation handoff, `agents.handoff({ model, task?, when? })` schedules a visible Pi child at the completed outer `fabric_exec` boundary; later calls in the same program still run, and Main blocks only after the finalized native outer result is ready. `when` is a guest-only pure synchronous predicate over immutable earlier successful-call facts from any resolved Fabric provider and is stripped before the host call. `/fabric prewalk [task]` defaults to in-place Main model switching plus a hidden same-session continuation; child trajectory mode is an opt-in setting. See `/Users/monotykamary/VCS/working-remote/open-source/pi-fabric/skills/fabric-exec/references/agents.md`.
 
 Persistent actors may declare `requires: ["provider.action", { ref: "provider.optional", optional: true }]`. Each run records and verifies a closed-world descriptor commitment; missing required refs fail the activation instead of widening authority.
 

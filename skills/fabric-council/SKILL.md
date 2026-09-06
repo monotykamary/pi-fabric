@@ -2,6 +2,8 @@
 name: fabric-council
 description: Runs a bounded multi-perspective Pi Fabric council with independent reviewers and best-effort synthesis. Use for architecture choices, plans, reviews, and adversarial cross-checking.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Council

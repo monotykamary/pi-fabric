@@ -2,6 +2,8 @@
 name: fabric-advisor
 description: Starts a persistent Pi Fabric peer advisor that reviews the main agent at decision points and surfaces only concrete, material advice. Use for ambient correctness review without another extension.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Advisor

@@ -2,6 +2,8 @@
 name: fabric-rlm
 description: Recursively decomposes oversized tasks into bounded child Pi agents with fresh context windows. Use for whole-repo audits, massive-context analysis, and multi-file refactors that do not fit one context.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Recursive Decomposition

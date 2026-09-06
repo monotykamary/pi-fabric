@@ -4,10 +4,11 @@ Pi Fabric uses a core-first, user-opt-in skill hierarchy.
 
 ## Invocation contract
 
-- The model can invoke one skill only: `fabric-exec`. It covers normal Pi core work through `fabric_exec`, `pi.*`, discovery, and stable provider proxies.
+- The model can invoke one execution reference for its configured kernel: `fabric-exec` (TypeScript) or `fabric-exec-python` (Python). It covers Pi core work through `fabric_exec`, `pi.*`, discovery, and stable provider proxies.
 - The user invokes every advanced workflow. Each one declares `disable-model-invocation: true` and stays out of the model catalog. Agent policy forbids reading one autonomously or delegating from one user-only skill to another. The policy governs agent behavior. It is not a filesystem authorization boundary.
 - `/skill:fabric-guide` is the user-only router. It names one exact advanced command and stops there. The router never invokes the recommendation.
-- Each user-facing description summarizes its command. The `fabric-exec` description is the only one that spends always-on model context.
+- Each user-facing description summarizes its command. Only the selected execution reference spends always-on model context.
+- Skills declare `metadata.fabric-kernel: typescript` or `python` to restrict runtime visibility; unannotated skills are shared. Fabric filters catalogs and expanded invocations each turn. Bundled advanced workflows currently require TypeScript. See [kernel-specific skills](kernels.md#kernel-specific-skills-and-guidance) for authoring and command-menu limitations.
 
 The parent agent behaves like regular Pi until the user explicitly opts into orchestration, recursion, Schema, ambient actors, or swarm coordination.
 

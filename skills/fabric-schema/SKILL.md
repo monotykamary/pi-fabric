@@ -2,6 +2,8 @@
 name: fabric-schema
 description: Uses Fabric's typed Schema evidence loop and, when enabled, its bounded local-file transaction channel. Use when surprise must void a plan and mutation claims need explicit postconditions.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Schema

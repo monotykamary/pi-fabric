@@ -217,7 +217,7 @@ describe("fabric-exec skill provider contracts", () => {
       skills.map(({ name }) => name).sort(),
     );
     expect(fabricSkills.filter((skill) => !skill.disableModelInvocation)
-      .map((skill) => skill.name)).toEqual(["fabric-exec"]);
+      .map((skill) => skill.name)).toEqual(["fabric-exec", "fabric-exec-python"]);
     const prompt = formatSkillsForPrompt(fabricSkills);
     expect(prompt).toContain("fabric-exec");
     for (const skill of fabricSkills.filter((skill) => skill.disableModelInvocation)) {
@@ -227,7 +227,7 @@ describe("fabric-exec skill provider contracts", () => {
     const guide = fs.readFileSync("skills/fabric-guide/SKILL.md", "utf8");
     expect(guide).toContain("disable-model-invocation: true");
     for (const name of skills.map(({ name }) => name).filter((name) =>
-      name !== "fabric-exec" && name !== "fabric-guide"
+      name !== "fabric-exec" && name !== "fabric-exec-python" && name !== "fabric-guide"
     )) {
       expect(guide, `router missing ${name}`).toContain(`/skill:${name}`);
     }

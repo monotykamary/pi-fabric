@@ -2,6 +2,8 @@
 name: fabric-fusion
 description: Multi-model deliberation. Two to 8 distinct models answer in parallel with web-capable tools, then a judge compares consensus, contradictions, coverage gaps, unique insights, and blind spots. Act mode runs 1–4 read-only references, then one actor reconciles and executes. Use when the cost of being wrong justifies multiple completions.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Fusion

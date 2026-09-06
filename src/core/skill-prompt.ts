@@ -12,19 +12,21 @@ const CWD_MARKER = "\nCurrent working directory:";
 export const restoreSkillsForFullCodePrompt = (
   systemPrompt: string,
   skills: readonly Skill[],
+  fullCodeMode = true,
 ): string => {
   const section = formatSkillsForPrompt([...skills]).replace(
     PI_SKILL_LOAD_INSTRUCTION,
-    FABRIC_SKILL_LOAD_INSTRUCTION,
+    fullCodeMode ? FABRIC_SKILL_LOAD_INSTRUCTION : PI_SKILL_LOAD_INSTRUCTION,
   );
-  if (!section) return systemPrompt;
-
-  if (systemPrompt.includes(SKILL_SECTION_HEADING)) {
-    return systemPrompt.replace(
-      PI_SKILL_LOAD_INSTRUCTION,
-      FABRIC_SKILL_LOAD_INSTRUCTION,
-    );
+  // Replace the catalog, not just its loader sentence: a previous catalog may
+  // advertise skills for a different kernel, including in native-tool mode.
+  const start = systemPrompt.indexOf(SKILL_SECTION_HEADING);
+  const end = start < 0 ? -1 : systemPrompt.indexOf("</available_skills>", start);
+  if (start >= 0 && end >= 0) {
+    return systemPrompt.slice(0, start) + section.trimStart() +
+      systemPrompt.slice(end + "</available_skills>".length);
   }
+  if (!section) return systemPrompt;
 
   const cwdIndex = systemPrompt.lastIndexOf(CWD_MARKER);
   if (cwdIndex < 0) return `${systemPrompt}${section}`;

@@ -2,6 +2,8 @@
 name: fabric-workflow
 description: Runs a dynamic Pi Fabric workflow with code-held phases, fan-out, pipelines, structured agents, and best-effort verification. Use for large audits, migrations, parallel research, or explicit workflow requests.
 disable-model-invocation: true
+metadata:
+  fabric-kernel: typescript
 ---
 
 # Fabric Dynamic Workflow

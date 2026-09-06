@@ -36,6 +36,23 @@ For full native Python and installed packages, install **CPython 3.10+** and opt
 
 `executor.cpython.binary` is an executable name on `PATH` or a path, not shell arguments. An absolute path selects a particular interpreter. Setting only the binary does not select Python or disable Monty. CPython is trusted native code outside schema enforce, just as Node/Bun are TypeScript escape hatches. Host approvals do not cover direct native OS operations. Under enforce, CPython requires the additional OS isolation described below.
 
+## Kernel-specific skills and guidance
+
+Fabric selects skill visibility on every agent turn using the current kernel, including after `/fabric settings` changes. `fabric-exec` is the TypeScript-only reference; `fabric-exec-python` is the Python-only reference. Bundled workflows that still depend on TypeScript programs are unavailable under Python, not automatically translated or executed through Node.
+
+Third-party and project skills can opt into the same filtering with standard skill frontmatter metadata:
+
+```yaml
+metadata:
+  fabric-kernel: python
+```
+
+Use `typescript` for the other kernel. Omit `fabric-kernel` for language-neutral skills; invalid declared values hide the skill under both kernels. Give kernel variants distinct skill names so Pi's name-collision handling does not discard one before Fabric sees it. Existing `disable-model-invocation` behavior is preserved. Changes to existing skill metadata are detected on the next turn; adding new skill files still needs Pi resource discovery (`/reload`).
+
+This is model-context selection, not filesystem access control. Pi's skill command menu can still list both variants because its discovery API is additive. An incompatible expanded `/skill:name` block is replaced in model context by an unavailable notice, preserving user arguments and leaving stored session history unchanged. Ordinary source reads and earlier tool results are not erased. Unannotated third-party skills and custom model guidance may still contain language-specific examples: annotate/split those skills and remove conflicting custom guidance as needed.
+
+The selected kernel is authoritative even when older context shows another language. Do not use shell interpreters or native subprocesses merely to move Fabric orchestration into the other language. Legitimate project builds, tests, and explicitly requested interpreter work remain allowed; this guidance is not a shell-command security sandbox.
+
 ## Agent kernel inheritance
 
 An agent request may select a **child's** language with `kernel: "typescript" | "python" | "inherit"` on `agents.run`, `agents.spawn`, `agents.create`, or `agents.handoff`. Omitted/`inherit` uses the caller's configured kernel. This is not a per-call selector on `fabric_exec`: its current program must still use the current kernel's syntax. Skills can choose the language that best fits their model and task; workflow, council, and RLM requests forward the option. See [agents](agents.md#choose-the-childs-language) for cross-language examples.
