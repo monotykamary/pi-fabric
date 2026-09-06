@@ -38,7 +38,9 @@ import {
   isBlockingOrchestrationRef,
 } from "./runtime/orchestration.js";
 import type { FabricCommittedCapabilityView } from "./protocol.js";
-import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
+import {
+  fabricAuthoredTitleHintCached,
+} from "./ui/fabric-title-hint.js";
 import type {
   QuickJsRuntime,
   FabricSandboxResult,
@@ -152,6 +154,7 @@ export interface FabricExecutionOptions {
   maxAgentCalls?: number;
   display?: FabricRunDisplay;
   onPartial(snapshot: FabricExecutionPartial): void;
+  titleHint?: string;
 }
 
 export class FabricExecutionService {
@@ -178,7 +181,9 @@ export class FabricExecutionService {
     this.activity?.start(
       options.parentToolCallId,
       options.display,
-      options.display?.name?.trim() ? undefined : fabricExecTitleHintCached(options.code),
+      options.display?.name?.trim()
+        ? undefined
+        : options.titleHint ?? fabricAuthoredTitleHintCached(options),
     );
     const dependencies = await loadRuntimeDependencies();
     const effectiveFullCodeMode =

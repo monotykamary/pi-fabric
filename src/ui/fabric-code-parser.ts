@@ -293,6 +293,44 @@ const pathTarget = (tokens: Token[], start: number, end: number): string | undef
   return keyed !== undefined ? dirQualifier(keyed) : undefined;
 };
 
+// Deterministic title for a script-mode payload. The compiled program is a
+// constant, so tokenizing it yields a bare "Shell" for every script ever run.
+// Only the command identity is retained: arguments may contain credentials,
+// headers, URLs, or other payload text, and this title is reused by the compact
+// card, activity, and durable compaction intent. Leading shebangs, comments,
+// and shell-option preamble are skipped because they identify no work.
+const SCRIPT_TITLE_PREAMBLE = /^(?:set|shopt|export|cd|source|\.)\b/;
+const SCRIPT_TITLE_ASSIGNMENT =
+  /^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+)\s*/;
+
+const scriptCommandName = (line: string): string | undefined => {
+  let remaining = line.trimStart();
+  while (true) {
+    const assignment = SCRIPT_TITLE_ASSIGNMENT.exec(remaining);
+    if (!assignment) break;
+    remaining = remaining.slice(assignment[0].length);
+  }
+  const command = /^[A-Za-z0-9_./@+-]+/.exec(remaining)?.[0];
+  return command ? titleBasename(command) : undefined;
+};
+
+export const fabricScriptTitleHint = (script: string): string | undefined => {
+  const lines = script.split("\n");
+  let fallback: string | undefined;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const command = scriptCommandName(trimmed);
+    if (!command) continue;
+    if (SCRIPT_TITLE_PREAMBLE.test(trimmed)) {
+      fallback ??= command;
+      continue;
+    }
+    return `Shell ${command}`;
+  }
+  return fallback === undefined ? undefined : `Shell ${fallback}`;
+};
+
 const piCallTarget = (
   label: string,
   tokens: Token[],

@@ -8,7 +8,9 @@ import {
 } from "./branch-details.js";
 import { clipUtf8, utf8Bytes } from "./bounds.js";
 import { normalizeRunDisplay } from "../run-display.js";
-import { fabricExecTitleHintCached } from "../ui/fabric-title-hint.js";
+import {
+  fabricAuthoredTitleHintCached,
+} from "../ui/fabric-title-hint.js";
 
 // A purely structural, typed view of one session window. Every event carries
 // the 1-based `index` it occupied in the normalized stream (stable, used by the
@@ -242,9 +244,7 @@ const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undef
   // preserved even when the name comes from the program.
   const intentName = display?.name?.trim()
     ? display.name
-    : typeof call.args.code === "string"
-      ? fabricExecTitleHintCached(call.args.code)
-      : undefined;
+    : fabricAuthoredTitleHintCached(call.args);
   if (intentName === undefined) return undefined;
   const name = clipUtf8(intentName.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
   if (!name) return undefined;
