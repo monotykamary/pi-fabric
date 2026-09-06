@@ -316,7 +316,8 @@ return {"blocked": blocked, "host": result}
   });
 
   it.skipIf(process.platform !== "darwin" || !installedSandbox)("denies signaling and ptrace against a sacrificial host process", async () => {
-    const target = childProcess.spawn("/bin/sleep", ["30"]);
+    // Computed so knip does not treat the binary path as a resolvable import.
+    const target = childProcess.spawn(path.join("/bin", "sleep"), ["30"]);
     try {
       const result = await new CPythonRuntime(binary, true).execute(`
 import ctypes, os, signal
