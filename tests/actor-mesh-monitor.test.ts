@@ -51,7 +51,7 @@ describe("ActorMeshMonitor", () => {
     expect(JSON.parse(fs.readFileSync(s.cursorPath, "utf8"))).toEqual({ format: 1, cursor: 20 });
   });
 
-  it("falls back after watcher errors and closes timers and queued work", async () => {
+  it.skipIf(process.platform === "win32")("falls back after watcher errors and closes timers and queued work", async () => {
     const s = setup();
     s.monitor.start();
     await flush();

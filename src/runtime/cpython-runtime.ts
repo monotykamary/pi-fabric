@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, realpath } from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import type { Duplex } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -22,15 +24,26 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 const executable = async (binary: string, cwd: string): Promise<string> => {
+  // Windows stores executables with PATHEXT suffixes ("python3" -> "python3.exe");
+  // probe the variants spawn would find instead of failing on the bare name.
+  const extensions = process.platform === "win32"
+    ? String(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
+    : [];
+  const variants = (candidate: string): string[] =>
+    extensions.length && !/\.[A-Za-z0-9]+$/.test(candidate)
+      ? [candidate, ...extensions.map((extension) => candidate + extension)]
+      : [candidate];
   const candidates = path.isAbsolute(binary) || binary.includes("/") || binary.includes("\\")
     ? [path.resolve(cwd, binary)]
     : (process.env.PATH ?? "").split(path.delimiter).map((directory) => path.resolve(cwd, directory || ".", binary));
   for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return await realpath(candidate);
-    } catch {
-      // Continue only during executable discovery, never after a failed spawn.
+    for (const variant of variants(candidate)) {
+      try {
+        await access(variant, constants.X_OK);
+        return await realpath(variant);
+      } catch {
+        // Continue only during executable discovery, never after a failed spawn.
+      }
     }
   }
   throw new Error(`CPython executable not found: ${binary}. Install Python 3 or set executor.cpython.binary to a trusted executable's absolute path.`);
@@ -62,6 +75,20 @@ const launch = async (binary: string, enforce: boolean, cwd: string): Promise<{ 
   throw new Error(`Schema enforce CPython has no supported OS sandbox on ${process.platform}; no unsandboxed fallback is permitted.`);
 };
 
+// Windows stdio[3] is an anonymous pipe, not a socket, so the child dials a
+// loopback listener instead; a one-time token proves the caller is our child.
+const createIpcListener = (): Promise<{ server: net.Server; port: number; token: string }> =>
+  new Promise((resolve, reject) => {
+    const server = net.createServer();
+    const token = randomBytes(32).toString("hex");
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") reject(new Error("Fabric CPython IPC listener failed to bind"));
+      else resolve({ server, port: address.port, token });
+    });
+  });
+
 /** A fresh CPython process per call. Only enforce=true adds an OS security boundary. */
 export class CPythonRuntime implements FabricKernelRuntime {
   constructor(readonly binary = "python3", readonly enforce = false) {}
@@ -80,6 +107,8 @@ export class CPythonRuntime implements FabricKernelRuntime {
     catch (error) { return failure("runtime_error", errorText(error)); }
     // Resolve first, then check before spawn: no orphan on cancellation during discovery.
     if (options.signal?.aborted) return failure("aborted", "Execution cancelled");
+    // Windows cannot inherit a socket through stdio; the child connects back instead.
+    const ipc = process.platform === "win32" ? await createIpcListener() : undefined;
 
     return new Promise<FabricSandboxResult>((resolve) => {
       const hostAbort = new AbortController();
@@ -102,15 +131,17 @@ export class CPythonRuntime implements FabricKernelRuntime {
           cwd: options.cwd ?? process.cwd(),
           // -I ignores PYTHON* and user site packages; -B avoids bytecode writes.
           // Keep ordinary environment for trusted native code, not a false secrecy claim.
-          env: process.env,
+          env: ipc ? { ...process.env, FABRIC_IPC_PORT: String(ipc.port), FABRIC_IPC_TOKEN: ipc.token } : process.env,
           detached: process.platform !== "win32",
           stdio: command.seccomp ? ["ignore", "pipe", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
         });
       } catch (error) {
+        ipc?.server.close();
         resolve(failure("runtime_error", `CPython process failed: ${errorText(error)}`));
         return;
       }
-      const channel = child.stdio[3] as Duplex;
+      let channel: Duplex | net.Socket | undefined;
+      let expectedToken: string | undefined = ipc?.token;
       const appendLog = (index: number, text: string): void => {
         if (settled || truncated) return;
         const available = Math.max(0, maxLogChars - logChars);
@@ -128,7 +159,8 @@ export class CPythonRuntime implements FabricKernelRuntime {
         if (deadline) clearTimeout(deadline);
         options.signal?.removeEventListener("abort", abort);
         if (!hostAbort.signal.aborted) hostAbort.abort(new Error(result.error ?? "CPython execution ended"));
-        channel.destroy();
+        channel?.destroy();
+        ipc?.server.close();
         child.stdout?.destroy();
         child.stderr?.destroy();
         if (child.pid && process.platform !== "win32") {
@@ -149,7 +181,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
         deadline.unref?.();
       };
       const send = (message: unknown): void => {
-        if (settled || channel.destroyed) return;
+        if (settled || !channel || channel.destroyed) return;
         try {
           const frame = JSON.stringify(message) + "\n";
           const bytes = Buffer.byteLength(frame);
@@ -209,9 +241,26 @@ export class CPythonRuntime implements FabricKernelRuntime {
         ).finally(() => { hostTasks.delete(task); callIds.delete(id); });
         hostTasks.add(task);
       };
-      channel.on("data", (chunk: Buffer) => {
+      const onData = (chunk: Buffer): void => {
         if (settled || finishing) return;
         buffer = Buffer.concat([buffer, chunk]);
+        if (expectedToken !== undefined) {
+          const handshake = buffer.indexOf(10);
+          if (handshake === -1) {
+            if (buffer.length > 4096) fail("Invalid CPython IPC handshake");
+            return;
+          }
+          let verified = false;
+          try {
+            const hello = JSON.parse(buffer.subarray(0, handshake).toString("utf8"));
+            verified = record(hello) && hello.type === "hello" && hello.token === expectedToken;
+          } catch { /* Fail closed below. */ }
+          if (!verified) { fail("Invalid CPython IPC handshake"); return; }
+          buffer = buffer.subarray(handshake + 1);
+          expectedToken = undefined;
+          send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes });
+          if (settled || finishing) return;
+        }
         let newline: number;
         while ((newline = buffer.indexOf(10)) !== -1) {
           if (newline > MAX_FRAME_BYTES) { fail("CPython IPC frame exceeds 16 MiB"); return; }
@@ -222,8 +271,13 @@ export class CPythonRuntime implements FabricKernelRuntime {
           if (settled || finishing) return;
         }
         if (buffer.length > MAX_FRAME_BYTES) fail("CPython IPC frame exceeds 16 MiB");
-      });
-      channel.on("error", (error) => { if (!settled && !finishing) fail(`CPython IPC failed: ${error.message}`); });
+      };
+      const attach = (socket: Duplex | net.Socket): void => {
+        channel = socket;
+        if (socket instanceof net.Socket) socket.setNoDelay(true);
+        socket.on("data", onData);
+        socket.on("error", (error) => { if (!settled && !finishing) fail(`CPython IPC failed: ${error.message}`); });
+      };
       child.stdout?.on("data", (chunk: Buffer) => appendLog(0, decoders[0]!.write(chunk)));
       child.stderr?.on("data", (chunk: Buffer) => appendLog(1, decoders[1]!.write(chunk)));
       child.on("error", (error) => fail(`CPython process failed: ${error.message}${this.enforce ? "; OS sandbox is required (no native fallback)" : ""}`));
@@ -240,7 +294,17 @@ export class CPythonRuntime implements FabricKernelRuntime {
         filterPipe.end(command.seccomp);
       }
       scheduleDeadline();
-      send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes });
+      if (ipc) {
+        // Windows: the child dials the loopback listener and proves the token first.
+        ipc.server.on("connection", (socket) => {
+          if (channel) { socket.destroy(); return; }
+          ipc.server.close();
+          attach(socket);
+        });
+      } else {
+        attach(child.stdio[3] as Duplex);
+        send({ type: "execute", code, strings: options.strings ?? {}, memoryLimitBytes: options.memoryLimitBytes });
+      }
     });
   }
 }

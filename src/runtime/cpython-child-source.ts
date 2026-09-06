@@ -211,9 +211,17 @@ def _error_text(error, source):
 
 async def _main():
     global _writer
-    # Descriptor 3 is a dedicated inherited socket, never stdout/stderr.
-    channel = socket.socket(fileno=3)
-    reader, _writer = await asyncio.open_connection(sock=channel, limit=_MAX_FRAME)
+    # Descriptor 3 is a dedicated inherited socket, never stdout/stderr. Windows
+    # cannot inherit a socket through stdio, so there the child dials a loopback
+    # TCP listener and proves a one-time token from the environment instead.
+    port = os.environ.get("FABRIC_IPC_PORT")
+    token = os.environ.get("FABRIC_IPC_TOKEN")
+    if port and token:
+        reader, _writer = await asyncio.open_connection("127.0.0.1", int(port), limit=_MAX_FRAME)
+        await _send({"type": "hello", "token": token})
+    else:
+        channel = socket.socket(fileno=3)
+        reader, _writer = await asyncio.open_connection(sock=channel, limit=_MAX_FRAME)
     request = json.loads(await reader.readline())
     if request.get("type") != "execute":
         raise RuntimeError("Invalid Fabric execution request")

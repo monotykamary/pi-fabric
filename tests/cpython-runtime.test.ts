@@ -219,8 +219,11 @@ describe.skipIf(!hasPython)("CPythonRuntime", () => {
 
   it("rejects malformed/oversized IPC before calling the host", async () => {
     const host = vi.fn(echo);
-    const malformed = await run('import os\nos.write(3, bytes([123, 10]))\nawait asyncio.sleep(1)', host);
-    expect(malformed.error).toContain("Invalid CPython IPC");
+    if (process.platform !== "win32") {
+      // Windows carries IPC over loopback TCP, so there is no writable fd 3.
+      const malformed = await run('import os\nos.write(3, bytes([123, 10]))\nawait asyncio.sleep(1)', host);
+      expect(malformed.error).toContain("Invalid CPython IPC");
+    }
     const oversized = await run('return "x" * (17 * 1024 * 1024)', host);
     expect(oversized.error).toContain("16 MiB");
     expect(host).not.toHaveBeenCalled();
