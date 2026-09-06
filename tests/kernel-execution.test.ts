@@ -4,6 +4,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { availablePythonBackends, pythonBackends } from "./fixtures/python-backends.js";
+import { rmTempSync } from "./fixtures/temp-cleanup.js";
 import { normalizeFabricConfig, type FabricPythonRuntime } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
@@ -14,7 +15,7 @@ const roots: string[] = [];
 const registries: ActionRegistry[] = [];
 afterEach(async () => {
   await Promise.all(registries.splice(0).map((registry) => registry.close()));
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) rmTempSync(root);
 });
 
 const fixture = (pythonRuntime: FabricPythonRuntime) => {

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { rmTempSync } from "./fixtures/temp-cleanup.js";
 import os from "node:os";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -28,7 +29,7 @@ afterEach(async () => {
   clearActiveCompiledSurface();
   await Promise.all(compilers.splice(0).map((compiler) => compiler.flush()));
   await Promise.all(registries.splice(0).map((registry) => registry.close()));
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) rmTempSync(root);
 });
 const temp = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-kernel-compilers-"));

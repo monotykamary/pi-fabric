@@ -11,6 +11,7 @@ import {
 import { Type, type TSchema } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { availablePythonBackends } from "./fixtures/python-backends.js";
+import { rmTempSync } from "./fixtures/temp-cleanup.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
@@ -116,7 +117,7 @@ describe("captured core overrides through Fabric execution", () => {
       expect(result.success, result.error).toBe(true);
       expect(calls).toEqual([{ path: "virtual.txt", text: "canonical" }]);
       expect(fs.existsSync(path.join(cwd, "virtual.txt"))).toBe(false);
-    } finally { catalog.clear(); fs.rmSync(cwd, { recursive: true, force: true }); }
+    } finally { catalog.clear(); rmTempSync(cwd); }
   });
 
   it("fails closed instead of bypassing a bash override that does not support cwd", async () => {
@@ -148,7 +149,7 @@ describe("captured core overrides through Fabric execution", () => {
       expect(calls).toEqual([]);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 
@@ -210,7 +211,7 @@ return { shorthand, structure };
       expect(calls).toHaveLength(2);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 
@@ -259,7 +260,7 @@ return { shorthand, structure };
       expect(editCalls).toEqual([]);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 
@@ -323,7 +324,7 @@ return [positional.output, alias.output, batch.output, symbol.output, symbolAlia
       expect(calls).toHaveLength(5);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 
@@ -371,7 +372,7 @@ return [positional.output, alias.output, batch.output, symbol.output, symbolAlia
       ]);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 
@@ -399,7 +400,7 @@ return [positional.output, alias.output, batch.output, symbol.output, symbolAlia
       expect(calls).toEqual([]);
     } finally {
       catalog.clear();
-      fs.rmSync(cwd, { recursive: true, force: true });
+      rmTempSync(cwd);
     }
   });
 });

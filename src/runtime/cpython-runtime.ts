@@ -142,6 +142,8 @@ export class CPythonRuntime implements FabricKernelRuntime {
       }
       let channel: Duplex | net.Socket | undefined;
       let expectedToken: string | undefined = ipc?.token;
+      let childExited = child.pid === undefined;
+      child.once("exit", () => { childExited = true; });
       const appendLog = (index: number, text: string): void => {
         if (settled || truncated) return;
         const available = Math.max(0, maxLogChars - logChars);
@@ -152,7 +154,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
         for (const line of lines) logs.push(line.replace(/\r$/, ""));
         if (retained.length !== text.length) truncated = true;
       };
-      const finish = (result: Omit<FabricSandboxResult, "logs">): void => {
+      const finish = async (result: Omit<FabricSandboxResult, "logs">): Promise<void> => {
         if (settled) return;
         for (let index = 0; index < decoders.length; index++) appendLog(index, decoders[index]!.end());
         settled = true;
@@ -167,15 +169,24 @@ export class CPythonRuntime implements FabricKernelRuntime {
           try { process.kill(-child.pid, "SIGKILL"); } catch { /* The process group may already have exited. */ }
         }
         child.kill("SIGKILL");
+        // Let the terminated child release its working directory before the
+        // caller observes the result; Windows rmdir fails with EBUSY while held.
+        if (!childExited) {
+          await new Promise<void>((done) => {
+            const timer = setTimeout(done, 250);
+            timer.unref?.();
+            child.once("exit", () => { clearTimeout(timer); done(); });
+          });
+        }
         for (const text of partialLogs) if (text) logs.push(text);
         if (truncated) logs.push("[Pi Fabric log output truncated]");
         resolve({ ...result, logs });
       };
-      const abort = (): void => finish({ value: undefined, terminationReason: "aborted", error: "Execution cancelled" });
-      const fail = (message: string): void => finish({ value: undefined, terminationReason: "runtime_error", error: message });
+      const abort = (): void => void finish({ value: undefined, terminationReason: "aborted", error: "Execution cancelled" });
+      const fail = (message: string): void => void finish({ value: undefined, terminationReason: "runtime_error", error: message });
       const scheduleDeadline = (): void => {
         if (deadline) clearTimeout(deadline);
-        deadline = setTimeout(() => finish({
+        deadline = setTimeout(() => void finish({
           value: undefined, terminationReason: "timed_out", error: `Execution timed out after ${deadlineAt - startedAt}ms`,
         }), Math.max(0, deadlineAt - Date.now()));
         deadline.unref?.();
