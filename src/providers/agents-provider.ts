@@ -157,6 +157,11 @@ const longerTimeoutOverride = (
   return effective > manager.config.timeoutMs ? effective : undefined;
 };
 
+const checkedKernel = (value: unknown): AgentRunRequest["kernel"] => {
+  if (value === undefined || value === "inherit" || value === "typescript" || value === "python") return value;
+  throw new Error(`Invalid Fabric agent kernel: ${String(value)}`);
+};
+
 const runRequest = (
   args: Record<string, unknown>,
   context: FabricInvocationContext,
@@ -183,9 +188,14 @@ const runRequest = (
     runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
       : undefined;
+  const kernel = checkedKernel(args.kernel);
+  if (args.recursive === true && args.extensions === false) {
+    throw new Error("Recursive Fabric requires extensions enabled; omit recursive or extensions: false");
+  }
   return {
     task: String(args.task),
     runner,
+    ...(kernel !== undefined ? { kernel } : {}),
     ...(typeof args.name === "string" ? { name: args.name } : {}),
     ...(transport ? { transport } : {}),
     ...(typeof args.model === "string"
@@ -199,7 +209,9 @@ const runRequest = (
     ...(thinking ? { thinking } : {}),
     ...(tools ? { tools } : {}),
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(typeof args.extensions === "boolean" ? { extensions: args.extensions } : {}),
+    ...(typeof args.extensions === "boolean"
+      ? { extensions: args.extensions }
+      : args.recursive === true ? { extensions: true } : {}),
     ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
     ...(options.allowCwd !== false && typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
     ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
@@ -235,6 +247,7 @@ const compactHandoffResult = (
     id: result.id,
     name: result.name,
     runner: result.runner,
+    ...(result.kernel ? { kernel: result.kernel } : {}),
     transport: result.transport,
     ...(result.model ? { model: result.model } : {}),
     ...(result.thinking ? { thinking: result.thinking } : {}),
@@ -297,6 +310,15 @@ const actorRequest = (
       'The Veda runner does not support persistent actors: Veda executes one headless prompt per invocation. Use a Pi or Claude actor, or agents.run({ runner: "veda" }).',
     );
   }
+  const requestedKernel = checkedKernel(args.kernel);
+  const kernelRequest = {
+    runner,
+    ...(requestedKernel !== undefined ? { kernel: requestedKernel } : {}),
+    extensions: typeof args.extensions === "boolean" ? args.extensions : true,
+  };
+  // Templates retain inheritance until import; live actors freeze at creation.
+  const kernel = inheritModel ? manager.resolveKernel(kernelRequest) : requestedKernel;
+  if (!inheritModel && kernel !== undefined && kernel !== "inherit") manager.resolveKernel(kernelRequest);
   const inheritedModel =
     inheritModel && runner === "pi" && !manager.config.model && context.extensionContext.model
       ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
@@ -306,6 +328,7 @@ const actorRequest = (
     name: String(args.name),
     instructions: String(args.instructions),
     runner,
+    ...(kernel !== undefined ? { kernel } : {}),
     ...(events ? { events } : {}),
     ...(topics ? { topics } : {}),
     ...(args.delivery === "mailbox" ||
@@ -511,6 +534,12 @@ export class AgentsProvider implements FabricProvider {
       "pi",
     );
     delete handoffArgs.cwd;
+    const request = runRequest({ ...handoffArgs, runner: "pi" }, context, this.manager);
+    const kernel = this.manager.resolveKernel(request);
+    delete handoffArgs.kernel;
+    if (kernel) handoffArgs.kernel = kernel;
+    handoffArgs.extensions = request.extensions ?? this.manager.config.extensions;
+    if (kernel) handoffArgs.pythonRuntime = this.manager.resolvePythonRuntime();
     return context.deferHandoff(handoffArgs);
   }
 
@@ -540,6 +569,10 @@ export class AgentsProvider implements FabricProvider {
       { allowCwd: false },
     );
     request.runner = "pi";
+    if (args.pythonRuntime !== undefined) {
+      // Only host-created deferred handoffs carry this internal policy snapshot.
+      request.pythonRuntime = this.manager.resolvePythonRuntime(args.pythonRuntime as AgentRunRequest["pythonRuntime"]);
+    }
     request.sessionSeed = sessionSeed;
     const targetModel = request.model ?? model;
     const handoffCompaction = checkedHandoffCompaction(args.compact);
@@ -606,9 +639,16 @@ export class AgentsProvider implements FabricProvider {
       case "spawn": {
         const request = runRequest(this.#resolvePiModelArgs(args, context), context, this.manager);
         validateAgentCwdRequest(request);
-        const durableRequest = request.residency === "durable" && request.cwd !== undefined
-          ? { ...request, cwd: this.manager.resolveCwd(request.cwd) }
-          : request;
+        const kernel = this.manager.resolveKernel(request);
+        const { kernel: _requestedKernel, ...baseRequest } = request;
+        const durableRequest = {
+          ...baseRequest,
+          ...(kernel ? { kernel, pythonRuntime: this.manager.resolvePythonRuntime() } : {}),
+          extensions: request.extensions ?? this.manager.config.extensions,
+          ...(request.residency === "durable" && request.cwd !== undefined
+            ? { cwd: this.manager.resolveCwd(request.cwd) }
+            : {}),
+        };
         const handle = durableRequest.residency === "durable"
           ? await this.#resident().spawnAgent(durableRequest, context.signal)
           : await this.manager.spawn(durableRequest, context.signal);
@@ -1158,6 +1198,16 @@ export class AgentsProvider implements FabricProvider {
   }
 
   async #createActor(request: FabricActorRequest): Promise<FabricActorInfo> {
+    // Also freeze imported templates before any resident host sees the request.
+    const extensions = request.extensions ?? true;
+    const kernel = this.manager.resolveKernel({ ...request, extensions });
+    const { kernel: _requestedKernel, ...baseRequest } = request;
+    request = {
+      ...baseRequest,
+      runner: request.runner ?? this.manager.config.runner,
+      extensions,
+      ...(kernel ? { kernel, pythonRuntime: this.manager.resolvePythonRuntime(request.pythonRuntime) } : {}),
+    };
     if (request.residency !== "durable") return this.actorManager.create(request);
     if (!this.residency) return this.#residentActorClient().createActor(request);
 

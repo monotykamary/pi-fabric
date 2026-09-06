@@ -4,11 +4,14 @@ import {
   setting,
   sectionSubmenu,
   numericSubmenu,
+  stringInputSubmenu,
   modelPickerSubmenu,
 } from "./settings-submenus.js";
 import {
   BOOLEANS,
   summaryFor,
+  EXECUTOR_KERNELS,
+  PYTHON_RUNTIMES,
   EXECUTOR_RUNTIMES,
   formatMs,
   formatBytes,
@@ -39,25 +42,43 @@ export const buildExecutorSection = (
   { config, theme, persist }: Pick<SettingsSectionContext, "config" | "theme" | "persist">,
 ): SettingItem => {
   const executorMemoryDescription = (): string =>
-    config.executor.runtime === "quickjs"
-      ? "Maximum QuickJS heap size. WASM32 limits this to less than 4 GiB."
-      : config.executor.runtime === "bun-process"
-        ? "Heap target for the disposable Bun process. Bun ignores V8 heap flags, so this limit is not enforced."
-        : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
+    config.executor.kernel === "python" && config.executor.pythonRuntime === "monty"
+      ? "Monty VM allocation limit. Host bridge result/output limits apply separately. No filesystem or network access is granted to the VM."
+      : config.executor.kernel === "python"
+      ? "CPython process address-space limit via RLIMIT_AS where the OS supports it; not a portable hard memory cap. Process limits are not a security sandbox."
+      : config.executor.runtime === "quickjs"
+        ? "Maximum QuickJS heap size. WASM32 limits this to less than 4 GiB."
+        : config.executor.runtime === "bun-process"
+          ? "Heap target for the disposable Bun process. Bun ignores V8 heap flags, so this limit is not enforced."
+          : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
+  const kernelDescription = "Exclusive language for all fabric_exec calls; no per-call switching. Python defaults to sandboxed Monty. CPython requires explicit selection and is trusted native code outside schema enforce.";
+  const cpythonDescription = "CPython 3.10+ executable name or path (default python3), used only by the explicit CPython backend. No shell arguments.";
+  const enforceTypeScript = config.schema.mode === "enforce" && config.executor.kernel === "typescript";
 
   return setting("executor", "Executor", summaryFor("executor", config), {
-    description: "Runtime and resource limits for fabric_exec programs.",
+    description: "Kernel, Python/TypeScript backends, and resource limits. Node/Bun and CPython are unsafe trusted-code escape hatches.",
     submenu: sectionSubmenu(
       theme,
       "Executor",
-      "Runtime and resource limits for fabric_exec programs.",
+      "Kernel, Python/TypeScript backends, and resource limits. Node/Bun and CPython are unsafe trusted-code escape hatches.",
       [
-        setting("executor.runtime", "Runtime", config.executor.runtime, {
-          description:
-            config.schema.mode === "enforce"
-              ? "Schema enforce mode requires the isolated QuickJS runtime."
-              : "QuickJS is isolated and limited by WASM32. Node/Bun processes support larger heaps but are an unsafe trusted-code escape hatch, not a security sandbox.",
-          values: config.schema.mode === "enforce" ? ["quickjs"] : EXECUTOR_RUNTIMES,
+        setting("executor.kernel", "Kernel", config.executor.kernel, {
+          description: kernelDescription,
+          values: EXECUTOR_KERNELS,
+        }),
+        setting("executor.pythonRuntime", "Runtime (Python)", config.executor.pythonRuntime, {
+          description: "Monty (default) is a sandboxed Python subset with no native filesystem, network, or environment access. CPython 3.10+ is an explicit trusted-native escape hatch. Schema enforce keeps the selected backend and never falls back.",
+          values: PYTHON_RUNTIMES,
+        }),
+        setting("executor.cpython.binary", "CPython binary", config.executor.cpython.binary, {
+          description: cpythonDescription,
+          submenu: stringInputSubmenu(theme, "CPython binary", cpythonDescription),
+        }),
+        setting("executor.runtime", "Runtime (TS)", config.executor.runtime, {
+          description: enforceTypeScript
+            ? "TypeScript only. Schema enforce mode requires the isolated QuickJS runtime; it does not change the configured kernel."
+            : "TypeScript only; ignored by Python. QuickJS is isolated and limited by WASM32. Node/Bun processes support larger heaps but are an unsafe trusted-code escape hatch, not a security sandbox.",
+          values: enforceTypeScript ? ["quickjs"] : EXECUTOR_RUNTIMES,
         }),
         setting("executor.timeoutMs", "Timeout", formatMs(config.executor.timeoutMs), {
           description: `Default wall-clock time for a single fabric_exec program. A per-invocation timeoutMs or a matching executor.hostCallTimeouts ref can raise it up to the ${formatMs(config.executor.maxTimeoutMs)} policy maximum.`,
@@ -107,7 +128,7 @@ export const buildExecutorSection = (
             submenu: (currentValue, done) =>
               numericSubmenu(
                 theme,
-                executorMemoryLimitOptions(maxExecutorMemoryLimitBytes(config.executor.runtime)),
+                executorMemoryLimitOptions(maxExecutorMemoryLimitBytes(config.executor.runtime, config.executor.kernel)),
                 formatBytes,
                 "Executor memory limit",
                 executorMemoryDescription(),
@@ -162,7 +183,7 @@ export const buildSchemaSection = (
       [
         setting("schema.mode", "Mode", config.schema.mode, {
           description:
-            "off (default) leaves the control plane ungated. audit records would_block events for actions enforce would deny. enforce admits only the schema transaction channel for protected-workspace changes and forces the QuickJS runtime. Takes effect in the next session.",
+            "off (default) leaves the control plane ungated. audit records would_block events for actions enforce would deny. enforce admits only schema transactions for protected-workspace changes and preserves the kernel: TypeScript uses QuickJS; Python defaults to sandboxed Monty. Explicit CPython requires macOS sandbox-exec or Linux bwrap and fails closed without isolation. Takes effect in the next session.",
           values: SCHEMA_MODES,
         }),
         setting("schema.certificateTtlMs", "Certificate TTL", formatMs(config.schema.certificateTtlMs), {

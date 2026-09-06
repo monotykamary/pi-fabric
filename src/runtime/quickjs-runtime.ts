@@ -3,42 +3,23 @@ import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
 import ts from "typescript";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
+import { PI_ARGUMENT_NORMALIZATION_SOURCE } from "../core/pi-arguments.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
 
-export type FabricSandboxTerminationReason =
-  | "completed"
-  | "runtime_error"
-  | "timed_out"
-  | "aborted";
-
-export interface FabricSandboxResult {
-  value: unknown;
-  logs: string[];
-  terminationReason: FabricSandboxTerminationReason;
-  error?: string;
-}
-
-export interface FabricSandboxOptions {
-  timeoutMs: number;
-  memoryLimitBytes: number;
-  maxLogChars?: number;
-  strings?: Record<string, string>;
-  tokenBudget?: number;
-  signal?: AbortSignal;
-  minimumTimeoutMsForHostCall?(
-    ref: string,
-    args: Record<string, unknown>,
-  ): number | undefined;
-  transpiledCode?: string;
-  transpiledSourceMap?: string;
-}
-
-export type FabricHostCall = (
-  ref: string,
-  args: Record<string, unknown>,
-  signal: AbortSignal,
-) => Promise<unknown>;
+import type {
+  FabricHostCall,
+  FabricSandboxOptions,
+  FabricSandboxResult,
+  FabricSandboxTerminationReason,
+} from "./kernel.js";
+// Preserve existing import paths for runtime consumers.
+export type {
+  FabricHostCall,
+  FabricSandboxOptions,
+  FabricSandboxResult,
+  FabricSandboxTerminationReason,
+} from "./kernel.js";
 
 type QuickJsModule = Awaited<ReturnType<typeof newQuickJSWASMModuleFromVariant>>;
 
@@ -87,6 +68,9 @@ const quickJsModule = (): Promise<QuickJsModule> => {
   quickJsModulePromise ??= newQuickJSWASMModuleFromVariant(releaseSyncVariant);
   return quickJsModulePromise;
 };
+
+export const guestSetupSource = (fields?: Record<string, string[]>): string =>
+  `const __piCanonicalFields = ${JSON.stringify(fields ?? {})};\n${GUEST_SETUP}`;
 
 export const GUEST_SETUP = `
 (() => {
@@ -148,69 +132,8 @@ globalThis.tools = new Proxy(__toolsBase, {
   deleteProperty() { return true; },
 });
 const __piStringFields = { bash: "command", powershell: "command", read: "path", ls: "path", grep: "pattern", find: "pattern" };
-// Per-tool key aliases. The runtime normalizes them to the canonical form
-// before the host validates args; unit-converting aliases are handled separately
-// in __normalizePiArgs. This lets a model that writes { query, regex, ... }
-// or { file } instead of { pattern } / { path } still succeeds on the first
-// call. Keep these in sync with the PiToolsApi overloads in guest-types.ts so
-// the type-checker accepts the same spellings it coercion-handles at runtime.
-const __piArgAliases = {
-  bash: {
-    cmd: "command", shell: "command", cmdline: "command", script: "command",
-    commandLine: "command",
-    workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
-  },
-  powershell: {
-    cmd: "command", shell: "command", cmdline: "command", script: "command",
-    commandLine: "command",
-    workdir: "cwd", directory: "cwd", workingDirectory: "cwd",
-  },
-  find: {
-    query: "pattern", regex: "pattern", search: "pattern", name: "pattern",
-    filename: "pattern", glob: "pattern", expression: "pattern", include: "pattern",
-    max: "limit",
-  },
-  grep: {
-    query: "pattern", regex: "pattern", search: "pattern", q: "pattern",
-    expression: "pattern", text: "pattern",
-    ic: "ignoreCase", caseInsensitive: "ignoreCase",
-    globPattern: "glob",
-    max: "limit", ctx: "context",
-  },
-  read: {
-    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
-    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
-    absolute_path: "path", fileAbsolutePath: "path",
-    max: "limit", start: "offset",
-  },
-  ls: {
-    dir: "path", file: "path", folder: "path", absolutePath: "path",
-    file_path: "path", filePath: "path", filepath: "path", pathname: "path",
-    target_file: "path", targetFile: "path", absolute_path: "path",
-    fileAbsolutePath: "path", directory: "path", directoryPath: "path",
-    max: "limit",
-  },
-  edit: {
-    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
-    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
-    absolute_path: "path", fileAbsolutePath: "path",
-    old: "oldText", old_string: "oldText", oldString: "oldText",
-    old_str: "oldText", oldStr: "oldText", from: "oldText",
-    old_value: "oldText", old_text: "oldText", oldContent: "oldText",
-    old_content: "oldText",
-    new: "newText", replacement: "newText", new_string: "newText",
-    newString: "newText", new_str: "newText", newStr: "newText",
-    to: "newText", new_value: "newText", new_text: "newText",
-    newContent: "newText", new_content: "newText",
-  },
-  write: {
-    file: "path", absolutePath: "path", file_path: "path", filePath: "path",
-    filepath: "path", pathname: "path", target_file: "path", targetFile: "path",
-    absolute_path: "path", fileAbsolutePath: "path",
-    contents: "content", body: "content", text: "content", data: "content",
-    fileContent: "content",
-  },
-};
+// Object aliases and coercions are shared with host preparation in core/pi-arguments.ts.
+
 // Multi-arg positional order, used only when a call passes >= 2 args and the
 // (primary, options) merge in __positionalToArgs does not apply. One-field
 // tools (read/bash/ls) stay absent: their two-arg form is a bare string plus
@@ -222,26 +145,7 @@ const __piPositionalFields = {
   write: ["path", "content"],
   edit: ["path", "oldText", "newText"],
 };
-// Models often pass numbers as strings ("20"); coerce the known numeric
-// option fields so the host schema sees a number. Non-numeric strings pass
-// through untouched and fail host validation exactly as before. Kept in sync
-// with the numeric optionals in the PiToolsApi overloads in guest-types.ts.
-const __piNumericFields = {
-  read: ["offset", "limit"],
-  grep: ["limit", "context"],
-  find: ["limit"],
-  ls: ["limit"],
-  bash: ["timeout"],
-  powershell: ["timeout"],
-};
-const __piOptionalFields = {
-  read: ["offset", "limit"],
-  grep: ["path", "glob", "ignoreCase", "literal", "context", "limit"],
-  find: ["path", "limit"],
-  ls: ["path", "limit"],
-  bash: ["timeout"],
-  powershell: ["timeout"],
-};
+
 // (primary, options) two-arg merge for the string-primary tools:
 // pi.read("index.ts", { limit: 120 }) becomes { path: "index.ts", limit: 120 }.
 // A plain-object second arg is never a valid positional value for these tools
@@ -259,7 +163,7 @@ const __positionalToArgs = (name, rest) => {
     primaryField !== undefined &&
     second !== null && typeof second === "object" && !Array.isArray(second)
   ) {
-    const merged = Object.assign({}, second);
+    const merged = { ...second };
     merged[primaryField] = first;
     return merged;
   }
@@ -272,90 +176,7 @@ const __positionalToArgs = (name, rest) => {
   }
   return out;
 };
-const __normalizePiArgs = (name, args) => {
-  const field = __piStringFields[name];
-  if (typeof args === "string" && field) return { [field]: args };
-  if (args === null || typeof args !== "object" || Array.isArray(args)) return args;
-  const aliases = __piArgAliases[name];
-  let out = args;
-  if ((name === "bash" || name === "powershell") && "timeoutMs" in out) {
-    out = Object.assign({}, args);
-    if (!("timeout" in out)) {
-      const timeoutMs = out.timeoutMs;
-      if (timeoutMs !== null && timeoutMs !== undefined) {
-        out.timeout = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) / 1000 : timeoutMs;
-      }
-    }
-    delete out.timeoutMs;
-  }
-  // settle is a guest-only directive (settles nonzero exits instead of
-  // rejecting); strip it so it never reaches the host/bash schema.
-  if ((name === "bash" || name === "powershell") && "settle" in out) {
-    if (out === args) out = Object.assign({}, args);
-    delete out.settle;
-  }
-  if (aliases) {
-    for (const alias in aliases) {
-      const canonical = aliases[alias];
-      if (alias in out) {
-        if (out === args) out = Object.assign({}, args);
-        if (!(canonical in out)) out[canonical] = out[alias];
-        delete out[alias];
-      }
-    }
-  }
-  const numerics = __piNumericFields[name];
-  if (numerics) {
-    for (const key of numerics) {
-      const value = out[key];
-      if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
-        if (out === args) out = Object.assign({}, args);
-        out[key] = Number(value);
-      }
-    }
-  }
-  const optionalFields = __piOptionalFields[name];
-  if (optionalFields) {
-    for (const key of optionalFields) {
-      if (out[key] !== null && out[key] !== undefined) continue;
-      if (!(key in out)) continue;
-      if (out === args) out = Object.assign({}, args);
-      delete out[key];
-    }
-  }
-  if (name === "edit" && Array.isArray(out.edits)) {
-    let changed = false;
-    const editAliases = __piArgAliases.edit;
-    const edits = out.edits.map((entry) => {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
-      let edit = entry;
-      for (const alias in editAliases) {
-        const canonical = editAliases[alias];
-        if (canonical !== "oldText" && canonical !== "newText") continue;
-        if (!(alias in edit)) continue;
-        if (edit === entry) edit = Object.assign({}, entry);
-        if (!(canonical in edit)) edit[canonical] = edit[alias];
-        delete edit[alias];
-        changed = true;
-      }
-      return edit;
-    });
-    if (changed) {
-      if (out === args) out = Object.assign({}, args);
-      out.edits = edits;
-    }
-  }
-  if (name === "edit" && !Array.isArray(out.edits) && ("oldText" in out || "newText" in out)) {
-    if (out === args) out = Object.assign({}, args);
-    const edit = {};
-    if ("oldText" in out) edit.oldText = out.oldText;
-    if ("newText" in out) edit.newText = out.newText;
-    out.edits = [edit];
-    delete out.oldText;
-    delete out.newText;
-  }
-  return out;
-};
+${PI_ARGUMENT_NORMALIZATION_SOURCE}
 // shell/edit/write resolve envelope objects { ok, output, details }, and the
 // type-checker deliberately suppresses property-miss (2339) diagnostics, so
 // result.trim() on an envelope typechecks and then dies with QuickJS's terse
@@ -415,7 +236,7 @@ globalThis.pi = new Proxy({}, {
       // {ok:false, exitCode, ...} instead (opt-in). Other failures still reject.
       const settle = (name === "bash" || name === "powershell") &&
         typeof args === "object" && args !== null && args.settle === true;
-      const call = __call("pi." + name, __normalizePiArgs(name, args));
+      const call = __call("pi." + name, __normalizePiArgs(name, args, typeof __piCanonicalFields === "undefined" ? undefined : __piCanonicalFields[name]));
       const promise = settle ? call.catch((error) => {
         // node-process bridge errors originate in a different VM realm.
         const message = typeof error?.message === "string" ? error.message : String(error);
@@ -1183,7 +1004,7 @@ export class QuickJsRuntime {
       context.setProp(context.global, "__fabricTokenBudget", tokenBudget);
       tokenBudget.dispose();
 
-      const setupResult = context.evalCode(GUEST_SETUP, "pi-fabric-setup.js");
+      const setupResult = context.evalCode(guestSetupSource(options.piToolCanonicalFields), "pi-fabric-setup.js");
       if (setupResult.error) {
         const deadlineExceeded = interruptedByDeadline || Date.now() > executionDeadlineAt;
         if (deadlineExceeded) timedOut = true;

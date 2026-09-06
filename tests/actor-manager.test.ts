@@ -1881,6 +1881,8 @@ describe("ActorManager", () => {
       triggerTurn: false,
       coalesce: true,
       runner: "pi",
+      kernel: "typescript",
+      pythonRuntime: "monty",
       model: "anthropic/sonnet",
     });
     // history never crosses the global⇄project boundary

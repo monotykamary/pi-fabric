@@ -1,8 +1,12 @@
+import type { FabricKernel } from "../runtime/kernel.js";
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 
-export const fabricExecutionKernelGuidance = (fullCodeMode: boolean): string =>
+export const fabricExecutionKernelGuidance = (fullCodeMode: boolean, kernel: FabricKernel = "typescript", pythonRuntime: "cpython" | "monty" = "monty"): string =>
   [
+    kernel === "python"
+      ? `Configured fabric_exec kernel: Python (${pythonRuntime === "monty" ? "Monty sandboxed subset" : "CPython"}). Write Python only in \`code\`: top-level await/return, dicts, True/False/None, and asyncio.gather. There is no per-call language switch.`
+      : "Configured fabric_exec kernel: TypeScript. Write TypeScript only in `code`; top-level await and return are supported.",
     fullCodeMode
       ? "Pi Fabric full code mode: `fabric_exec` is the only way to call Pi core tools — use them as `pi.*` inside `code`."
       : "Pi Fabric is in orchestration-only mode. Pi core and registered extension tools stay on their native direct execution path; inside fabric_exec, `pi.*` and `extensions.*` are unavailable.",
@@ -12,8 +16,12 @@ export const fabricExecutionKernelGuidance = (fullCodeMode: boolean): string =>
     `Read every file the user provides (images, screenshots, code, text) with the ${fullCodeMode ? "`pi.read`" : "`read`"} tool before responding — never assume its contents.`,
   ].join(" ");
 
-export const defaultFabricExecutionGuidance = (fullCodeMode: boolean): string =>
-  fullCodeMode
+export const defaultFabricExecutionGuidance = (fullCodeMode: boolean, kernel: FabricKernel = "typescript", pythonRuntime: "cpython" | "monty" = "monty"): string =>
+  kernel === "python"
+    ? (pythonRuntime === "monty"
+      ? "Python backend: Monty sandboxed subset, not CPython. Native filesystem/network/environment access and arbitrary imports are unavailable; use host tools for effects. Supply acyclic JSON host arguments; recursive containers are unsupported. Underscore-prefixed direct capability attributes are unavailable: use tools.call with the exact discovered ref instead. π is an attribute object; payloads is a dict, not the same identity. "
+      : "Python backend: CPython; native standard-library imports are available. ") + "Python fabric_exec: write an async function body with `await` and `return`; each invocation starts fresh. Use imports supported by the configured backend, such as `import asyncio`. Host methods accept one dict or keyword arguments: `await tools.search(query=\"example\")`, `await tools.call(ref=\"provider.action\", args={\"key\": \"value\"})`; discover schemas with tools.list/describe. Known actions use mcp.<server>.<tool>, memory.*, state.*, schema.*, compact.*, components.*, agents.*, or mesh.*. Responses are native Python dicts/lists, not attribute objects. Use `asyncio.gather` for independent calls. `π.key` and `payloads[\"key\"]` contain only the exact top-level payload keys. Return JSON-compatible data (convert sets, bytes, paths, and datetimes explicitly); print output is bounded. JavaScript callback helpers (workflow, memory.walk, and predicate callbacks) are not Python APIs; page with ordinary await/loops instead. Provider argument validation and approvals remain host-enforced. Schema enforce retains host gates and requires the selected runtime’s isolation; no unrestricted fallback." + (fullCodeMode ? " `await pi.read(\"/x\")`, `await pi.grep(pattern=\"TODO\", path=\"src\")`, `await pi.find(pattern=\"*.py\", path=\"src\")`, and `await pi.ls(\"src\")` return strings. `await pi.bash(command=\"ls\")`, `await pi.edit(path=\"/x\", oldText=\"a\", newText=\"b\")`, and `await pi.write(path=\"/y\", content=π.body)` return dicts; read `r[\"output\"]`. Shell nonzero exits raise; `settle=True` returns a failure dict instead. Cancellation, timeout, approval and security errors still raise. Captured tools are `await extensions.<name>(...)`." : " Pi core and extensions are unavailable inside fabric_exec in orchestration-only mode.")
+    : fullCodeMode
     ? "Examples and returns: `pi.read('/x')`, `pi.grep('TODO','src')` / `pi.grep({pattern:'TODO', path:'src', ignoreCase:true, context:2})`, `pi.find({pattern:'*.ts', path:'src', limit:20})`, and `pi.ls('src')` return strings; `pi.bash({cmd:'ls'})` (or `pi.powershell` on Windows), `pi.edit({path:'/x', old:'a', new:'b'})`, and `pi.write({path:'/y', text:'z'})` return `{ok, output, details}` (read `.output`); failed core calls reject, including shell tools on an ordinary nonzero exit; pass `settle: true` to `pi.bash` or `pi.powershell` to get `{ ok: false, exitCode, output, error }` instead. Timeout, cancellation, approval, and security failures still reject.\n`tools` is discovery + generic calls only (`providers`/`catalog`/`list`/`search`/`describe`/`call`/`models`). Call known MCP tools as `mcp.<sanitized_server>.<sanitized_tool>(args)`, captured tools as `extensions.<tool>(args)`, and stable providers as `memory.*`, `state.*`, `schema.*`, or `compact.*`. Use `tools.call({ref,args})` for computed refs. `pi` is the core tools; `π.<key>` reads named `strings` (not a tool)."
     : "Call known actions through `mcp.<sanitized_server>.<sanitized_tool>(args)`, `memory.*`, `state.*`, `schema.*`, `components.*`, `compact.*`, `agents.*`, or `mesh.*`; use `tools.catalog`/`search`/`describe`/`list` for discovery and `tools.call({ref,args})` for computed refs. Other surfaces are opt-in via user-loaded skills.";
 

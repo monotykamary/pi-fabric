@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { normalizeFabricConfig } from "../src/config.js";
+import { createFabricExecTool } from "../src/fabric-exec-tool.js";
+import type { FabricState } from "../src/fabric-state.js";
+import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 
 describe("prewalk prompt isolation", () => {
   it("does not add prewalk state or guidance to before_agent_start", () => {
@@ -30,21 +34,12 @@ describe("prewalk prompt isolation", () => {
   });
 
   it("keeps coding guidance outcome-oriented and context-bounded", () => {
-    const toolSource = fs.readFileSync(
-      path.join(process.cwd(), "src", "fabric-exec-tool.ts"),
-      "utf8",
-    );
-    const start = toolSource.indexOf("promptGuidelines: [");
-    const end = toolSource.indexOf("parameters:", start);
-    const guidelines = toolSource.slice(start, end);
-    const visibleGuidelines = guidelines
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('"') && line.endsWith('",'));
-    const visibleGuidelineChars = visibleGuidelines.reduce(
-      (total, line) => total + line.length - 3,
-      0,
-    );
+    const state = { bootstrapped: true, config: normalizeFabricConfig({}) } as FabricState;
+    const visibleGuidelines = createFabricExecTool(
+      state, defaultCodePreviewSettings(), new Map(), (tool) => tool,
+    ).promptGuidelines ?? [];
+    const guidelines = visibleGuidelines.join("\n");
+    const visibleGuidelineChars = visibleGuidelines.reduce((total, line) => total + line.length, 0);
 
     expect(visibleGuidelines).toHaveLength(6);
     expect(visibleGuidelineChars).toBeLessThanOrEqual(2_200);

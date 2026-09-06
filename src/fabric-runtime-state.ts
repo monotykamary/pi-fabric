@@ -62,6 +62,7 @@ import {
   setActiveCompiledSurface,
 } from "./entropy/active.js";
 import { RuntimeStateSpeculation } from "./runtime-state-speculation.js";
+import { schemaRefAllowedInEnforce } from "./schema/policy.js";
 import type { FabricSpeculationStreamTap } from "./speculation/stream-tap.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { LifecycleBroker } from "./lifecycle/broker.js";
@@ -329,13 +330,7 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
-    if (this.#config.speculation.enabled) {
-      this.#speculation = new RuntimeStateSpeculation(
-        this.#registry,
-        () => this.#config?.speculation,
-        () => this.#sessionCapabilityLease?.view,
-      );
-    }
+    this.#configureSpeculation();
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() => {
       this.#registry?.notifyCatalogChanged("extensions");
@@ -504,6 +499,8 @@ export class FabricRuntimeState {
     };
     this.#agents = new AgentManager(context.cwd, agentConfig, {
       fullCodeMode: this.#config.fullCodeMode,
+      kernel: () => this.#config?.executor.kernel ?? "typescript",
+      pythonRuntime: () => this.#config?.executor.pythonRuntime ?? "monty",
       mainAgentId,
       fabricSessionId,
       meshRoot,
@@ -666,6 +663,8 @@ export class FabricRuntimeState {
             sessionActorRoot: actorRoots.session,
             residencyRoot: residentRoot(meshRoot, mainAgentId),
             fullCodeMode: this.#config.fullCodeMode,
+            kernel: this.#config.executor.kernel,
+            pythonRuntime: this.#config.executor.pythonRuntime,
             agents: structuredClone(this.#config.agents),
             mesh: structuredClone(this.#config.mesh),
             retention: structuredClone(this.#config.retention),
@@ -835,13 +834,16 @@ export class FabricRuntimeState {
     if (!this.#config) return;
     this.#config.schema.mode = mode;
     this.#config.executor.runtime = executorRuntime;
+    this.#configureSpeculation();
   }
 
   reloadConfig(context: ExtensionContext, next: FabricConfig): void {
     if (!this.#config || !this.#cwd) return;
     next.schema.mode = this.#config.schema.mode;
+    this.#speculation?.reset();
     const previousComponents = structuredClone(this.#config.components);
     deepAssign(this.#config as unknown as Record<string, unknown>, next as unknown as Record<string, unknown>);
+    this.#configureSpeculation();
     // The persisted master switch wins over any live arm: disabling prewalk
     // via /fabric settings (or an external config edit followed by a reload)
     // cancels the arm so no later boundary can claim behind the user's back.
@@ -855,6 +857,31 @@ export class FabricRuntimeState {
       const detail = error instanceof Error ? error.message : String(error);
       if (context.hasUI) context.ui.notify(`Pi Fabric component reload failed: ${detail}`, "error");
     });
+  }
+
+  #configureSpeculation(): void {
+    this.#speculation?.reset();
+    this.#speculation = undefined;
+    this.#registry?.setSpeculation(undefined);
+    const config = this.#config;
+    // The TS scanner cannot model Python bindings or native OS mutations.
+    // Recreate the tap/store for every policy change so limits, epochs and
+    // pending asynchronous scans cannot leak across an execution boundary.
+    const eligible = (): boolean => this.#config?.executor.kernel === "typescript"
+      && (this.#config.schema.mode === "enforce" || this.#config.executor.runtime === "quickjs")
+      && this.#config.speculation.enabled;
+    if (!config || !this.#registry || !eligible()) return;
+    this.#speculation = new RuntimeStateSpeculation(
+      this.#registry,
+      () => eligible() ? this.#config?.speculation : undefined,
+      () => this.#sessionCapabilityLease?.view,
+      (ref) => {
+        const current = this.#config!;
+        if (current.approvals[ref.startsWith("mcp.") ? "network" : "read"] !== "allow") return false;
+        if (ref.startsWith("pi.") && !current.fullCodeMode && current.schema.mode !== "enforce") return false;
+        return current.schema.mode !== "enforce" || schemaRefAllowedInEnforce(ref);
+      },
+    );
   }
 
   async claimHandoff(

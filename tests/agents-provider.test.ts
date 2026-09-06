@@ -868,7 +868,7 @@ describe("AgentsProvider runner support", () => {
       status: "deferred",
       boundary: "fabric_exec_end",
     });
-    expect(deferredRequest).toEqual(args);
+    expect(deferredRequest).toEqual({ ...args, extensions: true, kernel: "typescript", pythonRuntime: "monty" });
     expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
 
     const outerToolResult = {
@@ -1174,7 +1174,7 @@ describe("AgentsProvider runner support", () => {
       status: "deferred",
       boundary: "fabric_exec_end",
     });
-    expect(deferredRequest).toEqual(args);
+    expect(deferredRequest).toEqual({ ...args, extensions: true, kernel: "typescript", pythonRuntime: "monty" });
 
     const outerToolResult = {
       role: "toolResult" as const,

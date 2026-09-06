@@ -30,7 +30,7 @@ const applyKeyAliasRepairs = (
     (repair) =>
       repair.kind === "keyAlias" &&
       repair.ref === ref &&
-      repair.from in args &&
+      Object.hasOwn(args, repair.from) &&
       repair.from !== repair.to &&
       !declaredSet.has(repair.from) &&
       declaredSet.has(repair.to) &&
@@ -43,10 +43,14 @@ const applyKeyAliasRepairs = (
   let out = args;
   let changed = false;
   for (const repair of applicable) {
-    const canonicalPresent = repair.to in args;
+    const canonicalPresent = Object.hasOwn(args, repair.to);
     if (!canonicalPresent && sourceCountByTarget.get(repair.to) !== 1) continue;
     if (out === args) out = { ...args };
-    if (!(repair.to in out)) out[repair.to] = out[repair.from];
+    if (!Object.hasOwn(out, repair.to)) {
+      Object.defineProperty(out, repair.to, {
+        value: out[repair.from], enumerable: true, writable: true, configurable: true,
+      });
+    }
     delete out[repair.from];
     changed = true;
   }

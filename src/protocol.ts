@@ -288,6 +288,16 @@ export interface FabricMcpServerTypeSource {
   tools: FabricNamedActionTypeSource[];
 }
 
+export type {
+  FabricKernel,
+  FabricKernelRuntime,
+  FabricHostCall,
+  FabricSandboxOptions,
+  FabricSandboxResult,
+  FabricSandboxTerminationReason,
+} from "./runtime/kernel.js";
+export type { FabricPythonRuntime } from "./config.js";
+
 /**
  * Live descriptor snapshot the registry hands to the guest declaration
  * builder so dynamic surfaces (mcp, extensions) get argument checking before

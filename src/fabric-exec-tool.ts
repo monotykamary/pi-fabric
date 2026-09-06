@@ -86,6 +86,7 @@ const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
 const MAX_FABRIC_CODE_TRANSFER_LINES = 12;
 
 type FabricRendererState = {
+  fabricKernel?: "typescript" | "python";
   fabricWriteBindingsCode?: string;
   fabricWriteBindings?: FabricWriteBinding[];
   fabricWritePreviews?: FabricWritePreview[];
@@ -108,6 +109,9 @@ type FabricToolDisplayMode = "full" | "compact";
 // underlying transcript.
 const toolDisplayMode = (state: FabricState): FabricToolDisplayMode =>
   state.bootstrapped ? state.config.ui.toolDisplay : "full";
+
+const toolKernel = (state: FabricState): "typescript" | "python" =>
+  state.bootstrapped ? state.config.executor?.kernel ?? "typescript" : "typescript";
 
 const compactResultHeader = (
   theme: Theme,
@@ -132,21 +136,34 @@ export const createFabricExecTool = (
   pendingHandoffs: Map<string, PendingFabricHandoff>,
   decorateShell: FabricToolShellDecorator = withCodePreviewShell,
   toolDisplay?: FabricToolDisplayController,
-): ToolDefinition<any, any, any> => decorateShell(
+): ToolDefinition<any, any, any> => {
+  const python = toolKernel(state) === "python";
+  const monty = python && state.config.executor.pythonRuntime === "monty";
+  return decorateShell(
   defineTool({
     name: "fabric_exec",
     label: "Fabric",
-    description:
-      "Execute type-checked TypeScript through Fabric's configured executor for Pi core tools, MCP, Fabric providers, discovery, and extensions. QuickJS is isolated by default; the optional Node/Bun process is an unsafe trusted-code escape hatch. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
+    description: python
+      ? monty
+        ? "Execute Python through Fabric's configured Monty sandbox. Monty runs a Python subset with VM resource limits, no native filesystem/network/environment access, and only host-mediated tools. Each invocation starts fresh. This is the exclusive model tool path in full code mode and Schema enforce mode."
+        : "Execute Python through Fabric’s configured CPython kernel for Pi core tools, MCP, providers, discovery, and extensions. Each call uses a fresh process. Native execution is trusted code; Schema enforce requires OS isolation. This is the exclusive model tool path in full code mode and Schema enforce mode."
+      : "Execute type-checked TypeScript through Fabric's configured executor for Pi core tools, MCP, Fabric providers, discovery, and extensions. QuickJS is isolated by default; the optional Node/Bun process is an unsafe trusted-code escape hatch. In full code mode, and always in Schema enforce mode, this is the exclusive model tool path.",
     promptSnippet:
       "Pi core tools, MCP, Fabric providers, discovery, and extensions",
     promptGuidelines: [
-      "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Coalesce non-dependent replacements from one file snapshot into one `pi.edit({path, edits:[...]})`; use `all:true` only for intentional repeated exact anchors. Return only the compact final value; intermediate results stay in the sandbox.",
-      "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. Escape regex metacharacters, or use `literal:true` for exact punctuated text. Keep fan-out search limits small and widen only on misses. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
+      python
+        ? "Batch independent operations in one `fabric_exec` Python program with `asyncio.gather`; await dependent/conditional steps sequentially. Coalesce independent replacements into one `await pi.edit(path=..., edits=[...])`. Return only the compact final JSON-compatible value."
+        : "Batch independent operations in one `fabric_exec` program (`Promise.all` for parallel, sequential `await` for ordered), not one call per tool; keep dependent/conditional steps sequential. Coalesce non-dependent replacements from one file snapshot into one `pi.edit({path, edits:[...]})`; use `all:true` only for intentional repeated exact anchors. Return only the compact final value; intermediate results stay in the sandbox.",
+      python
+        ? "Search before reading with `await pi.grep(pattern=..., path=...)` or `await pi.find(pattern=..., path=...)`, then `await pi.read(path=..., offset=..., limit=...)`. Use Python dict syntax, `True`/`False`/`None`, and bounded searches; unbounded reads cap at 2000 lines or 50KB. Read continuation notices when needed."
+        : "Search before reading: use `pi.grep`/`pi.find` to locate relevant lines, then `pi.read({path, offset, limit})` that range. Escape regex metacharacters, or use `literal:true` for exact punctuated text. Keep fan-out search limits small and widen only on misses. An unbounded `pi.read` returns at most 2000 lines or 50KB and, when truncated, ends with a `Use offset=…` continuation notice; reserve whole-file reads for small files you will use in full.",
       "For coding tasks, keep an acceptance ledger: turn the request into concrete checks, trace the relevant execution path before editing, implement end to end, then run targeted tests and direct behavioral probes. Mechanically confirm requested public symbols, registrations, and configuration entries. Use the smallest checks that cover the ledger, escalating only for failures or cross-cutting risk; inspect failures and iterate instead of rerunning unchanged passing checks. A build alone is not completion.",
-      "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop; for a known long suite, set `pi.bash` `timeout` in seconds once instead of retrying a timed-out call. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
+      python
+        ? "For test/probe nonzero exits, use `await pi.bash(command=..., settle=True)` and inspect the returned dict: `r['ok']`, `r['output']`, and `r.get('exitCode')`. Set shell `timeout` in seconds once for long suites. Return decisions and evidence rather than raw logs."
+        : "Amortize round trips without inflating context: batch only independent, bounded work. Keep search→read and edit→verify sequential when an output determines the next action. Use `settle:true` for tests or probes whose nonzero result is evidence rather than an exceptional stop; for a known long suite, set `pi.bash` `timeout` in seconds once instead of retrying a timed-out call. Filter or summarize noisy command output inside the program and return decisions, failures, and evidence—not raw logs or unused intermediate results.",
       "For edits/writes, pass named payloads through top-level `payloads`; each `π.key` must exactly match a key there; prefer `pi.edit`/`pi.write`. `pi.bash`: no stdin.",
       "Use `display.name` and objective `display.description`; Fabric pairs them with verified outcomes in deterministic compaction.",
+      ...(monty ? ["Monty requires acyclic JSON host arguments. For underscore-prefixed provider/tool names, use `await tools.call(ref=..., args={...})`, not direct attributes. Use `payloads['key']` for private/non-identifier payload keys."] : []),
     ],
     // The model-facing schema is intentionally flat: one large `code` string
     // plus scalar/optional params. Do not add nested arrays-of-objects with
@@ -165,8 +182,11 @@ export const createFabricExecTool = (
     // back to Record<string, string> before Pi validates.
     parameters: Type.Object({
       code: Type.String({
-        description:
-          "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. `π` contains only the exact keys supplied by this call's `payloads`. See session guidance / `fabric-exec` skill for exact signatures.",
+        description: python
+          ? monty
+            ? "Python async function body executed by Monty, a sandboxed Python subset (not CPython). Top-level await/return and asyncio.gather are supported. Use only Monty's supported syntax/modules; native imports, filesystem, network, and environment are unavailable. Host globals: tools, mcp, memory, state, schema, compact, components, agents, mesh; full-code mode adds pi and extensions. Await dict/keyword calls; use native dict results r['output']. Payloads: π.key or payloads['key']. Return JSON-compatible data; each invocation starts fresh."
+            : "Python async function body executed by CPython. Top-level await and return are supported; standard-library imports are available. Globals: tools, mcp, memory, state, schema, compact, components, agents, mesh; full-code mode adds pi and extensions. Await host calls using a dict or keyword arguments. Results are native dicts/lists: r['output'], not r.output. Use asyncio.gather for concurrency. Named payloads are π.key or payloads['key']. Return a JSON-compatible value. Each call starts fresh."
+          : "TypeScript function body. Top-level await and return are supported. Globals include `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, `print`, and `π`; full-code mode adds `pi` and `extensions`. `π` contains only the exact keys supplied by this call's `payloads`. See session guidance / `fabric-exec` skill for exact signatures.",
       }),
       payloads: Type.Optional(
         Type.Record(Type.String(), Type.String(), {
@@ -175,12 +195,14 @@ export const createFabricExecTool = (
         }),
       ),
       resultFormat: Type.Optional(Type.Union(RESULT_FORMATS.map((value) => Type.Literal(value)))),
-      tokenBudget: Type.Optional(
-        Type.Number({
-          minimum: 1,
-          description: "Optional token budget observed by workflow.agent() calls",
-        }),
-      ),
+      ...(python ? {} : {
+        tokenBudget: Type.Optional(
+          Type.Number({
+            minimum: 1,
+            description: "Optional token budget observed by workflow.agent() calls",
+          }),
+        ),
+      }),
       agentBudget: Type.Optional(
         Type.Number({
           minimum: 1,
@@ -221,13 +243,14 @@ export const createFabricExecTool = (
     // compatibility coercions for the model-facing boundary must live in the
     // official prepareArguments hook rather than execute-time fallbacks.
     prepareArguments(args) {
-      return prepareFabricExecArguments(args) as any;
+      return prepareFabricExecArguments(args, toolKernel(state)) as any;
     },
     renderCall(params, theme, context) {
       observePiTheme(theme);
       const code = Array.isArray(params.code) ? params.code.join("\n") : params.code;
       const mode = toolDisplayMode(state);
       const rendererState = context.state as FabricRendererState;
+      const python = (rendererState.fabricKernel ?? toolKernel(state)) === "python";
       toolDisplay?.observe(context.toolCallId, "call", context.invalidate);
       const spinner = updateSpinner(
         rendererState.fabricSpinner ??= {},
@@ -237,7 +260,7 @@ export const createFabricExecTool = (
       const rowBalance = rendererState.fabricResultRowBalance ??= {};
       if (rendererState.fabricWriteBindingsCode !== code) {
         rendererState.fabricWriteBindingsCode = code;
-        rendererState.fabricWriteBindings = fabricWriteBindings(code);
+        rendererState.fabricWriteBindings = python ? [] : fabricWriteBindings(code);
       }
       // The write argument preview is a streaming affordance: it previews
       // pending writes while args are still arriving. Pi only flips
@@ -265,7 +288,7 @@ export const createFabricExecTool = (
         const display = normalizeRunDisplay(params.display);
         // Session-wide memo keyed by the program string: the same hint serves
         // the live card, the activity feed, and compaction intent.
-        const title = display?.name?.trim() || fabricExecTitleHintCached(code);
+        const title = display?.name?.trim() || (python ? "Python program" : fabricExecTitleHintCached(code));
         const header = renderBoundedLines(
           [
             theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Fabric"))),
@@ -289,7 +312,7 @@ export const createFabricExecTool = (
       const displayName = runDisplay?.name ? safeTerminalText(runDisplay.name) : "";
       const title = `${theme.fg("toolTitle", theme.bold("fabric"))}${
         displayName ? ` ${theme.fg("accent", displayName)}` : ""
-      } ${theme.fg("dim", `TypeScript · ${countLabel(lines.length, "line")}`)}`;
+      } ${theme.fg("dim", `${python ? "Python" : "TypeScript"} · ${countLabel(lines.length, "line")}`)}`;
       // Match the compact header: the declared objective sits between the
       // title and the code preview.
       const description = runDisplay?.description
@@ -340,6 +363,13 @@ export const createFabricExecTool = (
         context.args,
       );
       const rendererState = context.state as FabricRendererState;
+      const recordedKernel = details.kernel ?? (isPartial ? undefined : "typescript");
+      if (recordedKernel && rendererState.fabricKernel !== recordedKernel) {
+        const renderedKernel = rendererState.fabricKernel ?? toolKernel(state);
+        rendererState.fabricKernel = recordedKernel;
+        delete rendererState.fabricWriteBindingsCode;
+        if (renderedKernel !== recordedKernel) context.invalidate();
+      }
       toolDisplay?.observe(context.toolCallId, "result", context.invalidate);
       const spinner = updateSpinner(
         rendererState.fabricSpinner ??= {},
@@ -793,16 +823,18 @@ export const createFabricExecTool = (
       // and quotes unquoted pi path arguments before Pi validates this call;
       // keep the same coercion here for direct internal invocations.
       const joined = Array.isArray(params.code) ? params.code.join("\n") : params.code;
-      const code = repairFabricGuestCode(joined);
+      const code = state.config.executor.kernel === "python" ? joined : repairFabricGuestCode(joined);
       const runDisplay = normalizeRunDisplay(params.display);
       const strings = resolveFabricExecPayloads(params);
+      const tokenBudget = "tokenBudget" in params && typeof params.tokenBudget === "number"
+        ? params.tokenBudget : undefined;
       const result = await state.execution.execute({
         code,
         ...(strings ? { strings } : {}),
         signal,
         parentToolCallId: toolCallId,
         context,
-        ...(params.tokenBudget !== undefined ? { tokenBudget: params.tokenBudget } : {}),
+        ...(tokenBudget !== undefined ? { tokenBudget } : {}),
         ...(params.agentBudget !== undefined ? { maxAgentCalls: params.agentBudget } : {}),
         ...(params.timeoutMs !== undefined ? { requestedTimeoutMs: params.timeoutMs } : {}),
         ...(runDisplay
@@ -982,4 +1014,5 @@ export const createFabricExecTool = (
     mode: codePreviewSettings.toolCallBackground,
     toolCallTiming: codePreviewSettings.toolCallTiming,
   },
-);
+  );
+};

@@ -70,6 +70,42 @@ const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
 
 export const schemaDigest = (schema: unknown): string => stableJsonHash(schema);
 
+// A base digest binds provenance, not authority: an imported or damaged
+// artifact must not replace required fields, types, or other schema guards.
+// Only top-level property enum restrictions may differ from the declaration.
+const isEnumRestriction = (live: unknown, candidate: Record<string, unknown>): boolean => {
+  if (!isPlainRecord(live)) return false;
+  if (schemaDigest(live) === schemaDigest(candidate)) return true;
+  if (!isPlainRecord(live.properties) || !isPlainRecord(candidate.properties)) return false;
+  const restored = { ...candidate.properties };
+  if (Object.keys(restored).length !== Object.keys(live.properties).length) return false;
+  for (const [key, property] of Object.entries(live.properties)) {
+    if (!Object.hasOwn(restored, key)) return false;
+    const overlay = restored[key];
+    if (schemaDigest(property) === schemaDigest(overlay)) continue;
+    if (
+      !isPlainRecord(property) || !isPlainRecord(overlay) ||
+      !Array.isArray(overlay.enum) || overlay.enum.length === 0
+    ) return false;
+    if (Array.isArray(property.enum)) {
+      const allowed = new Set(property.enum.map((value) => stableJsonHash(value)));
+      if (!overlay.enum.every((value) => allowed.has(stableJsonHash(value)))) return false;
+    }
+    const rest = { ...overlay };
+    const base = { ...property };
+    delete rest.enum;
+    delete base.enum;
+    if (schemaDigest(rest) !== schemaDigest(base)) return false;
+    Object.defineProperty(restored, key, {
+      value: property, enumerable: true, configurable: true, writable: true,
+    });
+  }
+  return schemaDigest({ ...candidate, properties: restored }) === schemaDigest(live);
+};
+
+const provesOverlay = (live: unknown, entry: CompiledSurfaceOverlayEntry): boolean =>
+  schemaDigest(live) === entry.baseSchemaDigest && isEnumRestriction(live, entry.inputSchema);
+
 // Overlay consult for one ref: the compiled schema replaces the declared
 // schema only while the base digest still proves the declared surface did
 // not change underneath the compile.
@@ -80,7 +116,7 @@ export const effectiveSchemaFor = (
 ): unknown => {
   const entry = file?.actions.find((candidate) => candidate.ref === ref);
   if (!entry) return liveSchema;
-  return schemaDigest(liveSchema) === entry.baseSchemaDigest ? entry.inputSchema : liveSchema;
+  return provesOverlay(liveSchema, entry) ? entry.inputSchema : liveSchema;
 };
 
 // Whole-surface overlay for measurement and export: tightened schemas where
@@ -99,7 +135,7 @@ export const applyCompiledSurface = (
   const actions: EntropySurfaceSnapshot["actions"] = [];
   for (const action of live.actions) {
     const overlay = overlayByRef.get(action.ref);
-    if (overlay && schemaDigest(byRef.get(action.ref)) === overlay.baseSchemaDigest) {
+    if (overlay && provesOverlay(byRef.get(action.ref), overlay)) {
       actions.push({ ref: action.ref, inputSchema: overlay.inputSchema });
       continue;
     }
@@ -164,7 +200,7 @@ export const mergeCompiledSurfaces = (
   let droppedQuarantines = 0;
   for (const entry of incoming.actions) {
     if (overlayRefs.has(entry.ref) || quarantineRefs.has(entry.ref)) continue;
-    if (liveDigestOf(entry.ref) !== entry.baseSchemaDigest) {
+    if (!provesOverlay(liveByRef.get(entry.ref), entry)) {
       droppedOverlays++;
       continue;
     }

@@ -287,9 +287,11 @@ export class FabricState {
     });
     if (this.#config) {
       next.schema.mode = this.#config.schema.mode;
-      // Keep the enforce ⇒ QuickJS coupling alive across reloads; a disk
-      // runtime value must never combine with a live enforce override.
-      if (next.schema.mode === "enforce") next.executor.runtime = this.#config.executor.runtime;
+      // Isolate the selected language, including when a live schema override
+      // differs from disk. CPython selects its OS sandbox at execution time.
+      if (next.schema.mode === "enforce" && next.executor.kernel === "typescript") {
+        next.executor.runtime = "quickjs";
+      }
     }
     this.#config = next;
     this.#runtime?.reloadConfig(context, next);
@@ -309,9 +311,7 @@ export class FabricState {
     }
     this.#config.schema.mode = mode;
     if (mode === "enforce") {
-      // Mirror normalizeFabricConfig: the sandbox gate is void when guest code
-      // has a process escape hatch, so enforce always runs on QuickJS.
-      this.#config.executor.runtime = "quickjs";
+      if (this.#config.executor.kernel === "typescript") this.#config.executor.runtime = "quickjs";
     } else if (previous === "enforce") {
       this.#config.executor.runtime = this.#diskConfig(context).executor.runtime;
     }
@@ -330,7 +330,9 @@ export class FabricState {
       source: this.#config && this.#config.schema.mode !== disk.schema.mode
         ? "session override"
         : "config",
-      executorRuntime: this.#config?.executor.runtime ?? disk.executor.runtime,
+      executorRuntime: (this.#config ?? disk).executor.kernel === "python"
+        ? (this.#config ?? disk).executor.pythonRuntime
+        : this.#config?.executor.runtime ?? disk.executor.runtime,
     };
   }
 

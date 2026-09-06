@@ -32,6 +32,8 @@ import type {
 } from "../protocol.js";
 import { countContentLines } from "../ui/preview-lines.js";
 import { CapturedToolsProvider } from "./captured-tools-provider.js";
+import { normalizePiArguments } from "../core/pi-arguments.js";
+import { validationMessage } from "../core/action-arguments.js";
 import {
   BashCwdDefinitions,
   PI_BASH_CWD_KEY,
@@ -45,6 +47,22 @@ import { writeContentForPreview } from "./write-diff-limits.js";
 import { createPreviewWriteToolDefinition } from "./write-preview.js";
 
 import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+
+const closedPiInputSchema = (name: PiCoreToolName, source: unknown): Record<string, unknown> => {
+  const schema = source as Record<string, unknown>;
+  const properties = { ...(schema.properties as Record<string, unknown>) };
+  if (name === "edit") {
+    properties.all = { type: "boolean", description: "Apply every replacement to all matching occurrences." };
+    const edits = properties.edits as Record<string, unknown> | undefined;
+    const items = edits?.items as Record<string, unknown> | undefined;
+    if (edits && items && !Array.isArray(items)) {
+      properties.edits = { ...edits, items: { ...items, additionalProperties: false,
+        properties: { ...(items.properties as Record<string, unknown>), all: { type: "boolean" } },
+      } };
+    }
+  }
+  return { ...schema, properties, additionalProperties: false };
+};
 
 const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
 const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
@@ -257,6 +275,11 @@ export class PiToolsProvider implements FabricProvider {
 
   prepareArguments(actionName: string, args: Record<string, unknown>): Record<string, unknown> {
     this.#assertAllowed(actionName);
+    const definition = this.#catalog?.get(actionName)?.definition ?? this.#tools[actionName as PiCoreToolName];
+    const properties = (definition?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+    // An override's declared properties are canonical, even when their spelling
+    // is a built-in alias. Both kernels use this same preparation before validation.
+    args = normalizePiArguments(actionName, args, Object.keys(properties)) as Record<string, unknown>;
     if (this.#catalog?.get(actionName)) {
       return this.#capturedTools!.prepareArguments(actionName, args);
     }
@@ -265,12 +288,39 @@ export class PiToolsProvider implements FabricProvider {
     const input = actionName === "edit" && Object.hasOwn(args, "all")
       ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "all"))
       : args;
+    if (actionName === "edit") {
+      const entries = [args, ...(Array.isArray(args.edits) ? args.edits : [])];
+      for (const entry of entries) {
+        if (entry && typeof entry === "object" && Object.hasOwn(entry, "all") && typeof entry.all !== "boolean") {
+          throw new Error("pi.edit all must be a boolean; use True/False in Python or true/false in TypeScript.");
+        }
+      }
+    }
     const prepare = tool.prepareArguments;
     const prepared = prepare ? prepare(input) : input;
     if (typeof prepared !== "object" || prepared === null || Array.isArray(prepared)) {
       throw new Error(`Pi tool ${actionName} prepared non-object arguments`);
     }
-    const record = prepared as Record<string, unknown>;
+    const record = { ...prepared } as Record<string, unknown>;
+    // Native Pi preparation can drop unknown keys. Without TypeScript's static
+    // gate that would silently accept misspelled Python arguments. Keep them for
+    // authoritative validation and the repair compiler's normal failure evidence.
+    for (const [key, value] of Object.entries(input)) {
+      if (!Object.hasOwn(properties, key)) Object.defineProperty(record, key, { value, enumerable: true, configurable: true, writable: true });
+    }
+    if (actionName === "edit" && Array.isArray(input.edits) && Array.isArray(record.edits)) {
+      const originals = input.edits;
+      record.edits = record.edits.map((entry, index) => {
+        const original = originals[index];
+        if (!original || typeof original !== "object" || Array.isArray(original)
+          || !entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+        const retained = { ...entry };
+        for (const [key, value] of Object.entries(original)) {
+          if (!["oldText", "newText"].includes(key)) Object.defineProperty(retained, key, { value, enumerable: true, configurable: true, writable: true });
+        }
+        return retained;
+      });
+    }
     if (isPiShellToolName(actionName)) {
       // pi 0.85 preparation strips schema-external keys. Preserve Fabric's
       // advertised cwd before preparation, then validate and resolve it here.
@@ -285,9 +335,13 @@ export class PiToolsProvider implements FabricProvider {
         (edit) => typeof edit === "object" && edit !== null
           && !Array.isArray(edit) && (edit as Record<string, unknown>).all === true,
       );
-    return actionName === "edit" && (args.all === true || hasPerEditAll)
-      ? expandReplaceAllEdit(this.#cwd, record, args.all === true)
-      : record;
+    if (actionName === "edit" && (args.all === true || hasPerEditAll)) {
+      // Rejected extras must reach registry validation, not disappear while the
+      // replace-all helper expands the edit into a whole-file replacement.
+      if (validationMessage(closedPiInputSchema("edit", tool.parameters), record)) return record;
+      return expandReplaceAllEdit(this.#cwd, record, args.all === true);
+    }
+    return record;
   }
 
   #assertAllowed(name: string): void {
@@ -637,7 +691,7 @@ export class PiToolsProvider implements FabricProvider {
     return {
       name,
       description: tool.description,
-      inputSchema: inputSchema as unknown as Record<string, unknown>,
+      inputSchema: closedPiInputSchema(name, inputSchema),
       risk: riskForTool(name),
       namespace: "builtin",
     };

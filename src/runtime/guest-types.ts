@@ -33,6 +33,7 @@ type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 type FabricTransport = "auto" | "process" | "tmux" | "screen" | "localterm" | "herdr";
 type FabricAgentRunner = "pi" | "claude" | "veda";
+type FabricKernel = "typescript" | "python";
 type FabricThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 interface FabricActionEffect {
   kind: "none" | "scoped" | "transactional" | "emission";
@@ -51,6 +52,8 @@ interface FabricAction {
   effect?: FabricActionEffect;
 }
 interface FabricAgentRequest {
+  /** Omitted/inherit uses caller executor.kernel; concrete choices require Pi with extensions. */
+  kernel?: FabricKernel | "inherit";
   task: string;
   name?: string;
   runner?: FabricAgentRunner;
@@ -80,6 +83,7 @@ interface FabricHandoffFacts {
 }
 type FabricHandoffPredicate = (facts: Readonly<FabricHandoffFacts>) => boolean;
 interface FabricHandoffRequest {
+  kernel?: FabricKernel | "inherit";
   model: string;
   task?: string;
   when?: FabricHandoffPredicate;
@@ -222,6 +226,8 @@ interface FabricLifecycleSubscription {
   lastError?: string;
 }
 interface FabricAgentHandle {
+  /** Resolved Fabric kernel, absent for non-Fabric runners. */
+  kernel?: FabricKernel;
   id: string;
   name: string;
   status: string;
@@ -560,6 +566,8 @@ type FabricActorBindingScope = "session" | "project";
 interface FabricActorRunBinding { model?: string; thinking?: FabricThinking }
 type FabricActorValidWhile = (facts: Readonly<FabricActorValidityFacts>) => FabricActorValidityDecision;
 interface FabricActorRequestBase {
+  /** Fixed at creation; ask/tell cannot change language. Global templates resolve inheritance on import. */
+  kernel?: FabricKernel | "inherit";
   scope?: "session" | "project" | "global";
   name: string;
   instructions: string;
@@ -585,6 +593,8 @@ type FabricActorRequest = FabricActorRequestBase & (
   | { delivery: "steer" | "followUp"; triggerTurn: boolean }
 );
 interface FabricActorInfo {
+  kernel?: FabricKernel;
+  pythonRuntime?: "cpython" | "monty";
   id: string;
   scope: "session" | "project";
   name: string;
@@ -749,18 +759,8 @@ interface FabricMcpManagement {
 // execution service replaces the declare-const-mcp line below with a
 // schema-typed rendering of the live cache (runtime/dynamic-guest-types.ts).
 type FabricMcpApi = Record<string, FabricMcpServer> & FabricMcpManagement;
-interface FabricCouncilRunOptions {
-  task: string;
+interface FabricCouncilRunOptions extends FabricAgentRequest {
   roles: string[];
-  runner?: FabricAgentRunner;
-  transport?: FabricTransport;
-  model?: string;
-  thinking?: FabricThinking;
-  tools?: string[];
-  timeoutMs?: number;
-  /** Filesystem execution directory; relative paths resolve from the parent agent cwd. */
-  cwd?: string;
-  worktree?: boolean;
 }
 interface FabricCouncilApi {
   run(args: FabricCouncilRunOptions & { synthesize?: true }): Promise<FabricAgentResult>;

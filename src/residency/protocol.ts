@@ -5,6 +5,7 @@ import type { FabricModelCandidate } from "../core/model-resolution.js";
 import type { FabricAgentConfig, FabricMeshConfig, FabricRetentionConfig } from "../config.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { AgentHandleInfo, AgentRunRequest } from "../agents/types.js";
+import type { FabricKernel } from "../runtime/kernel.js";
 import type { MeshIdentity } from "../mesh/store.js";
 
 export const RESIDENT_HOST_FORMAT = 1 as const;
@@ -39,6 +40,8 @@ export interface ResidentHostConfig {
   sessionActorRoot?: string;
   residencyRoot: string;
   fullCodeMode: boolean;
+  kernel?: FabricKernel;
+  pythonRuntime?: "cpython" | "monty";
   agents: FabricAgentConfig;
   mesh: FabricMeshConfig;
   retention: FabricRetentionConfig;

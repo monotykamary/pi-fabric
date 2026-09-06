@@ -45,7 +45,7 @@ export const normalizeTypeScriptPath = (fileName: string): string =>
   fileName.replaceAll("\\", "/");
 
 /** Guest programs execute inside this wrapper; user code starts on wrapped line 2. */
-export const wrapFabricGuestCode = (code: string): string =>
+const wrapFabricGuestCode = (code: string): string =>
   `async function __piFabricMain() {\n${code}\n}\n`;
 
 class FabricTypeChecker {

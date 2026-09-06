@@ -19,6 +19,8 @@ export const TRANSPORTS = ["auto", "process", "tmux", "screen", "localterm", "he
 export const WIDGET_MODES = ["auto", "always", "hidden"] as const;
 export const TOOL_DISPLAY_MODES = ["full", "compact"] as const;
 export const RESULT_FORMATS = ["auto", "yaml", "json", "text"] as const;
+export const EXECUTOR_KERNELS = ["typescript", "python"] as const;
+export const PYTHON_RUNTIMES = ["monty", "cpython"] as const;
 export const EXECUTOR_RUNTIMES = ["quickjs", "node-process", "bun-process"] as const;
 export const SCHEMA_MODES = ["off", "audit", "enforce"] as const;
 export const COMPACTION_ENGINES = ["fabric", "pi"] as const;
@@ -252,7 +254,10 @@ export const summaryFor = (id: string, config: FabricConfig): string => {
       return config.fullCodeMode ? "true" : "false";
     case "executor": {
       const refFloors = Object.keys(config.executor.hostCallTimeouts).length;
-      return `${config.executor.runtime} · ${formatMs(config.executor.timeoutMs)} · max ${formatMs(config.executor.maxTimeoutMs)}${refFloors > 0 ? ` · ${refFloors} ref floor${refFloors === 1 ? "" : "s"}` : ""}`;
+      const kernel = config.executor.kernel === "python"
+        ? `python · ${config.executor.pythonRuntime === "monty" ? "monty" : config.executor.cpython.binary}`
+        : `typescript · ${config.executor.runtime}`;
+      return `${kernel} · ${formatMs(config.executor.timeoutMs)} · max ${formatMs(config.executor.maxTimeoutMs)}${refFloors > 0 ? ` · ${refFloors} ref floor${refFloors === 1 ? "" : "s"}` : ""}`;
     }
     case "schema":
       return config.schema.mode;

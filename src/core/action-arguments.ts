@@ -17,7 +17,7 @@ const unexpectedKeys = (
   if ((schema as { patternProperties?: unknown }).patternProperties !== undefined) return [];
   const properties = (schema as { properties?: Record<string, unknown> }).properties;
   if (!properties) return [];
-  return Object.keys(value).filter((key) => !(key in properties));
+  return Object.keys(value).filter((key) => !Object.hasOwn(properties, key));
 };
 
 export const validationMessage = (

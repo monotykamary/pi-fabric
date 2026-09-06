@@ -3,7 +3,8 @@ import type {
   SessionEntry,
   SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
-import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricAgentTransport, FabricPythonRuntime } from "../config.js";
+import type { FabricKernel } from "../runtime/kernel.js";
 import type { ThinkingTransferInput } from "./thinking-transfer.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricParticipantResidency } from "../topology/types.js";
@@ -43,6 +44,10 @@ export interface AgentRunRequest {
   images?: ImageContent[];
   name?: string;
   runner?: FabricAgentRunner;
+  /** Omitted/inherit uses the caller kernel; concrete kernels require Pi with Fabric extensions. */
+  kernel?: FabricKernel | "inherit";
+  /** Host-only snapshot for resident/trajectory forwarding; not a provider argument. */
+  pythonRuntime?: FabricPythonRuntime;
   transport?: FabricAgentTransport;
   model?: string;
   /** Veda persona name; only used when runner is "veda". */
@@ -106,6 +111,8 @@ export interface AgentRunRecord {
   task: string;
   status: AgentRunStatus;
   runner: FabricAgentRunner;
+  /** Resolved Fabric kernel; absent for runners without Fabric. */
+  kernel?: FabricKernel;
   transport: FabricAgentTransport;
   cwd: string;
   model?: string;
@@ -149,6 +156,8 @@ export interface AgentHandleInfo {
   name: string;
   status: AgentRunStatus;
   runner: FabricAgentRunner;
+  /** Resolved Fabric kernel; absent for runners without Fabric. */
+  kernel?: FabricKernel;
   transport: FabricAgentTransport;
   cwd: string;
   model?: string;
@@ -169,6 +178,8 @@ export interface AgentHandleInfo {
 export interface AgentWorkerOptions {
   id: string;
   runner: FabricAgentRunner;
+  kernel?: FabricKernel;
+  pythonRuntime?: FabricPythonRuntime;
   name: string;
   taskFile: string;
   imagesFile?: string;

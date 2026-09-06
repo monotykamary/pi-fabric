@@ -38,6 +38,8 @@ interface SpeculationEntry {
 export class FabricSpeculationStore implements FabricSpeculationRuntime {
   #epoch = 0;
   readonly #entries = new Map<string, SpeculationEntry>();
+  readonly #serving = new Set<SpeculationEntry>();
+  readonly #endedInvocations = new Set<string>();
   readonly #stats: FabricSpeculationStats = {
     launched: 0,
     served: 0,
@@ -69,6 +71,12 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
     this.#epoch += 1;
   }
 
+  /** Fence descriptor/argument preparation across resets, effects and invocation end. */
+  captureLaunch(parentToolCallId: string): () => boolean {
+    const epoch = this.#epoch;
+    return () => epoch === this.#epoch && !this.#endedInvocations.has(parentToolCallId);
+  }
+
   static key(
     parentToolCallId: string,
     ref: string,
@@ -92,6 +100,7 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
     replay: FabricSpeculationReplay,
     bindingToken: string,
   ): boolean {
+    if (this.#endedInvocations.has(parentToolCallId)) return false;
     this.#sweepExpired(Date.now());
     if (this.#entries.size >= this.#maxEntries || this.#inFlightCount() >= this.#maxConcurrent) {
       this.#stats.skipped += 1;
@@ -138,6 +147,11 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
       return { hit: false, reason: "absent" };
     }
     this.#entries.delete(key);
+    if (Date.now() - entry.createdAt > this.#entryTtlMs) {
+      this.#stats.wasted += 1;
+      entry.controller.abort();
+      return { hit: false, reason: "absent" };
+    }
     if (entry.birthEpoch !== this.#epoch) {
       this.#stats.epochInvalidated += 1;
       entry.controller.abort();
@@ -148,7 +162,29 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
       entry.controller.abort();
       return { hit: false, reason: "freshness" };
     }
-    const value = await entry.promise;
+    this.#serving.add(entry);
+    let value: unknown;
+    try {
+      value = await entry.promise;
+    } finally {
+      this.#serving.delete(entry);
+    }
+    // A reset or mutation may occur while the provider is still answering.
+    if (entry.controller.signal.aborted || entry.birthEpoch !== this.#epoch) {
+      this.#stats.epochInvalidated += 1;
+      entry.controller.abort();
+      return { hit: false, reason: "epoch" };
+    }
+    if (Date.now() - entry.createdAt > this.#entryTtlMs) {
+      this.#stats.wasted += 1;
+      entry.controller.abort();
+      return { hit: false, reason: "absent" };
+    }
+    if (entry.freshness && !entry.freshness()) {
+      this.#stats.freshnessInvalidated += 1;
+      entry.controller.abort();
+      return { hit: false, reason: "freshness" };
+    }
     if (entry.failed) {
       this.#stats.failed += 1;
       return { hit: false, reason: "failed" };
@@ -159,6 +195,10 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
 
   /** Execution for this tool call finished: everything unserved is waste. */
   onInvocationEnd(parentToolCallId: string): void {
+    this.#endedInvocations.add(parentToolCallId);
+    for (const entry of this.#serving) {
+      if (entry.parentToolCallId === parentToolCallId) entry.controller.abort();
+    }
     for (const [key, entry] of this.#entries) {
       if (entry.parentToolCallId !== parentToolCallId) continue;
       entry.controller.abort();
@@ -169,8 +209,11 @@ export class FabricSpeculationStore implements FabricSpeculationRuntime {
 
   /** Turn backstop: speculation never outlives a turn. */
   reset(): void {
+    this.bumpEpoch();
+    for (const entry of this.#serving) entry.controller.abort();
     for (const entry of this.#entries.values()) entry.controller.abort();
     this.#entries.clear();
+    this.#endedInvocations.clear();
   }
 
   #inFlightCount(): number {

@@ -1,15 +1,45 @@
 ---
 name: fabric-exec
 description: >-
-  Troubleshooting and advanced API reference for `fabric_exec` TypeScript
-  programs, dynamic providers, agents, and schema recovery. Routine `pi.*`
+  Troubleshooting and advanced API reference for `fabric_exec` programs,
+  configured TypeScript/Python kernels, dynamic providers, agents, and schema recovery. Routine `pi.*`
   coding calls are documented by ambient guidance; load this skill only after
   an argument-shape error or when an advanced surface needs exact contracts.
 ---
 
 # fabric_exec — core reference
 
-One type-checked TS program in a fresh executor (isolated QuickJS by default). Only the `return` value reaches the model; `print()`/`console.log` go to the activity panel. `π` is not a tool.
+One program in the **configured kernel**: `executor.kernel` is `typescript` by default, or explicitly `python`. There is **no per-call kernel selector**, language autodetection, or fallback. Only the `return` value reaches the model; `print()` goes to activity logs. `π` is payload data, not a tool.
+
+## Python kernel
+
+Select `executor.kernel: "python"` in global `~/.pi/agent/fabric.json` or trusted project `.pi/fabric.json`. Python defaults to **Monty**, a sandboxed Python subset—not CPython. `asyncio.gather` is supported, but arbitrary imports, third-party packages, ambient OS access, and some Python syntax are unavailable. Use host tools for I/O. Missing native Monty dependencies fail with an installation hint, never a CPython fallback. Explicit `executor.pythonRuntime: "cpython"` enables the trusted native escape hatch, requiring **CPython 3.10+** (`executor.cpython.binary`, default `python3`). No extra enabled flag. `executor.runtime` selects a TypeScript backend only. See [execution kernels](../../docs/kernels.md) for configuration, isolation, and examples.
+
+- `code` is a **Python async function body**: top-level `await` and `return`, no enclosing `async def` or `asyncio.run`. Use Python `True`/`False`/`None`, dictionaries, and `asyncio.gather` for independent calls.
+- Await host actions through the same `tools`, `mcp`, `memory`, `state`, `schema`, `compact`, `agents`, `mesh`, and registered provider namespaces; `pi`/`extensions` are full-code surfaces (also exposed under schema enforce). Host schema validation, approvals, audit, timeouts, and cancellation still apply; **no static TypeScript check** runs for Python.
+- `await pi.read("README.md")`, `await pi.read({"path": "README.md", "limit": 80})`, and `await pi.read(path="README.md", limit=80)` return strings. `r = await pi.bash({"command": "git status --short", "settle": True})` returns a native dict: use `r['output']`, **not** `r.output`. Other structured bridge results are native dicts/lists too. Prefer canonical schema fields. Shared core aliases (`cmd`, `file_path`, `old_string`, `text`), numeric-string coercion, and optional null removal also work in Python; canonical values win, declared override fields stay canonical, and unknown keys reject.
+- Pass multiline content in top-level `payloads`; read only exact supplied keys as `π.key` or `payloads['key']`. Search before bounded reads, batch only independent work, and return compact evidence.
+- Discover with `await tools.search({"query": "action"})`; inspect `await tools.describe({"ref": ref})`; invoke computed refs with `await tools.call({"ref": ref, "args": args})`. Recover from validation errors using the actual schema, not TypeScript syntax.
+- Do not assume guest-local callbacks such as `memory.walk(args, visitor)`, callback-based workflow helpers, or `agents.handoff` predicates exist in Python. Use explicit loops over host actions and `asyncio.gather` instead.
+- Monty requires acyclic JSON-compatible host arguments; recursive containers are unsupported. Underscore-prefixed direct capability names (for example `mcp._123._tool`) require `await tools.call(ref="mcp._123._tool", args={...})`. `π` is an attribute object, while `payloads` is a separate dict with the same keys; use dictionary access for private/non-identifier keys.
+- Monty is always sandboxed with VM-enforced resource limits, including in schema enforce mode. Outside schema enforce, explicit CPython is trusted native code with full OS privileges. `RLIMIT_AS` bounds address space where the OS supports it; process limits are **not a security sandbox**. Enforce preserves Python; explicit CPython additionally requires macOS `sandbox-exec` or Linux `bwrap`, failing closed without isolation. TypeScript enforce uses QuickJS.
+
+Python-only example:
+
+```python
+import asyncio
+manifest, readme = await asyncio.gather(
+    pi.read("package.json"),
+    pi.read(path="README.md", limit=60),
+)
+return {"manifest": manifest, "readme": readme, "ok": True}
+```
+
+Python errors include user-line diagnostics and bounded repair advice; fix the reported call or syntax without replaying successful effects blindly. Entropy/catalog repair compilers remain host-side and kernel-neutral. sPTC currently applies only to isolated TypeScript/QuickJS; Python and native TypeScript calls execute normally without speculative prefetch.
+
+## TypeScript reference scope
+
+**All remaining examples, signatures, and object-shape notation below are TypeScript-only.** Shared host action names also apply to Python through its async bridge, but guest-local callback helpers are not a cross-kernel promise. The TypeScript kernel runs in isolated QuickJS by default and receives static type checking; `console.log` also goes to activity logs.
 
 ## `pi` core tools (full code mode only)
 `pi.<tool>(arg)` — single arg: bare string (primary field) or options object, or a two-arg `(primary, options)` merge for the string-primary tools (`read`/`bash`/`powershell`/`ls`/`grep`/`find`): `pi.read('index.ts', { limit: 120 })` becomes `{ path: 'index.ts', limit: 120 }`, the positional string winning the primary field on conflict; a non-object second arg on those is still a type error. Positional tuple calls are accepted for `grep`/`find` (`pattern, path, limit`), `write` (`path, content`), and `edit` (`path, oldText, newText`).
@@ -64,7 +94,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 |------|-------------|
 | `memory.recall(args?)` | `{total,hits:MemoryRecallHit[],next:{ref:"memory.recall",args}|null,coverage:MemoryCoverage,error?}` |
 | `memory.expand(args)` | `{session?,sourceHash?,branches?,lineageFingerprint?,entryCount?,entries:ExpandedSessionEntry[],next?:{ref:"memory.expand",args}|null,error?}` |
-| `memory.walk(args, visitor)` | `{visited,stopped,error?}`; guest-local paging and full-entry reassembly over `memory.expand` |
+| `memory.walk(args, visitor)` (TypeScript guest only) | `{visited,stopped,error?}`; guest-local paging and full-entry reassembly over `memory.expand` |
 | `memory.sessions(args?)` | `{scope?,branches?,sessions?:SessionInfo[],error?}`; slice `result.sessions ?? []`, not the wrapper |
 | `state.transition(args)` | `{event:FabricMeshEvent,head:unknown}` |
 | `state.get()` | `{head,goal,complexity,certification,recentLabels:string[]}` |
@@ -90,7 +120,7 @@ All calls return promises. Fields ending in `?` are optional; `unknown` marks pr
 
 Recall returns one bounded flat hit stream. Every hit has the same copy-ready `{ref,args}` field: `await tools.call(hit.follow)` expands an entry or resolves a cold session. Continue any result with `await tools.call(result.next)` when `next !== null`; `total` is the retained pre-page hit count. Do not locate or parse Pi session JSONL yourself: follow calls, integrity bindings, and continuations are the supported retrieval API.
 
-`memory.expand(args)` requires `session` plus a selector: `indices`, `entryIds`, `operationAddresses`, or `entryRange:{first,last}`. Optional `before`/`after` add adjacent entries. It returns normalized records in `entries`, with one uniform `tool` field and Pi `parentId` links. Long entries use lossless `textRange` chunks. For arbitrary filter/map/reduce/join/traversal work, use guest-local `memory.walk(args, async (entry, index) => { ... })`: it follows every expansion page, reassembles complete entries, awaits nested tool calls, and stops early when the visitor returns `false`. `memory.sessions` accepts an optional `limit`.
+`memory.expand(args)` requires `session` plus a selector: `indices`, `entryIds`, `operationAddresses`, or `entryRange:{first,last}`. Optional `before`/`after` add adjacent entries. It returns normalized records in `entries`, with one uniform `tool` field and Pi `parentId` links. Long entries use lossless `textRange` chunks. For arbitrary filter/map/reduce/join/traversal work in TypeScript, use guest-local `memory.walk(args, async (entry, index) => { ... })`: it follows every expansion page, reassembles complete entries, awaits nested tool calls, and stops early when the visitor returns `false`. `memory.sessions` accepts an optional `limit`.
 
 Stable-provider arguments normalize near-miss spellings the way `pi.*` does: known aliases and casing/singular variants repair to the canonical key, numeric strings coerce for numeric fields, and scope spellings such as `cwd` repair to `project`. Unknown keys are never silently ignored—they fail validation with the offending property path named (e.g. `/befroe: must NOT have additional properties`).
 

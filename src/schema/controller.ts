@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { FabricTraceSafeError } from "../audit/trace.js";
+import { schemaRefAllowedInEnforce } from "./policy.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricSchemaConfig, FabricSchemaTrustedCommand } from "../config.js";
 import type { MeshIdentity, MeshStateEntry, MeshStore } from "../mesh/store.js";
@@ -60,32 +61,7 @@ const atomicJsonWrite = (filePath: string, value: unknown): void => {
   writeJsonAtomic(filePath, value, { newline: true });
 };
 
-const allowedEnforceRefs = new Set([
-  "pi.read",
-  "pi.grep",
-  "pi.find",
-  "pi.ls",
-  "memory.recall",
-  "memory.expand",
-  "memory.sessions",
-  "state.get",
-  "state.history",
-  "state.complexity",
-  "mesh.self",
-  "mesh.read",
-  "mesh.members",
-  "mesh.get",
-  "mesh.list",
-  "compact.status",
-  "components.list",
-  "components.status",
-  "components.graph",
-  "schema.status",
-  "schema.hypothesize",
-  "schema.verify",
-  "schema.commit",
-  "schema.abort",
-]);
+
 
 const operationPath = (operation: SchemaFileOperation): string => operation.path;
 
@@ -109,7 +85,7 @@ export class SchemaController {
   }
 
   async authorize(ref: string, parentToolCallId: string): Promise<void> {
-    if (this.config.mode === "off" || allowedEnforceRefs.has(ref)) return;
+    if (this.config.mode === "off" || schemaRefAllowedInEnforce(ref)) return;
     const message = `Schema ${this.config.mode} policy would block ${ref}: protected workspace mutations and external effects must use schema.commit`;
     if (this.config.mode === "audit") {
       try {

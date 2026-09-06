@@ -65,9 +65,24 @@ export const parseWorkerOptions = (
   if (runner !== "pi" && runner !== "claude" && runner !== "veda") {
     throw new Error(`Unsupported Fabric agent runner: ${runner}`);
   }
+  const extensions = required(args, "extensions") === "true";
+  const selectedKernel = args.get("kernel");
+  const pythonRuntime = args.get("python-runtime") ?? "monty";
+  if (pythonRuntime !== "cpython" && pythonRuntime !== "monty") {
+    throw new Error(`Invalid worker Python runtime: ${pythonRuntime}`);
+  }
+  if (selectedKernel !== undefined && selectedKernel !== "typescript" && selectedKernel !== "python") {
+    throw new Error(`Invalid worker kernel: ${selectedKernel}`);
+  }
+  if (selectedKernel !== undefined && (runner !== "pi" || !extensions)) {
+    throw new Error("Explicit worker kernel requires the Pi runner with Fabric extensions enabled");
+  }
+  // Old launchers had no flag and always used TypeScript, regardless of ambient env.
+  const kernel = runner === "pi" && extensions ? selectedKernel ?? "typescript" : undefined;
   return {
     id: required(args, "id"),
     runner,
+    ...(kernel ? { kernel, pythonRuntime } : {}),
     name: required(args, "name"),
     taskFile: required(args, "task-file"),
     ...(imagesFile ? { imagesFile } : {}),
@@ -86,7 +101,7 @@ export const parseWorkerOptions = (
     fullCodeMode: required(args, "full-code-mode") === "true",
     ...(mainAgentId ? { mainAgentId } : {}),
     ...(fabricSessionId ? { fabricSessionId } : {}),
-    extensions: required(args, "extensions") === "true",
+    extensions,
     tools: JSON.parse(required(args, "tools")) as string[],
     grantedRisks: JSON.parse(required(args, "granted-risks")) as string[],
     transport: required(args, "transport") as AgentWorkerOptions["transport"],

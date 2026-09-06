@@ -96,6 +96,8 @@ const validateResidentHostConfig = (value: unknown, configPath: string): Residen
     (config.sessionActorRoot !== undefined && typeof config.sessionActorRoot !== "string") ||
     typeof config.residencyRoot !== "string" ||
     typeof config.fullCodeMode !== "boolean" ||
+    (config.kernel !== undefined && config.kernel !== "typescript" && config.kernel !== "python") ||
+    (config.pythonRuntime !== undefined && config.pythonRuntime !== "cpython" && config.pythonRuntime !== "monty") ||
     typeof config.agents !== "object" ||
     config.agents === null ||
     typeof config.mesh !== "object" ||
@@ -211,6 +213,8 @@ class ResidentHost {
       vedaBinary: config.vedaBinary,
       runRoot: path.join(config.residencyRoot, "runs"),
       fullCodeMode: config.fullCodeMode,
+      kernel: () => currentConfig().kernel ?? config.kernel ?? "typescript",
+      pythonRuntime: () => currentConfig().pythonRuntime ?? config.pythonRuntime ?? "monty",
       mainAgentId: config.rootId,
       fabricSessionId: config.sessionId,
       meshRoot: config.meshRoot,

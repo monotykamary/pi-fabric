@@ -363,6 +363,9 @@ const main = async (): Promise<void> => {
       ...(options.fabricSessionId ? { PI_FABRIC_SESSION_ID: options.fabricSessionId } : {}),
       PI_FABRIC_GRANTED_RISKS: options.grantedRisks.join(","),
       PI_FABRIC_FULL_CODE_MODE: String(options.fullCodeMode),
+      // Never leak an ambient native-kernel selector into a non-Fabric runner.
+      PI_FABRIC_KERNEL: options.kernel,
+      PI_FABRIC_PYTHON_RUNTIME: options.pythonRuntime,
       // Native tool allowlist for nested-call enforcement: full-code children
       // reach pi.* through fabric_exec, which is not gated by the --tools
       // allowlist, so both Pi and captured-tool providers enforce this

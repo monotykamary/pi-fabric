@@ -67,6 +67,10 @@ export class FabricSpeculationStreamTap {
 
   setScannerFactory(factory: () => LiteralCallScanner): void {
     this.#createScanner = factory;
+    if (!this.#options.enabled()) {
+      this.reset();
+      return;
+    }
     for (const stream of this.#streams.values()) {
       if (stream.scanner) continue;
       stream.scanner = factory();
@@ -89,6 +93,10 @@ export class FabricSpeculationStreamTap {
   /** Drain candidates recovered while the scanner module loaded. */
   flushCatchUp(context: Parameters<FabricSpeculationTapOptions["launch"]>[2]): void {
     const pending = this.#pendingCatchUp.splice(0);
+    if (!this.#options.enabled()) {
+      this.reset();
+      return;
+    }
     for (const { stream, candidate } of pending) {
       this.#options.launch(stream.toolCallId, candidate, context);
     }
@@ -97,11 +105,16 @@ export class FabricSpeculationStreamTap {
   /** New assistant message: content indices restart. */
   reset(): void {
     this.#streams.clear();
+    this.#pendingCatchUp.length = 0;
+    this.#lastParseAt = 0;
   }
 
   handleMessageUpdate(event: MessageUpdateEvent, context: ExtensionContext): void {
     try {
-      if (!this.#options.enabled()) return;
+      if (!this.#options.enabled()) {
+        this.reset();
+        return;
+      }
       if (this.#pendingCatchUp.length > 0) this.flushCatchUp(context);
       const assistantEvent = event.assistantMessageEvent;
       if (assistantEvent.type === "toolcall_start") {

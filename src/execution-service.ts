@@ -10,7 +10,10 @@ import {
 } from "./audit/trace.js";
 import { FabricActivityStore } from "./activity/store.js";
 import type { CapturedToolCatalog } from "./capture/catalog.js";
-import { isPiShellRef } from "./core/pi-tools.js";
+import { isPiShellRef, PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
+import { piBashExitMetadata } from "./core/pi-bash-error.js";
+import { normalizePiArguments } from "./core/pi-arguments.js";
+import { pythonErrorRecoveryHint } from "./runtime/python-error-guidance.js";
 import type {
   FabricActivityEventInput,
   FabricActivityItemInput,
@@ -40,43 +43,13 @@ import {
 import type { FabricCommittedCapabilityView } from "./protocol.js";
 import { fabricExecTitleHintCached } from "./ui/fabric-title-hint.js";
 import type {
-  QuickJsRuntime,
+  FabricKernel,
+  FabricKernelRuntime,
   FabricSandboxResult,
   FabricSandboxTerminationReason,
-} from "./runtime/quickjs-runtime.js";
-import type { NodeProcessRuntime } from "./runtime/node-process-runtime.js";
-import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
-import type { FabricTypeError } from "./runtime/type-checker.js";
-
-let runtimeDependencies:
-  | Promise<{
-      QuickJsRuntime: typeof import("./runtime/quickjs-runtime.js").QuickJsRuntime;
-      NodeProcessRuntime: typeof import("./runtime/node-process-runtime.js").NodeProcessRuntime;
-      BunProcessRuntime: typeof import("./runtime/node-process-runtime.js").BunProcessRuntime;
-      typeCheckFabricCode: typeof import("./runtime/type-checker.js").typeCheckFabricCode;
-      guestTypeDeclarations: typeof import("./runtime/guest-types.js").guestTypeDeclarations;
-      buildDynamicGuestDeclarations: typeof import("./runtime/dynamic-guest-types.js").buildDynamicGuestDeclarations;
-      buildCoreOverrideGuestDeclarations: typeof import("./runtime/core-override-guest-types.js").buildCoreOverrideGuestDeclarations;
-    }>
-  | undefined;
-
-const loadRuntimeDependencies = () =>
-  runtimeDependencies ??= Promise.all([
-    import("./runtime/quickjs-runtime.js"),
-    import("./runtime/node-process-runtime.js"),
-    import("./runtime/type-checker.js"),
-    import("./runtime/guest-types.js"),
-    import("./runtime/dynamic-guest-types.js"),
-    import("./runtime/core-override-guest-types.js"),
-  ]).then(([quickjs, nodeProcess, checker, guest, dynamicGuest, coreOverrides]) => ({
-    QuickJsRuntime: quickjs.QuickJsRuntime,
-    NodeProcessRuntime: nodeProcess.NodeProcessRuntime,
-    BunProcessRuntime: nodeProcess.BunProcessRuntime,
-    typeCheckFabricCode: checker.typeCheckFabricCode,
-    guestTypeDeclarations: guest.guestTypeDeclarations,
-    buildDynamicGuestDeclarations: dynamicGuest.buildDynamicGuestDeclarations,
-    buildCoreOverrideGuestDeclarations: coreOverrides.buildCoreOverrideGuestDeclarations,
-  }));
+} from "./runtime/kernel.js";
+import type { TypeScriptKernelRuntime } from "./runtime/typescript-kernel.js";
+import type { FabricTypeError, FabricTypeCheckResult } from "./runtime/type-checker.js";
 
 const executionOutcomeFromTermination = (
   reason: FabricSandboxTerminationReason,
@@ -116,6 +89,7 @@ const aggregateUsage = (usages: Usage[]): Usage => ({
 
 export interface FabricExecutionResult {
   success: boolean;
+  kernel?: FabricKernel;
   value: unknown;
   logs: string[];
   audits: FabricCallAudit[];
@@ -155,8 +129,8 @@ export interface FabricExecutionOptions {
 }
 
 export class FabricExecutionService {
-  #runtime: QuickJsRuntime | NodeProcessRuntime | undefined;
-  #runtimeKind: FabricConfig["executor"]["runtime"] | undefined;
+  #runtime: FabricKernelRuntime | undefined;
+  #runtimeKind: string | undefined;
   #capabilityView: FabricCommittedCapabilityView | undefined;
   constructor(
     readonly registry: ActionRegistry,
@@ -178,46 +152,66 @@ export class FabricExecutionService {
     this.activity?.start(
       options.parentToolCallId,
       options.display,
-      options.display?.name?.trim() ? undefined : fabricExecTitleHintCached(options.code),
+      options.display?.name?.trim() ? undefined : this.config.executor.kernel === "python"
+        ? "Python program"
+        : fabricExecTitleHintCached(options.code),
     );
-    const dependencies = await loadRuntimeDependencies();
     const effectiveFullCodeMode =
       this.config.fullCodeMode || this.config.schema.mode === "enforce";
+    const python = this.config.executor.kernel === "python";
+    const enforce = this.config.schema.mode === "enforce";
+    const monty = python && this.config.executor.pythonRuntime === "monty";
+    // Snapshot kernel identity before awaits. Schema enforce isolates the selected
+    // language rather than silently changing Python programs into TypeScript.
+    const runtimeKind = python
+      ? monty ? "python:monty" : `python:${this.config.executor.cpython.binary}:${enforce}`
+      : `typescript:${enforce ? "quickjs" : this.config.executor.runtime}`;
+    let runtime = this.#runtimeKind === runtimeKind ? this.#runtime : undefined;
+    if (!runtime) {
+      if (monty) {
+        const { MontyRuntime } = await import("./runtime/monty-runtime.js");
+        runtime = new MontyRuntime();
+      } else if (python) {
+        const { CPythonRuntime } = await import("./runtime/cpython-runtime.js");
+        runtime = new CPythonRuntime(this.config.executor.cpython.binary, enforce);
+      } else {
+        const { TypeScriptKernelRuntime } = await import("./runtime/typescript-kernel.js");
+        runtime = new TypeScriptKernelRuntime(enforce ? "quickjs" : this.config.executor.runtime);
+      }
+      this.#runtime = runtime;
+      this.#runtimeKind = runtimeKind;
+    }
+    let code = options.code;
+    let checked: FabricTypeCheckResult = { errors: [] };
     const unavailable = new Map(
       this.registry.unavailableProviders().map((entry) => [entry.name, entry.reason]),
     );
-    // Snapshot live mcp/extension tool schemas so the type gate below rejects
-    // argument-shape mistakes on those surfaces pre-execution, the way pi.*
-    // calls already fail. Snapshotting is side-effect-free (cache-warm read);
-    // unavailable or cold providers yield empty sources and the loose
-    // declarations stand.
-    const guestTypeSources = await this.registry.guestTypeSources({
-      cwd: options.context.cwd,
-      signal: options.signal,
-      parentToolCallId: options.parentToolCallId,
-      nestedToolCallId: `${options.parentToolCallId}_typedecls`,
-      extensionContext: options.context,
-      update() {},
-      ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
-    });
-    const coreOverrideDeclarations =
-      effectiveFullCodeMode
-        ? dependencies.buildCoreOverrideGuestDeclarations(
-            this.capturedTools?.list().map((entry) => ({
-              name: entry.name,
-              inputSchema: entry.definition.parameters,
-            })) ?? [],
-          )
-        : undefined;
-    const code = repairFabricGuestCode(options.code);
-    const checked = dependencies.typeCheckFabricCode(
-      code,
-      dependencies.guestTypeDeclarations(effectiveFullCodeMode, {
-        excludeGlobals: [...unavailable.keys()],
-        dynamic: dependencies.buildDynamicGuestDeclarations(guestTypeSources),
-        ...(coreOverrideDeclarations ? { coreOverrides: coreOverrideDeclarations } : {}),
-      }),
-    );
+    const coreOverrides = this.capturedTools?.list().map((entry) => ({
+      name: entry.name, inputSchema: entry.definition.parameters,
+    })) ?? [];
+    const piToolCanonicalFields = Object.fromEntries(coreOverrides
+      .filter((entry) => PI_CORE_TOOL_NAME_SET.has(entry.name))
+      .map((entry) => [entry.name, Object.keys((entry.inputSchema as { properties?: object }).properties ?? {})]));
+    if (!python) {
+      // TypeScript alone consumes live schemas as compiler declarations. Python
+      // compiles in CPython; both kernels share authoritative registry validation.
+      const guestTypeSources = await this.registry.guestTypeSources({
+        cwd: options.context.cwd,
+        signal: options.signal,
+        parentToolCallId: options.parentToolCallId,
+        nestedToolCallId: `${options.parentToolCallId}_typedecls`,
+        extensionContext: options.context,
+        update() {},
+        ...(this.#capabilityView ? { capabilityView: this.#capabilityView } : {}),
+      });
+      ({ code, checked } = (runtime as TypeScriptKernelRuntime).prepare(
+        options.code,
+        effectiveFullCodeMode,
+        [...unavailable.keys()],
+        guestTypeSources,
+        coreOverrides,
+      ));
+    }
     if (checked.errors.length > 0) {
       for (const error of checked.errors) {
         const missing = /^Cannot find name '([^']+)'/.exec(error.message);
@@ -229,6 +223,7 @@ export class FabricExecutionService {
       this.activity?.finish(options.parentToolCallId, false, "Type checking failed");
       return {
         success: false,
+        kernel: "typescript",
         value: undefined,
         logs: [],
         audits: [],
@@ -399,8 +394,9 @@ export class FabricExecutionService {
           ? (args.args as Record<string, unknown>)
           : args;
       if (isPiShellRef(targetRef)) {
-        const seconds = targetArgs.timeout;
-        const milliseconds = targetArgs.timeoutMs;
+        const repaired = normalizePiArguments(targetRef.slice(3), targetArgs, piToolCanonicalFields[targetRef.slice(3)]) as Record<string, unknown>;
+        const seconds = repaired.timeout;
+        const milliseconds = repaired.timeoutMs;
         const requested =
           typeof seconds === "number" && Number.isFinite(seconds)
             ? seconds * 1_000
@@ -512,16 +508,7 @@ export class FabricExecutionService {
     };
     let sandboxResult: FabricSandboxResult;
     try {
-      const runtimeKind = this.config.executor.runtime;
-      if (!this.#runtime || this.#runtimeKind !== runtimeKind) {
-        this.#runtime = runtimeKind === "node-process"
-          ? new dependencies.NodeProcessRuntime()
-          : runtimeKind === "bun-process"
-            ? new dependencies.BunProcessRuntime()
-            : new dependencies.QuickJsRuntime();
-        this.#runtimeKind = runtimeKind;
-      }
-      sandboxResult = await this.#runtime.execute(
+      sandboxResult = await runtime.execute(
         code,
         async (ref, args, runtimeSignal) => {
           const callContext = { ...baseContext, signal: runtimeSignal };
@@ -642,12 +629,29 @@ export class FabricExecutionService {
                 },
               );
             case "fabric.$call": {
-              const callArgs =
-                typeof args.args === "object" && args.args !== null && !Array.isArray(args.args)
-                  ? (args.args as Record<string, unknown>)
-                  : {};
-              const targetRef = String(args.ref ?? "");
-              return invokeAction(targetRef, callArgs, callContext);
+              if (typeof args.ref !== "string" || !args.ref.trim()) {
+                throw new Error("tools.call requires a non-empty ref string; discover the exact ref with tools.search/describe.");
+              }
+              if (args.args !== undefined && (typeof args.args !== "object" || args.args === null || Array.isArray(args.args))) {
+                throw new Error(python
+                  ? 'tools.call args must be a dictionary; use await tools.call(ref="provider.action", args={"key": "value"}).'
+                  : 'tools.call args must be an object; use await tools.call({ref: "provider.action", args: {key: "value"}}).');
+              }
+              const callArgs = { ...(args.args as Record<string, unknown> | undefined) };
+              const targetRef = args.ref;
+              const shell = isPiShellRef(targetRef);
+              if (shell && callArgs.settle !== undefined && typeof callArgs.settle !== "boolean") {
+                throw new Error(python ? "pi shell settle must be a boolean; use settle=True or settle=False" : "pi shell settle must be a boolean; use settle: true or settle: false");
+              }
+              const settle = shell && callArgs.settle === true;
+              if (shell) delete callArgs.settle;
+              try {
+                return await invokeAction(targetRef, callArgs, callContext);
+              } catch (error) {
+                const exit = settle ? piBashExitMetadata(error) : undefined;
+                if (exit) return { ok: false, ...exit, details: null, error: error instanceof Error ? error.message : String(error) };
+                throw error;
+              }
             }
             case "fabric.$progress":
               return traceAttempt(
@@ -749,9 +753,11 @@ export class FabricExecutionService {
         },
         {
           timeoutMs: effectiveTimeoutMs,
+          cwd: options.context.cwd,
           memoryLimitBytes: this.config.executor.memoryLimitBytes,
           maxLogChars: this.config.executor.maxOutputChars,
           minimumTimeoutMsForHostCall,
+          ...(!python ? { piToolCanonicalFields } : {}),
           ...(checked.javascript ? { transpiledCode: checked.javascript } : {}),
           ...(checked.sourceMap ? { transpiledSourceMap: checked.sourceMap } : {}),
           ...(options.strings ? { strings: options.strings } : {}),
@@ -768,11 +774,16 @@ export class FabricExecutionService {
       flushEmit();
     }
 
+    if (python && sandboxResult.terminationReason === "runtime_error" && sandboxResult.error) {
+      const hint = pythonErrorRecoveryHint(code, sandboxResult.error, monty ? "monty" : "cpython");
+      if (hint && !sandboxResult.error.includes(hint)) sandboxResult.error += `\n\nRecovery hint: ${hint}`;
+    }
     const runOutcome = executionOutcomeFromTermination(sandboxResult.terminationReason);
     const succeeded = runOutcome === "succeeded";
     this.activity?.finish(options.parentToolCallId, succeeded, sandboxResult.error);
     return {
       success: succeeded,
+      kernel: python ? "python" : "typescript",
       value: sandboxResult.value,
       logs: sandboxResult.logs,
       audits,

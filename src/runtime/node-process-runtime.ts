@@ -2,12 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import { piBashExitMetadata } from "../core/pi-bash-error.js";
 import { isPiShellRef } from "../core/pi-tools.js";
-import {
-  GUEST_SETUP,
-  type FabricHostCall,
-  type FabricSandboxOptions,
-  type FabricSandboxResult,
-} from "./quickjs-runtime.js";
+import { guestSetupSource } from "./quickjs-runtime.js";
+import type { FabricHostCall, FabricSandboxOptions, FabricSandboxResult } from "./kernel.js";
 import { NODE_PROCESS_CHILD_SOURCE } from "./node-process-child-source.js";
 import { createGuestStackMap, remapGuestErrorText } from "./guest-stack-map.js";
 import { transpileFabricCodeWithSourceMap } from "./type-checker.js";
@@ -221,7 +217,7 @@ export class NodeProcessRuntime {
       scheduleDeadline();
       send(child, {
         type: "execute",
-        setup: GUEST_SETUP,
+        setup: guestSetupSource(options.piToolCanonicalFields),
         code: guestBundle.code,
         strings: options.strings ?? {},
         tokenBudget: options.tokenBudget,

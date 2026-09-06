@@ -100,6 +100,32 @@ describe("runtime state speculation wiring", () => {
     }
   });
 
+  it.each(["reset", "disable", "invocation end"] as const)("does not dispatch preparation completed after %s", async (boundary) => {
+    const { registry, config, service } = fixture();
+    let resolve!: (value: Awaited<ReturnType<ActionRegistry["speculate"]>>) => void;
+    const pending = new Promise<Awaited<ReturnType<ActionRegistry["speculate"]>>>((done) => { resolve = done; });
+    const execute = vi.fn(async () => "old");
+    vi.spyOn(registry, "speculate").mockReturnValueOnce(pending);
+    taps[0]!.launch("turn-call", { ref: "compact.status", args: {} }, extensionContext);
+    if (boundary === "reset") service.reset();
+    else if (boundary === "disable") config.enabled = false;
+    else await registry.endInvocation("turn-call");
+    resolve({ preparedArgs: {}, bindingToken: "old", execute });
+    await pending;
+    await Promise.resolve();
+    expect(execute).not.toHaveBeenCalled();
+    service.reset();
+    await registry.close();
+  });
+
+  it("rechecks the live eligibility gate after descriptor resolution", async () => {
+    const { registry, config, service } = fixture();
+    config.enabled = false;
+    expect(await registry.speculate("compact.status", {}, context, {})).toBeUndefined();
+    service.reset();
+    await registry.close();
+  });
+
   it("resolves the capability commitment at launch time", async () => {
     const { registry, service, setView } = fixture();
     const lease = await registry.acquireCapabilityView(["compact.status"], context);

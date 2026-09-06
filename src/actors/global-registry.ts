@@ -177,6 +177,7 @@ export class GlobalActorRegistry {
           ? { residency: existing.residency }
           : {}),
       runner: patch.runner ?? existing.runner,
+      ...(patch.kernel !== undefined ? { kernel: patch.kernel } : existing.kernel ? { kernel: existing.kernel } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : existing.model ? { model: existing.model } : {}),
       ...(patch.thinking !== undefined ? { thinking: patch.thinking } : existing.thinking ? { thinking: existing.thinking } : {}),
       ...(patch.tools !== undefined ? { tools: patch.tools } : existing.tools ? { tools: existing.tools } : {}),
@@ -281,6 +282,12 @@ export class GlobalActorRegistry {
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid global actor runner: ${String(def.runner)}`);
     }
+    if (def.kernel !== undefined && def.kernel !== "inherit" && def.kernel !== "typescript" && def.kernel !== "python") {
+      throw new Error(`Invalid Fabric actor kernel: ${String(def.kernel)}`);
+    }
+    if (def.kernel && def.kernel !== "inherit" && (runner !== "pi" || def.extensions === false)) {
+      throw new Error("An explicit Fabric kernel requires a Pi actor with extensions enabled");
+    }
     const model = typeof def.model === "string" && def.model.trim() ? def.model.trim() : undefined;
     const thinking =
       def.thinking !== undefined && isFabricThinking(def.thinking) ? def.thinking : undefined;
@@ -310,6 +317,7 @@ export class GlobalActorRegistry {
       coalesce,
       residency,
       runner,
+      ...(def.kernel ? { kernel: def.kernel } : {}),
       ...(model ? { model } : {}),
       ...(thinking ? { thinking } : {}),
       ...(tools ? { tools } : {}),
@@ -365,6 +373,8 @@ export class GlobalActorRegistry {
       const coalesce = record.coalesce !== false;
       const residency = record.residency === "durable" ? "durable" : "session";
       const runner = record.runner === "claude" ? "claude" : "pi";
+      if (record.kernel !== undefined && record.kernel !== "inherit" && record.kernel !== "typescript" && record.kernel !== "python") continue;
+      if (record.kernel && record.kernel !== "inherit" && (runner !== "pi" || record.extensions === false)) continue;
       const thinking: FabricThinking | undefined = isFabricThinking(record.thinking)
         ? record.thinking
         : undefined;
@@ -398,6 +408,7 @@ export class GlobalActorRegistry {
         coalesce,
         residency,
         runner,
+        ...(record.kernel ? { kernel: record.kernel } : {}),
         createdAt: record.createdAt,
         updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : record.createdAt,
         ...(typeof record.model === "string" && record.model ? { model: record.model } : {}),

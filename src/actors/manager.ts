@@ -63,6 +63,9 @@ interface ActorQueueItem {
   reject?: (error: Error) => void;
 }
 
+import type { FabricKernel } from "../runtime/kernel.js";
+import type { FabricPythonRuntime } from "../config.js";
+
 interface ManagedActor {
   id: string;
   name: string;
@@ -81,6 +84,8 @@ interface ManagedActor {
   coalesce: boolean;
   residency: FabricParticipantResidency;
   runner: FabricAgentRunner;
+  kernel?: FabricKernel;
+  pythonRuntime?: FabricPythonRuntime;
   runnerSessionId?: string;
   model?: string;
   thinking?: FabricThinking;
@@ -373,6 +378,12 @@ export class ActorManager {
     if (runner !== "pi" && runner !== "claude") {
       throw new Error(`Invalid Fabric actor runner: ${String(request.runner)}`);
     }
+    const kernel = this.agents.resolveKernel({
+      ...(request.kernel !== undefined ? { kernel: request.kernel } : {}),
+      runner,
+      extensions: request.extensions ?? true,
+    });
+    const pythonRuntime = kernel ? this.agents.resolvePythonRuntime(request.pythonRuntime) : undefined;
     const requestedModel = typeof request.model === "string" ? request.model.trim() : "";
     const model = requestedModel ? this.#resolvedModel(runner, requestedModel) : undefined;
     const requirements = normalizeCapabilityRequirements(request.requires);
@@ -396,6 +407,8 @@ export class ActorManager {
       coalesce: request.coalesce ?? true,
       residency,
       runner,
+      ...(kernel ? { kernel } : {}),
+      ...(pythonRuntime ? { pythonRuntime } : {}),
       ...(model ? { model } : {}),
       ...(request.thinking ? { thinking: request.thinking } : {}),
       ...(request.tools ? { tools: [...new Set(request.tools)] } : {}),
@@ -785,6 +798,8 @@ export class ActorManager {
       coalesce: actor.coalesce,
       ...(actor.residency === "durable" ? { residency: "durable" as const } : {}),
       runner: actor.runner,
+      ...(actor.kernel ? { kernel: actor.kernel } : {}),
+      ...(actor.pythonRuntime ? { pythonRuntime: actor.pythonRuntime } : {}),
       ...(actor.model ? { model: actor.model } : {}),
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
       ...(actor.tools ? { tools: [...actor.tools] } : {}),
@@ -1444,6 +1459,8 @@ export class ActorManager {
       ].join("\n\n"),
       name: actor.name,
       runner: actor.runner,
+      ...(actor.kernel ? { kernel: actor.kernel } : {}),
+      ...(actor.pythonRuntime ? { pythonRuntime: actor.pythonRuntime } : {}),
       recursive: (actor.extensions ?? true) && actor.runner === "pi",
       extensions: actor.extensions ?? true,
       sessionFile: actor.sessionFile,
@@ -1743,6 +1760,8 @@ export class ActorManager {
       coalesce: actor.coalesce,
       residency: actor.residency,
       runner: actor.runner,
+      ...(actor.kernel ? { kernel: actor.kernel } : {}),
+      ...(actor.pythonRuntime ? { pythonRuntime: actor.pythonRuntime } : {}),
       ...(actor.runnerSessionId ? { runnerSessionId: actor.runnerSessionId } : {}),
       ...(actor.model ? { model: actor.model } : {}),
       ...(actor.thinking ? { thinking: actor.thinking } : {}),
@@ -1892,6 +1911,14 @@ export class ActorManager {
         coalesce: record.coalesce !== false,
         residency: record.residency === "durable" ? "durable" : "session",
         runner: record.runner === "claude" ? "claude" : "pi",
+        // Legacy Pi sessions were TypeScript-only. Do not change their language
+        // when the current host happens to select Python after a restart.
+        ...(record.runner !== "claude" && record.extensions !== false
+          ? {
+              kernel: record.kernel === "python" ? "python" as const : "typescript" as const,
+              pythonRuntime: record.pythonRuntime === "cpython" ? "cpython" as const : "monty" as const,
+            }
+          : {}),
         ...(typeof record.runnerSessionId === "string" && record.runnerSessionId.trim()
           ? { runnerSessionId: record.runnerSessionId }
           : {}),
@@ -1997,6 +2024,8 @@ export class ActorManager {
       rootId: actor.rootId,
       status: actor.status,
       runner: actor.runner,
+      ...(actor.kernel ? { kernel: actor.kernel } : {}),
+      ...(actor.pythonRuntime ? { pythonRuntime: actor.pythonRuntime } : {}),
       events: [...actor.events],
       topics: [...actor.topics],
       delivery: actor.delivery,

@@ -7,6 +7,33 @@ streaming-overlap half of the technique with a correctness contract the blog
 leaves informal: a served speculative result is indistinguishable from the
 call having executed at its natural program point.
 
+## Kernel support
+
+sPTC currently supports **TypeScript with the effective QuickJS backend only**
+(including schema enforce mode, which selects QuickJS for TypeScript).
+It has a **TypeScript-only scanner**. Python (Monty and CPython)
+is explicitly bypassed before extraction/scanning or speculative dispatch;
+Python syntax must never be fed through the TypeScript AST as an approximation.
+Normal Python host calls still run the authoritative registry pipeline without
+speculative cache warming. This is not Python sPTC support.
+
+Kernel/backend and schema/full-code policy transitions must reset both stream
+state and the promise cache before the next program. Reset invalidates pending
+preparation and already-claimed promises as well as retained results. Re-enabling
+speculation or returning to an eligible kernel/backend starts with empty state;
+it does not revive earlier streams or results.
+
+Robust Python support warrants future parser work: an incremental Python-aware
+parser, completed-call detection, Python literal/keyword argument normalization,
+and lexical binding/shadowing analysis shared with the Python bridge contract.
+Regex extraction or parsing Python-looking expressions as TypeScript cannot
+safely establish those properties. Native TypeScript backends (Node/Bun outside
+schema enforce) are explicitly bypassed too: ambient OS writes bypass registry
+mutation epochs, and only `pi.read` currently has external filesystem freshness
+checks. Backend support must not weaken the isolated correctness contract.
+
+The pre-launch gate also checks live policy **before provider lookup**: read or network approval must be `allow`, hidden `pi.*` calls cannot pre-launch in orchestration-only mode, and Schema-blocked refs cannot pre-launch under enforcement. MCP allowlisting alone does not override `ask`/`deny` or Schema policy. The normal invocation repeats its full authorization and approval path before consuming a cached result.
+
 ## Pipeline
 
 ```
@@ -52,7 +79,9 @@ ActionRegistry.invoke()          serve-or-reexecute at the real call site
      speculation.
    - The entry's **freshness checker** still holds. `pi.read` snapshots
      `{mtimeMs, size}` of the resolved path at launch and re-stats at serve,
-     which also catches external edits. Other Tier-A refs rely on the epoch
+     which also catches external edits. Epoch, freshness, and TTL are checked
+     again after awaiting an in-flight result; resets also abort claimed
+     entries, not just entries still in the cache. Other Tier-A refs rely on the epoch
      plus the fact that their stores cannot be written by this guest surface.
 3. **No approval bypass.** Speculation launches only actions that never
    prompt; the serve path runs the complete normal pipeline (authorize,
@@ -63,7 +92,10 @@ ActionRegistry.invoke()          serve-or-reexecute at the real call site
 4. **Failures always degrade to plain execution.** A speculative call that
    errored is discarded and the real call runs. A program that never invokes
    the candidate leaves waste and nothing more. Unserved entries are aborted
-   when the invocation ends, and everything is dropped at turn end.
+   when the invocation ends, and everything is dropped at turn end. A launch
+   commitment fences asynchronous descriptor/argument preparation against
+   resets, mutations, and invocation completion, so late preparation cannot
+   repopulate a retired cache. Reset also clears lazy-scanner catch-up work.
 5. **Take-once, occurrence-safe.** Serving deletes the entry, so one
    speculation can never answer two calls. The store also retains only one
    entry per identical call signature, so a duplicate read past the first

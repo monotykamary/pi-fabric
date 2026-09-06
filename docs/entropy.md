@@ -32,6 +32,39 @@ same report, which is what makes the score bisectable and CI-gateable.
   counts across windows with exact per-session deltas, so sparse parameters
   still reach the derivation thresholds.
 
+## Kernel boundary
+
+Entropy and catalog repairs compile **host call data**, not guest programs.
+TypeScript, Python/Monty (the Python default), and explicitly selected native
+CPython share canonical refs, JSON argument schemas, audits, and trace V1.
+No Python runtime is disabled, selected, or substituted by either compiler.
+
+- Repair promotion happens at registry resolve/prepare/validate, not by parsing
+  TypeScript diagnostics or Python tracebacks. Guest diagnostics are status-only;
+  they cannot author alias rows. Apply re-proves unique live spellings, respects
+  own canonical argument keys, and leaves schema validation and approvals intact.
+  Action aliases do not expand committed capability views.
+- The repair-table digest binds provider and captured-tool names, not the guest
+  language. Changing that catalog clears candidates and reloads the table;
+  field/action drift is handled by live mapping proofs on each application.
+- Entropy ingestion requires a guarded trace envelope before accepting its audit
+  values. Program text, Python dictionary reprs, and exception prose are not
+  evidence. Standard JSON whitespace is accepted for model attribution, including
+  model changes in appended session records.
+- Session caches and observation pools contain language-neutral evidence. A kernel
+  switch does not invalidate it; partitioning it by runtime would discard valid
+  host observations. Trace V1 does not provide per-kernel entropy attribution.
+- Compiled overlays must prove both the live base-schema digest and an enum-only
+  restriction: they cannot remove required fields, change types, widen declared
+  enums, or replace other schema constraints, even on artifact import. Schema
+  drift invalidates enforcement at consult time. The automatic compiler still
+  only tightens domains already declared closed by the schema author.
+
+The session-start load, per-`fabric_exec` turn-end compile, immediate activation,
+and shutdown flush are shared lifecycle hooks, independent of the chosen kernel.
+`tests/kernel-compilers.test.ts` exercises these host boundaries with real TS,
+Monty, and CPython executions, including language switches and stale artifacts.
+
 ## The metric
 
 `measureEntropy({ traces, surface?, repairs?, catalogDigest? })` returns a

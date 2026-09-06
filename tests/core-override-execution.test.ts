@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { describe, expect, it, vi } from "vitest";
+import { availablePythonBackends } from "./fixtures/python-backends.js";
 import { CapturedToolCatalog } from "../src/capture/catalog.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
@@ -96,6 +97,28 @@ const setup = (
 };
 
 describe("captured core overrides through Fabric execution", () => {
+  it.each(["quickjs", "node-process", "bun-process", "monty", "cpython"] as const)("preserves override fields that spell core aliases (%s)", async (backend) => {
+    if ((backend === "monty" || backend === "cpython") && !availablePythonBackends[backend]) return;
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-canonical-override-"));
+    const calls: Array<Record<string, unknown>> = [];
+    const override = makeOverride("write", Type.Object({ path: Type.String(), text: Type.String() }, { additionalProperties: false }), calls);
+    const { catalog, service } = setup(cwd, [override]);
+    const python = backend === "monty" || backend === "cpython";
+    service.config.executor.kernel = python ? "python" : "typescript";
+    if (python) service.config.executor.pythonRuntime = backend;
+    else service.config.executor.runtime = backend;
+    try {
+      const result = await service.execute({
+        code: python ? 'return await pi.write(path="virtual.txt", text="canonical")'
+          : 'return await pi.write({path: "virtual.txt", text: "canonical"});',
+        signal: undefined, parentToolCallId: "canonical-override", context: makeContext(cwd), onPartial() {},
+      });
+      expect(result.success, result.error).toBe(true);
+      expect(calls).toEqual([{ path: "virtual.txt", text: "canonical" }]);
+      expect(fs.existsSync(path.join(cwd, "virtual.txt"))).toBe(false);
+    } finally { catalog.clear(); fs.rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it("fails closed instead of bypassing a bash override that does not support cwd", async () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-core-bash-cwd-"));
     const calls: Array<Record<string, unknown>> = [];

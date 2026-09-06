@@ -1,3 +1,4 @@
+import type { FabricKernel } from "./runtime/kernel.js";
 import { normalizeRunDisplay } from "./run-display.js";
 import { repairFabricGuestCode } from "./runtime/guest-code-repair.js";
 
@@ -62,8 +63,8 @@ export const resolveFabricExecPayloads = (params: {
 }): Record<string, string> | undefined =>
   normalizeFabricExecStrings(params.payloads) ?? normalizeFabricExecStrings(params.strings);
 
-export const prepareFabricExecArguments = (input: unknown): unknown => {
-  if (typeof input === "string") return { code: repairFabricGuestCode(input) };
+export const prepareFabricExecArguments = (input: unknown, kernel: FabricKernel = "typescript"): unknown => {
+  if (typeof input === "string") return { code: kernel === "python" ? input : repairFabricGuestCode(input) };
   if (!isRecord(input)) return input;
 
   let prepared = input;
@@ -75,7 +76,7 @@ export const prepareFabricExecArguments = (input: unknown): unknown => {
   if (Array.isArray(prepared.code) && prepared.code.every((line) => typeof line === "string")) {
     writable().code = prepared.code.join("\n");
   }
-  if (typeof prepared.code === "string") {
+  if (kernel === "typescript" && typeof prepared.code === "string") {
     const repaired = repairFabricGuestCode(prepared.code);
     if (repaired !== prepared.code) writable().code = repaired;
   }

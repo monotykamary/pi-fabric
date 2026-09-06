@@ -4,7 +4,7 @@
 
 **A programmable tool and agent runtime for [Pi](https://github.com/earendil-works/pi-coding-agent)**
 
-_One type-checked program for tools, MCP, agents, workflows, actors, mesh, councils, and recursion._
+_One program for tools, MCP, agents, workflows, actors, mesh, councils, and recursion._
 
 <p>
   <img src="https://raw.githubusercontent.com/monotykamary/pi-fabric/main/media/banner.svg" alt="Animated banner: one checked TypeScript program weaving pi core tools, MCP servers, agents, and mesh into a single result" width="100%">
@@ -24,13 +24,13 @@ _One type-checked program for tools, MCP, agents, workflows, actors, mesh, counc
 
 ---
 
-Fabric gives Pi one programmable tool called `fabric_exec`, which composes core tools and MCP servers with captured extension tools in a checked TypeScript program. That program can call agents or actors, use durable coordination, and run inside QuickJS. Trusted workloads that exceed WASM32 memory may use the unsafe Node process. After execution, the conversation receives the result of the program's branches, loops, fan-out, and data flow.
+Fabric gives Pi one programmable tool called `fabric_exec`, which composes core tools and MCP servers with captured extension tools. The default kernel runs checked TypeScript in isolated QuickJS; select sandboxed **Python (Monty)** with `executor.kernel: "python"`. CPython is an explicit native escape hatch via `executor.pythonRuntime: "cpython"`. The configured kernel is exclusive: there is no per-call language selector. Trusted TypeScript workloads can also use unsafe Node/Bun processes. Programs call host providers for agents, actors, and durable coordination, then return the result of their branches, loops, fan-out, and data flow. See [execution kernels](docs/kernels.md) for Python usage, security boundaries, and guest-helper limitations.
 
 ## Why Fabric?
 
 |     | Capability | What it unlocks |
 | :-: | ---------- | --------------- |
-| ⚡ | **Code mode** | One flat tool schema; branching, loops, fan-out, and data flow live in checked TypeScript. |
+| ⚡ | **Code mode** | One flat tool schema; branching, loops, fan-out, and data flow live in TypeScript or configured Python. |
 | 🧰 | **Capability routing** | Call Pi core tools, MCP servers, captured extension tools, or Fabric providers through one runtime. |
 | 🧑‍🤝‍🧑 | **Agent runtime** | One-shot workers, durable resident agents, persistent event-driven actors, councils, and bounded recursive queries. |
 | 🕸️ | **Workflows + mesh** | Phased progress plus durable topics, shared tasks, and compare-and-swap state. |
@@ -41,10 +41,10 @@ Fabric gives Pi one programmable tool called `fabric_exec`, which composes core 
 
 1. **You ask** in plain language.
 2. **Pi writes one program** that calls the required tools and agents.
-3. **The type checker validates the program** before execution.
+3. **TypeScript is statically checked** before execution; both kernels use the same authoritative host-call schema validation.
 4. **The result returns** to your conversation. Intermediate work stays in the sandbox and appears in the activity panel and dashboard.
 
-The model can write this program:
+With the default TypeScript kernel, the model can write this program (TypeScript only):
 
 ```ts
 const [manifest, sources] = await Promise.all([
@@ -57,11 +57,19 @@ return {
 };
 ```
 
-Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. Refs found or computed at runtime use `tools.call({ ref, args })`.
+Independent calls run in parallel, and the returned object enters the model context. Known providers support concise direct calls such as `mcp.fal_ai.get_model_schema(...)`, `memory.recall(...)`, `state.get()`, `schema.status()`, and `compact.status()`. Refs found or computed at runtime use `tools.call({ ref, args })` (TypeScript notation). Python uses `await tools.call({"ref": ref, "args": args})`, native dictionary results, and `asyncio.gather` for independent calls.
+
+To select Python, put this in `~/.pi/agent/fabric.json` or a trusted project's `.pi/fabric.json`, or use `/fabric settings` → **Executor** → **Kernel**:
+
+```json
+{ "executor": { "kernel": "python" } }
+```
+
+Python defaults to [Monty](https://github.com/pydantic/monty), a sandboxed Python subset with VM resource limits and no ambient filesystem, network, or process access. It is **not CPython**: arbitrary imports, third-party packages, and some Python features are unavailable. Full **CPython 3.10+** requires explicit `executor.pythonRuntime: "cpython"` and runs trusted native code with full OS privileges outside schema enforce, like TypeScript's Node/Bun escape hatches. CPython enforcement additionally requires macOS `sandbox-exec` or Linux `bwrap`, failing closed without isolation. Missing Monty dependencies never trigger a native fallback. `executor.runtime` only affects TypeScript. See [the kernel guide](docs/kernels.md).
 
 ## Install
 
-Requires Node.js 24+ and Pi 0.80.6+. Fabric also checks a detectable Pi host version at startup and warns when an older host may ignore continuation APIs such as actor `triggerTurn`.
+Requires Node.js 24+ and Pi 0.80.6+. Monty's optional native package installs on supported platforms; only the explicit CPython escape hatch requires CPython 3.10+. Fabric also checks a detectable Pi host version at startup and warns when an older host may ignore continuation APIs such as actor `triggerTurn`.
 
 ```bash
 pi install npm:pi-fabric
@@ -123,13 +131,14 @@ Fabric includes a live activity surface in Pi:
 - A compact widget above the chat (like `pi-supervisor`) whose header follows the current phase while its rows show active/completed agents, active actors, and their recent nested tool or code-change activity.
 - `/fabric` (or `/fabric dashboard`): opens the **Activity** and **Topology** views. The user-facing Pi session appears as **Main**. You can queue or steer participants and inspect the project topology.
 - `/fabric settings`: mirrors Pi's `/settings` and writes changes to `fabric.json`. TUI hosts get the searchable settings component; RPC hosts get the same nested sections, value/input/model pickers, list editors, and project/global save scopes through native dialog primitives.
-- `Tool display` (`compact` by default, or `full`) is configured under `/fabric settings` → **UI**; compact elevates the declared display intent, hides the outer TypeScript, and applies to the current transcript immediately. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript.
+- `Tool display` (`compact` by default, or `full`) is configured under `/fabric settings` → **UI**; compact elevates the declared display intent, hides the outer program, and applies to the current transcript immediately. Pi's tool-expand keybinding (`ctrl+o` by default) expands a compact card to the full transcript.
 
 See the [interface & commands reference](docs/interface.md) for every view, keybinding, and slash command.
 
 ## Reference
 
 - [Configuration](docs/configuration.md): `fabric.json`, code modes, tool capture, approvals, and budgets.
+- [Execution kernels](docs/kernels.md): exclusive TypeScript/Python selection, Monty sandboxing, CPython escape hatch, agent inheritance, and examples.
 - [Memory & recall](docs/memory-recall.md): compact ranked hits, uniform follow calls, lossless expansion, and guest-local `memory.walk` computation.
 - [Interface & commands](docs/interface.md): dashboard, settings, keybindings, slash commands, and headless runs.
 - [Agents, actors & mesh](docs/agents.md): model handoff, `/fabric prewalk`, runners, transports, actors, councils, recursive queries, and durable coordination.

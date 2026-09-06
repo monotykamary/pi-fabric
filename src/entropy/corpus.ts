@@ -38,8 +38,8 @@ export const entropyTraceFromFabricTrace = (
   ...(model ? { model } : {}),
 });
 
-const MODEL_CHANGE_FILTER = '"type":"model_change"';
-const ASSISTANT_FILTER = '"role":"assistant"';
+const MODEL_CHANGE_FILTER = /"type"\s*:\s*"model_change"/;
+const ASSISTANT_FILTER = /"role"\s*:\s*"assistant"/;
 
 // Model identity for one parsed session record: `model_change` entries name
 // the provider/model from that point on, and assistant messages carry the
@@ -76,7 +76,7 @@ const scanSessionLine = (
   if (line === "") return undefined;
   const traceLine = line.includes(FABRIC_EXECUTION_TRACE_KIND);
   const modelLine =
-    !traceLine && (line.includes(MODEL_CHANGE_FILTER) || line.includes(ASSISTANT_FILTER));
+    !traceLine && (MODEL_CHANGE_FILTER.test(line) || ASSISTANT_FILTER.test(line));
   if (!traceLine && !modelLine) return undefined;
   let parsed: unknown;
   try {
@@ -85,11 +85,9 @@ const scanSessionLine = (
     return undefined;
   }
   if (!isRecord(parsed)) return undefined;
-  if (modelLine) {
-    const model = modelFromRecord(parsed);
-    if (model) state.currentModel = model;
-    return undefined;
-  }
+  const model = modelFromRecord(parsed);
+  if (model) state.currentModel = model;
+  if (!traceLine) return undefined;
   const details = isRecord(parsed.details)
     ? parsed.details
     : isRecord(parsed.message) && isRecord(parsed.message.details)
@@ -120,7 +118,8 @@ const appendSessionRecord = (
   record: ScannedSessionRecord,
 ): void => {
   const trace = readFabricExecutionTraceV1(record.details.trace);
-  if (trace) evidence.traces.push(entropyTraceFromFabricTrace(trace, record.model));
+  if (!trace) return;
+  evidence.traces.push(entropyTraceFromFabricTrace(trace, record.model));
   const audits = record.details.audits;
   if (!Array.isArray(audits)) return;
   for (const audit of audits) {

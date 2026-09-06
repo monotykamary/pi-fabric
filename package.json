@@ -111,5 +111,8 @@
     "ajv": {
       "fast-uri": "^3.1.6"
     }
+  },
+  "optionalDependencies": {
+    "@pydantic/monty": "0.0.23"
   }
 }

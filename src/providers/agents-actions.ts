@@ -15,6 +15,11 @@ const runProperties = {
     enum: ["pi", "claude", "veda"],
     description: "Execution harness. Defaults to agents.runner.",
   },
+  kernel: {
+    type: "string",
+    enum: ["typescript", "python", "inherit"],
+    description: "Fabric execution language. Omitted/inherit uses the caller executor.kernel; concrete choices require Pi with extensions enabled. Python uses the configured backend; CPython is native execution.",
+  },
   transport: {
     type: "string",
     enum: ["auto", "process", "tmux", "screen", "localterm", "herdr"],
@@ -116,6 +121,7 @@ const handoffSchema = {
       description: "Optional instructions for the executor in addition to the inherited trajectory",
     },
     name: runProperties.name,
+    kernel: runProperties.kernel,
     transport: runProperties.transport,
     model: {
       ...runProperties.model,
@@ -343,6 +349,7 @@ export const AGENTS_ACTION_DESCRIPTORS: FabricActionDescriptor[] = [
         coalesce: { type: "boolean" },
         residency: residencySchema,
         runner: runProperties.runner,
+        kernel: runProperties.kernel,
         model: runProperties.model,
         thinking: runProperties.thinking,
         tools: runProperties.tools,

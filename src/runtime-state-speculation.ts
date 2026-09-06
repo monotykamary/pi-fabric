@@ -24,12 +24,13 @@ export class RuntimeStateSpeculation {
     readonly registry: ActionRegistry,
     readonly readConfig: () => FabricConfig["speculation"] | undefined,
     readonly readCapabilityView: () => FabricInvocationContext["capabilityView"],
+    readonly allowRef: (ref: string) => boolean = () => true,
   ) {
     const speculation = readConfig();
     if (!speculation?.enabled) return;
     const store = new FabricSpeculationStore(speculation);
     registry.setSpeculation(store, (action: ResolvedFabricAction) =>
-      isSpeculationEligible(
+      this.readConfig()?.enabled === true && this.allowRef(action.ref) && isSpeculationEligible(
         {
           ref: action.ref,
           provider: action.provider,
@@ -37,19 +38,19 @@ export class RuntimeStateSpeculation {
           effectKind: action.effect?.kind,
           ...(action.annotations ? { annotations: action.annotations } : {}),
         },
-        speculation.mcpAllowlist,
+        this.readConfig()?.mcpAllowlist ?? [],
       ));
     this.#store = store;
     this.tap = new FabricSpeculationStreamTap({
       enabled: () => this.readConfig()?.enabled === true,
       maxBufferBytes: () => this.readConfig()?.maxBufferBytes ?? 2 * 1024 * 1024,
-      isEligible: (ref) =>
+      isEligible: (ref) => this.allowRef(ref) && (
         TIER_A_SPECULATION_REFS.has(ref) ||
         (ref.startsWith("mcp.") &&
           mcpAllowlistMatch(
             ref.slice("mcp.".length),
             this.readConfig()?.mcpAllowlist ?? [],
-          )),
+          ))),
       launch: (toolCallId, candidate, extensionContext) => {
         void this.#launchSpeculation(toolCallId, candidate, extensionContext).catch(
           () => undefined,
@@ -74,7 +75,8 @@ export class RuntimeStateSpeculation {
   ): Promise<void> {
     const registry = this.registry;
     const store = this.#store;
-    if (!registry || !store || this.readConfig()?.enabled !== true) return;
+    if (!registry || !store || this.readConfig()?.enabled !== true || !this.allowRef(candidate.ref)) return;
+    const isCurrent = store.captureLaunch(toolCallId);
     const replay: FabricSpeculationReplay = {};
     const capabilityView = this.readCapabilityView();
     const lightContext: FabricInvocationContext = {
@@ -94,7 +96,7 @@ export class RuntimeStateSpeculation {
       lightContext,
       replay,
     );
-    if (!speculation) return;
+    if (!speculation || !isCurrent() || this.readConfig()?.enabled !== true || !this.allowRef(candidate.ref)) return;
     store.launch(
       toolCallId,
       candidate.ref,

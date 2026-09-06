@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { FabricKernel } from "../runtime/kernel.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +13,7 @@ import {
   type FabricAgentConfig,
   type FabricAgentTransport,
   type FabricRetentionConfig,
+  type FabricPythonRuntime,
 } from "../config.js";
 import {
   discoverClaudeModels,
@@ -148,6 +150,7 @@ interface ManagedAgent {
   name: string;
   task: string;
   runner: FabricAgentRunner;
+  kernel?: FabricKernel;
   recursive: boolean;
   residency: "session" | "durable";
   cwd: string;
@@ -342,6 +345,7 @@ const failedRecord = (
     task: managed.task,
     status,
     runner: managed.runner,
+    ...(managed.kernel ? { kernel: managed.kernel } : {}),
     transport: managed.transport.kind,
     cwd: managed.cwd,
     ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
@@ -379,6 +383,8 @@ export class AgentManager {
   readonly #vedaBinary: string;
   readonly #currentDepth: number;
   readonly #fullCodeMode: boolean;
+  readonly #kernel: () => FabricKernel;
+  readonly #pythonRuntime: () => FabricPythonRuntime;
   readonly #mainAgentId: string | undefined;
   readonly #fabricSessionId: string | undefined;
   readonly #meshRoot: string | undefined;
@@ -417,6 +423,8 @@ export class AgentManager {
       vedaBinary?: string;
       runRoot?: string;
       fullCodeMode?: boolean;
+      kernel?: () => FabricKernel;
+      pythonRuntime?: () => FabricPythonRuntime;
       mainAgentId?: string;
       fabricSessionId?: string;
       meshRoot?: string;
@@ -450,6 +458,8 @@ export class AgentManager {
     this.#resolveParticipantGuidance = options.resolveParticipantGuidance;
     this.#currentDepth = Math.max(0, Number(process.env.PI_FABRIC_DEPTH ?? "0") || 0);
     this.#fullCodeMode = options.fullCodeMode ?? true;
+    this.#kernel = options.kernel ?? (() => "typescript");
+    this.#pythonRuntime = options.pythonRuntime ?? (() => "monty");
     this.#mainAgentId =
       options.mainAgentId ?? process.env.PI_FABRIC_MAIN_AGENT_ID;
     this.#fabricSessionId = options.fabricSessionId ?? process.env.PI_FABRIC_SESSION_ID;
@@ -515,12 +525,54 @@ export class AgentManager {
     return resolveAgentCwd(this.cwd, requestedCwd);
   }
 
+  /** Resolve once at the caller boundary, before launch or resident/trajectory handoff. */
+  resolveKernel(
+    request: Pick<AgentRunRequest, "kernel" | "runner" | "extensions">,
+  ): FabricKernel | undefined {
+    const choice = request.kernel;
+    if (choice !== undefined && choice !== "inherit" && choice !== "typescript" && choice !== "python") {
+      throw new Error(`Invalid Fabric agent kernel: ${String(choice)}`);
+    }
+    const runner = request.runner ?? this.config.runner;
+    if (runner !== "pi" && runner !== "claude" && runner !== "veda") {
+      throw new Error(`Unsupported Fabric agent runner: ${String(runner)}`);
+    }
+    if (runner !== "pi" || !(request.extensions ?? this.config.extensions)) {
+      if (choice === "typescript" || choice === "python") {
+        throw new Error("Explicit agent kernel requires the Pi runner with Fabric extensions enabled");
+      }
+      return undefined;
+    }
+    const kernel = choice === undefined || choice === "inherit" ? this.#kernel() : choice;
+    if (kernel !== "typescript" && kernel !== "python") {
+      throw new Error(`Invalid inherited Fabric agent kernel: ${String(kernel)}`);
+    }
+    return kernel;
+  }
+
+  /** Internal backend policy snapshot; public agent calls select a language, not a backend. */
+  resolvePythonRuntime(inherited?: FabricPythonRuntime): FabricPythonRuntime {
+    const runtime = inherited === undefined ? this.#pythonRuntime() : inherited;
+    if (runtime !== "cpython" && runtime !== "monty") {
+      throw new Error(`Invalid inherited Fabric Python runtime: ${String(runtime)}`);
+    }
+    return runtime;
+  }
+
   async spawn(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
     if (!this.config.enabled) throw new Error("Agents are disabled in Fabric configuration");
     if (this.#currentDepth >= this.config.maxDepth) {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
     }
     if (!request.task.trim()) throw new Error("Agent task must not be empty");
+    if (request.recursive === true && request.extensions === false) {
+      throw new Error("Recursive Fabric requires extensions enabled; omit recursive or extensions: false");
+    }
+    const kernel = this.resolveKernel({
+      ...request,
+      ...(request.recursive === true ? { extensions: true } : {}),
+    });
+    const pythonRuntime = kernel ? this.resolvePythonRuntime(request.pythonRuntime) : undefined;
     validateAgentCwdRequest(request);
     // Validate explicit execution targets before any model preparation or budget side effects.
     // With no override this deliberately preserves the manager cwd without canonicalizing it.
@@ -552,7 +604,8 @@ export class AgentManager {
     if (request.sessionSeed && request.sessionFile) {
       throw new Error("A agent request cannot combine sessionSeed with sessionFile");
     }
-    const tools = this.#childTools(request, runner);
+    const requiresFabricKernel = kernel === "python" || request.kernel === "typescript";
+    const tools = this.#childTools(request, runner, requiresFabricKernel);
     if (runner === "claude") mapClaudeTools(tools);
     if (runner === "veda") mapVedaTools(tools);
     let model =
@@ -663,6 +716,8 @@ export class AgentManager {
         name,
         "--runner",
         runner,
+        ...(kernel ? ["--kernel", kernel] : []),
+        ...(pythonRuntime ? ["--python-runtime", pythonRuntime] : []),
         "--task-file",
         taskFile,
         ...(imagesFile ? ["--images-file", imagesFile] : []),
@@ -703,7 +758,7 @@ export class AgentManager {
           : []),
         "--transport",
         adapter.kind,
-        ...(recursive || inheritedFullCodeMode
+        ...(recursive || inheritedFullCodeMode || requiresFabricKernel
           ? ["--fabric-extension", this.#fabricExtensionPath]
           : []),
         ...(model ? ["--model", model] : []),
@@ -759,6 +814,7 @@ export class AgentManager {
         name,
         task: request.task,
         runner,
+        ...(kernel ? { kernel } : {}),
         recursive,
         residency,
         cwd: agentCwd,
@@ -1424,14 +1480,14 @@ export class AgentManager {
     }
   }
 
-  #childTools(request: AgentRunRequest, runner: FabricAgentRunner): string[] {
+  #childTools(request: AgentRunRequest, runner: FabricAgentRunner, requiresFabricKernel = false): string[] {
     const tools = [...(request.tools ?? this.config.defaultTools)].filter(
       (tool) => tool !== "fabric_exec",
     );
     const extensions = request.recursive === true
       ? true
       : (request.extensions ?? this.config.extensions);
-    if (runner === "pi" && (request.recursive || (this.#fullCodeMode && extensions))) {
+    if (runner === "pi" && (request.recursive || ((this.#fullCodeMode || requiresFabricKernel) && extensions))) {
       tools.push("fabric_exec");
     }
     return [...new Set(tools)];
@@ -1507,6 +1563,7 @@ export class AgentManager {
       name: managed.name,
       status,
       runner: managed.runner,
+      ...(managed.kernel ? { kernel: managed.kernel } : {}),
       transport: managed.transport.kind,
       cwd: managed.cwd,
       ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
@@ -1565,6 +1622,7 @@ export class AgentManager {
       ...safeRecord,
       cwd: managed.cwd,
       runner: managed.runner,
+      ...(managed.kernel ? { kernel: managed.kernel } : {}),
       ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
       logFile: path.join(managed.runDirectory, "events.jsonl"),
       ...(nestedAgents.length > 0 ? { nestedAgents } : {}),

@@ -281,6 +281,10 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // surfaces against the (now stable) empty catalog.
     capturedTools.markResumed();
     toolCapture.setPolicy(capturePolicy());
+    Object.assign(
+      fabricTool,
+      createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell, toolDisplay),
+    );
     pi.registerTool(fabricTool);
     toolOwnership.apply(
       fabricOwnsModelTools(),
@@ -343,10 +347,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   };
   state.setActivationHook(async (context) => {
     refreshCodePreviewSettings();
-    Object.assign(
-      fabricTool,
-      createFabricExecTool(state, codePreviewSettings, pendingHandoffs, decorateShell, toolDisplay),
-    );
     await autoArmPrewalk(context);
     applyFabricMode();
     fabricUi.start(context);
@@ -767,16 +767,13 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   });
 
   pi.on("before_agent_start", async (event, context) => {
-    const fullCodeMode = state.cwd
-      ? state.config.fullCodeMode
-      : DEFAULT_FABRIC_CONFIG.fullCodeMode;
-    const schemaMode = state.cwd
-      ? state.config.schema.mode
-      : DEFAULT_FABRIC_CONFIG.schema.mode;
+    const config = state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG;
+    const fullCodeMode = config.fullCodeMode;
+    const schemaMode = config.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
     const skills = event.systemPromptOptions.skills ?? [];
-    const captureSnapshot = state.cwd ? capturePolicy() : undefined;
+    const captureSnapshot = state.bootstrapped ? capturePolicy() : undefined;
     // Pi omits its entire skill catalog when the active tool set lacks a tool
     // named read. Restore that catalog in full code mode with only the loader
     // instruction adapted to Fabric's nested pi.read path.
@@ -799,7 +796,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       target: process.env.PI_FABRIC_PARENT_RUN ? "participant" : "main",
       defaults: [{
         slot: FABRIC_EXECUTION_GUIDANCE_SLOT,
-        content: defaultFabricExecutionGuidance(effectiveFullCodeMode),
+        content: defaultFabricExecutionGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime),
       }],
     });
     const overrideGuidance = effectiveFullCodeMode
@@ -812,7 +809,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     // from the current prompt (skill references) rides
     // the message channel so provider prefix caches never cold-prefill.
     const guidance = [
-      fabricExecutionKernelGuidance(effectiveFullCodeMode),
+      fabricExecutionKernelGuidance(effectiveFullCodeMode, config.executor.kernel, config.executor.pythonRuntime),
       resolvedGuidance.slotText,
       fabricSchemaGuidance(schemaMode),
       overrideGuidance,

@@ -22,6 +22,36 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 ## Agents
 
+### Choose the child's language
+
+`agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` accept `kernel: "typescript" | "python" | "inherit"`. Omit it or use `"inherit"` to inherit the caller's `executor.kernel`; use a concrete value so a skill or model can choose its strongest language for the task. Workflow agents, `rlm.query`, and council members/synthesis forward the same option. This selects the **child's** Fabric language, not the language of the current `fabric_exec` program; that program still uses its configured kernel.
+
+TypeScript caller example:
+
+```ts
+return agents.run({
+  task: "Analyze the dataset and report a compact result.",
+  runner: "pi",
+  kernel: "python",
+});
+```
+
+Python caller example:
+
+```python
+return await agents.run({
+    "task": "Inspect TypeScript API compatibility and report concrete findings.",
+    "runner": "pi",
+    "kernel": "typescript",
+})
+```
+
+Concrete kernels require the Pi runner with Fabric extensions enabled. Claude, Veda, and `extensions: false` reject concrete choices before launch; omitted/`inherit` keeps those runners native and their status has no Fabric kernel. Invalid kernel values reject without guessing. A supported run's handle, result, and status record expose the resolved `kernel`, never `inherit`. Explicit kernels and inherited Python load the Fabric extension/tool even when the parent is outside full-code mode.
+
+Language and configured Python backend policy (`executor.pythonRuntime`, default `monty`) are frozen before launch and forwarded to workers, recursive children, alternate-cwd children, and resident handoffs. There is no public per-request backend selector. Monty is the sandboxed default and fails closed if its optional dependency is unavailable; it never falls back to CPython. CPython is an explicitly configured native escape hatch, trusted outside schema enforce; selecting Python does not promise the same isolation or library support across backends. See [execution kernels](kernels.md).
+
+Persistent actors freeze their language and Python backend when created. `ask`/`tell` cannot switch either; recreate the actor for a different language. Do not mix languages in one persistent session. Global templates preserve omitted/`inherit` kernel selection until import into a new actor; an explicit template kernel stays explicit. A trajectory handoff freezes the caller choice when scheduled and keeps the original session history unchanged.
+
 ```ts
 const result = await agents.run({
   name: "security-review",
@@ -103,7 +133,7 @@ return "Frontier Fabric invocation completed";
 
 `when` is an optional pure synchronous predicate that runs inside the Fabric guest. It receives immutable `{ calls, count(ref?) }` facts for each successful resolved bridge call that finished earlier in the same `fabric_exec` program. These calls include `pi.*`, `extensions.*`, `mcp.*`, external providers, and computed `tools.call()` refs. `count()` counts all calls. `count("pi.edit")` counts one ref. `count(["pi.edit", "schema.commit"])` counts a set. Fabric records each generic call under its resolved target. Fabric excludes failed calls. A false predicate does not start a child and reports a clear failure. The function never crosses the host bridge. Omit `when` to schedule unconditionally.
 
-In the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "deferred", boundary: "fabric_exec_end" }`. Code later in the same Fabric invocation cannot consume the child output. At the outer boundary, Fabric replaces Main's tool result with the compact completion `{ handedOff, completed, status, agent, implementation, error? }`. The `model` field is required. The target runner is Pi. The `worktree` field is unavailable because the implementation must remain visible in the caller's workspace. You can also set `task`, `name`, `transport`, `thinking`, `tools`, `timeoutMs`, `extensions`, `recursive`, `schema`, and `compact`. Fabric does not switch or rewrite the history of the source session.
+In the guest, `agents.handoff()` resolves to `{ scheduled: true, status: "deferred", boundary: "fabric_exec_end" }`. Code later in the same Fabric invocation cannot consume the child output. At the outer boundary, Fabric replaces Main's tool result with the compact completion `{ handedOff, completed, status, agent, implementation, error? }`. The `model` field is required. The target runner is Pi. The `worktree` field is unavailable because the implementation must remain visible in the caller's workspace. You can also set `task`, `name`, `kernel`, `transport`, `thinking`, `tools`, `timeoutMs`, `extensions`, `recursive`, `schema`, and `compact`. Fabric does not switch or rewrite the history of the source session.
 
 After an explicit handoff settles, Fabric queues one visible `pi-fabric-handoff-complete` custom message as a follow-up and wakes Main. The TUI shows the executor name, model, status, and a bounded conclusion. Main summarizes the outcome and reported checks, preserving links and other concrete identifiers without redoing the delegated work. Failed, stopped, and timed-out handoffs (including launch errors) instead prompt Main to explain what happened and propose a next step without retrying or taking over unprompted. Internal continuation instructions are included in model context but omitted by the message renderer. Prewalk keeps its existing verification continuation.
 

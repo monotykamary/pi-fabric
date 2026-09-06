@@ -10,6 +10,7 @@ import {
 } from "./config-migrations.js";
 import type { FabricComponentEntry } from "./components/types.js";
 import type { FabricRisk } from "./protocol.js";
+import type { FabricKernel } from "./runtime/kernel.js";
 import { DEFAULT_FABRIC_THINKING, isFabricThinking, type FabricThinking } from "./thinking.js";
 import {
   defaultCodePreviewSettings,
@@ -35,7 +36,13 @@ export type FabricConfigScope = "global" | "project";
 type FabricCompactionEngine = "pi" | "fabric";
 type FabricActorScope = "project" | "session";
 
+export type FabricPythonRuntime = "cpython" | "monty";
+
 interface FabricExecutorConfig {
+  kernel: FabricKernel;
+  pythonRuntime: FabricPythonRuntime;
+  cpython: { binary: string };
+  /** TypeScript backend only; ignored by the Python kernel. */
   runtime: FabricExecutorRuntime;
   timeoutMs: number;
   /** Policy maximum for any executor deadline, including per-invocation
@@ -312,14 +319,20 @@ export const MAX_EXECUTOR_MEMORY_LIMIT_BYTES = Math.max(
   Math.min(Number.MAX_SAFE_INTEGER, Math.floor(os.totalmem())),
 );
 
-export const maxExecutorMemoryLimitBytes = (runtime: FabricExecutorRuntime): number =>
-  runtime === "quickjs"
+export const maxExecutorMemoryLimitBytes = (
+  runtime: FabricExecutorRuntime,
+  kernel: FabricKernel = "typescript",
+): number =>
+  kernel === "typescript" && runtime === "quickjs"
     ? Math.min(QUICKJS_MAX_MEMORY_LIMIT_BYTES, MAX_EXECUTOR_MEMORY_LIMIT_BYTES)
     : MAX_EXECUTOR_MEMORY_LIMIT_BYTES;
 
 export const DEFAULT_FABRIC_CONFIG: FabricConfig = {
   fullCodeMode: true,
   executor: {
+    kernel: "typescript",
+    pythonRuntime: "monty",
+    cpython: { binary: "python3" },
     runtime: "quickjs",
     timeoutMs: 120_000,
     maxTimeoutMs: 900_000,
@@ -578,6 +591,9 @@ const toolDisplayModeValue = (
   fallback: FabricToolDisplayMode,
 ): FabricToolDisplayMode => value === "full" || value === "compact" ? value : fallback;
 
+const executorKernelValue = (value: unknown, fallback: FabricKernel): FabricKernel =>
+  value === "typescript" || value === "python" ? value : fallback;
+
 const executorRuntimeValue = (
   value: unknown,
   fallback: FabricExecutorRuntime,
@@ -621,6 +637,8 @@ const riskValue = (value: unknown, fallback: FabricRisk): FabricRisk =>
 
 export const normalizeFabricConfig = (input: Record<string, unknown>): FabricConfig => {
   const executor = objectValue(input.executor);
+  const cpython = objectValue(executor.cpython);
+  const executorKernel = executorKernelValue(executor.kernel, DEFAULT_FABRIC_CONFIG.executor.kernel);
   const executorMaxTimeoutMs = boundedInteger(
     executor.maxTimeoutMs,
     DEFAULT_FABRIC_CONFIG.executor.maxTimeoutMs,
@@ -650,7 +668,9 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
     executor.runtime,
     DEFAULT_FABRIC_CONFIG.executor.runtime,
   );
-  const executorRuntime = schemaMode === "enforce" ? "quickjs" : configuredExecutorRuntime;
+  const executorRuntime = schemaMode === "enforce" && executorKernel === "typescript"
+    ? "quickjs"
+    : configuredExecutorRuntime;
   const configuredTools = Array.isArray(agents.defaultTools)
     ? agents.defaultTools.filter(
         (tool): tool is string => typeof tool === "string" && Boolean(tool),
@@ -748,6 +768,11 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
   return {
     fullCodeMode: booleanValue(input.fullCodeMode, DEFAULT_FABRIC_CONFIG.fullCodeMode),
     executor: {
+      kernel: executorKernel,
+      pythonRuntime: executor.pythonRuntime === "cpython" ? "cpython" : "monty",
+      cpython: {
+        binary: stringValue(cpython.binary)?.trim() ?? DEFAULT_FABRIC_CONFIG.executor.cpython.binary,
+      },
       runtime: executorRuntime,
       maxTimeoutMs: boundedInteger(
         executor.maxTimeoutMs,
@@ -776,7 +801,7 @@ export const normalizeFabricConfig = (input: Record<string, unknown>): FabricCon
         executor.memoryLimitBytes,
         DEFAULT_FABRIC_CONFIG.executor.memoryLimitBytes,
         8 * 1024 * 1024,
-        maxExecutorMemoryLimitBytes(executorRuntime),
+        maxExecutorMemoryLimitBytes(executorRuntime, executorKernel),
       ),
       maxOutputChars: boundedInteger(
         executor.maxOutputChars,
@@ -1314,6 +1339,21 @@ const resolveFabricConfig = (
   for (const plan of plans) {
     if (plan.changed) writeJsonAtomic(plan.path, plan.document, plan.source);
     merged = mergeObjects(merged, plan.document);
+  }
+  const inheritedKernel = process.env.PI_FABRIC_KERNEL;
+  if (applyEnvironmentOverrides && inheritedKernel !== undefined) {
+    // This can select trusted native execution: never repair an unsafe selector.
+    if (inheritedKernel !== "typescript" && inheritedKernel !== "python") {
+      throw new Error(`Invalid PI_FABRIC_KERNEL: ${inheritedKernel}; expected typescript or python`);
+    }
+    merged.executor = { ...objectValue(merged.executor), kernel: inheritedKernel };
+  }
+  const inheritedPythonRuntime = process.env.PI_FABRIC_PYTHON_RUNTIME;
+  if (applyEnvironmentOverrides && inheritedPythonRuntime !== undefined) {
+    if (inheritedPythonRuntime !== "cpython" && inheritedPythonRuntime !== "monty") {
+      throw new Error(`Invalid PI_FABRIC_PYTHON_RUNTIME: ${inheritedPythonRuntime}; expected cpython or monty`);
+    }
+    merged.executor = { ...objectValue(merged.executor), pythonRuntime: inheritedPythonRuntime };
   }
   const inheritedFullCodeMode = process.env.PI_FABRIC_FULL_CODE_MODE;
   if (

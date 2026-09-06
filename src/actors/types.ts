@@ -1,8 +1,9 @@
 import type { ExtensionEvent } from "@earendil-works/pi-coding-agent";
-import type { FabricAgentRunner, FabricAgentTransport } from "../config.js";
+import type { FabricAgentRunner, FabricAgentTransport, FabricPythonRuntime } from "../config.js";
 import type { FabricThinking } from "../thinking.js";
 import type { FabricLogLine, AgentRunRecord, AgentUsage } from "../agents/types.js";
 import type { FabricCapabilityRequirement } from "../components/types.js";
+import type { FabricKernel } from "../runtime/kernel.js";
 import type { FabricParticipantResidency } from "../topology/types.js";
 
 export type FabricActorPiHostEvent = Exclude<ExtensionEvent["type"], "project_trust">;
@@ -150,6 +151,10 @@ export interface FabricActorRequest {
   /** session actors stop with their Pi host; durable actors transfer to a resident host. */
   residency?: FabricParticipantResidency;
   runner?: FabricAgentRunner;
+  /** Omitted/inherit resolves at creation; the actor keeps one language for its session. */
+  kernel?: FabricKernel | "inherit";
+  /** Host-only backend snapshot for persistent/resident sessions; not a provider argument. */
+  pythonRuntime?: FabricPythonRuntime;
   model?: string;
   thinking?: FabricThinking;
   tools?: string[];
@@ -178,6 +183,8 @@ export interface FabricActorInfo {
   rootId?: string;
   status: FabricActorStatus;
   runner: FabricAgentRunner;
+  kernel?: FabricKernel;
+  pythonRuntime?: FabricPythonRuntime;
   events: FabricActorHostEvent[];
   topics: string[];
   delivery: FabricActorDelivery;

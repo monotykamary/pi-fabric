@@ -1,3 +1,4 @@
+import type { FabricKernel } from "../runtime/kernel.js";
 import {
   isFabricExecutionTraceV1,
   type FabricExecutionTraceOperationV1,
@@ -8,6 +9,7 @@ export const FABRIC_EXECUTION_DETAILS_MAX_BYTES = 512 * 1024;
 
 export interface FabricPersistedExecutionDetailsV1 {
   success: boolean;
+  kernel?: FabricKernel;
   trace: FabricExecutionTraceV1;
   /** Rich render audits persisted verbatim (minus in-memory media) so a resumed transcript re-renders — and expands — exactly like the live one. */
   audits: FabricLegacyRenderAudit[];
@@ -55,6 +57,7 @@ export interface FabricLegacyRenderAudit {
 
 export interface FabricExecutionRenderDetails {
   success?: boolean;
+  kernel?: FabricKernel;
   error?: string;
   progress?: string;
   outputFormat?: "yaml" | "json";
@@ -96,6 +99,7 @@ const persistableAudit = (audit: FabricPersistableAuditInput): FabricLegacyRende
  */
 export const createFabricPersistedExecutionDetails = (input: {
   success: boolean;
+  kernel?: FabricKernel;
   trace: FabricExecutionTraceV1;
   audits?: readonly FabricPersistableAuditInput[];
   phases?: readonly string[];
@@ -106,6 +110,7 @@ export const createFabricPersistedExecutionDetails = (input: {
 }): FabricPersistedExecutionDetailsV1 => {
   const details: FabricPersistedExecutionDetailsV1 = {
     success: input.success,
+    ...(input.kernel ? { kernel: input.kernel } : {}),
     trace: cloneTrace(input.trace),
     audits: (input.audits ?? []).map(persistableAudit),
     phases: (input.phases ?? []).filter((phase): phase is string => typeof phase === "string"),
@@ -204,6 +209,7 @@ export const readFabricExecutionRenderDetails = (
     ? value.phases.filter((phase): phase is string => typeof phase === "string")
     : undefined;
   return {
+    ...(value.kernel === "typescript" || value.kernel === "python" ? { kernel: value.kernel } : {}),
     ...(typeof value.success === "boolean"
       ? { success: value.success }
       : trace
