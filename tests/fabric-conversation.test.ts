@@ -1,5 +1,9 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { NativeConversationReader } from "../src/ui/conversation-native-reader.js";
 import { WorkingStatusIndicator } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -162,6 +166,49 @@ const makeHarness = (overrides: HarnessOverrides = {}): Harness => {
 };
 
 describe.each(["regular", "fullscreen"] as const)("native conversation dock in %s mode", (mode) => {
+  it.each(["\x1b[<65;4;4M", "\x1b[1;5B", "\x1b[6~"])("keeps live follow while scrolling down at the bottom (%j)", (gesture) => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "fabric-bottom-follow-"));
+    try {
+      const eventsFile = path.join(directory, "events.jsonl");
+      writeFileSync(eventsFile, "");
+      const reader = new NativeConversationReader();
+      const source = { id: "a", status: "running", eventsFile };
+      const h = makeHarness({ mode, transcript: (_id, follow) => reader.read(source, follow) });
+      h.loadNewer.mockImplementation(() => {
+        const before = reader.read(source, false);
+        return reader.loadNewer()!.revision !== before.revision;
+      });
+      expect(renderText(h.view)).toContain("Working");
+      for (let tick = 0; tick < 4; tick++) {
+        const append = (text: string) => appendFileSync(eventsFile, JSON.stringify({
+          type: "message_end", message: assistantMessage(text, tick + 1),
+        }) + "\n");
+        append(`before scroll ${tick}`);
+        h.view.handleInput(gesture);
+        // New activity can arrive between the scroll callback and the next frame.
+        append(`after scroll ${tick}`);
+        h.view.refresh();
+        const text = renderText(h.view);
+        expect(h.state.view("a").following).toBe(true);
+        expect(text).toContain(`after scroll ${tick}`);
+        expect(text).toContain("Working");
+        expect(text).not.toContain("newer activity available");
+      }
+      expect(h.loadNewer).not.toHaveBeenCalled();
+      h.view.handleInput("\x1b[<64;4;4M");
+      expect(h.state.view("a").following).toBe(false);
+      appendFileSync(eventsFile, JSON.stringify({ type: "message_end", message: assistantMessage("while pinned", 99) }) + "\n");
+      expect(renderText(h.view)).toContain("newer activity available");
+      h.view.handleInput("\x1b[F");
+      const latest = renderText(h.view);
+      expect(latest).toContain("while pinned");
+      expect(latest).toContain("Working");
+      expect(latest).not.toContain("newer activity available");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("scrolls the end gap away instead of concealing a history row", () => {
     const history = Array.from({ length: 100 }, (_, i) => `history ${i}`);
     vi.spyOn(FabricConversationTranscriptRenderer.prototype, "render").mockReturnValue(history);

@@ -1161,6 +1161,10 @@ export class FabricConversationView implements Component, Focusable {
     const position = entry.following ? maxScroll : entry.scroll;
     // A wheel/key gesture wins over an unpainted command-result reveal.
     if (entry.pageAnchor === "end") entry.pageAnchor = undefined;
+    // Downward overscroll at the live tail is still follow mode. Paging here
+    // can succeed on fresh activity and leave the view pinned between frames,
+    // alternating the Working row with the newer-activity notice.
+    if (entry.following && delta > 0) return;
     const next = position + Math.trunc(delta);
     entry.following = false;
     if (next < 0 && !this.textSelection.dragging && this.options.loadOlder(this.currentId)) {
