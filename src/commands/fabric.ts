@@ -437,6 +437,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           suspendToolCapture();
           throw error;
         }
+        if (state.kernelReloadRequired) {
+          await context.reload();
+          return;
+        }
         context.ui.notify("Pi Fabric reloaded", "info");
         // initialize() reloads configuration, so an externally edited
         // ui.toolDisplay must re-render existing transcript cards too.
@@ -446,6 +450,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
       if (command === "settings") {
         const { openFabricSettings } = await import("../ui/settings.js");
         await openFabricSettings(context, {
+          reloadResources: () => context.reload(),
           state,
           applyFabricMode,
           capturedTools,

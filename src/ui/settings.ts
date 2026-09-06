@@ -55,6 +55,7 @@ export interface FabricSettingsDeps {
   applyFabricMode: () => void;
   capturedTools: CapturedToolCatalog;
   onConfigApplied?: (id: string) => void;
+  reloadResources?: () => Promise<void>;
 }
 
 export async function openFabricSettings(
@@ -185,6 +186,14 @@ export async function openFabricSettings(
   }
 
   if (dirty) {
+    if (deps.state.kernelReloadRequired) {
+      if (deps.reloadResources) {
+        context.ui.notify("Kernel saved. Reloading Pi to switch execution and skill resources together.", "info");
+        await deps.reloadResources();
+        return;
+      }
+      context.ui.notify("Run /reload to apply the kernel change; the current kernel remains active.", "warning");
+    }
     deps.applyFabricMode();
     const needsReload = [...changedSections].some((section) => RELOAD_SECTIONS.has(section));
     if (needsReload) {

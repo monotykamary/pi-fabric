@@ -38,20 +38,17 @@ For full native Python and installed packages, install **CPython 3.10+** and opt
 
 ## Kernel-specific skills and guidance
 
-Fabric selects skill visibility on every agent turn using the current kernel, including after `/fabric settings` changes. `fabric-exec` is the TypeScript-only reference; `fabric-exec-python` is the Python-only reference. Bundled workflows that still depend on TypeScript programs are unavailable under Python, not automatically translated or executed through Node.
+Every bundled skill keeps the same public name in both kernels: `/skill:fabric-exec`, `/skill:fabric-workflow`, `/skill:fabric-council`, and the other advanced workflows. Fabric ships two complete physical trees under `skillsets/typescript/` and `skillsets/python/`. Each includes its own `fabric-exec/references/agents.md`, `mcp.md`, `mesh.md`, and ambient actor setup. Python programs use host actions, ordinary loops and `asyncio.gather`, not guest TypeScript callback helpers.
 
-Third-party and project skills can opt into the same filtering with standard skill frontmatter metadata:
+The package manifest explicitly exposes no static skills (`pi.skills: []`). At `resources_discover`, after configuration bootstrap, Fabric contributes only the configured kernel's tree. Pi's native catalog, slash-command expansion, skill `filePath`/`baseDir`, and Fabric's `<skill-dir>` pointers all refer to that physical tree. Do not add the parent `skillsets/` directory to Pi settings: loading both variants causes same-name collisions. Direct extension-loaded children use the same discovery path and inherit the parent's resolved kernel.
 
-```yaml
-metadata:
-  fabric-kernel: python
-```
+Pi discovery is additive; it cannot replace one contributed tree with another in place. Kernel settings are saved immediately but the running execution kernel remains pinned to its loaded skill tree until a Pi resource reload. Closing `/fabric settings` after changing the effective kernel triggers that reload. `/fabric reload` also escalates to a full Pi reload if disk configuration requests a different kernel. After editing configuration manually, use `/reload` to apply it directly. A reload tears down and rebuilds extensions as well as resources; return from the old command context immediately. Python backend changes within the same kernel do not require a different skill tree.
 
-Use `typescript` for the other kernel. Omit `fabric-kernel` for language-neutral skills; invalid declared values hide the skill under both kernels. Give kernel variants distinct skill names so Pi's name-collision handling does not discard one before Fabric sees it. Existing `disable-model-invocation` behavior is preserved. Changes to existing skill metadata are detected on the next turn; adding new skill files still needs Pi resource discovery (`/reload`).
+This replaces the earlier `fabric-exec-python` name and `metadata.fabric-kernel` context filter. Use `/skill:fabric-exec` in both languages. Third-party skills retain Pi's normal discovery and invocation behavior; Fabric no longer strips their expanded instructions. Authors can use their own extension discovery to contribute a single language-specific directory, with canonical names and relative references. Remove legacy explicit skill paths from Pi settings when upgrading.
 
-This is model-context selection, not filesystem access control. Pi's skill command menu can still list both variants because its discovery API is additive. An incompatible expanded `/skill:name` block is replaced in model context by an unavailable notice, preserving user arguments and leaving stored session history unchanged. Ordinary source reads and earlier tool results are not erased. Unannotated third-party skills and custom model guidance may still contain language-specific examples: annotate/split those skills and remove conflicting custom guidance as needed.
+This is resource selection, not a filesystem authorization boundary. Both trees remain installed and ordinary tools can read either. Reload does not erase old skill expansions, tool results, or summaries from session history. Start a fresh session if you need a clean language context; do not mutate a shared symlink to switch languages because concurrent sessions may use different kernels.
 
-The selected kernel is authoritative even when older context shows another language. Do not use shell interpreters or native subprocesses merely to move Fabric orchestration into the other language. Legitimate project builds, tests, and explicitly requested interpreter work remain allowed; this guidance is not a shell-command security sandbox.
+The selected kernel remains authoritative when older context shows another language. Do not use shell interpreters or native subprocesses merely to move Fabric orchestration into the other language. Legitimate project builds, tests, and explicitly requested interpreter work remain allowed.
 
 ## Agent kernel inheritance
 

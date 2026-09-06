@@ -446,7 +446,7 @@ Fabric handles staleness in stale-while-revalidate style. Sessions adopt the cac
 - `mcp.cache.revalidate`: background re-listing scope at session start, one of `"changed"` (only added or reconfigured servers, the default), `"all"`, or `"off"` (explicit `tools.list({ provider: "mcp", namespace })` probes still fetch exactly that server).
 - `mcp.cache.revalidateBudgetMs`: wall-clock budget for one background revalidation pass (default 60000). A leftover queue tail restarts with a fresh budget.
 
-See the [`mcp` reference](../skills/fabric-exec/references/mcp.md) for the call surface.
+See the [TypeScript MCP reference](../skillsets/typescript/fabric-exec/references/mcp.md) or [Python MCP reference](../skillsets/python/fabric-exec/references/mcp.md) for the selected call surface.
 
 ## UI
 

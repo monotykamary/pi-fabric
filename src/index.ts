@@ -68,7 +68,7 @@ import {
   resolveFabricModelGuidance,
 } from "./components/model-guidance.js";
 import { restoreSkillsForFullCodePrompt } from "./core/skill-prompt.js";
-import { KernelSkills } from "./core/kernel-skills.js";
+import { fabricSkillPaths } from "./core/kernel-skills.js";
 import {
   formatProxyContractReminder,
   PROXY_CONTRACT_CUSTOM_TYPE,
@@ -100,7 +100,6 @@ import { configureHighlighting } from "./ui/highlight.js";
 import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -108,15 +107,15 @@ import { fileURLToPath } from "node:url";
 // relative to the extension entry so it works both in development (src/) and
 // in an installed package (dist/). Contributed via resources_discover so child
 // Pi processes that load Fabric with -e (agents and actors) discover the
-// same fabric-exec / fabric-advisor / fabric-council skill references as the
-// main agent, which gets them through the package manifest.
+// same kernel-specific tree as Main. The package manifest exposes no skills;
+// selecting exactly one tree avoids canonical-name collisions.
 const FABRIC_EXTENSION_ENTRY_PATH = path.resolve(fileURLToPath(import.meta.url));
 const FABRIC_ENTRY_DIR = path.dirname(FABRIC_EXTENSION_ENTRY_PATH);
 const FABRIC_RUNTIME_PATHS = {
   extension: FABRIC_EXTENSION_ENTRY_PATH,
   worker: path.join(FABRIC_ENTRY_DIR, "worker.js"),
   residentHost: path.join(FABRIC_ENTRY_DIR, "residency", "launcher.js"),
-  skills: path.resolve(FABRIC_ENTRY_DIR, "..", "skills"),
+  skills: path.resolve(FABRIC_ENTRY_DIR, "..", "skillsets"),
 };
 const FABRIC_SKILLS_DIR = FABRIC_RUNTIME_PATHS.skills;
 
@@ -235,11 +234,9 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     },
   );
 
-  const kernelSkills = new KernelSkills();
-
-  pi.on("resources_discover", async () => {
-    if (existsSync(FABRIC_SKILLS_DIR)) return { skillPaths: [FABRIC_SKILLS_DIR] };
-    return {};
+  pi.on("resources_discover", async (_event, context) => {
+    if (!state.bootstrapped) await state.bootstrap(context);
+    return { skillPaths: fabricSkillPaths(FABRIC_SKILLS_DIR, state.config.executor.kernel) };
   });
 
   const fabricTool = createFabricExecTool(
@@ -743,14 +740,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       (continuationId) => state.initialized &&
         state.prewalk.acceptContinuation(sessionId, continuationId),
     );
-    const kernel = (state.bootstrapped ? state.config : DEFAULT_FABRIC_CONFIG).executor.kernel;
-    const filterSkill = (text: string): string => pi.getActiveTools().includes("fabric_exec")
-      ? kernelSkills.filterInvocation(text, kernel) : text;
     let changed = continuation.changed;
     const messages = continuation.messages.map((message) => {
       if (message.role !== "user") return message;
       if (typeof message.content === "string") {
-        const content = expandSkillDirMarkersInSkillBlock(filterSkill(message.content));
+        const content = expandSkillDirMarkersInSkillBlock(message.content);
         if (content === message.content) return message;
         changed = true;
         return { ...message, content };
@@ -758,7 +752,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       let messageChanged = false;
       const content = message.content.map((part) => {
         if (part.type !== "text") return part;
-        const text = expandSkillDirMarkersInSkillBlock(filterSkill(part.text));
+        const text = expandSkillDirMarkersInSkillBlock(part.text);
         if (text === part.text) return part;
         changed = true;
         messageChanged = true;
@@ -775,11 +769,11 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const schemaMode = config.schema.mode;
     const effectiveFullCodeMode = fullCodeMode || schemaMode === "enforce";
     if (!pi.getActiveTools().includes("fabric_exec")) return;
-    const skills = kernelSkills.select(event.systemPromptOptions.skills ?? [], config.executor.kernel);
+    const skills = event.systemPromptOptions.skills ?? [];
     const captureSnapshot = state.bootstrapped ? capturePolicy() : undefined;
     // Pi omits its entire skill catalog when the active tool set lacks a tool
-    // named read. Rebuild the catalog from kernel-compatible skills each turn;
-    // full code mode also adapts its loader to Fabric's nested pi.read path.
+    // named read. Restore Pi's discovered catalog (already bound to one skill
+    // tree); full code mode adapts its loader to Fabric's nested pi.read path.
     const systemPrompt = restoreSkillsForFullCodePrompt(event.systemPrompt, skills, effectiveFullCodeMode);
     // Pi expands the invoked skill into the user message, but wrappers may
     // delegate by name. Resolve only explicit invocation lines so full code

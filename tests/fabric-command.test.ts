@@ -76,6 +76,20 @@ describe("/fabric command", () => {
     expect(fabricUi.openDashboard).toHaveBeenCalledWith(context);
   });
 
+  it("escalates a pending kernel switch to Pi reload and returns from the old context", async () => {
+    let handler: any;
+    const pi = { registerCommand: (_name: string, definition: any) => { handler = definition.handler; } } as unknown as ExtensionAPI;
+    const state = { ensure: vi.fn(async () => {}), initialize: vi.fn(async () => {}), kernelReloadRequired: true } as unknown as FabricState;
+    const reload = vi.fn(async () => {});
+    const notify = vi.fn();
+    const refreshToolDisplay = vi.fn();
+    registerFabricCommand(pi, { state, fabricUi: { stop: vi.fn() } as unknown as FabricUiController, capturedTools: {} as CapturedToolCatalog, applyFabricMode: vi.fn(), suspendToolCapture: vi.fn(), refreshToolDisplay });
+    await handler("reload", { reload, ui: { notify } });
+    expect(reload).toHaveBeenCalledOnce();
+    expect(notify).not.toHaveBeenCalled();
+    expect(refreshToolDisplay).not.toHaveBeenCalled();
+  });
+
   it("lets the activation hook own reload setup and keeps failure suspended", async () => {
     let handler: ((argumentsText: string, context: ExtensionContext) => Promise<void>) | undefined;
     const pi = {

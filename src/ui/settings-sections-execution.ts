@@ -51,7 +51,7 @@ export const buildExecutorSection = (
         : config.executor.runtime === "bun-process"
           ? "Heap target for the disposable Bun process. Bun ignores V8 heap flags, so this limit is not enforced."
           : "V8 old-generation heap limit for the disposable Node process. Large allocations may destabilize the system.";
-  const kernelDescription = "Exclusive language for all fabric_exec calls; no per-call switching. Python defaults to sandboxed Monty. CPython requires explicit selection and is trusted native code outside schema enforce.";
+  const kernelDescription = "Exclusive language for all fabric_exec calls; no per-call switching. Saving a kernel change reloads Pi after settings close so skill resources switch with execution. Python defaults to sandboxed Monty. CPython requires explicit selection and is trusted native code outside schema enforce.";
   const cpythonDescription = "CPython 3.10+ executable name or path (default python3), used only by the explicit CPython backend. No shell arguments.";
   const enforceTypeScript = config.schema.mode === "enforce" && config.executor.kernel === "typescript";
 

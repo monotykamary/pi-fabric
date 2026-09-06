@@ -774,6 +774,44 @@ describe("FabricSettingsComponent", () => {
     expect(lines).toContain("500k");
   });
 
+  it("reloads Pi only after the kernel settings dialog closes, without touching stale mode state", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-kernel-settings-"));
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(cwd, { recursive: true });
+    vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+    vi.stubEnv("PI_FABRIC_KERNEL", undefined);
+    let closed = false;
+    const reloadResources = vi.fn(async () => { expect(closed).toBe(true); });
+    const applyFabricMode = vi.fn();
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    const state = {
+      config, kernelReloadRequired: false,
+      ensure: vi.fn(async () => {}),
+      reloadConfig: vi.fn(() => { state.kernelReloadRequired = loadFabricConfig({ cwd, agentDir, projectTrusted: true }).executor.kernel !== config.executor.kernel; }),
+      agents: { claudeModels: vi.fn(async () => []) },
+    };
+    const context = {
+      mode: "tui", cwd, isProjectTrusted: () => true,
+      modelRegistry: { getAvailable: () => fakeModelSource.models },
+      ui: { notify: vi.fn(), custom: vi.fn(async (factory) => {
+        const component = factory({}, theme, {}, () => {}) as FabricSettingsComponent;
+        component.handleInput("executor");
+        component.handleInput("\r");
+        component.handleInput("\r");
+        expect(reloadResources).not.toHaveBeenCalled();
+        expect(config.executor.kernel).toBe("typescript");
+        closed = true;
+      }) },
+    } as unknown as ExtensionContext;
+    try {
+      await openFabricSettings(context, { state: state as unknown as FabricState, applyFabricMode, reloadResources, capturedTools: { list: () => [] } as unknown as CapturedToolCatalog });
+      expect(loadFabricConfig({ cwd, agentDir, projectTrusted: true }).executor.kernel).toBe("python");
+      expect(reloadResources).toHaveBeenCalledOnce();
+      expect(applyFabricMode).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("persists tool-display changes through the real settings dialog flow", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-settings-display-"));
     const cwd = path.join(root, "project");

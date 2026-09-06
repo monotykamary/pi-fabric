@@ -29,7 +29,7 @@ async function runProgram(file: string, context: Context): Promise<Record<string
 }
 
 function runSkill(name: string, context: Context): Promise<Record<string, unknown>> {
-  return runProgram(`skills/${name}/SKILL.md`, context);
+  return runProgram(`skillsets/typescript/${name}/SKILL.md`, context);
 }
 
 const workflow = {
@@ -737,7 +737,7 @@ describe("expensive skill program behavior", () => {
       responseMode: "directive", triggerTurn: false, coalesce: true,
       tools: [], extensions: false,
     };
-    const result = await runProgram("skills/fabric-ambient/references/setup.md", {
+    const result = await runProgram("skillsets/typescript/fabric-ambient/references/setup.md", {
       π: {
         name: "advisor", instructions: "observe", events: JSON.stringify(["turn_end"]),
         triggerTurn: "false", model: "",
@@ -760,7 +760,7 @@ describe("expensive skill program behavior", () => {
   it("omits an extension override when creating an ambient actor", async () => {
     let request: Record<string, unknown> | undefined;
     const actor = { id: "actor-2", name: "advisor", status: "idle" };
-    const result = await runProgram("skills/fabric-ambient/references/setup.md", {
+    const result = await runProgram("skillsets/typescript/fabric-ambient/references/setup.md", {
       π: {
         name: "advisor", instructions: "observe", events: JSON.stringify(["turn_end"]),
         triggerTurn: "false", model: "",
@@ -786,7 +786,7 @@ describe("expensive skill program behavior", () => {
       events: ["turn_end"], topics: [], delivery: "steer", responseMode: "directive",
       triggerTurn: false, coalesce: true, tools: ["read", "grep", "find", "ls"],
     };
-    const result = await runProgram("skills/fabric-ambient/references/setup.md", {
+    const result = await runProgram("skillsets/typescript/fabric-ambient/references/setup.md", {
       π: {
         name: "advisor", instructions: "observe", events: JSON.stringify(["turn_end"]),
         triggerTurn: "false", model: "",

@@ -59,6 +59,8 @@ export class FabricState {
   #activation: Promise<FabricRuntimeState> | undefined;
   #activationGeneration: number | undefined;
   #config: FabricConfig | undefined;
+  #kernelReloadRequired = false;
+
   #cwd: string | undefined;
   #generation = 0;
   #everActivated = false;
@@ -79,6 +81,10 @@ export class FabricState {
     options: FabricStateOptions = {},
   ) {
     this.#options = options;
+  }
+
+  get kernelReloadRequired(): boolean {
+    return this.#kernelReloadRequired;
   }
 
   get initialized(): boolean {
@@ -150,6 +156,7 @@ export class FabricState {
       projectTrusted: context.isProjectTrusted(),
     });
     this.#config = config;
+    this.#kernelReloadRequired = false;
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     this.activity.reset();
@@ -167,11 +174,14 @@ export class FabricState {
     if (!this.#config || this.#cwd !== context.cwd) {
       await this.bootstrap(context);
     } else {
-      this.#config = loadFabricConfig({
+      const next = loadFabricConfig({
         cwd: context.cwd,
         agentDir: resolveAgentDir(),
         projectTrusted: context.isProjectTrusted(),
       });
+      this.#kernelReloadRequired = next.executor.kernel !== this.#config.executor.kernel;
+      next.executor.kernel = this.#config.executor.kernel;
+      this.#config = next;
     }
     await this.#activate(context, true);
   }
@@ -286,6 +296,10 @@ export class FabricState {
       projectTrusted: context.isProjectTrusted(),
     });
     if (this.#config) {
+      // Pi skill discovery is additive. Keep execution aligned with the loaded
+      // skill tree until Pi reload creates a fresh extension/resource runtime.
+      this.#kernelReloadRequired = next.executor.kernel !== this.#config.executor.kernel;
+      next.executor.kernel = this.#config.executor.kernel;
       next.schema.mode = this.#config.schema.mode;
       // Isolate the selected language, including when a live schema override
       // differs from disk. CPython selects its OS sandbox at execution time.

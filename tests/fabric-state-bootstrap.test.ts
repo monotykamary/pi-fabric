@@ -85,6 +85,38 @@ describe("FabricState lazy bootstrap", () => {
     expect(harness.instances).toHaveLength(0);
   });
 
+  it.each(["typescript", "python"] as const)("pins %s until resources can reload, including config revert and initialize", async (kernel) => {
+    vi.stubEnv("PI_FABRIC_KERNEL", undefined);
+    const nextKernel = kernel === "python" ? "typescript" : "python";
+    const cwd = project({ executor: { kernel }, mesh: { enabled: false } });
+    const context = contextAt(cwd);
+    const harness = runtimeHarness();
+    const state = createState(harness.loader);
+    const persist = (selected: string) => fs.writeFileSync(path.join(cwd, ".pi", "fabric.json"), JSON.stringify({ executor: { kernel: selected }, mesh: { enabled: false } }));
+    try {
+      await state.bootstrap(context);
+      persist(nextKernel);
+      state.reloadConfig(context);
+      expect(state.config.executor.kernel).toBe(kernel);
+      expect(state.kernelReloadRequired).toBe(true);
+      persist(kernel);
+      state.reloadConfig(context);
+      expect(state.kernelReloadRequired).toBe(false);
+      persist(nextKernel);
+      await state.initialize(context);
+      expect(state.config.executor.kernel).toBe(kernel);
+      expect(state.kernelReloadRequired).toBe(true);
+      const replacement = createState(harness.loader);
+      await replacement.bootstrap(context);
+      expect(replacement.config.executor.kernel).toBe(nextKernel);
+      expect(replacement.kernelReloadRequired).toBe(false);
+    } finally {
+      await state.shutdown();
+      fs.rmSync(cwd, { recursive: true, force: true });
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("uses one activation for concurrent callers and never reloads after activation", async () => {
     const cwd = project({ prewalk: { alwaysRearm: false }, mesh: { enabled: false } });
     const harness = runtimeHarness();

@@ -15,7 +15,7 @@ const stableProviderActions = {
 
 describe("fabric-exec skill provider contracts", () => {
   it("documents a return shape for every stable first-class provider action", () => {
-    const skill = fs.readFileSync("skills/fabric-exec/SKILL.md", "utf8");
+    const skill = fs.readFileSync("skillsets/typescript/fabric-exec/SKILL.md", "utf8");
 
     for (const [provider, actions] of Object.entries(stableProviderActions)) {
       for (const action of actions) {
@@ -27,14 +27,14 @@ describe("fabric-exec skill provider contracts", () => {
   });
 
   it("documents dynamic MCP and captured-extension returns", () => {
-    const skill = fs.readFileSync("skills/fabric-exec/SKILL.md", "utf8");
+    const skill = fs.readFileSync("skillsets/typescript/fabric-exec/SKILL.md", "utf8");
 
     expect(skill).toContain("mcp.<sanitized_server>.<sanitized_tool>(args)` resolves to");
     expect(skill).toContain("extensions.<tool>(args)` in full code mode resolves to");
   });
 
   it("keeps detailed execution caveats in the progressive skill", () => {
-    const skill = fs.readFileSync("skills/fabric-exec/SKILL.md", "utf8");
+    const skill = fs.readFileSync("skillsets/typescript/fabric-exec/SKILL.md", "utf8");
     const extension = fs.readFileSync("src/index.ts", "utf8");
 
     expect(skill).toContain("multiline or syntax-heavy payloads");
@@ -48,7 +48,7 @@ describe("fabric-exec skill provider contracts", () => {
   });
 
   it("keeps the full execution reference progressive rather than mandatory", () => {
-    const skill = fs.readFileSync("skills/fabric-exec/SKILL.md", "utf8");
+    const skill = fs.readFileSync("skillsets/typescript/fabric-exec/SKILL.md", "utf8");
     const frontmatter = skill.slice(0, skill.indexOf("---", 4));
 
     expect(frontmatter).toContain("Routine `pi.*`");
@@ -58,7 +58,7 @@ describe("fabric-exec skill provider contracts", () => {
 
   it("centralizes ambient actor setup outside the profile skills", () => {
     const setup = fs.readFileSync(
-      "skills/fabric-ambient/references/setup.md",
+      "skillsets/typescript/fabric-ambient/references/setup.md",
       "utf8",
     );
     expect(setup).toContain("agents.create({");
@@ -78,9 +78,9 @@ describe("fabric-exec skill provider contracts", () => {
       "fabric-ambient": "references/setup.md",
     } as const;
     for (const [name, reference] of Object.entries(profiles)) {
-      const skillPath = `skills/${name}/SKILL.md`;
+      const skillPath = `skillsets/typescript/${name}/SKILL.md`;
       const skill = fs.readFileSync(skillPath, "utf8");
-      const referencePath = new URL(reference, `file://${process.cwd()}/skills/${name}/`);
+      const referencePath = new URL(reference, `file://${process.cwd()}/skillsets/typescript/${name}/`);
       expect(fs.existsSync(referencePath)).toBe(true);
       expect(skill).toContain(reference);
       expect(skill).toContain("empty");
@@ -88,19 +88,19 @@ describe("fabric-exec skill provider contracts", () => {
       expect(skill).not.toContain("agents.setDeliveryPolicy({");
     }
 
-    expect(fs.readFileSync("skills/fabric-supervisor/SKILL.md", "utf8"))
+    expect(fs.readFileSync("skillsets/typescript/fabric-supervisor/SKILL.md", "utf8"))
       .toContain("request credentials");
-    expect(fs.readFileSync("skills/fabric-ambient/SKILL.md", "utf8"))
+    expect(fs.readFileSync("skillsets/typescript/fabric-ambient/SKILL.md", "utf8"))
       .toContain("request credentials");
   });
 
   it("type-checks every TypeScript-fenced skill program", () => {
-    const skillFiles = fs.readdirSync("skills", { withFileTypes: true })
+    const skillFiles = fs.readdirSync("skillsets/typescript", { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join("skills", entry.name, "SKILL.md"))
+      .map((entry) => path.join("skillsets/typescript", entry.name, "SKILL.md"))
       .filter((file) => fs.existsSync(file));
     skillFiles.push(
-      "skills/fabric-ambient/references/setup.md",
+      "skillsets/typescript/fabric-ambient/references/setup.md",
       "docs/schema-enforcement.md",
     );
 
@@ -120,9 +120,9 @@ describe("fabric-exec skill provider contracts", () => {
   });
 
   it("marks and resolves every relative Markdown reference in a skill", () => {
-    for (const entry of fs.readdirSync("skills", { withFileTypes: true })) {
+    for (const entry of fs.readdirSync("skillsets/typescript", { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const file = path.join("skills", entry.name, "SKILL.md");
+      const file = path.join("skillsets/typescript", entry.name, "SKILL.md");
       if (!fs.existsSync(file)) continue;
       const markdown = fs.readFileSync(file, "utf8");
       expect(
@@ -153,7 +153,7 @@ describe("fabric-exec skill provider contracts", () => {
     };
 
     for (const [name, signals] of Object.entries(required)) {
-      const skill = fs.readFileSync(`skills/${name}/SKILL.md`, "utf8");
+      const skill = fs.readFileSync(`skillsets/typescript/${name}/SKILL.md`, "utf8");
       for (const signal of signals) {
         expect(skill, `${name} lost signal: ${signal}`).toContain(signal);
       }
@@ -163,7 +163,7 @@ describe("fabric-exec skill provider contracts", () => {
   it("preserves expensive partial work without bloating successful output", () => {
     const fanoutSkills = ["fabric-council", "fabric-fusion", "fabric-rlm", "fabric-workflow"];
     for (const name of fanoutSkills) {
-      const skill = fs.readFileSync(`skills/${name}/SKILL.md`, "utf8");
+      const skill = fs.readFileSync(`skillsets/typescript/${name}/SKILL.md`, "utf8");
       expect(skill, `${name} lacks partial status`).toContain('status: "partial"');
       expect(skill, `${name} lacks failed status`).toContain('status: "failed"');
       expect(skill, `${name} lacks compact fallback`).toContain("fallback: completed");
@@ -173,12 +173,12 @@ describe("fabric-exec skill provider contracts", () => {
       );
     }
 
-    const rlm = fs.readFileSync("skills/fabric-rlm/SKILL.md", "utf8");
+    const rlm = fs.readFileSync("skillsets/typescript/fabric-rlm/SKILL.md", "utf8");
     expect(rlm).not.toContain("finding: FabricAgentResult");
     expect(rlm).not.toContain("findings: completed");
     expect(rlm).toContain("full `FabricAgentResult` objects never return");
 
-    const swarm = fs.readFileSync("skills/fabric-swarm/SKILL.md", "utf8");
+    const swarm = fs.readFileSync("skillsets/typescript/fabric-swarm/SKILL.md", "utf8");
     expect(swarm).not.toContain("## Completion criterion");
   });
 
@@ -192,42 +192,40 @@ describe("fabric-exec skill provider contracts", () => {
     )) as Array<{ files: Array<{ path: string }> }>;
     const files = new Set(packed[0]!.files.map((entry) => entry.path));
     expect(files).toContain("docs/skills.md");
-    expect(files).toContain("skills/fabric-ambient/references/setup.md");
-    for (const entry of fs.readdirSync("skills", { withFileTypes: true })) {
-      if (entry.isDirectory() && fs.existsSync(`skills/${entry.name}/SKILL.md`)) {
-        expect(files, `packed skill missing: ${entry.name}`)
-          .toContain(`skills/${entry.name}/SKILL.md`);
-      }
+    expect(files).toContain("skillsets/typescript/fabric-ambient/references/setup.md");
+    for (const entry of fs.readdirSync("skillsets", { recursive: true }).map(String).filter((file) => file.endsWith(".md"))) {
+      expect(files, `packed skill/reference missing: ${entry}`)
+        .toContain(`skillsets/${entry.replaceAll("\\", "/")}`);
     }
   }, 120_000);
 
   it("keeps the skill hierarchy core-first and user-opt-in", () => {
-    const skills = fs.readdirSync("skills", { withFileTypes: true })
+    const skills = fs.readdirSync("skillsets/typescript", { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => ({
         name: entry.name,
-        file: path.join("skills", entry.name, "SKILL.md"),
+        file: path.join("skillsets/typescript", entry.name, "SKILL.md"),
       }))
       .filter((entry) => fs.existsSync(entry.file));
 
-    const loaded = loadSkillsFromDir({ dir: "skills", source: "test" });
+    const loaded = loadSkillsFromDir({ dir: "skillsets/typescript", source: "test" });
     expect(loaded.diagnostics).toEqual([]);
     const fabricSkills = loaded.skills.filter((skill) => skill.name.startsWith("fabric-"));
     expect(fabricSkills.map((skill) => skill.name).sort()).toEqual(
       skills.map(({ name }) => name).sort(),
     );
     expect(fabricSkills.filter((skill) => !skill.disableModelInvocation)
-      .map((skill) => skill.name)).toEqual(["fabric-exec", "fabric-exec-python"]);
+      .map((skill) => skill.name)).toEqual(["fabric-exec"]);
     const prompt = formatSkillsForPrompt(fabricSkills);
     expect(prompt).toContain("fabric-exec");
     for (const skill of fabricSkills.filter((skill) => skill.disableModelInvocation)) {
       expect(prompt).not.toContain(`<name>${skill.name}</name>`);
     }
 
-    const guide = fs.readFileSync("skills/fabric-guide/SKILL.md", "utf8");
+    const guide = fs.readFileSync("skillsets/typescript/fabric-guide/SKILL.md", "utf8");
     expect(guide).toContain("disable-model-invocation: true");
     for (const name of skills.map(({ name }) => name).filter((name) =>
-      name !== "fabric-exec" && name !== "fabric-exec-python" && name !== "fabric-guide"
+      name !== "fabric-exec" && name !== "fabric-guide"
     )) {
       expect(guide, `router missing ${name}`).toContain(`/skill:${name}`);
     }
@@ -244,11 +242,11 @@ describe("fabric-exec skill provider contracts", () => {
       pi: { skills: string[] };
     };
     expect(packageJson.files).toContain("docs/");
-    expect(packageJson.pi.skills).toContain("./skills");
+    expect(packageJson.pi.skills).toEqual([]);
 
-    for (const reference of fs.readdirSync("skills/fabric-exec/references")) {
+    for (const reference of fs.readdirSync("skillsets/typescript/fabric-exec/references")) {
       const markdown = fs.readFileSync(
-        path.join("skills/fabric-exec/references", reference),
+        path.join("skillsets/typescript/fabric-exec/references", reference),
         "utf8",
       );
       if (/\/skill:fabric-[a-z-]+/.test(markdown)) {

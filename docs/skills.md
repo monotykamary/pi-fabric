@@ -4,11 +4,11 @@ Pi Fabric uses a core-first, user-opt-in skill hierarchy.
 
 ## Invocation contract
 
-- The model can invoke one execution reference for its configured kernel: `fabric-exec` (TypeScript) or `fabric-exec-python` (Python). It covers Pi core work through `fabric_exec`, `pi.*`, discovery, and stable provider proxies.
+- The model can invoke one execution reference: `fabric-exec`. Its physical path selects the configured TypeScript or Python implementation. It covers Pi core work through `fabric_exec`, `pi.*`, discovery, and stable provider proxies.
 - The user invokes every advanced workflow. Each one declares `disable-model-invocation: true` and stays out of the model catalog. Agent policy forbids reading one autonomously or delegating from one user-only skill to another. The policy governs agent behavior. It is not a filesystem authorization boundary.
 - `/skill:fabric-guide` is the user-only router. It names one exact advanced command and stops there. The router never invokes the recommendation.
 - Each user-facing description summarizes its command. Only the selected execution reference spends always-on model context.
-- Skills declare `metadata.fabric-kernel: typescript` or `python` to restrict runtime visibility; unannotated skills are shared. Fabric filters catalogs and expanded invocations each turn. Bundled advanced workflows currently require TypeScript. See [kernel-specific skills](kernels.md#kernel-specific-skills-and-guidance) for authoring and command-menu limitations.
+- Both `skillsets/typescript/` and `skillsets/python/` contain the same twelve canonical skill names, each with its own reference files. Fabric contributes only the selected tree through Pi resource discovery. Changing the kernel reloads Pi resources; see [kernel-specific skills](kernels.md#kernel-specific-skills-and-guidance). Third-party skills remain under Pi's normal discovery rules.
 
 The parent agent behaves like regular Pi until the user explicitly opts into orchestration, recursion, Schema, ambient actors, or swarm coordination.
 
@@ -32,7 +32,7 @@ A mandatory pointer serves legibility and single-source maintenance. Per-run tok
 - Classify each dependency as hard, branch-conditioned, or soft.
 - Apply the no-op test sentence by sentence: cut any text that leaves model behavior unchanged.
 - State the target behavior in positive terms. Reserve prohibitions for safety or invocation boundaries.
-- Preserve the executable TypeScript examples and their contract tests. Expensive fan-out returns `success`, `partial`, or `failed`. A `partial` result on its own implies no automatic whole-flow retry.
+- Preserve both executable language variants and their contract tests. Python uses host actions and native loops/asyncio.gather, not TypeScript callback helpers. Expensive fan-out returns `success`, `partial`, or `failed`. A `partial` result on its own implies no automatic whole-flow retry.
 
 ## User-invoked workflows
 

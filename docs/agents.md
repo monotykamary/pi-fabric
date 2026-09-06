@@ -1,6 +1,8 @@
 # Agents, actors & mesh
 
-Fabric exposes its multi-agent runtime through the model-facing APIs in [`skills/fabric-exec/references/agents.md`](../skills/fabric-exec/references/agents.md) and [`mesh.md`](../skills/fabric-exec/references/mesh.md). Reusable patterns are in the [skills](../skills/): `fabric-workflow`, `fabric-swarm`, `fabric-council`, `fabric-rlm`, `fabric-supervisor`, `fabric-advisor`, and `fabric-fusion`. For the `agents` and `mesh` settings, see [configuration](configuration.md).
+Fabric exposes its multi-agent runtime through the model-facing APIs in [`skillsets/typescript/fabric-exec/references/agents.md`](../skillsets/typescript/fabric-exec/references/agents.md) and [`mesh.md`](../skillsets/typescript/fabric-exec/references/mesh.md). Reusable patterns are in the [skills](../skillsets/typescript/): `fabric-workflow`, `fabric-swarm`, `fabric-council`, `fabric-rlm`, `fabric-supervisor`, `fabric-advisor`, and `fabric-fusion`. For the `agents` and `mesh` settings, see [configuration](configuration.md).
+
+Python uses the same public skill names from the [Python tree](../skillsets/python/), with native `agents.run` and `asyncio.gather` programs and its own [agent reference](../skillsets/python/fabric-exec/references/agents.md). The helper examples below are TypeScript-only.
 
 ## Workflows
 
@@ -18,7 +20,7 @@ Use these helpers:
 - Use `workflow.log(...)` to add short progress notes.
 - Read `workflow.budget` for token-budget observations.
 
-You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Configuration sets a hard agent limit for each execution. Add a JSON Schema to an agent request to make the worker return validated structured data in `result.value`. Workflow helpers return this value directly. Without a schema value, they return the agent's final text. See [`/skill:fabric-workflow`](../skills/fabric-workflow/SKILL.md) for the complete pattern.
+You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Configuration sets a hard agent limit for each execution. Add a JSON Schema to an agent request to make the worker return validated structured data in `result.value`. Workflow helpers return this value directly. Without a schema value, they return the agent's final text. See [`/skill:fabric-workflow`](../skillsets/typescript/fabric-workflow/SKILL.md) for the complete pattern.
 
 ## Agents
 
@@ -289,7 +291,7 @@ return { self: await agents.self(), lineage };
 
 For Main and one-shot agents, `steer` arrives after the tool calls in the current turn and before the next model call. `followUp` waits until the current run settles. For actors, both operations add a message to the serial mailbox. `agents.status({ id })` accepts any participant ID. It returns complete details for a local run or actor and a bounded directory summary for a remote participant. `agents.setSteeringMode` and `setFollowUpMode` continue to control local one-shot runs.
 
-Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skills/fabric-exec/references/agents.md).
+Local routing returns `"main"` or `"local"`. For cross-process `steer`, `followUp`, and `stop`, Fabric resolves the exact owner of the target. It sends a control command addressed to that owner and waits for an acknowledgement that matches the version, target, and owner identity. Success returns `routed: "mesh", acknowledged: true` after this verified acknowledgement. Unknown IDs, stale owners, rejection, and timeout throw an error. The dashboard actions `s`, `u`, and `x` use the same route. Set `mesh.enabled` to use cross-process control. See [`references/agents.md`](../skillsets/typescript/fabric-exec/references/agents.md).
 
 ### Peer labels and queue gates
 
@@ -551,7 +553,7 @@ return council.run({
 });
 ```
 
-Council members run at the same time under the global agent semaphore. When `synthesize: true`, a final child agent combines their reports. See [`/skill:fabric-council`](../skills/fabric-council/SKILL.md).
+Council members run at the same time under the global agent semaphore. When `synthesize: true`, a final child agent combines their reports. See [`/skill:fabric-council`](../skillsets/typescript/fabric-council/SKILL.md).
 
 ## Recursive queries
 
@@ -565,7 +567,7 @@ return rlm.query({
 
 `rlm.query()` calls `agents.run({ runner: "pi", recursive: true })` with Fabric enabled in the child; it does not accept `cwd`. Recursive spawning means Fabric agent composition, not recursive filesystem traversal. Fabric rejects Claude runners for recursive use. It also rejects recursion at `agents.maxDepth`. This setting accepts any non-negative safe integer, and `0` disables child spawning. Approval for the initial recursive call delegates only the `agent` risk capability to recursive children. It does not delegate approvals for network access, execution, or writes. Each Fabric process applies its own configured concurrency and timeout limits. When `agents.budgetUsd` is set, a shared append-only cost ledger limits total spending across the recursion tree. Each node writes the cost of its children to one ledger file that it receives through the environment. A node rejects a new child when accumulated spending reaches the budget. This check is best effort. Concurrent children can pass the check before another child records cost, so the tree can exceed the limit slightly. Use `agents.maxPerExecution` as the race-free ceiling. Results and live status for each recursive child include a `budget` summary with `limit`, `spent`, `remaining`, and `tokens`. Fabric keeps the latest bounded nested-agent status tree in memory. Completed recursive leaves remain visible in **Topology · Run** after the child process deletes its temporary nested run directories. Fabric releases the snapshot when the parent run is cleaned up or the Fabric session shuts down.
 
-`agents.maxTokensPerChild` limits cumulative token use for each child. Its default value, `0`, disables the limit. The wall-clock `timeoutMs` limits time, and `budgetUsd` limits cost. This limit caps the context of one runaway child before the host session compacts. Fabric stops the child with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skills/fabric-rlm/SKILL.md).
+`agents.maxTokensPerChild` limits cumulative token use for each child. Its default value, `0`, disables the limit. The wall-clock `timeoutMs` limits time, and `budgetUsd` limits cost. This limit caps the context of one runaway child before the host session compacts. Fabric stops the child with the same `timed_out` status and a `token limit` error. See [`/skill:fabric-rlm`](../skillsets/typescript/fabric-rlm/SKILL.md).
 
 ## Durable mesh coordination
 
@@ -593,4 +595,4 @@ const claimed = await mesh.put({
 return { event, claimed };
 ```
 
-Topics provide durable channels and direct messages with sequence cursors. `mesh.members({ scope?, kinds? })` returns the same combined directory of roots, agents, and actors as `agents.members()`. Versioned `get`, `put`, and `delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. You can combine these operations with persistent actors to implement messenger-style swarms in Fabric code. Messenger-style swarms need no fixed planner and worker roles or user-managed daemon. When guest code requests durable residency, Fabric starts the hidden resident host described earlier. See [`/skill:fabric-swarm`](../skills/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skills/fabric-exec/references/mesh.md) for the complete API.
+Topics provide durable channels and direct messages with sequence cursors. `mesh.members({ scope?, kinds? })` returns the same combined directory of roots, agents, and actors as `agents.members()`. Versioned `get`, `put`, and `delete` operations provide compare-and-swap state for task claims, leases, reservations, and decisions. You can combine these operations with persistent actors to implement messenger-style swarms in Fabric code. Messenger-style swarms need no fixed planner and worker roles or user-managed daemon. When guest code requests durable residency, Fabric starts the hidden resident host described earlier. See [`/skill:fabric-swarm`](../skillsets/typescript/fabric-swarm/SKILL.md) for the pattern and [`references/mesh.md`](../skillsets/typescript/fabric-exec/references/mesh.md) for the complete API.

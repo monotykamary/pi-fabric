@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("fabric-schema skill contract", () => {
   it("uses the real provider API and states the strict guarantee without treating evidence as proof", () => {
     const skill = fs.readFileSync(
-      path.join(process.cwd(), "skills/fabric-schema/SKILL.md"),
+      path.join(process.cwd(), "skillsets/typescript/fabric-schema/SKILL.md"),
       "utf8",
     );
 
