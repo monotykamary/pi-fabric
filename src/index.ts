@@ -376,7 +376,6 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
     const current = (): boolean =>
       epoch === entropyLifecycleEpoch && state.initialized && state.config.entropy.compile;
     if (!current()) return;
-    const startedAt = performance.now();
     const agentDir = resolveAgentDir();
     const cwd = state.cwd ?? context.cwd;
     const repairs = entropyRepairRows(state.repairs.repairs);
@@ -420,10 +419,8 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
         if (compiledSurfaceEffectChanged(loaded.file, outcome.artifact) && context.hasUI) {
           context.ui.notify(
             formatEntropyCompileNotice({
-              proposals: outcome.proposals,
               beforeScore: outcome.report.score,
               afterScore: outcome.after?.score ?? outcome.report.score,
-              elapsedMs: performance.now() - startedAt,
               ...(reviewChanged && review.length > 0 ? { reviewCount: review.length } : {}),
             }),
             "info",

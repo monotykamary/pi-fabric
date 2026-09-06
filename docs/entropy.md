@@ -250,11 +250,10 @@ shutdown awaits the queued final compile for durability, but all of that work
 remains cooperative with the event loop.
 
 A notification appears only when a newly persisted artifact changes the live
-surface. It starts with `background optimization complete`, includes elapsed
-work time, names up to three concrete targets and values, prints enough decimal
-places to distinguish the before/after scores (with an explicit signed delta),
-states that lower is better, and says that the safety checks passed. An equal
-score is labeled `entropy score unchanged`. Review suggestions point to
+surface. It starts with `background optimization complete`, prints enough
+decimal places to distinguish the before/after scores (with an explicit signed
+delta), states that lower is better, and says that the safety checks passed. An
+equal score is labeled `entropy score unchanged`. Review suggestions point to
 `/fabric entropy`; internal proposal-kind jargon stays out of user-facing
 notices.
 

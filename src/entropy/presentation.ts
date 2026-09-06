@@ -1,8 +1,6 @@
 import type { EntropyProposal } from "./types.js";
 
 const METRIC_PRECISION = 6;
-const MAX_APPLIED_DETAILS = 3;
-const MAX_VALUE_LENGTH = 32;
 
 const ENTROPY_COMMAND_HINTS = [
   {
@@ -30,34 +28,6 @@ export const formatEntropyCommandHints = (): string[] => {
   return ENTROPY_COMMAND_HINTS.map(
     (hint, index) => `${heads[index]!.padEnd(commentColumn)}# ${hint.comment}`,
   );
-};
-
-const formatDuration = (elapsedMs: number): string =>
-  elapsedMs >= 1_000 ? `${(elapsedMs / 1_000).toFixed(1)}s` : `${Math.max(1, Math.round(elapsedMs))}ms`;
-
-const formatValue = (value: string | number | boolean): string => {
-  const rendered = typeof value === "string"
-    ? (value.replace(/\s+/gu, " ").trim() || '""')
-    : String(value);
-  return rendered.length <= MAX_VALUE_LENGTH
-    ? rendered
-    : `${rendered.slice(0, MAX_VALUE_LENGTH - 1)}…`;
-};
-
-const formatValues = (values: readonly (string | number | boolean)[]): string =>
-  `{${values.map(formatValue).join(", ")}}`;
-
-const autoProposal = (proposal: EntropyProposal): boolean =>
-  proposal.kind === "enum-tighten" || proposal.kind === "noise-quarantine";
-
-const formatApplied = (proposal: EntropyProposal): string => {
-  if (proposal.kind === "enum-tighten") {
-    return `tightened ${proposal.ref}.${proposal.key} to ${formatValues(proposal.values)}`;
-  }
-  if (proposal.kind === "noise-quarantine") {
-    return `hid ${proposal.ref} (${proposal.failed} failed, ${proposal.succeeded} succeeded)`;
-  }
-  return proposal.kind;
 };
 
 const scoreChange = (before: number, after: number): string => {
@@ -122,20 +92,12 @@ export const formatEntropyReviewNotice = (
 };
 
 export const formatEntropyCompileNotice = (input: {
-  proposals: readonly EntropyProposal[];
   beforeScore: number;
   afterScore: number;
-  elapsedMs: number;
   reviewCount?: number;
 }): string => {
-  const applied = input.proposals.filter(autoProposal);
-  const details = applied.slice(0, MAX_APPLIED_DETAILS).map(formatApplied);
-  if (applied.length > MAX_APPLIED_DETAILS) {
-    details.push(`+${applied.length - MAX_APPLIED_DETAILS} more`);
-  }
-  if (details.length === 0) details.push("surface updated");
   const review = input.reviewCount
     ? ` · ${input.reviewCount} suggestion${input.reviewCount === 1 ? "" : "s"} await review (/fabric entropy)`
     : "";
-  return `entropy: background optimization complete (${formatDuration(input.elapsedMs)}) · ${details.join(" · ")} · ${scoreChange(input.beforeScore, input.afterScore)} · safety checks passed${review}`;
+  return `entropy: background optimization complete · ${scoreChange(input.beforeScore, input.afterScore)} · safety checks passed${review}`;
 };

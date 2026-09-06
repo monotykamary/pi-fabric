@@ -7,16 +7,6 @@ import {
   type EntropyProposal,
 } from "../src/entropy/index.js";
 
-const tightened: EntropyProposal = {
-  kind: "enum-tighten",
-  ref: "memory.recall",
-  key: "queryMode",
-  values: ["literal", "regex"],
-  calls: 24,
-  distinct: 2,
-  topShare: 0.75,
-};
-
 const declaration = (
   ref: string,
   key: string,
@@ -36,48 +26,31 @@ describe("entropy user-facing messages", () => {
   it("names the applied target and preserves metric precision", () => {
     expect(
       formatEntropyCompileNotice({
-        proposals: [tightened],
         beforeScore: 0.004458,
         afterScore: 0.004455,
-        elapsedMs: 1_320,
         reviewCount: 13,
       }),
     ).toBe(
-      "entropy: background optimization complete (1.3s) · tightened memory.recall.queryMode to {literal, regex} · entropy score improved 0.004458 → 0.004455 (−0.000003; lower is better) · safety checks passed · 13 suggestions await review (/fabric entropy)",
+      "entropy: background optimization complete · entropy score improved 0.004458 → 0.004455 (−0.000003; lower is better) · safety checks passed · 13 suggestions await review (/fabric entropy)",
     );
   });
 
   it("calls out a genuinely unchanged score instead of rendering a false reduction", () => {
     expect(
       formatEntropyCompileNotice({
-        proposals: [tightened],
         beforeScore: 0,
         afterScore: 0,
-        elapsedMs: 12,
       }),
     ).toContain("entropy score unchanged at 0.000000 (lower is better)");
   });
 
   it("adds precision when a real change is smaller than six decimals", () => {
     const notice = formatEntropyCompileNotice({
-      proposals: [tightened],
       beforeScore: 0.0044580001,
       afterScore: 0.004458,
-      elapsedMs: 12,
     });
     expect(notice).toContain("entropy score improved 0.0044580001 → 0.0044580000 (−0.0000000001; lower is better)");
     expect(notice).not.toContain("score unchanged");
-  });
-
-  it("keeps untrusted observed values on one notification line", () => {
-    expect(
-      formatEntropyCompileNotice({
-        proposals: [{ ...tightened, values: ["literal\nvalue", "regex"] }],
-        beforeScore: 1,
-        afterScore: 0.5,
-        elapsedMs: 10,
-      }),
-    ).toContain("to {literal value, regex}");
   });
 
   it("aligns /fabric entropy command comments", () => {
