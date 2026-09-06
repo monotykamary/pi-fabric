@@ -74,13 +74,11 @@ import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
 import { ResidencyClient } from "../residency/client.js";
 import { ResidentActorClient } from "../residency/actor-client.js";
-import {
-  AgentTranscriptReader,
-  recentTranscriptTools,
-  type FabricAgentToolPreview,
-  type FabricAgentToolPreviewNode,
-  type FabricTranscriptEntry,
-} from "../ui/transcript.js";
+import { AgentTranscriptReader } from "../ui/transcript.js";
+import { waitWithProgress, waitWithActorProgress } from "./agents-progress.js";
+import { AgentMessageRouter } from "./agents-message-router.js";
+
+export { collectAgentToolPreviewNodes, type AgentToolPreviewTreeOptions } from "./agents-progress.js";
 
 const REMOTE_ASK_ACK_GRACE_MS = 30_000;
 const MAX_ACTIVITY_CWD_CHARS = 240;
@@ -136,17 +134,6 @@ const resolveThinkingTransfer = (
         : {}),
     },
   };
-};
-
-const AGENT_PROGRESS_INTERVAL_MS = 1_000;
-const AGENT_PREVIEW_TEXT_CODE_POINTS = 2_000;
-const AGENT_PREVIEW_TOOL_LIMIT = 8;
-const AGENT_PREVIEW_TREE_MAX_DEPTH = 4;
-const AGENT_PREVIEW_TREE_MAX_NODES = 24;
-
-const tailCodePoints = (value: string, limit: number): string => {
-  if (value.length <= limit) return value;
-  return Array.from(value.slice(-limit * 2)).slice(-limit).join("");
 };
 
 const stringArray = (value: unknown): string[] | undefined =>
@@ -356,255 +343,13 @@ const actorRequest = (
   };
 };
 
-type AgentProgressStatus = ReturnType<AgentManager["status"]>;
-
-export interface AgentToolPreviewTreeOptions {
-  tools: (record: AgentRunRecord) => FabricTranscriptEntry[];
-  maxDepth?: number;
-  maxNodes?: number;
-}
-
-// Map an agent run tree (AgentRunRecord.nestedAgents) onto bounded preview
-// nodes. Depth and total-node budgets keep recursive runs cheap to build and
-// cheap to diff against the previous revision every progress tick.
-export const collectAgentToolPreviewNodes = (
-  records: readonly AgentRunRecord[],
-  options: AgentToolPreviewTreeOptions,
-  depth = 0,
-  budget = { remaining: options.maxNodes ?? AGENT_PREVIEW_TREE_MAX_NODES },
-): FabricAgentToolPreviewNode[] => {
-  const maxDepth = options.maxDepth ?? AGENT_PREVIEW_TREE_MAX_DEPTH;
-  const nodes: FabricAgentToolPreviewNode[] = [];
-  for (const record of records) {
-    if (budget.remaining <= 0) break;
-    budget.remaining -= 1;
-    const descendants = Array.isArray(record.nestedAgents) ? record.nestedAgents : [];
-    const agents =
-      depth + 1 < maxDepth && descendants.length > 0 && budget.remaining > 0
-        ? collectAgentToolPreviewNodes(descendants, options, depth + 1, budget)
-        : [];
-    nodes.push({
-      id: record.id,
-      name: record.actorName ?? record.name,
-      status: record.status,
-      ...(record.runner === "pi" || record.runner === "claude" || record.runner === "veda"
-        ? { runner: record.runner }
-        : {}),
-      owner: record.actorId ? "actor" : "agent",
-      ...(record.currentTool ? { currentTool: record.currentTool } : {}),
-      ...(record.text
-        ? { text: tailCodePoints(record.text, AGENT_PREVIEW_TEXT_CODE_POINTS) }
-        : {}),
-      tools: options.tools(record),
-      ...(agents.length > 0 ? { agents } : {}),
-      ...(descendants.length > agents.length ? { agentsTruncated: true } : {}),
-    });
-  }
-  return nodes;
-};
-
-const attachAgentToolPreview = (
-  status: AgentProgressStatus,
-  transcripts: AgentTranscriptReader,
-  context: FabricInvocationContext,
-  enabled: () => boolean,
-  previousRevision?: string,
-): string => {
-  if (!context.attachPreview) return agentProgressRevision(status);
-  const previewTools = (source: {
-    id: string;
-    status: string;
-    logFile?: string | undefined;
-  }): FabricTranscriptEntry[] => {
-    if (!enabled() || !source.logFile) return [];
-    try {
-      return recentTranscriptTools(
-        transcripts.read({ id: source.id, status: source.status, logFile: source.logFile }),
-        AGENT_PREVIEW_TOOL_LIMIT,
-      );
-    } catch {
-      // Descendant runs can clean up mid-read; keep the rest of the tree.
-      return [];
-    }
-  };
-  try {
-    const nestedRecords =
-      "nestedAgents" in status && Array.isArray(status.nestedAgents) ? status.nestedAgents : [];
-    const descendants = collectAgentToolPreviewNodes(nestedRecords, { tools: previewTools });
-    const preview: FabricAgentToolPreview = {
-      kind: "fabric-agent-tools",
-      id: status.id,
-      name: status.actorName ?? status.name,
-      status: status.status,
-      runner: status.runner,
-      owner: status.actorId ? "actor" : "agent",
-      ...("text" in status && status.text
-        ? { text: tailCodePoints(status.text, AGENT_PREVIEW_TEXT_CODE_POINTS) }
-        : {}),
-      tools: previewTools(status),
-      ...(descendants.length > 0 ? { agents: descendants } : {}),
-      ...(nestedRecords.length > descendants.length ? { agentsTruncated: true } : {}),
-    };
-    // The preview is bounded before this point. Comparing its compact snapshot
-    // keeps the one-second filesystem poll cheap while still noticing transcript
-    // deltas that do not update the worker's coarse status record.
-    const revision = JSON.stringify(preview);
-    if (revision !== previousRevision) context.attachPreview(preview);
-    return revision;
-  } catch {
-    // The worker may settle and clean up while its final preview is being read.
-    return previousRevision ?? agentProgressRevision(status);
-  }
-};
-
-const waitForResultWithProgress = <T>(
-  result: Promise<T>,
-  onProgress: () => void,
-): Promise<T> =>
-  new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (complete: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearInterval(progressTimer);
-      complete();
-    };
-    const progressTimer = setInterval(() => {
-      if (settled) return;
-      try {
-        onProgress();
-      } catch (error) {
-        finish(() => reject(error));
-      }
-    }, AGENT_PROGRESS_INTERVAL_MS);
-    progressTimer.unref?.();
-    result.then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error)),
-    );
-  });
-
-const actorWorker = (
-  manager: AgentManager,
-  actorId: string,
-  includeTerminal: boolean,
-): ReturnType<AgentManager["list"]>[number] | undefined => {
-  const candidates = manager.list().filter((candidate) => candidate.actorId === actorId);
-  const active = candidates.find((candidate) => candidate.status === "running");
-  if (active || !includeTerminal) return active;
-  // AgentManager.list() preserves run insertion order; the last actor run
-  // is therefore the terminal snapshot for the ask that just settled.
-  return candidates.at(-1);
-};
-
-const agentProgressRevision = (status: AgentProgressStatus): string =>
-  [
-    status.status,
-    "updatedAt" in status ? status.updatedAt : 0,
-    "currentTool" in status ? status.currentTool : "",
-    "toolCalls" in status ? status.toolCalls : 0,
-    "turns" in status ? status.turns : 0,
-  ].join(":");
-
-const waitWithProgress = async (
-  manager: AgentManager,
-  transcripts: AgentTranscriptReader,
-  id: string,
-  context: FabricInvocationContext,
-  agentToolPreviewEnabled: () => boolean,
-): Promise<AgentRunResult> => {
-  const result = manager.wait(id);
-  let lastPreviewRevision: string | undefined;
-  try {
-    const settled = await waitForResultWithProgress(result, () => {
-      const status = manager.status(id);
-      const revision = attachAgentToolPreview(
-        status,
-        transcripts,
-        context,
-        agentToolPreviewEnabled,
-        lastPreviewRevision,
-      );
-      if (revision === lastPreviewRevision) return;
-      lastPreviewRevision = revision;
-      const currentTool =
-        "currentTool" in status && status.currentTool ? ` · ${status.currentTool}` : "";
-      const displayName = status.actorName ?? status.name;
-      context.update(`Agent ${displayName}: ${status.status}${currentTool}`);
-      if ("usage" in status) {
-        context.activity?.({
-          type: "metrics",
-          tokens: status.usage.input + status.usage.output,
-          toolCalls: status.toolCalls,
-          cost: status.usage.cost,
-        });
-      }
-    });
-    context.activity?.({
-      type: "metrics",
-      tokens: settled.usage.input + settled.usage.output,
-      toolCalls: settled.toolCalls,
-      cost: settled.usage.cost,
-    });
-    return settled;
-  } finally {
-    try {
-      const status = manager.status(id);
-      attachAgentToolPreview(status, transcripts, context, agentToolPreviewEnabled);
-      const displayName = status.actorName ?? status.name;
-      context.update(`Agent ${displayName}: ${status.status}`);
-    } catch {
-      // The run may have been cleaned up during cancellation.
-    }
-  }
-};
-
-const waitWithActorProgress = async (
-  manager: AgentManager,
-  transcripts: AgentTranscriptReader,
-  actorId: string,
-  actorName: string,
-  result: Promise<FabricActorMessage>,
-  context: FabricInvocationContext,
-  agentToolPreviewEnabled: () => boolean,
-): Promise<FabricActorMessage> => {
-  let lastPreviewRevision: string | undefined;
-  try {
-    return await waitForResultWithProgress(result, () => {
-      const worker = actorWorker(manager, actorId, false);
-      const revision = worker
-        ? attachAgentToolPreview(
-            worker,
-            transcripts,
-            context,
-            agentToolPreviewEnabled,
-            lastPreviewRevision,
-          )
-        : "queued";
-      if (revision === lastPreviewRevision) return;
-      lastPreviewRevision = revision;
-      const currentTool =
-        worker && "currentTool" in worker && worker.currentTool ? ` · ${worker.currentTool}` : "";
-      context.update(
-        worker
-          ? `Actor ${actorName}: ${worker.status}${currentTool}`
-          : `Actor ${actorName}: queued`,
-      );
-    });
-  } finally {
-    const worker = actorWorker(manager, actorId, true);
-    if (worker) attachAgentToolPreview(worker, transcripts, context, agentToolPreviewEnabled);
-  }
-};
-
-
-
 // Argument repair derives from the action schemas plus the shared synonym
 // lexicon; no agents-specific table remains.
 export const normalizeAgentsArgs = actionArgNormalizer(() => AGENTS_ACTION_DESCRIPTORS);
 
 export class AgentsProvider implements FabricProvider {
   readonly #transcripts = new AgentTranscriptReader();
+  readonly #router: AgentMessageRouter;
   readonly name = "agents";
   readonly description =
     "The user-facing Main target, one-shot Pi or Claude Code agents, and persistent mailbox actors over process, tmux, screen, LocalTerm, or Herdr";
@@ -622,6 +367,10 @@ export class AgentsProvider implements FabricProvider {
     readonly ownsRuntime = true,
     readonly modelsConfig: () => FabricModelsConfig = () => DEFAULT_FABRIC_CONFIG.models,
   ) {
+    this.#router = new AgentMessageRouter(
+      manager, actorManager, mainAgent, participants, control,
+      (binding, runner, context) => this.#resolvePiRunBinding(binding, runner, context),
+    );
     this.#lifecycleScheduler = new LifecycleDeliveryScheduler(
       DEFAULT_LIFECYCLE_COALESCE_MS,
       (target, batch) => this.#routeLifecycleBatch(target, batch),
@@ -1374,121 +1123,7 @@ export class AgentsProvider implements FabricProvider {
       binding?: FabricActorRunBinding;
     } = {},
   ): Promise<FabricAgentMessageResult> {
-    if (this.mainAgent.matches(id)) {
-      if (this.mainAgent.local) {
-        context?.activity?.({
-          type: "entity",
-          id: this.mainAgent.id,
-          kind: "agent",
-          name: "Main",
-        });
-        return this.mainAgent.deliverAgent({
-          from: options.from ?? this.actorManager.identity,
-          message,
-          delivery: kind,
-          ...(typeof options.triggerTurn === "boolean"
-            ? { triggerTurn: options.triggerTurn }
-            : {}),
-          ...(data === undefined ? {} : { data }),
-        });
-      }
-      const participant = this.participants.get(this.mainAgent.id);
-      if (!participant) throw new Error(`Unknown Fabric Main participant: ${this.mainAgent.id}`);
-      if (!participant.capabilities.includes(kind)) {
-        throw new Error(`Fabric participant ${participant.id} does not support ${kind}`);
-      }
-      if (!this.control || participant.controlProtocol === "legacy") {
-        return this.actorManager.steerRemote(this.mainAgent.id, message, kind, data);
-      }
-      return this.control.request(
-        participant.ownerHostId,
-        participant.id,
-        kind,
-        {
-          message,
-          data,
-          ...(typeof options.triggerTurn === "boolean"
-            ? { triggerTurn: options.triggerTurn }
-            : {}),
-        },
-        participant.ownerIdentityId,
-      );
-    }
-
-    // Local one-shot agent: forward between its turns via the worker's
-    // steer.jsonl channel, preserving the child's accumulated context.
-    try {
-      const status = this.manager.status(id);
-      context?.activity?.({ type: "entity", id, kind: "agent", name: status.name });
-      const result =
-        kind === "steer"
-          ? this.manager.steer(id, message, data)
-          : this.manager.followUp(id, message, data);
-      return { queued: true, messageId: result.messageId, routed: "local" };
-    } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
-    }
-
-    // Persistent actors consume both delivery modes through their serial mailbox.
-    this.actorManager.validateDirectMessage(message, data);
-    let target: { actor?: FabricActorInfo; participant?: FabricParticipantInfo };
-    try {
-      target = this.#resolveActorTarget(id);
-    } catch (error) {
-      if (error instanceof Error && /Unknown Fabric actor/.test(error.message)) {
-        throw new Error(`Unknown Fabric participant: ${id}`);
-      }
-      throw error;
-    }
-    const { actor, participant } = target;
-    const localActor = Boolean(actor && (!participant || participant.local));
-    const binding = options.binding && context && localActor
-      ? this.#resolvePiRunBinding(options.binding, actor!.runner, context)
-      : options.binding;
-    if (actor && localActor) {
-      context?.activity?.({ type: "entity", id: actor.id, kind: "actor", name: actor.name });
-      const result = this.actorManager.tell(actor.id, message, data, {
-        ...(binding ? { overrides: binding } : {}),
-      });
-      return { queued: true, messageId: result.messageId, routed: "local" };
-    }
-    if (!participant) throw new Error(`Fabric actor ${actor!.id} has no live execution owner`);
-    if (!participant.capabilities.includes(kind)) {
-      throw new Error(`Fabric participant ${participant.id} does not support ${kind}`);
-    }
-    const sessionBinding = actor?.binding;
-    const resolvedBinding = actor
-      ? this.actorManager.resolveBinding(actor.id, binding)
-      : binding;
-    const needsBinding = Boolean(
-      resolvedBinding?.model ||
-        resolvedBinding?.thinking ||
-        sessionBinding?.model ||
-        sessionBinding?.thinking,
-    );
-    if (needsBinding && !participant.capabilities.includes("actor-bindings")) {
-      throw new Error(`Fabric actor owner ${participant.ownerHostId} does not support session bindings`);
-    }
-    if (!this.control || participant.controlProtocol === "legacy") {
-      if (needsBinding) {
-        throw new Error(`Fabric actor owner ${participant.ownerHostId} has no binding control channel`);
-      }
-      return this.actorManager.steerRemote(participant.id, message, kind, data);
-    }
-    return this.control.request(
-      participant.ownerHostId,
-      participant.id,
-      kind,
-      {
-        message,
-        data,
-        ...(typeof options.triggerTurn === "boolean"
-          ? { triggerTurn: options.triggerTurn }
-          : {}),
-        ...(needsBinding && resolvedBinding ? { binding: resolvedBinding } : {}),
-      },
-      participant.ownerIdentityId,
-    );
+    return this.#router.routeMessage(id, message, data, kind, context, options);
   }
 
   /** Flush pending coalesced lifecycle deliveries; used by tests and shutdown. */
@@ -1511,126 +1146,14 @@ export class AgentsProvider implements FabricProvider {
     from: MeshIdentity,
     signal?: AbortSignal,
   ): Promise<FabricControlAcceptance> {
-    if (command.operation === "cancel") {
-      return { accepted: false, error: "Cancel commands are handled by the control plane" };
-    }
-    if (command.operation === "stop") {
-      try {
-        await this.manager.stop(command.targetId);
-        this.participants.scheduleRefresh();
-        return { accepted: true, messageId: command.commandId };
-      } catch (error) {
-        if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) {
-          return { accepted: false, error: error instanceof Error ? error.message : String(error) };
-        }
-      }
-      try {
-        const actor = this.actorManager.status(command.targetId);
-        const ownership = this.participants.get(actor.id);
-        if (ownership && !ownership.local) {
-          return { accepted: false, error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}` };
-        }
-        await this.actorManager.stop(actor.id);
-        this.participants.scheduleRefresh();
-        return { accepted: true, messageId: command.commandId };
-      } catch (error) {
-        if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) {
-          return { accepted: false, error: error instanceof Error ? error.message : String(error) };
-        }
-      }
-      return { accepted: false, error: `Owner does not control Fabric participant ${command.targetId}` };
-    }
-
-    const message = command.message?.trim();
-    if (!message) return { accepted: false, error: "Fabric control message must not be empty" };
-    if (command.operation === "ask") {
-      try {
-        const actor = this.actorManager.status(command.targetId);
-        const ownership = this.participants.get(actor.id);
-        if (ownership && !ownership.local) {
-          return {
-            accepted: false,
-            error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}`,
-          };
-        }
-        const result = await this.actorManager.ask(
-          actor.id,
-          message,
-          command.data,
-          signal,
-          command.binding !== undefined ? { binding: command.binding } : {},
-        );
-        return { accepted: true, messageId: result.id, result };
-      } catch (error) {
-        return {
-          accepted: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    }
-    if (this.mainAgent.local && this.mainAgent.matches(command.targetId)) {
-      const result = this.mainAgent.deliverAgent({
-        from,
-        message,
-        delivery: command.operation,
-        ...(typeof command.triggerTurn === "boolean"
-          ? { triggerTurn: command.triggerTurn }
-          : {}),
-        ...(command.data === undefined ? {} : { data: command.data }),
-      });
-      return { accepted: true, messageId: result.messageId };
-    }
-    try {
-      this.manager.status(command.targetId);
-      const result =
-        command.operation === "steer"
-          ? this.manager.steer(command.targetId, message, command.data)
-          : this.manager.followUp(command.targetId, message, command.data);
-      return { accepted: true, messageId: result.messageId };
-    } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) {
-        return { accepted: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    }
-    try {
-      const actor = this.actorManager.status(command.targetId);
-      const ownership = this.participants.get(actor.id);
-      if (ownership && !ownership.local) {
-        return { accepted: false, error: `Participant ${actor.id} is owned by ${ownership.ownerHostId}` };
-      }
-      const result = this.actorManager.tell(
-        actor.id,
-        message,
-        command.data,
-        command.binding !== undefined ? { binding: command.binding } : {},
-      );
-      return { accepted: true, messageId: result.messageId };
-    } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) {
-        return { accepted: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    }
-    return { accepted: false, error: `Owner does not control Fabric participant ${command.targetId}` };
+    return this.#router.acceptControl(command, from, signal);
   }
 
   #resolveActorTarget(id: string): {
     actor?: FabricActorInfo;
     participant?: FabricParticipantInfo;
   } {
-    let actor: FabricActorInfo | undefined;
-    try {
-      actor = this.actorManager.status(id);
-    } catch (error) {
-      if (!(error instanceof Error && /Unknown Fabric actor/.test(error.message))) throw error;
-    }
-    const participant = this.participants.get(actor?.id ?? id);
-    if (!actor && (!participant || participant.kind !== "actor")) {
-      throw new Error(`Unknown Fabric actor: ${id}`);
-    }
-    return {
-      ...(actor ? { actor } : {}),
-      ...(participant?.kind === "actor" ? { participant } : {}),
-    };
+    return this.#router.resolveActorTarget(id);
   }
 
   async #createActor(request: FabricActorRequest): Promise<FabricActorInfo> {

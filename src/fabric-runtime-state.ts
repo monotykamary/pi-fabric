@@ -30,7 +30,6 @@ import {
   FABRIC_COMPONENT_PROVIDER_NAMES,
   FABRIC_PROVIDER_COMPONENT_PREFIX,
   FabricProviderComponentManifest,
-  type FabricProviderComponent,
 } from "./components/provider-component.js";
 import type {
   FabricComponentDefinition,
@@ -47,7 +46,6 @@ import {
 import {
   ActionRegistry,
   type FabricCapabilityViewLease,
-  type ResolvedFabricAction,
 } from "./core/action-registry.js";
 import { FabricSessionApprovals } from "./core/approval-controller.js";
 import { CompactController, type CompactLastCommit, type CompactPendingIntent } from "./core/compact-controller.js";
@@ -63,18 +61,8 @@ import {
   clearActiveCompiledSurface,
   setActiveCompiledSurface,
 } from "./entropy/active.js";
-import {
-  isSpeculationEligible,
-  mcpAllowlistMatch,
-  TIER_A_SPECULATION_REFS,
-} from "./speculation/eligibility.js";
-import { createFreshnessChecker } from "./speculation/freshness.js";
-import { FabricSpeculationStore } from "./speculation/store.js";
-import { FabricSpeculationStreamTap } from "./speculation/stream-tap.js";
-import type {
-  FabricSpeculationCandidate,
-  FabricSpeculationReplay,
-} from "./speculation/types.js";
+import { RuntimeStateSpeculation } from "./runtime-state-speculation.js";
+import type { FabricSpeculationStreamTap } from "./speculation/stream-tap.js";
 import { MeshStore, type MeshIdentity } from "./mesh/store.js";
 import { LifecycleBroker } from "./lifecycle/broker.js";
 import type { FabricLifecycleEventType } from "./lifecycle/types.js";
@@ -103,16 +91,11 @@ import {
   type FabricMainAgentInfo,
 } from "./main-agent.js";
 import { AgentsProvider } from "./providers/agents-provider.js";
-import { CapturedToolsProvider } from "./providers/captured-tools-provider.js";
 import { CompactProvider } from "./providers/compact-provider.js";
 import { ComponentsProvider } from "./providers/components-provider.js";
-import { McpDescriptorCacheStore } from "./providers/mcp-descriptor-cache.js";
-import { McpProvider, type McpProviderHooks } from "./providers/mcp-provider.js";
-import { MemoryProvider, type MemoryProviderContext } from "./providers/memory-provider.js";
-import { MeshProvider } from "./providers/mesh-provider.js";
-import { PiToolsProvider } from "./providers/pi-tools-provider.js";
+import type { McpProviderHooks } from "./providers/mcp-provider.js";
+import { RuntimeStateBuiltins } from "./runtime-state-builtins.js";
 import { SchemaProvider } from "./providers/schema-provider.js";
-import { StateProvider } from "./providers/state-provider.js";
 import { SchemaController } from "./schema/controller.js";
 import { StateStore } from "./state/store.js";
 import {
@@ -120,7 +103,6 @@ import {
   FABRIC_PROVIDER_DISCOVER_EVENT,
   type FabricActionDescriptor,
   type FabricComponentDiscovery,
-  type FabricInvocationContext,
   type FabricProvider,
   type FabricProviderDiscovery,
 } from "./protocol.js";
@@ -158,12 +140,10 @@ export interface FabricRuntimeStateOptions {
 
 export class FabricRuntimeState {
   #registry: ActionRegistry | undefined;
-  #mcpProvider: McpProvider | undefined;
   #config: FabricConfig | undefined;
   #execution: FabricExecutionService | undefined;
   #repairs: RepairCompiler | undefined;
-  #speculationStore: FabricSpeculationStore | undefined;
-  #speculationTap: FabricSpeculationStreamTap | undefined;
+  #speculation: RuntimeStateSpeculation | undefined;
   #agents: AgentManager | undefined;
   #actors: ActorDirectory | undefined;
   #globalActors: GlobalActorRegistry | undefined;
@@ -230,99 +210,12 @@ export class FabricRuntimeState {
 
   /** Stream tap for speculative PTC; undefined when speculation is disabled. */
   get speculationTap(): FabricSpeculationStreamTap | undefined {
-    return this.#speculationTap;
+    return this.#speculation?.tap;
   }
 
   /** Turn-boundary backstop: tap state and unserved entries never outlive a turn. */
   resetSpeculation(): void {
-    this.#speculationTap?.reset();
-    this.#speculationStore?.reset();
-  }
-
-  // Speculative PTC: the store is the epoch-checked promise cache consumed by
-  // ActionRegistry.invoke; the tap watches fabric_exec argument streaming and
-  // launches literal-args Tier-A calls early (docs/speculation.md).
-  #wireSpeculation(): void {
-    const config = this.#config;
-    const registry = this.#registry;
-    if (!config || !registry || !config.speculation.enabled) return;
-    const { speculation } = config;
-    const store = new FabricSpeculationStore(speculation);
-    registry.setSpeculation(store, (action: ResolvedFabricAction) =>
-      isSpeculationEligible(
-        {
-          ref: action.ref,
-          provider: action.provider,
-          risk: action.risk,
-          effectKind: action.effect?.kind,
-          ...(action.annotations ? { annotations: action.annotations } : {}),
-        },
-        speculation.mcpAllowlist,
-      ));
-    this.#speculationStore = store;
-    this.#speculationTap = new FabricSpeculationStreamTap({
-      enabled: () => this.#config?.speculation.enabled === true,
-      maxBufferBytes: () => this.#config?.speculation.maxBufferBytes ?? 2 * 1024 * 1024,
-      isEligible: (ref) =>
-        TIER_A_SPECULATION_REFS.has(ref) ||
-        (ref.startsWith("mcp.") &&
-          mcpAllowlistMatch(
-            ref.slice("mcp.".length),
-            this.#config?.speculation.mcpAllowlist ?? [],
-          )),
-      launch: (toolCallId, candidate, extensionContext) => {
-        void this.#launchSpeculation(toolCallId, candidate, extensionContext).catch(
-          () => undefined,
-        );
-      },
-    });
-    // The scanner pulls in the TypeScript compiler; load it in the background
-    // so session startup never pays. Streams that open first are re-scanned in
-    // full once the factory lands (their extractors buffered the prefix).
-    void import("./speculation/scanner.js").then(
-      (module) => {
-        this.#speculationTap?.setScannerFactory(() => new module.LiteralCallScanner());
-      },
-      () => undefined,
-    );
-  }
-
-  async #launchSpeculation(
-    toolCallId: string,
-    candidate: FabricSpeculationCandidate,
-    context: ExtensionContext,
-  ): Promise<void> {
-    const registry = this.#registry;
-    const store = this.#speculationStore;
-    if (!registry || !store || this.#config?.speculation.enabled !== true) return;
-    const replay: FabricSpeculationReplay = {};
-    const lightContext: FabricInvocationContext = {
-      cwd: context.cwd,
-      signal: undefined,
-      parentToolCallId: toolCallId,
-      nestedToolCallId: "fabric-speculation",
-      extensionContext: context,
-      update() {},
-      ...(this.#sessionCapabilityLease?.view
-        ? { capabilityView: this.#sessionCapabilityLease.view }
-        : {}),
-    };
-    const speculation = await registry.speculate(
-      candidate.ref,
-      candidate.args,
-      lightContext,
-      replay,
-    );
-    if (!speculation) return;
-    store.launch(
-      toolCallId,
-      candidate.ref,
-      speculation.preparedArgs,
-      speculation.execute,
-      createFreshnessChecker(candidate.ref, speculation.preparedArgs, context.cwd),
-      replay,
-      speculation.bindingToken,
-    );
+    this.#speculation?.reset();
   }
 
   get registry(): ActionRegistry {
@@ -422,10 +315,8 @@ export class FabricRuntimeState {
     this.prewalk.cancel();
     this.prewalkDrift.clear();
     context.ui.setStatus("fabric-prewalk", undefined);
-    this.#speculationTap?.reset();
-    this.#speculationStore?.reset();
-    this.#speculationTap = undefined;
-    this.#speculationStore = undefined;
+    this.#speculation?.reset();
+    this.#speculation = undefined;
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
@@ -438,7 +329,13 @@ export class FabricRuntimeState {
     this.#registry = new ActionRegistry(
       new FabricToolResultProxy(() => this.capturedTools.runner),
     );
-    this.#wireSpeculation();
+    if (this.#config.speculation.enabled) {
+      this.#speculation = new RuntimeStateSpeculation(
+        this.#registry,
+        () => this.#config?.speculation,
+        () => this.#sessionCapabilityLease?.view,
+      );
+    }
     this.#unsubscribeCapturedCatalog?.();
     this.#unsubscribeCapturedCatalog = this.capturedTools.subscribe(() => {
       this.#registry?.notifyCatalogChanged("extensions");
@@ -481,66 +378,13 @@ export class FabricRuntimeState {
       this.componentCatalog,
       this.#componentLoader,
     );
-    const installBuiltin = async (component: FabricProviderComponent): Promise<void> => {
-      await builtinManifest.install(component);
-      this.#builtinComponentNames.add(component.definition.name);
-    };
+    const builtins = new RuntimeStateBuiltins(
+      builtinManifest,
+      this.#registry,
+      (name) => this.#builtinComponentNames.add(name),
+    );
     const enforceSchema = this.#config.schema.mode === "enforce";
-    const effectiveFullCodeMode = this.#config.fullCodeMode || enforceSchema;
-    // Enforce keeps this provider private to the Pi adapter: core overrides
-    // still resolve through pi.* while the schema authorizer blocks protected
-    // mutations and external effects. Do not expose the generic extensions.*
-    // namespace in enforce mode.
-    const capturedToolsProvider =
-      effectiveFullCodeMode && (this.#config.capture.enabled || enforceSchema)
-        ? new CapturedToolsProvider(this.capturedTools)
-        : undefined;
-    if (effectiveFullCodeMode) {
-      await installBuiltin(createProviderComponent({
-        provider: "pi",
-        description: "Pi core tools adapter",
-        create: () => new PiToolsProvider(
-          context.cwd,
-          this.capturedTools,
-          capturedToolsProvider,
-        ),
-      }));
-    }
-    await installBuiltin(createProviderComponent({
-      provider: "mcp",
-      description: "MCP runtime and descriptor cache",
-      create: () => new McpProvider(context.cwd, this.#config!.mcp, {
-        ...(this.#config!.mcp.cache.enabled
-          ? {
-              cache: new McpDescriptorCacheStore(
-                path.join(
-                  process.env.PI_FABRIC_PROJECT_ROOT ?? context.cwd,
-                  ".pi",
-                  "fabric",
-                  "mcp-cache.json",
-                ),
-              ),
-            }
-          : {}),
-        hooks: {
-          onSliceChanged: () => {
-            this.#registry?.notifyCatalogChanged("mcp");
-          },
-        },
-      }),
-      mounted: (provider) => { this.#mcpProvider = provider; },
-      unmounted: (provider) => {
-        if (this.#mcpProvider === provider) this.#mcpProvider = undefined;
-      },
-      start: (provider) => { provider.warmup(); },
-    }));
-    if (capturedToolsProvider && !enforceSchema) {
-      await installBuiltin(createProviderComponent({
-        provider: "extensions",
-        description: "Captured extension tool catalog",
-        create: () => capturedToolsProvider,
-      }));
-    }
+    await builtins.tools(context.cwd, this.#config, this.capturedTools);
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
     const fabricSessionId = process.env.PI_FABRIC_SESSION_ID?.trim() || sessionId;
@@ -587,24 +431,7 @@ export class FabricRuntimeState {
       hostId,
       pollMs: this.#config.mesh.actorPollMs,
     });
-    if (this.#config.mesh.enabled) {
-      await installBuiltin(createProviderComponent({
-        provider: "mesh",
-        description: "Project mesh and participant directory",
-        create: () => new MeshProvider(this.#mesh!, identity, this.#participants!),
-      }));
-      await installBuiltin(createProviderComponent({
-        provider: "state",
-        description: "Labeled world state over the project mesh",
-        requires: ["mesh.get"],
-        create: () => new StateProvider(this.#mesh!, identity),
-      }));
-    } else {
-      const meshDisabled =
-        'disabled by configuration (mesh.enabled=false); set "mesh": { "enabled": true } in .pi/fabric.json or the agent fabric.json';
-      this.#registry.markUnavailable("mesh", `${meshDisabled} to enable mesh.* actions`);
-      this.#registry.markUnavailable("state", `${meshDisabled}; state.* actions run on the mesh`);
-    }
+    await builtins.mesh(this.#config, this.#mesh, identity, this.#participants);
     this.#schema = new SchemaController(
       context.cwd,
       this.#config.schema,
@@ -612,7 +439,7 @@ export class FabricRuntimeState {
       identity,
       new StateStore(this.#mesh),
     );
-    await installBuiltin(createProviderComponent({
+    await builtins.install(createProviderComponent({
       provider: "schema",
       description: "Schema verification and workspace transactions",
       create: () => new SchemaProvider(this.#schema!),
@@ -622,7 +449,7 @@ export class FabricRuntimeState {
       onRequest: (intent) => void this.#publishCompactEvent("requested", intent),
       onCommit: (info) => void this.#publishCompactEvent(info.status, info),
     });
-    await installBuiltin(createProviderComponent({
+    await builtins.install(createProviderComponent({
       provider: "compact",
       description: "Host context compaction controller",
       create: () => new CompactProvider(this.#compact!),
@@ -914,46 +741,13 @@ export class FabricRuntimeState {
     }
     this.#lifecycle.start();
     this.#residency?.start();
-    await installBuiltin(createProviderComponent({
+    await builtins.install(createProviderComponent({
       provider: "agents",
       description: "Agents, actors, lifecycle delivery, and residency control",
       create: () => agentsProvider,
     }));
-    if (this.#config.memory.enabled) {
-      const sessionFile = context.sessionManager.getSessionFile();
-      const memoryContext: MemoryProviderContext = {
-        agentDir: resolveAgentDir(),
-        cwd: context.cwd,
-        config: this.#config.memory,
-        sessionId,
-        ...(sessionFile ? { sessionFile } : {}),
-        getLiveBranch: () => ({
-          entries: context.sessionManager.getBranch(),
-          leafId: context.sessionManager.getLeafId(),
-        }),
-      };
-      await installBuiltin(createProviderComponent({
-        provider: "memory",
-        description: "Session memory index and source hydration",
-        create: () => new MemoryProvider(memoryContext),
-      }));
-    } else {
-      this.#registry.markUnavailable(
-        "memory",
-        'disabled by configuration (memory.enabled=false); set "memory": { "enabled": true } in .pi/fabric.json or the agent fabric.json to enable memory.* actions',
-      );
-    }
-    const expectedBuiltinProviders = new Set<string>([
-      ...(effectiveFullCodeMode ? ["pi"] : []),
-      ...(capturedToolsProvider && !enforceSchema ? ["extensions"] : []),
-      "mcp",
-      ...(this.#config.mesh.enabled ? ["mesh", "state"] : []),
-      "schema",
-      "compact",
-      "agents",
-      ...(this.#config.memory.enabled ? ["memory"] : []),
-    ]);
-    builtinManifest.assertActive(expectedBuiltinProviders, this.#registry);
+    await builtins.memory(context, this.#config, sessionId);
+    builtins.assertActive(this.#config);
     for (const provider of this.#externalProviders.values()) {
       this.#registry.register(provider);
     }
@@ -1308,7 +1102,6 @@ export class FabricRuntimeState {
       await this.#participants?.close();
     }
     this.#registry = undefined;
-    this.#mcpProvider = undefined;
     this.#config = undefined;
     this.#execution = undefined;
     this.#agents = undefined;
@@ -1400,7 +1193,6 @@ export class FabricRuntimeState {
       await this.#participants?.close();
     }
     this.#registry = undefined;
-    this.#mcpProvider = undefined;
     this.#execution = undefined;
     this.#agents = undefined;
     this.#actors = undefined;

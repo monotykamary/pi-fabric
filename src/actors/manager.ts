@@ -1,11 +1,11 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
-import fs, { type FSWatcher } from "node:fs";
+import fs from "node:fs";
+import { ActorMeshMonitor } from "./mesh-monitor.js";
 import os from "node:os";
 import path from "node:path";
 import type { FabricCapabilityRequirement } from "../components/types.js";
 import type { FabricCapabilityViewLease } from "../core/action-registry.js";
-import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
   type FabricAgentRunner,
@@ -19,7 +19,7 @@ import type { FabricParticipantResidency } from "../topology/types.js";
 import { AgentManager } from "../agents/manager.js";
 import type { AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
 import { readJsonlPage } from "../log-tail.js";
-import { pruneActorRunArchives } from "../storage/retention.js";
+import { ActorLogStore, ACTOR_MESSAGE_ENVELOPE_BYTES, ACTOR_MESSAGE_HISTORY_LIMIT as MESSAGE_HISTORY_LIMIT } from "./log-store.js";
 import { FABRIC_ACTOR_HOST_EVENTS } from "./types.js";
 import type {
   FabricActorBindingScope,
@@ -41,6 +41,7 @@ import { isFabricThinking, type FabricThinking } from "../thinking.js";
 import { resolveActorDeliveryPolicy } from "./delivery-policy.js";
 import { evaluateActorValidWhile, validateActorValidWhile } from "./predicate.js";
 import { ActorBindingStore } from "./binding-store.js";
+import { ActorRegistryStore } from "./registry-store.js";
 
 export interface ActorMessageBindingOptions {
   /** Per-call values layered over this session binding. */
@@ -114,74 +115,9 @@ const MAIN_REVISION_EVENTS: ReadonlySet<FabricActorHostEvent> = new Set([
   "tool_error",
   "session_compact",
 ]);
-const MESSAGE_HISTORY_LIMIT = 100;
-const MESH_WATCH_RECONCILE_MS = 2_000;
-const ACTOR_REGISTRY_LOCK_TIMEOUT_MS = 5_000;
 const ORPHAN_ADOPTION_RETRY_MS = 30_000;
-const ACTOR_REGISTRY_STALE_LOCK_MS = 30_000;
 const RETENTION_SWEEP_INTERVAL_MS = 15 * 60 * 1_000;
 const RESIDENT_HOST_EVENT_TOPIC = "fabric.actor.host-event";
-const ACTOR_MESSAGE_ENVELOPE_BYTES = 4_096;
-const ACTOR_TRUNCATION_SUFFIX = "\n[actor message truncated]";
-
-const serializedBytes = (value: unknown): number =>
-  Buffer.byteLength(JSON.stringify(value), "utf8");
-
-const truncateUtf8 = (value: string, maxBytes: number, suffix = ""): string => {
-  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-  const boundedSuffix = Buffer.byteLength(suffix, "utf8") <= maxBytes
-    ? suffix
-    : truncateUtf8(suffix, maxBytes);
-  const available = Math.max(0, maxBytes - Buffer.byteLength(boundedSuffix, "utf8"));
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(value.slice(0, middle), "utf8") <= available) low = middle;
-    else high = middle - 1;
-  }
-  return `${value.slice(0, low)}${boundedSuffix}`;
-};
-
-const boundedActorText = (value: string, maxBytes: number): string => {
-  if (serializedBytes({ text: value }) <= maxBytes) return value;
-  const suffix = serializedBytes({ text: ACTOR_TRUNCATION_SUFFIX }) <= maxBytes
-    ? ACTOR_TRUNCATION_SUFFIX
-    : "";
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (serializedBytes({ text: `${value.slice(0, middle)}${suffix}` }) <= maxBytes) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return `${value.slice(0, low)}${suffix}`;
-};
-
-const boundedActorData = (data: unknown, maxBytes: number): unknown => {
-  let serialized: string;
-  try {
-    const encoded = JSON.stringify(data);
-    serialized = typeof encoded === "string" ? encoded : String(data);
-    if (serializedBytes({ data }) <= maxBytes) return data;
-  } catch {
-    serialized = String(data);
-  }
-  const originalBytes = Buffer.byteLength(serialized, "utf8");
-  let preview = truncateUtf8(serialized, Math.max(0, maxBytes - 256));
-  let bounded = { fabricTruncated: true, originalBytes, preview };
-  while (preview && serializedBytes({ data: bounded }) > maxBytes) {
-    preview = truncateUtf8(preview, Math.floor(Buffer.byteLength(preview, "utf8") / 2));
-    bounded = { fabricTruncated: true, originalBytes, preview };
-  }
-  return serializedBytes({ data: bounded }) <= maxBytes
-    ? bounded
-    : { fabricTruncated: true, originalBytes };
-};
-
 const normalizeCapabilityRequirements = (
   requirements: readonly (string | FabricCapabilityRequirement)[] = [],
 ): FabricCapabilityRequirement[] => {
@@ -199,18 +135,6 @@ const normalizeCapabilityRequirements = (
   return [...normalized]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([ref, optional]) => ({ ref, ...(optional ? { optional: true } : {}) }));
-};
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-const errorCode = (error: unknown): string | undefined =>
-  error instanceof Error && "code" in error
-    ? String((error as NodeJS.ErrnoException).code)
-    : undefined;
-
-const atomicWrite = (filePath: string, value: unknown): void => {
-  writeJsonAtomic(filePath, value, { space: 2 });
 };
 
 const readRunRecord = (filePath: string): AgentRunRecord | undefined => {
@@ -269,7 +193,7 @@ export class ActorManager {
   readonly #actors = new Map<string, ManagedActor>();
   readonly #actorRoot: string;
   readonly #actorScope: import("./types.js").FabricActorStorageScope;
-  readonly #registryPath: string;
+  readonly #registry: ActorRegistryStore;
   readonly #persistent: boolean;
   readonly #bindings: ActorBindingStore;
   readonly #mainAgent: FabricMainAgentTarget | undefined;
@@ -278,9 +202,9 @@ export class ActorManager {
   readonly #lineageAlive: ((rootId: string) => boolean) | undefined;
   readonly #claimResidency: FabricParticipantResidency | undefined;
   readonly #rootId: string;
-  readonly #meshCursorPath: string | undefined;
+  readonly #meshMonitor: ActorMeshMonitor;
   readonly #relayParticipantSteering: boolean;
-  readonly #retention: FabricRetentionConfig;
+  readonly #logs: ActorLogStore;
   readonly #acquireCapabilityView:
     | ((
         requirements: readonly FabricCapabilityRequirement[],
@@ -298,12 +222,7 @@ export class ActorManager {
   readonly #adoptionPending = new Set<string>();
   readonly #adoptionGraceMs: number;
   readonly #listeners = new Set<() => void>();
-  #pollTimer: NodeJS.Timeout | undefined;
   #retentionTimer: NodeJS.Timeout | undefined;
-  #meshWatcher: FSWatcher | undefined;
-  #meshOffset: number;
-  #meshPollScheduled = false;
-  #polling = false;
   #closing = false;
   // Stop-the-world gate armed by haltAll() (ESC): while true, host-event and
   // mesh dispatch are frozen so interrupted actors are not re-armed by the
@@ -354,25 +273,40 @@ export class ActorManager {
     this.#adoptionGraceMs = options.adoptionGraceMs ?? ORPHAN_ADOPTION_RETRY_MS;
     this.#claimResidency = options.claimResidency;
     this.#rootId = options.rootId ?? identity.id;
-    this.#meshCursorPath = options.meshCursorPath;
     this.#relayParticipantSteering = options.relayParticipantSteering ?? true;
-    this.#registryPath = path.join(this.#actorRoot, "actors.json");
+    this.#logs = new ActorLogStore(
+      mesh,
+      meshConfig,
+      options.retention ?? DEFAULT_FABRIC_CONFIG.retention,
+    );
+    this.#registry = new ActorRegistryStore(this.#actorRoot);
     this.#bindings = new ActorBindingStore(
       sessionId,
       this.#persistent && meshConfig.enabled ? this.#actorRoot : undefined,
     );
     if (this.#persistent && meshConfig.enabled) this.#loadActors();
-    this.#registryFingerprint = this.#currentRegistryFingerprint();
+    this.#registryFingerprint = this.#registry.fingerprint();
     for (const actor of this.#actors.values()) {
       this.#ownership.set(actor.id, this.#ownershipDecision(actor.id));
     }
-    this.#retention = options.retention ?? DEFAULT_FABRIC_CONFIG.retention;
     this.#acquireCapabilityView = options.acquireCapabilityView;
     this.#sweepRetainedRuns();
     this.#retentionTimer = setInterval(() => this.#sweepRetainedRuns(), RETENTION_SWEEP_INTERVAL_MS);
     this.#retentionTimer.unref();
-    this.#meshOffset = this.#readMeshCursor() ?? mesh.latestOffset();
-    this.#startMeshMonitor();
+    this.#meshMonitor = new ActorMeshMonitor(mesh, meshConfig, {
+      cursorPath: options.meshCursorPath,
+      beforePoll: () => {
+        this.#syncActorsFromRegistry();
+        this.#refreshOwnership();
+        // Preserve deferred events while halted; fencing remains manager-owned.
+        return !this.#halted;
+      },
+      onEvent: (event) => {
+        if (event.topic === "fabric.steer") this.#relaySteer(event);
+        else if (!event.topic.startsWith("fabric.control.")) this.#dispatchMeshEvent(event);
+      },
+    });
+    this.#meshMonitor.start();
   }
 
   subscribe(listener: () => void): () => void {
@@ -907,7 +841,7 @@ export class ActorManager {
       sessionHasMore: sessionPage.hasMore,
       ...(sessionPage.before !== undefined ? { sessionBefore: sessionPage.before } : {}),
       ...(run ? { run } : {}),
-      retainedRuns: this.#retainedRunIds(actor),
+      retainedRuns: this.#logs.retainedRunIds(actor),
     };
   }
 
@@ -1045,30 +979,6 @@ export class ActorManager {
     });
   }
 
-  #readMeshCursor(): number | undefined {
-    if (!this.#meshCursorPath) return undefined;
-    try {
-      const value = JSON.parse(fs.readFileSync(this.#meshCursorPath, "utf8")) as {
-        format?: unknown;
-        cursor?: unknown;
-      };
-      return value.format === 1 && typeof value.cursor === "number" && value.cursor >= 0
-        ? value.cursor
-        : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  #writeMeshCursor(): void {
-    if (!this.#meshCursorPath) return;
-    try {
-      atomicWrite(this.#meshCursorPath, { format: 1, cursor: this.#meshOffset });
-    } catch {
-      // Cursor persistence is best-effort; replay resumes from the latest safe cursor.
-    }
-  }
-
   #beginHostEvent(event: FabricActorHostEvent, idle: boolean): boolean {
     if (this.#closing || !this.meshConfig.enabled) return false;
     // Streaming/message/provider hooks are frequent. The actor registry watcher
@@ -1085,7 +995,7 @@ export class ActorManager {
     // before dispatching so input-subscribed actors receive this event.
     if (event === "input" && this.#halted) {
       this.#halted = false;
-      this.#scheduleMeshPoll();
+      this.#meshMonitor.schedule();
     }
     if (this.#halted) return false;
     if (MAIN_REVISION_EVENTS.has(event)) this.#mainRevision++;
@@ -1191,12 +1101,9 @@ export class ActorManager {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
-    if (this.#pollTimer) clearInterval(this.#pollTimer);
-    this.#pollTimer = undefined;
+    this.#meshMonitor.close();
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
-    this.#meshWatcher?.close();
-    this.#meshWatcher = undefined;
     this.#listeners.clear();
     if (this.#persistent) {
       this.#refreshOwnership();
@@ -1703,72 +1610,6 @@ export class ActorManager {
     item.reject?.(new Error(`Fabric actor activation invalidated: ${reason}`));
   }
 
-  #startMeshMonitor(): void {
-    if (!this.meshConfig.enabled || this.#closing) return;
-    if (process.platform === "win32") {
-      this.#startPollTimer(this.meshConfig.actorPollMs);
-      this.#scheduleMeshPoll();
-      return;
-    }
-    try {
-      const watcher = fs.watch(this.mesh.root, { persistent: false }, (_event, filename) => {
-        if (filename !== null && path.basename(filename.toString()) !== "events.jsonl") return;
-        this.#scheduleMeshPoll();
-      });
-      this.#meshWatcher = watcher;
-      watcher.on("error", () => this.#fallBackToMeshPolling(watcher));
-      this.#startPollTimer(Math.max(MESH_WATCH_RECONCILE_MS, this.meshConfig.actorPollMs));
-    } catch {
-      this.#startPollTimer(this.meshConfig.actorPollMs);
-    }
-    this.#scheduleMeshPoll();
-  }
-
-  #fallBackToMeshPolling(watcher: FSWatcher): void {
-    if (this.#closing || this.#meshWatcher !== watcher) return;
-    watcher.close();
-    this.#meshWatcher = undefined;
-    this.#startPollTimer(this.meshConfig.actorPollMs);
-    this.#scheduleMeshPoll();
-  }
-
-  #startPollTimer(delay: number): void {
-    if (this.#pollTimer) clearInterval(this.#pollTimer);
-    this.#pollTimer = setInterval(() => this.#scheduleMeshPoll(), delay);
-    this.#pollTimer.unref();
-  }
-
-  #scheduleMeshPoll(): void {
-    if (this.#meshPollScheduled || this.#closing || !this.meshConfig.enabled) return;
-    this.#meshPollScheduled = true;
-    queueMicrotask(() => {
-      this.#meshPollScheduled = false;
-      if (this.#closing) return;
-      void this.#pollMesh().catch(() => undefined);
-    });
-  }
-
-  async #pollMesh(): Promise<void> {
-    if (this.#polling || this.#closing || !this.meshConfig.enabled) return;
-    this.#syncActorsFromRegistry();
-    this.#refreshOwnership();
-    // Stop-the-world: do not consume mesh events while halted, so deferred
-    // events are preserved and dispatched after the user resumes.
-    if (this.#halted) return;
-    this.#polling = true;
-    try {
-      const tail = this.mesh.tail(this.#meshOffset, this.meshConfig.maxReadEvents);
-      this.#meshOffset = tail.nextOffset;
-      for (const event of tail.events) {
-        if (event.topic === "fabric.steer") this.#relaySteer(event);
-        else if (!event.topic.startsWith("fabric.control.")) this.#dispatchMeshEvent(event);
-      }
-      this.#writeMeshCursor();
-    } finally {
-      this.#polling = false;
-    }
-  }
-
   /**
    * Receive legacy fabric.steer events from older Fabric writers. This path is
    * intentionally best-effort; current writers use acknowledged owner-addressed
@@ -1832,98 +1673,19 @@ export class ActorManager {
   }
 
   async #retainRunLog(actor: ManagedActor, runId: string): Promise<void> {
-    const runDirectory = this.agents.runDirectory(runId);
-    if (!runDirectory || !fs.existsSync(runDirectory)) return;
-    const dest = path.join(path.dirname(actor.sessionFile), "runs", runId);
-    fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
-    for (const file of ["events.jsonl", "status.json", "task.txt"]) {
-      const src = path.join(runDirectory, file);
-      if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dest, file));
-    }
-    const nested = path.join(runDirectory, "nested");
-    if (fs.existsSync(nested)) {
-      try {
-        fs.cpSync(nested, path.join(dest, "nested"), { recursive: true });
-      } catch {
-        /* best-effort recursive run retention */
-      }
-    }
-    this.#pruneRetainedRuns(actor);
-  }
-
-  #pruneRetainedRuns(actor: ManagedActor, now = Date.now()): void {
-    pruneActorRunArchives({
-      runsDirectory: path.join(path.dirname(actor.sessionFile), "runs"),
-      ...(actor.lastRunId ? { latestRunId: actor.lastRunId } : {}),
-      retentionMs: this.#retention.actorRunArchiveMs,
-      now,
-    });
+    await this.#logs.retainRun(actor, runId, this.agents.runDirectory(runId));
   }
 
   #sweepRetainedRuns(now = Date.now()): void {
     if (this.#closing) return;
     this.#refreshOwnership();
     for (const actor of this.#actors.values()) {
-      if (this.#canManage(actor.id)) this.#pruneRetainedRuns(actor, now);
-    }
-  }
-
-  #retainedRunIds(actor: ManagedActor): string[] {
-    const runsDir = path.join(path.dirname(actor.sessionFile), "runs");
-    try {
-      return fs.readdirSync(runsDir).sort();
-    } catch {
-      return [];
+      if (this.#canManage(actor.id)) this.#logs.pruneRuns(actor, now);
     }
   }
 
   #recordMessage(actor: ManagedActor, message: FabricActorMessage): void {
-    let bounded = structuredClone(message);
-    const maxPayloadBytes = Math.max(1, this.mesh.maxEventBytes - ACTOR_MESSAGE_ENVELOPE_BYTES);
-    const fixed = structuredClone(bounded);
-    delete fixed.text;
-    delete fixed.data;
-    const contentBytes = Math.max(1, maxPayloadBytes - serializedBytes(fixed) - 128);
-    const hasText = Boolean(bounded.text);
-    const hasData = bounded.data !== undefined;
-    const textBytes = hasText && hasData ? Math.floor(contentBytes / 2) : contentBytes;
-    const dataBytes = hasText && hasData ? contentBytes - textBytes : contentBytes;
-    if (bounded.text) {
-      const contextBounded = bounded.text.length > this.meshConfig.eventContextChars
-        ? `${bounded.text.slice(0, this.meshConfig.eventContextChars)}${ACTOR_TRUNCATION_SUFFIX}`
-        : bounded.text;
-      bounded.text = boundedActorText(contextBounded, textBytes);
-    }
-    if (bounded.data !== undefined) {
-      bounded.data = boundedActorData(bounded.data, dataBytes);
-    }
-    if (serializedBytes(bounded) > maxPayloadBytes) {
-      delete bounded.data;
-      if (bounded.text) {
-        bounded.text = boundedActorText(bounded.text, contentBytes);
-      }
-    }
-    if (serializedBytes(bounded) > maxPayloadBytes) {
-      bounded = {
-        id: bounded.id,
-        actorId: bounded.actorId,
-        actorName: bounded.actorName,
-        direction: bounded.direction,
-        source: boundedActorText(bounded.source, 1_024),
-        createdAt: bounded.createdAt,
-        ...(bounded.action ? { action: bounded.action } : {}),
-        ...(bounded.runId ? { runId: bounded.runId } : {}),
-        error: "Actor message content exceeded the mesh event limit",
-      };
-    }
-    for (const key of Object.keys(message)) {
-      delete (message as unknown as Record<string, unknown>)[key];
-    }
-    Object.assign(message, bounded);
-    actor.messages.push(bounded);
-    if (actor.messages.length > MESSAGE_HISTORY_LIMIT) {
-      actor.messages.splice(0, actor.messages.length - MESSAGE_HISTORY_LIMIT);
-    }
+    this.#logs.recordMessage(actor.messages, message);
   }
 
   async #publishPresence(actor: ManagedActor): Promise<void> {
@@ -1999,95 +1761,17 @@ export class ActorManager {
     };
   }
 
-  #registryRecords(): Array<Record<string, unknown> & { id: string }> {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.#registryPath, "utf8")) as {
-        actors?: unknown;
-      };
-      if (!Array.isArray(parsed.actors)) return [];
-      return parsed.actors.flatMap((record) =>
-        typeof record === "object" &&
-        record !== null &&
-        !Array.isArray(record) &&
-        typeof (record as { id?: unknown }).id === "string"
-          ? [record as Record<string, unknown> & { id: string }]
-          : [],
-      );
-    } catch {
-      return [];
-    }
-  }
-
-  async #withRegistryLock<T>(operation: () => T): Promise<T> {
-    const lockPath = `${this.#registryPath}.lock`;
-    const ownerPath = path.join(lockPath, "owner");
-    const deadline = Date.now() + ACTOR_REGISTRY_LOCK_TIMEOUT_MS;
-    const token = randomUUID();
-    const processAlive = (pid: number): boolean => {
-      if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    fs.mkdirSync(this.#actorRoot, { recursive: true, mode: 0o700 });
-    while (true) {
-      try {
-        fs.mkdirSync(lockPath, { mode: 0o700 });
-        fs.writeFileSync(ownerPath, `${token}\n${process.pid}\n${Date.now()}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        break;
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-        try {
-          const firstOwner = fs.readFileSync(ownerPath, "utf8");
-          const [, pidText, createdText] = firstOwner.trim().split("\n");
-          const stale = Date.now() - Number(createdText) > ACTOR_REGISTRY_STALE_LOCK_MS;
-          if (stale && !processAlive(Number(pidText))) {
-            const secondOwner = fs.readFileSync(ownerPath, "utf8");
-            if (secondOwner === firstOwner) {
-              fs.rmSync(lockPath, { recursive: true, force: true });
-              continue;
-            }
-          }
-        } catch {
-          // Lock creation or stale recovery raced; retry until the deadline.
-        }
-        if (Date.now() >= deadline) {
-          throw new Error("Timed out waiting for the Fabric actor registry lock");
-        }
-        await delay(10);
-      }
-    }
-    try {
-      return operation();
-    } finally {
-      try {
-        const owner = fs.readFileSync(ownerPath, "utf8");
-        if (owner.startsWith(`${token}\n`)) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-        }
-      } catch {
-        // A recovering process already removed this lock.
-      }
-    }
-  }
-
   async #saveActors(removedIds: ReadonlySet<string> = new Set()): Promise<void> {
     if (!this.#persistent || !this.meshConfig.enabled) return;
-    await this.#withRegistryLock(() => {
+    await this.#registry.withLock(() => {
       const owned = [...this.#actors.values()].filter((actor) =>
         this.#ownershipDecision(actor.id),
       );
       const replaced = new Set([...removedIds, ...owned.map((actor) => actor.id)]);
-      const preserved = this.#registryRecords().filter((record) => !replaced.has(record.id));
+      const preserved = this.#registry.records().filter((record) => !replaced.has(record.id));
       const actors = [...preserved, ...owned.map((actor) => this.#serializedActor(actor))];
-      atomicWrite(this.#registryPath, { format: 1, actors });
-      this.#registryFingerprint = this.#currentRegistryFingerprint();
+      this.#registry.write(actors);
+      this.#registryFingerprint = this.#registry.fingerprint();
       for (const id of removedIds) this.#persistedRoots.delete(id);
       for (const actor of owned) this.#persistedRoots.set(actor.id, actor.rootId);
       for (const record of preserved) {
@@ -2100,18 +1784,9 @@ export class ActorManager {
     this.#syncActorsFromRegistry();
   }
 
-  #currentRegistryFingerprint(): string | undefined {
-    try {
-      const stat = fs.statSync(this.#registryPath);
-      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-    } catch {
-      return undefined;
-    }
-  }
-
   #syncActorsFromRegistry(): void {
     if (!this.#persistent || this.#closing || this.#reloadingOwnership) return;
-    const fingerprint = this.#currentRegistryFingerprint();
+    const fingerprint = this.#registry.fingerprint();
     if (!fingerprint || fingerprint === this.#registryFingerprint) return;
     this.#registryFingerprint = fingerprint;
     const ownsAny = [...this.#actors.keys()].some((id) => this.#ownershipDecision(id));
@@ -2149,7 +1824,7 @@ export class ActorManager {
     let added = 0;
     let parsed: unknown;
     try {
-      parsed = JSON.parse(fs.readFileSync(this.#registryPath, "utf8"));
+      parsed = this.#registry.read();
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
       return;
@@ -2437,8 +2112,8 @@ export class ActorManager {
     this.#adoptionPending.add(actor.id);
     try {
       const expectedRootId = actor.rootId;
-      const adopted = await this.#withRegistryLock(() => {
-        const records = this.#registryRecords();
+      const adopted = await this.#registry.withLock(() => {
+        const records = this.#registry.records();
         const current = records.find((record) => record.id === actor.id);
         // A racing adopter rewrote the lineage since we loaded it; they win.
         if (!current || current.rootId !== expectedRootId) return false;
@@ -2460,17 +2135,14 @@ export class ActorManager {
         actor.adoptedAt = Date.now();
         actor.updatedAt = Date.now();
         const preserved = records.filter((record) => record.id !== actor.id);
-        atomicWrite(this.#registryPath, {
-          format: 1,
-          actors: [...preserved, this.#serializedActor(actor)],
-        });
-        this.#registryFingerprint = this.#currentRegistryFingerprint();
+        this.#registry.write([...preserved, this.#serializedActor(actor)]);
+        this.#registryFingerprint = this.#registry.fingerprint();
         return true;
       });
       if (adopted) {
         this.#persistedRoots.set(actor.id, this.#rootId);
       } else {
-        const current = this.#registryRecords().find((record) => record.id === actor.id);
+        const current = this.#registry.records().find((record) => record.id === actor.id);
         if (!current) {
           this.#persistedRoots.delete(actor.id);
         } else if (typeof current.rootId === "string" && current.rootId !== this.#rootId) {

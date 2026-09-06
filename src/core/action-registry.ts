@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { Value } from "typebox/value";
+import { repairCatalogInput, validateCatalogArgs, validationMessage } from "./action-arguments.js";
+import {
+  MAX_AUDIT_VALUE_CHARS,
+  boundedPreviewValue,
+  boundedResult,
+  failedResultError,
+  failedResultOutcome,
+  previewArgs,
+  previewResult,
+} from "./action-result.js";
 import { runAbortable, settleWithin } from "../async-settlement.js";
 import type {
   FabricCapabilityRequirement,
@@ -146,111 +155,6 @@ export const NESTED_TOOL_CALL_ID_PREFIX = FABRIC_NESTED_TOOL_CALL_ID_PREFIX;
 
 const providerNamePattern = /^[a-z][a-z0-9_-]*$/;
 
-const PREVIEW_ARG_CHARS = 2_000;
-const WRITE_PREVIEW_CONTENT_CHARS = 16_000;
-const PREVIEW_ARG_KEYS = 32;
-const PREVIEW_RESULT_CHARS = 16_000;
-const PREVIEW_NESTED_CHARS = 16_000;
-const MAX_AUDIT_VALUE_CHARS = 64_000;
-const MAX_VALIDATION_MESSAGE_CHARS = 2_000;
-
-const truncateString = (value: string, max: number): string =>
-  value.length <= max ? value : `${value.slice(0, max)}…`;
-
-const boundedPreviewValue = (value: unknown, maxChars: number): unknown => {
-  if (value === undefined || value === null || typeof value !== "object") return value;
-  try {
-    const serialized = JSON.stringify(value);
-    if (serialized.length <= maxChars) return JSON.parse(serialized) as unknown;
-    return {
-      fabricTruncated: true,
-      originalChars: serialized.length,
-      preview: serialized.slice(0, Math.max(1, maxChars - 100)),
-    };
-  } catch {
-    return truncateString(String(value), maxChars);
-  }
-};
-
-const previewArgs = (ref: string, args: Record<string, unknown>): Record<string, unknown> => {
-  const out: Record<string, unknown> = {};
-  let count = 0;
-  for (const [key, value] of Object.entries(args)) {
-    if (count++ >= PREVIEW_ARG_KEYS) break;
-    const maxChars =
-      ref === "pi.write" && key === "content"
-        ? WRITE_PREVIEW_CONTENT_CHARS
-        : PREVIEW_ARG_CHARS;
-    out[key] =
-      typeof value === "string"
-        ? truncateString(value, maxChars)
-        : boundedPreviewValue(value, PREVIEW_NESTED_CHARS);
-  }
-  return out;
-};
-
-const previewResult = (value: unknown): unknown => {
-  if (typeof value === "string") return truncateString(value, PREVIEW_RESULT_CHARS);
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    const out: Record<string, unknown> = {};
-    let count = 0;
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (count++ >= PREVIEW_ARG_KEYS) break;
-      out[key] =
-        typeof val === "string"
-          ? truncateString(val, PREVIEW_RESULT_CHARS)
-          : boundedPreviewValue(val, PREVIEW_NESTED_CHARS);
-    }
-    return out;
-  }
-  return boundedPreviewValue(value, PREVIEW_RESULT_CHARS);
-};
-
-const failedResultError = (value: unknown): string | undefined => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const status = record.status;
-  if (status !== "failed" && status !== "stopped" && status !== "timed_out") return undefined;
-  const error = typeof record.error === "string" ? record.error.trim() : "";
-  return error ? truncateString(error, PREVIEW_RESULT_CHARS) : `Fabric action returned ${status}`;
-};
-
-const failedResultOutcome = (value: unknown): "failed" | "aborted" | "timed_out" => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return "failed";
-  const status = (value as Record<string, unknown>).status;
-  return status === "timed_out" ? "timed_out" : status === "stopped" ? "aborted" : "failed";
-};
-
-const boundedResult = (
-  value: unknown,
-  maxChars: number,
-): { value: unknown; chars: number; truncated: boolean } => {
-  let serialized: string;
-  try {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined && value !== undefined) {
-      throw new Error(`unsupported result type: ${typeof value}`);
-    }
-    serialized = encoded ?? "null";
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Fabric action returned a non-JSON-serializable value: ${message}`);
-  }
-  if (serialized.length <= maxChars) {
-    return { value, chars: serialized.length, truncated: false };
-  }
-  const previewChars = Math.max(1, maxChars - 200);
-  return {
-    value: {
-      fabricTruncated: true,
-      originalChars: serialized.length,
-      preview: serialized.slice(0, previewChars),
-    },
-    chars: serialized.length,
-    truncated: true,
-  };
-};
-
 const resolveDescriptor = (
   provider: FabricProvider,
   descriptor: FabricActionDescriptor,
@@ -300,102 +204,6 @@ const conflictBetween = (
   if (overlap.length === 0) return undefined;
   if (left.ordering === "commutative" && right.ordering === "commutative") return undefined;
   return { resources: overlap, reason: "shared_resource" };
-};
-
-// TypeBox reports additionalProperties failures against the object root
-// without naming the offending keys; name them so a rejected near-miss call
-// is actionable (e.g. a before/after guess on memory.expand surfaces as
-// "/before: must not have additional properties").
-const unexpectedKeys = (
-  schema: Record<string, unknown>,
-  value: Record<string, unknown>,
-): string[] => {
-  if ((schema as { type?: unknown }).type !== "object") return [];
-  if ((schema as { additionalProperties?: unknown }).additionalProperties !== false) return [];
-  if ((schema as { patternProperties?: unknown }).patternProperties !== undefined) return [];
-  const properties = (schema as { properties?: Record<string, unknown> }).properties;
-  if (!properties) return [];
-  return Object.keys(value).filter((key) => !(key in properties));
-};
-
-const validationMessage = (
-  schema: Record<string, unknown>,
-  value: Record<string, unknown>,
-): string | undefined => {
-  try {
-    if (Value.Check(schema, value)) return undefined;
-    const messages = [...Value.Errors(schema, value)]
-      .slice(0, 5)
-      .map((error) => {
-        // Prefix nested failures with their property path.
-        const at = (error as { path?: unknown }).path;
-        return typeof at === "string" && at !== "" && at !== "/"
-          ? `${at}: ${error.message}`
-          : error.message;
-      });
-    for (const key of unexpectedKeys(schema, value).slice(0, 5)) {
-      messages.push(`/${key}: must not have additional properties`);
-    }
-    return truncateString(
-      messages.join("; ") || "Schema validation failed",
-      MAX_VALIDATION_MESSAGE_CHARS,
-    );
-  } catch {
-    return "Schema validator failed";
-  }
-};
-
-const declaredPropertyNames = (schema: Record<string, unknown>): string[] => {
-  const properties = (schema as { properties?: Record<string, unknown> }).properties;
-  return properties ? Object.keys(properties) : [];
-};
-
-const repairCatalogInput = (
-  ref: string,
-  schema: Record<string, unknown>,
-  args: Record<string, unknown>,
-): { args: Record<string, unknown>; observedUnexpected: string | undefined } => {
-  const extras = unexpectedKeys(schema, args).sort();
-  const observedUnexpected = extras.length > 0 ? extras.join("\0") : undefined;
-  if (extras.length > 0) {
-    getActiveRepairCompiler()?.observeInvalidArgs(
-      ref,
-      args,
-      declaredPropertyNames(schema),
-      extras.join(","),
-      { countError: false, extraKeys: extras },
-    );
-  }
-  return {
-    args: applyActiveArgRepairs(ref, args, schema),
-    observedUnexpected,
-  };
-};
-
-const validateCatalogArgs = (
-  ref: string,
-  schema: Record<string, unknown>,
-  args: Record<string, unknown>,
-  observedUnexpected: string | undefined,
-): { args: Record<string, unknown>; invalid?: string } => {
-  const compiler = getActiveRepairCompiler();
-  const first = applyActiveArgRepairs(ref, args, schema);
-  const invalid = validationMessage(schema, first);
-  if (!invalid) return { args: first };
-  const extras = unexpectedKeys(schema, first).sort();
-  if (observedUnexpected === undefined || extras.join("\0") !== observedUnexpected) {
-    compiler?.observeInvalidArgs(
-      ref,
-      first,
-      declaredPropertyNames(schema),
-      invalid,
-      { countError: false, extraKeys: extras },
-    );
-  }
-  const second = applyActiveArgRepairs(ref, first, schema);
-  const stillInvalid = validationMessage(schema, second);
-  if (stillInvalid) compiler?.recordInvocationError();
-  return stillInvalid ? { args: second, invalid: stillInvalid } : { args: second };
 };
 
 export class ActionRegistry {

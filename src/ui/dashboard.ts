@@ -2,16 +2,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { CodePreviewSettings } from "./code-preview.js";
 import type { Component, Focusable, TUI } from "@earendil-works/pi-tui";
 import {
-  Editor,
   getKeybindings,
   Key,
   matchesKey,
   truncateToWidth,
-  type EditorTheme,
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { FabricActivityRun } from "../activity/types.js";
-import type { MeshEvent } from "../mesh/store.js";
 import type { FabricAgentMessageDelivery } from "../main-agent.js";
 import type {
   FabricActorBindingScope,
@@ -38,11 +35,9 @@ import {
   DashboardDetailRenderer,
   type FabricTranscriptTarget,
 } from "./dashboard-detail.js";
-import {
-  directionalGraphTarget,
-  renderFabricTopologyPanel,
-  type FabricGraphPoint,
-} from "./dashboard-fabric-graph.js";
+import { renderFabricTopologyPanel } from "./dashboard-fabric-graph.js";
+import { DashboardGraphController } from "./dashboard-graph-controller.js";
+import { DashboardModalController, type DashboardModalContent } from "./dashboard-modal-controller.js";
 import { FabricHostEventSelector } from "./fabric-host-event-selector.js";
 import { FabricActorDeliverySelector } from "./fabric-actor-delivery-selector.js";
 import { FabricActorToolSelector } from "./fabric-actor-tool-selector.js";
@@ -60,22 +55,10 @@ import { INHERIT_VALUE, type ModelSource } from "./model-picker.js";
 import {
   buildProjectMeshTopology,
   type FabricProjectMeshModel,
-  type FabricProjectMeshRoute,
 } from "./topology.js";
 import type { FabricAgentTranscript } from "./transcript.js";
 import type { FabricDashboardSnapshot, FabricUiActor, FabricUiAgent } from "./types.js";
 import { isActiveStatus } from "./types.js";
-
-const editorTheme = (theme: Theme): EditorTheme => ({
-  borderColor: (value: string) => theme.fg("borderMuted", value),
-  selectList: {
-    selectedPrefix: (text: string) => theme.fg("accent", text),
-    selectedText: (text: string) => theme.fg("accent", text),
-    description: (text: string) => theme.fg("muted", text),
-    scrollInfo: (text: string) => theme.fg("muted", text),
-    noMatch: (text: string) => theme.fg("muted", text),
-  },
-});
 
 const DASHBOARD_OVERLAY_HEIGHT_PERCENT = 90;
 const DASHBOARD_OVERLAY_VERTICAL_MARGIN = 1;
@@ -104,22 +87,7 @@ export class FabricDashboard implements Component, Focusable {
   focused = false;
   private pane: Pane = "phases";
   private overviewView: OverviewView = "activity";
-  private graphPositions = new Map<string, FabricGraphPoint>();
-  private graphCamera: FabricGraphPoint = { x: 0, y: 0 };
-  private graphCameraTarget: FabricGraphPoint = { x: 0, y: 0 };
-  private graphVelocity: FabricGraphPoint = { x: 0, y: 0 };
-  private graphCameraInitialized = false;
-  private graphAnimation: ReturnType<typeof setInterval> | undefined;
-  private graphAnimationAt = 0;
-  private graphEffectsAnimation: ReturnType<typeof setInterval> | undefined;
-  private graphReducedMotion = false;
-  private graphShowHistory = false;
-  private graphReplayIndex: number | undefined;
-  private graphReplayPlaying = false;
-  private graphReplaySpeed = 1;
-  private graphReplayAdvancedAt = 0;
-  private graphReplayLength = 0;
-  private graphReplayLabel: string | undefined;
+  private readonly graph = new DashboardGraphController(() => this.tui.requestRender());
   private phaseIndex = 0;
   private entityIndex = 0;
   private runIndex = 0;
@@ -141,29 +109,8 @@ export class FabricDashboard implements Component, Focusable {
   private transcriptFollowing = true;
   private readonly detailRenderer: DashboardDetailRenderer;
   private readonly highlightInvalidate = (): void => this.tui.requestRender();
-  private mode:
-    | "overview"
-    | "detail"
-    | "modelPicker"
-    | "thinkingPicker"
-    | "deliveryPicker"
-    | "eventsPicker"
-    | "toolsPicker"
-    | "instructionsEditor"
-    | "agentMessageEditor"
-    | "help" = "overview";
-  private picker:
-    | FabricModelSelector
-    | FabricThinkingSelector
-    | FabricActorDeliverySelector
-    | FabricHostEventSelector
-    | FabricActorToolSelector
-    | undefined;
-  private editor: Editor | undefined;
-  private editorActorName: string | undefined;
-  private agentMessageTarget:
-    | (FabricDashboardMessageTarget & { delivery: FabricAgentMessageDelivery })
-    | undefined;
+  private mode: "overview" | "detail" | "help" = "overview";
+  private readonly modal: DashboardModalController;
   private pendingStop: { id: string; expiresAt: number } | undefined;
   private readonly modelSource: ModelSource | undefined;
   private readonly claudeModelSource: ModelSource | undefined;
@@ -224,7 +171,6 @@ export class FabricDashboard implements Component, Focusable {
   private readonly onRemoveGlobalActor: ((globalActorId: string) => void) | undefined;
   private readonly codePreviewSettings: CodePreviewSettings | undefined;
   private readonly keybindings: FabricDashboardKeybindings | undefined;
-  private pickerActorName: string | undefined;
 
   constructor(
     readonly tui: TUI,
@@ -288,6 +234,7 @@ export class FabricDashboard implements Component, Focusable {
     } = {},
   ) {
     this.focused = true;
+    this.modal = new DashboardModalController(tui, theme);
     this.modelSource = options.modelSource;
     this.codePreviewSettings = options.codePreviewSettings;
     this.keybindings = options.keybindings;
@@ -335,36 +282,7 @@ export class FabricDashboard implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
-    if (this.mode === "agentMessageEditor" && this.editor) {
-      if (getKeybindings().matches(data, "tui.select.cancel")) {
-        this.closeAgentMessageEditor();
-      } else {
-        this.editor.handleInput(data);
-      }
-      this.tui.requestRender();
-      return;
-    }
-    if (this.mode === "instructionsEditor" && this.editor) {
-      if (getKeybindings().matches(data, "tui.select.cancel")) {
-        this.closeInstructionsEditor();
-      } else {
-        this.editor.handleInput(data);
-      }
-      this.tui.requestRender();
-      return;
-    }
-    if (
-      (this.mode === "modelPicker" ||
-        this.mode === "thinkingPicker" ||
-        this.mode === "deliveryPicker" ||
-        this.mode === "eventsPicker" ||
-        this.mode === "toolsPicker") &&
-      this.picker
-    ) {
-      this.picker.handleInput(data);
-      this.tui.requestRender();
-      return;
-    }
+    if (this.modal.handleInput(data)) return;
 
     const snapshot = this.snapshot();
     const run = this.selectRun(snapshot);
@@ -563,8 +481,8 @@ export class FabricDashboard implements Component, Focusable {
       const nextOverview: OverviewView = data === "1" ? "activity" : "topology";
       if (nextOverview !== this.overviewView) {
         if (nextOverview === "activity") {
-          this.stopGraphAnimation();
-          this.stopGraphEffectsAnimation();
+          this.graph.stopCameraAnimation();
+          this.graph.stopEffectsAnimation();
         }
         this.overviewView = nextOverview;
         this.pane = nextOverview === "activity" ? "phases" : "entities";
@@ -584,38 +502,33 @@ export class FabricDashboard implements Component, Focusable {
         return;
       }
     } else if (this.overviewView === "topology" && data === "r") {
-      this.toggleGraphReplay(snapshot, projectMesh);
-      this.startGraphEffectsAnimation();
+      this.graph.toggleReplay(snapshot.events, (projectMesh ?? this.projectMesh(snapshot))?.routes ?? []);
+      this.graph.startEffectsAnimation();
       this.tui.requestRender();
       return;
     } else if (
       this.overviewView === "topology" &&
-      this.graphReplayIndex !== undefined &&
+      this.graph.replayIndex !== undefined &&
       data === " "
     ) {
-      this.graphReplayPlaying = !this.graphReplayPlaying;
-      this.graphReplayAdvancedAt = Date.now();
-      this.startGraphEffectsAnimation();
+      this.graph.togglePlayback();
+      this.graph.startEffectsAnimation();
       this.tui.requestRender();
       return;
     } else if (
       this.overviewView === "topology" &&
-      this.graphReplayIndex !== undefined &&
+      this.graph.replayIndex !== undefined &&
       (matchesKey(data, Key.left) || matchesKey(data, Key.right))
     ) {
-      this.stepGraphReplay(matchesKey(data, Key.left) ? -1 : 1);
+      this.graph.stepReplay(matchesKey(data, Key.left) ? -1 : 1);
       this.tui.requestRender();
       return;
     } else if (this.overviewView === "topology" && (data === "+" || data === "=" || data === "-")) {
-      const speeds = [0.5, 1, 2, 4];
-      const current = speeds.indexOf(this.graphReplaySpeed);
-      const direction = data === "-" ? -1 : 1;
-      this.graphReplaySpeed = speeds[Math.max(0, Math.min(speeds.length - 1, current + direction))] ?? 1;
-      this.graphReplayAdvancedAt = Date.now();
+      this.graph.changeReplaySpeed(data === "-" ? -1 : 1);
       this.tui.requestRender();
       return;
     } else if (this.overviewView === "topology" && data === "H") {
-      this.graphShowHistory = !this.graphShowHistory;
+      this.graph.toggleHistory();
       this.tui.requestRender();
       return;
     } else if (this.overviewView === "topology" && data === "M") {
@@ -630,7 +543,7 @@ export class FabricDashboard implements Component, Focusable {
         this.detailId = selected.id;
         this.openModelPicker(selected, "project");
       } else {
-        this.graphReducedMotion = !this.graphReducedMotion;
+        this.graph.toggleReducedMotion();
       }
       this.tui.requestRender();
       return;
@@ -647,7 +560,7 @@ export class FabricDashboard implements Component, Focusable {
             : matchesKey(data, Key.up)
               ? "up"
               : "down";
-      const target = directionalGraphTarget(this.graphPositions, this.selectedEntityId, direction);
+      const target = this.graph.directionalTarget(this.selectedEntityId, direction);
       const targetIndex = target ? entities.findIndex((entity) => entity.id === target) : -1;
       if (targetIndex >= 0) {
         this.entityIndex = targetIndex;
@@ -849,20 +762,8 @@ export class FabricDashboard implements Component, Focusable {
   render(width: number): string[] {
     if (width <= 0) return [];
     if (this.mode === "help") return this.renderHelp(width);
-    if (this.mode === "agentMessageEditor") return this.renderAgentMessageEditor(width);
-    if (this.mode === "instructionsEditor") {
-      return this.renderInstructionsEditor(width);
-    }
-    if (
-      (this.mode === "modelPicker" ||
-        this.mode === "thinkingPicker" ||
-        this.mode === "deliveryPicker" ||
-        this.mode === "eventsPicker" ||
-        this.mode === "toolsPicker") &&
-      this.picker
-    ) {
-      return this.renderPicker(width);
-    }
+    const modal = this.modal.render(width, (w, content) => this.renderModal(w, content));
+    if (modal) return modal;
     const snapshot = this.snapshot();
     const run = this.selectRun(snapshot);
     const panels = phasePanels(snapshot, run);
@@ -901,13 +802,10 @@ export class FabricDashboard implements Component, Focusable {
   }
 
   dispose(): void {
-    this.picker = undefined;
-    this.editor = undefined;
-    this.editorActorName = undefined;
-    this.agentMessageTarget = undefined;
+    this.modal.dispose();
     this.pendingStop = undefined;
-    this.stopGraphAnimation();
-    this.stopGraphEffectsAnimation();
+    this.graph.stopCameraAnimation();
+    this.graph.stopEffectsAnimation();
     this.detailRenderer.invalidate();
     this.mode = "overview";
   }
@@ -992,28 +890,14 @@ export class FabricDashboard implements Component, Focusable {
   ): void {
     const target = this.messageTarget(entity);
     if (!target || !this.canMessage(entity, delivery)) return;
-    const editor = new Editor(this.tui, editorTheme(this.theme));
-    editor.focused = true;
-    editor.onSubmit = (text) => {
-      const message = text.trim();
-      if (!message) return;
+    this.modal.openMessage(target, delivery, (message) => {
       if (this.onTargetMessage) {
         this.onTargetMessage(target, message, delivery);
       } else if (target.kind === "agent") {
         if (delivery === "steer") this.onAgentSteer?.(target.id, message);
         else this.onAgentFollowUp?.(target.id, message);
       }
-      this.closeAgentMessageEditor();
-    };
-    this.editor = editor;
-    this.agentMessageTarget = { ...target, delivery };
-    this.mode = "agentMessageEditor";
-  }
-
-  private closeAgentMessageEditor(): void {
-    this.editor = undefined;
-    this.agentMessageTarget = undefined;
-    this.mode = this.detailId ? "detail" : "overview";
+    }, () => { this.mode = this.detailId ? "detail" : "overview"; });
   }
 
   private canStop(entity: Entity): entity is Extract<
@@ -1051,28 +935,12 @@ export class FabricDashboard implements Component, Focusable {
     this.pendingStop = { id: entity.value.id, expiresAt: now + 2_000 };
   }
 
-  private renderAgentMessageEditor(width: number): string[] {
-    if (!this.editor || !this.agentMessageTarget) return [];
-    if (width < 24) return this.renderNarrowFallback(width, `${this.agentMessageTarget.delivery} · ${this.agentMessageTarget.name}`, "esc cancel");
-    const target = this.agentMessageTarget;
-    const label =
-      target.kind === "actor"
-        ? "queue actor message"
-        : target.delivery === "steer"
-          ? target.kind === "main"
-            ? "message or steer Main"
-            : "steer now"
-          : "queue follow-up";
-    const innerWidth = width - 2;
-    const lines = [this.topBorder(width, `${label} · ${target.name}`)];
-    for (const line of this.editor.render(innerWidth)) lines.push(this.row(width, line));
+  private renderModal(width: number, content: DashboardModalContent): string[] {
+    if (width < 24) return this.renderNarrowFallback(width, content.narrowTitle, "esc cancel");
+    const lines = [this.topBorder(width, content.title)];
+    for (const line of content.render(width - 2)) lines.push(this.row(width, line));
     lines.push(this.middleBorder(width));
-    lines.push(
-      this.row(
-        width,
-        this.theme.fg("dim", "  enter send · shift+enter newline · esc cancel"),
-      ),
-    );
+    lines.push(this.row(width, this.theme.fg("dim", content.hint)));
     lines.push(this.bottomBorder(width));
     return lines.map((line) => truncateToWidth(line, width, ""));
   }
@@ -1158,8 +1026,7 @@ export class FabricDashboard implements Component, Focusable {
     const runtimeDefault = actor.runner === "claude"
       ? "Fabric Claude model (or Claude Code runtime default)"
       : "Fabric Pi model (or host default)";
-    this.pickerActorName = actor.name;
-    this.picker = new FabricModelSelector({
+    this.modal.openPicker("model", actor.name, (close) => new FabricModelSelector({
       theme: this.theme,
       source,
       currentValue: currentValue ?? INHERIT_VALUE,
@@ -1174,12 +1041,10 @@ export class FabricDashboard implements Component, Focusable {
       onSelect: (value) => {
         const model = value === INHERIT_VALUE ? undefined : value;
         this.onActorModel!(actor.id, model, scope);
-        this.closeModelPicker();
+        close();
       },
-      onCancel: () => this.closeModelPicker(),
-    });
-    this.picker.focused = true;
-    this.mode = "modelPicker";
+      onCancel: () => close(),
+    }), () => { this.mode = "detail"; });
   }
 
   private openThinkingPicker(
@@ -1192,8 +1057,7 @@ export class FabricDashboard implements Component, Focusable {
     const projectThinking =
       actor.projectDefaults?.thinking ?? (actor.binding ? undefined : actor.thinking);
     const currentValue = scope === "session" ? actor.binding?.thinking : projectThinking;
-    this.pickerActorName = actor.name;
-    this.picker = new FabricThinkingSelector({
+    this.modal.openPicker("thinking", actor.name, (close) => new FabricThinkingSelector({
       theme: this.theme,
       currentValue: currentValue ?? INHERIT_VALUE,
       headerText: scope === "session"
@@ -1209,12 +1073,10 @@ export class FabricDashboard implements Component, Focusable {
           isFabricThinking(thinking) ? thinking : undefined,
           scope,
         );
-        this.closeModelPicker();
+        close();
       },
-      onCancel: () => this.closeModelPicker(),
-    });
-    this.picker.focused = true;
-    this.mode = "thinkingPicker";
+      onCancel: () => close(),
+    }), () => { this.mode = "detail"; });
   }
 
   private openDeliveryPicker(entity: Entity): void {
@@ -1227,61 +1089,46 @@ export class FabricDashboard implements Component, Focusable {
       (entity.kind === "actor" &&
         (entity.status === "stopped" || entity.value.local === false))
     ) return;
-    this.pickerActorName = target.name;
-    this.picker = new FabricActorDeliverySelector({
+    this.modal.openPicker("delivery", target.name, (close) => new FabricActorDeliverySelector({
       theme: this.theme,
       currentValue: { delivery: target.delivery, triggerTurn: target.triggerTurn },
       headerText: `Delivery policy for ${entity.kind === "actor" ? "actor" : "template"} "${target.name}". Active delivery requires an explicit resume choice.`,
       onSelect: (policy) => {
         callback(target.id, policy.delivery, policy.triggerTurn);
-        this.closeModelPicker();
+        close();
       },
-      onCancel: () => this.closeModelPicker(),
-    });
-    this.picker.focused = true;
-    this.mode = "deliveryPicker";
+      onCancel: () => close(),
+    }), () => { this.mode = "detail"; });
   }
 
   private openEventsPicker(entity: Entity): void {
     if (entity.kind !== "actor" || entity.value.local === false || !this.onActorEvents) return;
     const actor = entity.value;
-    this.pickerActorName = actor.name;
-    this.picker = new FabricHostEventSelector({
+    this.modal.openPicker("events", actor.name, (close) => new FabricHostEventSelector({
       theme: this.theme,
       currentValue: actor.events,
       headerText: `Host events for actor "${actor.name}". Toggle with space, Enter to apply, Esc to cancel.`,
       onSelect: (events) => {
         this.onActorEvents!(actor.id, events);
-        this.closeModelPicker();
+        close();
       },
-      onCancel: () => this.closeModelPicker(),
-    });
-    this.picker.focused = true;
-    this.mode = "eventsPicker";
+      onCancel: () => close(),
+    }), () => { this.mode = "detail"; });
   }
 
   private openToolsPicker(entity: Entity): void {
     if (entity.kind !== "actor" || entity.value.local === false || !this.onActorTools) return;
     const actor = entity.value;
-    this.pickerActorName = actor.name;
-    this.picker = new FabricActorToolSelector({
+    this.modal.openPicker("tools", actor.name, (close) => new FabricActorToolSelector({
       theme: this.theme,
       currentValue: actor.tools ?? this.actorDefaultTools,
       headerText: `Tools for actor "${actor.name}". Toggle with space, Enter to apply, Esc to cancel. Pi actors always retain fabric_exec.`,
       onSelect: (tools) => {
         this.onActorTools!(actor.id, tools);
-        this.closeModelPicker();
+        close();
       },
-      onCancel: () => this.closeModelPicker(),
-    });
-    this.picker.focused = true;
-    this.mode = "toolsPicker";
-  }
-
-  private closeModelPicker(): void {
-    this.picker = undefined;
-    this.pickerActorName = undefined;
-    this.mode = "detail";
+      onCancel: () => close(),
+    }), () => { this.mode = "detail"; });
   }
 
   /**
@@ -1315,78 +1162,10 @@ export class FabricDashboard implements Component, Focusable {
     } else {
       return;
     }
-    const editor = new Editor(this.tui, editorTheme(this.theme));
-    editor.focused = true;
-    editor.setText(instructions);
-    editor.onSubmit = (text) => {
+    this.modal.openInstructions(name, instructions, (text) => {
       if (kind === "actor") this.onActorInstructions?.(id, text);
       else this.onGlobalInstructions?.(id, text);
-      this.closeInstructionsEditor();
-    };
-    this.editor = editor;
-    this.editorActorName = name;
-    this.mode = "instructionsEditor";
-  }
-
-  private closeInstructionsEditor(): void {
-    this.editor = undefined;
-    this.editorActorName = undefined;
-    this.mode = "detail";
-  }
-
-  private renderPicker(width: number): string[] {
-    if (!this.picker) return [];
-    if (width < 24) return this.renderNarrowFallback(width, `actor · ${this.pickerActorName ?? ""}`, "esc cancel");
-    const kind =
-      this.mode === "thinkingPicker"
-        ? "thinking"
-        : this.mode === "deliveryPicker"
-          ? "delivery"
-          : this.mode === "eventsPicker"
-            ? "events"
-            : this.mode === "toolsPicker"
-              ? "tools"
-              : "model";
-    const lines = [
-      this.topBorder(width, `actor · ${this.pickerActorName ?? ""} · ${kind}`),
-    ];
-    const inner = this.picker.render(width - 2);
-    for (const line of inner) lines.push(this.row(width, line));
-    lines.push(this.middleBorder(width));
-    const filterHint =
-      this.mode === "thinkingPicker" ||
-      this.mode === "deliveryPicker" ||
-      this.mode === "eventsPicker" ||
-      this.mode === "toolsPicker"
-        ? ""
-        : " · type to filter";
-    lines.push(
-      this.row(
-        width,
-        this.theme.fg("dim", `  Enter to select · Esc to cancel${filterHint}`),
-      ),
-    );
-    lines.push(this.bottomBorder(width));
-    return lines.map((line) => truncateToWidth(line, width, ""));
-  }
-
-  private renderInstructionsEditor(width: number): string[] {
-    if (!this.editor) return [];
-    if (width < 24) return this.renderNarrowFallback(width, `instructions · ${this.editorActorName ?? ""}`, "esc cancel");
-    const innerWidth = width - 2;
-    const lines = [this.topBorder(width, `instructions · ${this.editorActorName ?? ""}`)];
-    for (const line of this.editor.render(innerWidth)) {
-      lines.push(this.row(width, line));
-    }
-    lines.push(this.middleBorder(width));
-    lines.push(
-      this.row(
-        width,
-        this.theme.fg("dim", "  enter submit · shift+enter newline · esc cancel"),
-      ),
-    );
-    lines.push(this.bottomBorder(width));
-    return lines.map((line) => truncateToWidth(line, width, ""));
+    }, () => { this.mode = "detail"; });
   }
 
   private projectMesh(snapshot: FabricDashboardSnapshot): FabricProjectMeshModel | undefined {
@@ -1400,134 +1179,6 @@ export class FabricDashboard implements Component, Focusable {
       ...(snapshot.participants ? { participants: snapshot.participants } : {}),
       now: snapshot.now,
     });
-  }
-
-  private replayFrames(
-    snapshot: FabricDashboardSnapshot,
-    topology: FabricProjectMeshModel,
-  ): Array<{ event: MeshEvent; route: FabricProjectMeshRoute }> {
-    return snapshot.events.flatMap((event) => {
-      const route = topology.routes.find(
-        (candidate) =>
-          candidate.topic === event.topic &&
-          candidate.kind === event.kind &&
-          (candidate.fromId === event.from.id || candidate.fromName === event.from.name),
-      );
-      return route ? [{ event, route }] : [];
-    });
-  }
-
-  private startGraphEffectsAnimation(): void {
-    if (this.graphEffectsAnimation) return;
-    this.graphReplayAdvancedAt = Date.now();
-    this.graphEffectsAnimation = setInterval(() => {
-      const now = Date.now();
-      if (
-        this.graphReplayPlaying &&
-        this.graphReplayIndex !== undefined &&
-        this.graphReplayLength > 0 &&
-        now - this.graphReplayAdvancedAt >= 850 / this.graphReplaySpeed
-      ) {
-        if (this.graphReplayIndex < this.graphReplayLength - 1) {
-          this.graphReplayIndex++;
-          this.graphReplayAdvancedAt = now;
-        } else {
-          this.graphReplayPlaying = false;
-        }
-      }
-      this.tui.requestRender();
-    }, 80);
-    this.graphEffectsAnimation.unref?.();
-  }
-
-  private stopGraphEffectsAnimation(): void {
-    if (this.graphEffectsAnimation) clearInterval(this.graphEffectsAnimation);
-    this.graphEffectsAnimation = undefined;
-    this.graphReplayPlaying = false;
-  }
-
-  private toggleGraphReplay(snapshot: FabricDashboardSnapshot, topology?: FabricProjectMeshModel): void {
-    const model = topology ?? this.projectMesh(snapshot);
-    const frames = model ? this.replayFrames(snapshot, model) : [];
-    this.graphReplayLength = frames.length;
-    if (frames.length === 0) return;
-    if (this.graphReplayIndex === undefined) {
-      this.graphReplayIndex = 0;
-      this.graphReplayPlaying = true;
-    } else {
-      this.graphReplayIndex = undefined;
-      this.graphReplayPlaying = false;
-    }
-    this.graphReplayAdvancedAt = Date.now();
-  }
-
-  private stepGraphReplay(delta: number): void {
-    if (this.graphReplayIndex === undefined || this.graphReplayLength === 0) return;
-    this.graphReplayIndex = Math.max(
-      0,
-      Math.min(this.graphReplayLength - 1, this.graphReplayIndex + delta),
-    );
-    this.graphReplayPlaying = false;
-    this.graphReplayAdvancedAt = Date.now();
-  }
-
-  private setGraphCameraTarget(point: FabricGraphPoint): void {
-    if (!this.graphCameraInitialized) {
-      this.graphCamera = { ...point };
-      this.graphCameraTarget = { ...point };
-      this.graphCameraInitialized = true;
-      return;
-    }
-    if (this.graphCameraTarget.x === point.x && this.graphCameraTarget.y === point.y) return;
-    this.graphCameraTarget = { ...point };
-    this.graphAnimationAt = Date.now();
-    if (this.graphAnimation) return;
-    this.graphAnimation = setInterval(() => this.stepGraphCamera(), 16);
-    this.graphAnimation.unref?.();
-  }
-
-  private stopGraphAnimation(): void {
-    if (this.graphAnimation) clearInterval(this.graphAnimation);
-    this.graphAnimation = undefined;
-    this.graphAnimationAt = 0;
-    this.graphVelocity = { x: 0, y: 0 };
-    this.graphCameraTarget = { ...this.graphCamera };
-  }
-
-  private stepGraphCamera(): void {
-    const now = Date.now();
-    const elapsed = this.graphAnimationAt > 0 ? (now - this.graphAnimationAt) / 1_000 : 0.016;
-    const dt = Math.max(0.008, Math.min(0.032, elapsed));
-    this.graphAnimationAt = now;
-    const stiffness = 115;
-    const damping = 19;
-    const stepAxis = (position: number, target: number, velocity: number): [number, number] => {
-      const acceleration = stiffness * (target - position) - damping * velocity;
-      const nextVelocity = velocity + acceleration * dt;
-      return [position + nextVelocity * dt, nextVelocity];
-    };
-    [this.graphCamera.x, this.graphVelocity.x] = stepAxis(
-      this.graphCamera.x,
-      this.graphCameraTarget.x,
-      this.graphVelocity.x,
-    );
-    [this.graphCamera.y, this.graphVelocity.y] = stepAxis(
-      this.graphCamera.y,
-      this.graphCameraTarget.y,
-      this.graphVelocity.y,
-    );
-    const distance = Math.hypot(
-      this.graphCameraTarget.x - this.graphCamera.x,
-      this.graphCameraTarget.y - this.graphCamera.y,
-    );
-    const speed = Math.hypot(this.graphVelocity.x, this.graphVelocity.y);
-    if (distance < 0.025 && speed < 0.025) {
-      this.graphCamera = { ...this.graphCameraTarget };
-      this.graphVelocity = { x: 0, y: 0 };
-      if (this.graphAnimation) clearInterval(this.graphAnimation);
-      this.graphAnimation = undefined;
-    }
-    this.tui.requestRender();
   }
 
   private renderOverview(
@@ -1575,8 +1226,8 @@ export class FabricDashboard implements Component, Focusable {
               : undefined,
             `Participants ${snapshot.agents.filter((agent) => isActiveStatus(agent.status)).length}/${snapshot.agents.length} agents · ${activeActors}/${snapshot.actors.length} actors · ${meshModel.participants.length} remote`,
             `Mesh ${meshModel.topics.length} topics · ${snapshot.state.length} state`,
-            this.graphReplayIndex !== undefined
-              ? `${this.graphReplayPlaying ? "▶" : "Ⅱ"} replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)} · ${this.graphReplaySpeed}×`
+            this.graph.replayIndex !== undefined
+              ? `${this.graph.replayPlaying ? "▶" : "Ⅱ"} replay ${this.graph.replayIndex + 1}/${Math.max(1, this.graph.replayLength)} · ${this.graph.replaySpeed}×`
               : undefined,
             snapshot.runs.length > 1 ? `run ${this.runIndex + 1}/${snapshot.runs.length}` : undefined,
           ]
@@ -1652,19 +1303,8 @@ export class FabricDashboard implements Component, Focusable {
         ...(snapshot.participants ? { participants: snapshot.participants } : {}),
         now: snapshot.now,
       });
-      this.startGraphEffectsAnimation();
-      const replayFrames = this.replayFrames(snapshot, topology);
-      this.graphReplayLength = replayFrames.length;
-      if (this.graphReplayIndex !== undefined && replayFrames.length === 0) {
-        this.graphReplayIndex = undefined;
-        this.graphReplayPlaying = false;
-      } else if (this.graphReplayIndex !== undefined) {
-        this.graphReplayIndex = Math.min(this.graphReplayIndex, replayFrames.length - 1);
-      }
-      const replayFrame = this.graphReplayIndex === undefined
-        ? undefined
-        : replayFrames[this.graphReplayIndex];
-      this.graphReplayLabel = replayFrame?.event.kind;
+      this.graph.startEffectsAnimation();
+      const replayFrame = this.graph.replayFrame(snapshot.events, topology.routes);
       const renderGraph = () => renderFabricTopologyPanel({
         theme: this.theme,
         filter: this.filter,
@@ -1676,22 +1316,22 @@ export class FabricDashboard implements Component, Focusable {
         entities,
         width: innerWidth,
         height: maxBody,
-        camera: this.graphCamera,
+        camera: this.graph.camera,
         invalidate: this.highlightInvalidate,
         animation: {
           now: Date.now(),
-          reducedMotion: this.graphReducedMotion,
-          showHistory: this.graphShowHistory,
+          reducedMotion: this.graph.reducedMotion,
+          showHistory: this.graph.showHistory,
           ...(replayFrame
             ? { replayRouteId: replayFrame.route.id, replayLabel: replayFrame.event.kind }
             : {}),
         },
       });
-      const cameraWasInitialized = this.graphCameraInitialized;
+      const cameraWasInitialized = this.graph.cameraInitialized;
       let rendered = renderGraph();
-      this.graphPositions = rendered.positions;
-      if (rendered.selectedPosition) this.setGraphCameraTarget(rendered.selectedPosition);
-      if (!cameraWasInitialized && this.graphCameraInitialized) rendered = renderGraph();
+      this.graph.setPositions(rendered.positions);
+      if (rendered.selectedPosition) this.graph.setCameraTarget(rendered.selectedPosition);
+      if (!cameraWasInitialized && this.graph.cameraInitialized) rendered = renderGraph();
       for (const line of rendered.lines) lines.push(this.row(width, line));
     } else if (innerWidth >= 88) {
       const leftWidth = Math.min(38, Math.max(28, Math.floor((innerWidth - 1) * 0.34)));
@@ -1763,9 +1403,9 @@ export class FabricDashboard implements Component, Focusable {
     lines.push(this.middleBorder(width));
     const navigationHint =
       this.overviewView === "topology"
-        ? this.graphReplayIndex !== undefined
-          ? `replay ${this.graphReplayIndex + 1}/${Math.max(1, this.graphReplayLength)}${this.graphReplayLabel ? ` · ${safeText(this.graphReplayLabel)}` : ""} · r live · space ${this.graphReplayPlaying ? "pause" : "play"} · ←/→ step · +/- speed:${this.graphReplaySpeed}× · H history · M motion:${this.graphReducedMotion ? "reduced" : "full"} · ? help`
-          : `arrows/h/l move · j/k order · r replay · H history · M motion:${this.graphReducedMotion ? "reduced" : "full"} · f filter:${this.filter} · 1 activity · ? help`
+        ? this.graph.replayIndex !== undefined
+          ? `replay ${this.graph.replayIndex + 1}/${Math.max(1, this.graph.replayLength)}${this.graph.replayLabel ? ` · ${safeText(this.graph.replayLabel)}` : ""} · r live · space ${this.graph.replayPlaying ? "pause" : "play"} · ←/→ step · +/- speed:${this.graph.replaySpeed}× · H history · M motion:${this.graph.reducedMotion ? "reduced" : "full"} · ? help`
+          : `arrows/h/l move · j/k order · r replay · H history · M motion:${this.graph.reducedMotion ? "reduced" : "full"} · f filter:${this.filter} · 1 activity · ? help`
         : `↑↓/jk select · ←→/tab pane · enter inspect · f filter:${this.filter} · 2 topology · [ older · ] newer · ? help`;
     lines.push(this.row(width, this.theme.fg("dim", navigationHint)));
     const selectedEntity = entities[this.entityIndex];

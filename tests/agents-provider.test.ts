@@ -204,6 +204,37 @@ const setup = (
   };
 };
 
+describe("AgentsProvider runtime ownership lifecycle", () => {
+  it("does not close shared runtime services when it is not the owner", async () => {
+    const { agents, actors, globalActors, mainAgent, participants, control, lifecycle } = setup();
+    const provider = new AgentsProvider(
+      agents, actors, globalActors, mainAgent, participants, control, lifecycle,
+      undefined, undefined, false,
+    );
+    const closeLifecycle = vi.spyOn(lifecycle, "close");
+    const closeActors = vi.spyOn(actors, "close");
+    const closeAgents = vi.spyOn(agents, "close");
+    await provider.close();
+    expect(closeLifecycle).not.toHaveBeenCalled();
+    expect(closeActors).not.toHaveBeenCalled();
+    expect(closeAgents).not.toHaveBeenCalled();
+  });
+
+  it("closes agents even if actor shutdown fails, after stopping lifecycle delivery", async () => {
+    const { provider, agents, actors, lifecycle } = setup();
+    const failure = new Error("actor shutdown failed");
+    const order: string[] = [];
+    vi.spyOn(lifecycle, "close").mockImplementationOnce(async () => { order.push("lifecycle"); });
+    vi.spyOn(actors, "close").mockImplementationOnce(async () => {
+      order.push("actors");
+      throw failure;
+    });
+    vi.spyOn(agents, "close").mockImplementationOnce(async () => { order.push("agents"); });
+    await expect(provider.close()).rejects.toBe(failure);
+    expect(order).toEqual(["lifecycle", "actors", "agents"]);
+  });
+});
+
 afterEach(async () => {
   await Promise.all(controlPlanes.splice(0).map((control) => control.close()));
   await Promise.all(actorManagers.splice(0).map((manager) => manager.close()));
