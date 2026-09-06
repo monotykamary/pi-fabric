@@ -219,6 +219,7 @@ const handoffTask = (args: Record<string, unknown>): string => {
     "The caller has handed implementation to you and is blocked awaiting this run. Do the remaining work; do not merely advise the caller or restate the plan.",
     "Treat the inherited conversation, completed outer Fabric result, and current workspace as grounded context. Inspect again only where the workspace or a failed check makes it necessary.",
     "Keep the change scoped, run the relevant full test module or equivalent verification, and report the implementation plus checks honestly.",
+    "End with a concise conclusion for the caller: what you completed, which checks passed or failed, and any unfinished or blocked work. Include links, PR and issue numbers, commit hashes, and artifact paths verbatim.",
   ];
   if (task) lines.push("Additional continuation task:", task);
   return lines.join("\n\n");

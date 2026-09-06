@@ -15,6 +15,7 @@ import type {
   FabricInvocationContext,
 } from "../protocol.js";
 import { snapshotHandoffSession } from "../agents/handoff.js";
+import { queueHandoffCompletion } from "../agents/handoff-completion.js";
 import type {
   AgentSessionSeed,
   AgentToolResultMessage,
@@ -601,6 +602,9 @@ export const runFabricHandoffAtBoundary = async (
         );
       }
     }
+    if (pending.kind === "explicit") {
+      queueHandoffCompletion(extension, pending.args, result);
+    }
     context.ui.setStatus(
       "fabric-prewalk",
       completed ? "trajectory executor implemented" : `trajectory ${String(result.status ?? "failed")}`,
@@ -626,6 +630,11 @@ export const runFabricHandoffAtBoundary = async (
         PREWALK_FAILURE_PROMPT,
         { mode: inPlace ? "in-place" : "trajectory", trigger: pending.triggerRef, error: message },
       );
+    }
+    if (pending.kind === "explicit") {
+      queueHandoffCompletion(extension, pending.args, {
+        handedOff: false, completed: false, status: "failed", error: message,
+      });
     }
     context.ui.setStatus("fabric-prewalk", inPlace ? "in-place continuation failed" : "trajectory handoff failed");
     return {

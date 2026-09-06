@@ -97,6 +97,8 @@ Facts include every successful resolved bridge call completed before `agents.han
 
 The guest result is `{ scheduled: true, status: "deferred", boundary: "fabric_exec_end" }`; the final outer tool result is `{ handedOff, completed, status, agent, implementation, error? }`. `model` is required and handoff is always Pi-backed. It also accepts `name`, `transport`, `thinking`, `tools`, `timeoutMs`, `extensions`, `recursive`, and `schema`; it deliberately omits `worktree` so implementation remains in the caller's workspace. Do not run handoff in a parallel branch that keeps mutating the same files.
 
+After the executor settles, a visible `pi-fabric-handoff-complete` follow-up reports its identity, status, and bounded conclusion, then wakes Main. Summarize the outcome and reported checks, preserving concrete identifiers; do not redo completed work. If the handoff failed, stopped, or timed out, explain the outcome and propose the next step without retrying or taking over unprompted. This is a queued follow-up, not steering.
+
 ## Automatic prewalk
 
 `/fabric prewalk [task]` arms one automatic continuation when a Fabric invocation contains a successful `pi.edit`, `pi.write`, or `schema.commit`. With a task it submits immediately; without one it captures the next user input. The executor comes from `prewalk.model` or an interactive choice, and its reasoning effort from `prewalk.thinking` (inheriting `agents.thinking` when unset). `prewalk.alwaysRearm` keeps the controller armed until `/fabric prewalk --off`. That command cancels only the session arm; `/fabric prewalk --disable` persists the master switch and survives restarts, while `--enable` restores it.

@@ -78,6 +78,7 @@ const createHarness = () => {
     registerCommand: vi.fn((_name: string, definition: { handler: typeof command }) => {
       command = definition.handler;
     }),
+    registerMessageRenderer: vi.fn(),
     registerTool: vi.fn(),
     setActiveTools: vi.fn(),
   } as unknown as ExtensionAPI;

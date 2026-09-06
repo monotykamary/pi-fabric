@@ -96,6 +96,7 @@ import { FabricUiController } from "./ui/controller.js";
 import { installFabricEscapeHalt } from "./ui/escape-halt.js";
 import { FabricToolDisplayController } from "./ui/tool-display.js";
 import { configureHighlighting } from "./ui/highlight.js";
+import { registerHandoffCompletionRenderer } from "./ui/handoff-completion.js";
 import { formatFabricValue } from "./ui/structured.js";
 import { truncateMiddle } from "./util.js";
 import { existsSync } from "node:fs";
@@ -271,6 +272,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
       scheduleOwnershipReassert();
     },
   });
+  registerHandoffCompletionRenderer(pi);
   pi.registerTool(fabricTool);
 
   const applyFabricMode = (): void => {

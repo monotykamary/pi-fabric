@@ -99,6 +99,7 @@ const createHarness = (): Harness => {
       handlers.set(event, registered);
     }),
     registerCommand: vi.fn(),
+    registerMessageRenderer: vi.fn(),
     registerTool: vi.fn((tool: unknown) => {
       registeredTools.push(tool);
     }),

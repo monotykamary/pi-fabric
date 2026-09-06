@@ -89,6 +89,7 @@ describe("core override prompt guidance", () => {
         handlers.set(event, list);
       }),
       registerCommand: vi.fn(),
+      registerMessageRenderer: vi.fn(),
       registerTool: vi.fn(),
       setActiveTools: vi.fn(),
     } as unknown as ExtensionAPI;

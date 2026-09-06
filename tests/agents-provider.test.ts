@@ -912,6 +912,9 @@ describe("AgentsProvider runner support", () => {
       "utf8",
     );
     expect(task).toContain("inherited conversation trajectory");
+    expect(task).toContain("End with a concise conclusion for the caller");
+    expect(task).toContain("unfinished or blocked work");
+    expect(task).toContain("artifact paths verbatim");
     expect(task).toContain("Finish the implementation and verify it.");
     const handoffDirectory = path.join(root, "runs", result.agent.id, "handoff-session");
     const [sessionName] = fs.readdirSync(handoffDirectory);

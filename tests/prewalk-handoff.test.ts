@@ -1047,6 +1047,73 @@ describe("outer-boundary Prewalk", () => {
     );
   });
 
+  it.each(["completed", "failed", "stopped", "timed_out", "throw"])(
+    "reports an explicit %s handoff visibly and queues Main's conclusion once",
+    async (status) => {
+      const controller = new PrewalkController();
+      controller.arm({ model: "anthropic/automatic", sessionId: "session-1" });
+      const run = execution();
+      run.handoffRequest = { model: "anthropic/executor", name: "Guard executor" };
+      run.audits.push({ ref: "agents.handoff", nestedToolCallId: "explicit", startedAt: 7, args: run.handoffRequest });
+      const pending = claimFabricHandoff(controller, run, "session-1", "auto")!;
+      expect(pending.kind).toBe("explicit");
+      const ext = extension();
+      const workerResult = {
+        handedOff: true, completed: status === "completed", status,
+        agent: { id: "child-1", name: "Guard executor", model: "anthropic/executor" },
+        implementation: "Implemented guard. Tests passed. PR https://example.com/pull/42 commit abc123",
+        ...(status !== "completed" ? { error: "executor interrupted" } : {}),
+      };
+      const result = await runFabricHandoffAtBoundary(
+        controller,
+        { executeHandoff: vi.fn(async () => {
+          expect(ext.sendMessage).not.toHaveBeenCalled();
+          if (status === "throw") throw new Error("launch failed");
+          return workerResult;
+        }) },
+        ext.value, pending, outerResult(), context().value,
+      );
+      expect(ext.sendMessage).toHaveBeenCalledTimes(1);
+      const [message, options] = ext.sendMessage.mock.calls[0]!;
+      expect(options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+      expect(message).toMatchObject({
+        customType: "pi-fabric-handoff-complete", display: true,
+        details: { status: status === "throw" ? "failed" : status },
+      });
+      expect(message.details.displayText).toContain("Guard executor");
+      expect(message.details.displayText).toContain("anthropic/executor");
+      expect(message.details.displayText).not.toContain("Reply to the user now");
+      expect(message.content).toContain("Reply to the user now");
+      expect(message.content).toContain("verbatim");
+      if (status === "throw") {
+        expect(result).toMatchObject({ completed: false, error: "launch failed" });
+        expect(message.details.displayText).toContain("launch failed");
+      } else {
+        expect(result).toEqual(workerResult);
+        expect(message.details.displayText).toContain("https://example.com/pull/42 commit abc123");
+      }
+      expect(message.content).toContain(status === "completed" ? "Do not redo the work" : "do not retry");
+    },
+  );
+
+  it("preserves an explicit handoff result when follow-up delivery throws", async () => {
+    const controller = new PrewalkController();
+    const run = execution();
+    run.handoffRequest = { model: "anthropic/executor" };
+    run.audits.push({ ref: "agents.handoff", nestedToolCallId: "explicit", startedAt: 7, args: run.handoffRequest });
+    const pending = claimFabricHandoff(controller, run, "session-1", "auto")!;
+    const ext = extension();
+    ext.sendMessage.mockImplementation(() => { throw new Error("queue unavailable"); });
+    const workerResult = { completed: true, status: "completed", implementation: "done" };
+    const result = await runFabricHandoffAtBoundary(
+      controller, { executeHandoff: vi.fn(async () => workerResult) },
+      ext.value, pending, outerResult(), context().value,
+    );
+    expect(result).toEqual(workerResult);
+    expect(pending.audit.success).toBe(true);
+    expect(ext.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("gives an explicit deferred trajectory request precedence", () => {
     const controller = new PrewalkController();
     controller.arm({ model: "anthropic/automatic", sessionId: "session-1" });

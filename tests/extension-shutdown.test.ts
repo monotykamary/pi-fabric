@@ -28,6 +28,7 @@ describe("Pi Fabric extension shutdown", () => {
           handlers.set(event, registered);
         }),
         registerCommand: vi.fn(),
+        registerMessageRenderer: vi.fn(),
         registerTool: vi.fn(),
         setActiveTools: vi.fn(),
       } as unknown as ExtensionAPI;
