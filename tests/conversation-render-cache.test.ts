@@ -1,3 +1,4 @@
+import "./fixtures/conversation-host.js";
 import {
   AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, initTheme, type Theme,
 } from "@earendil-works/pi-coding-agent";

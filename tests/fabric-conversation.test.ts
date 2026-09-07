@@ -1,3 +1,4 @@
+import "./fixtures/conversation-host.js";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

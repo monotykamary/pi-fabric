@@ -7,8 +7,8 @@ import {
   Spacer,
   matchesKey,
 } from "@earendil-works/pi-tui";
-import { type FabricConfigScope } from "../config.js";
-import { type Theme } from "@earendil-works/pi-coding-agent";
+import type { FabricConfigScope } from "../config.js";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "./dynamic-border.js";
 import { settingsListTheme } from "./settings-submenus.js";
 

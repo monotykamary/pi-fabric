@@ -1,18 +1,17 @@
-import {
+import type {
   AssistantMessageComponent,
   BashExecutionComponent,
   BranchSummaryMessageComponent,
   CompactionSummaryMessageComponent,
   CustomMessageComponent,
-  parseSkillBlock,
   SkillInvocationMessageComponent,
   ToolExecutionComponent,
-  UserMessageComponent,
-  type MarkdownTransformer,
-  type MessageRenderer,
-  type Theme,
-  type TruncationResult,
+  MarkdownTransformer,
+  MessageRenderer,
+  Theme,
+  TruncationResult,
 } from "@earendil-works/pi-coding-agent";
+import { getConversationHost } from "./conversation-host.js";
 import type { MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
@@ -398,11 +397,11 @@ export class FabricConversationTranscriptRenderer {
         return;
       case "compactionSummary":
         this.pushSpacer(lines);
-        this.renderBoxedMessage(this.messageKey(message), message, CompactionSummaryMessageComponent, width, options, lines);
+        this.renderBoxedMessage(this.messageKey(message), message, getConversationHost().CompactionSummaryMessageComponent, width, options, lines);
         return;
       case "branchSummary":
         this.pushSpacer(lines);
-        this.renderBoxedMessage(this.messageKey(message), message, BranchSummaryMessageComponent, width, options, lines);
+        this.renderBoxedMessage(this.messageKey(message), message, getConversationHost().BranchSummaryMessageComponent, width, options, lines);
         return;
       default:
         return;
@@ -418,10 +417,10 @@ export class FabricConversationTranscriptRenderer {
     const text = userMessageText(message);
     if (!text) return;
     this.pushSpacer(lines);
-    const skillBlock = parseSkillBlock(text);
+    const skillBlock = getConversationHost().parseSkillBlock(text);
     if (skillBlock) {
       const record = this.messageRecord(this.messageKey(message), () =>
-        new SkillInvocationMessageComponent(skillBlock, this.markdownTheme(options)));
+        new (getConversationHost().SkillInvocationMessageComponent)(skillBlock, this.markdownTheme(options)));
       record.component.setExpanded(options.toolsExpanded);
       lines.push(...safeRender(record.component, width, () => this.plainTextFallback(text, width)));
       if (skillBlock.userMessage) {
@@ -438,7 +437,7 @@ export class FabricConversationTranscriptRenderer {
     width: number,
     options: FabricConversationTranscriptRenderOptions,
   ): string[] {
-    const component = new UserMessageComponent(
+    const component = new (getConversationHost().UserMessageComponent)(
       terminalSafe(text, false),
       this.markdownTheme(options),
       options.outputPad ?? 1,
@@ -512,7 +511,7 @@ export class FabricConversationTranscriptRenderer {
           },
         },
       }) as TUI;
-      const component = new ToolExecutionComponent(name, id, args,
+      const component = new (getConversationHost().ToolExecutionComponent)(name, id, args,
         { showImages: options.showImages ?? true, imageWidthCells: this.imageWidthCells() },
         definition, ui, options.target.cwd ?? process.cwd());
       if (options.toolsExpanded) component.setExpanded(true);
@@ -583,7 +582,7 @@ export class FabricConversationTranscriptRenderer {
   ): void {
     const key = this.messageKey(message);
     const record = this.messageRecord(key, () => {
-      const component = new BashExecutionComponent(message.command, this.tui, message.excludeFromContext);
+      const component = new (getConversationHost().BashExecutionComponent)(message.command, this.tui, message.excludeFromContext);
       component.appendOutput(terminalSafe(message.output ?? "", false));
       // Mirrors interactive-mode: only the truncated flag is known at this point.
       const truncation = message.truncated ? ({ truncated: true } as TruncationResult) : undefined;
@@ -601,7 +600,7 @@ export class FabricConversationTranscriptRenderer {
     lines: string[],
   ): void {
     const record = this.messageRecord(this.messageKey(message), () =>
-      new CustomMessageComponent(
+      new (getConversationHost().CustomMessageComponent)(
         message,
         this.rendererOptions.getMessageRenderer?.(message.customType),
         this.markdownTheme(options),
@@ -672,7 +671,7 @@ export class FabricConversationTranscriptRenderer {
     if (!record || record.hideThinking !== hideThinking) {
       record = {
         hideThinking,
-        component: new AssistantMessageComponent(
+        component: new (getConversationHost().AssistantMessageComponent)(
           undefined,
           hideThinking,
           this.markdownTheme(options),

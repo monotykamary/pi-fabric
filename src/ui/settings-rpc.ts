@@ -1,5 +1,5 @@
-import { type SettingItem } from "@earendil-works/pi-tui";
-import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { SettingItem } from "@earendil-works/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   unique,
   COMPACTION_DEFAULT_THRESHOLD_LABEL,

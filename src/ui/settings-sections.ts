@@ -1,6 +1,6 @@
 import { type ModelSource, buildClaudeModelSource } from "./model-picker.js";
-import { type Theme } from "@earendil-works/pi-coding-agent";
-import { type FabricConfig } from "../config.js";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { FabricConfig } from "../config.js";
 import { coerceValue } from "./settings-values.js";
 import { markDrillIn } from "./settings-submenus.js";
 import type { SettingItem } from "@earendil-works/pi-tui";

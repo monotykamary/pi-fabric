@@ -1,3 +1,4 @@
+import "./fixtures/conversation-host.js";
 import {
   AssistantMessageComponent,
   initTheme,

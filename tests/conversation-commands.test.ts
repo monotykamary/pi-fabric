@@ -1,3 +1,4 @@
+import "./fixtures/conversation-host.js";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";

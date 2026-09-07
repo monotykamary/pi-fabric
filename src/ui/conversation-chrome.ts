@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import { SettingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { getConversationHost } from "./conversation-host.js";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { formatTokens, safeText } from "./format.js";
 import type { FabricConversationTarget } from "./conversation.js";
@@ -17,7 +18,7 @@ export interface FabricConversationAppearance {
 
 /** Read the host's public Pi settings without changing its editor or footer. */
 export function readConversationAppearance(cwd: string, agentDir: string, projectTrusted: boolean): FabricConversationAppearance {
-  const settings = SettingsManager.create(cwd, agentDir, { projectTrusted });
+  const settings = getConversationHost().SettingsManager.create(cwd, agentDir, { projectTrusted });
   return {
     editorPaddingX: settings.getEditorPaddingX(), outputPad: settings.getOutputPad(),
     codeBlockIndent: settings.getCodeBlockIndent(), hideThinkingBlock: settings.getHideThinkingBlock(),

@@ -1,12 +1,8 @@
 import fs from "node:fs";
 import { NativeReaderEventReplay } from "./conversation-native-reader-replay.js";
 import { NativeReaderCheckpoint } from "./conversation-native-reader-checkpoint.js";
-import {
-  buildContextEntries,
-  sessionEntryToContextMessages,
-  type SessionEntry,
-  type SessionMessageEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { SessionEntry, SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import { getConversationHost } from "./conversation-host.js";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 // Native Pi conversation transcript reader.
@@ -1165,7 +1161,7 @@ export class NativeConversationReader {
     const leafId = this.#sessionLeafId ?? this.#eventLeafId ?? null;
     if (this.#treeDirty) {
       this.#pathComplete = leafId !== null && this.#pathReachesRoot(leafId);
-      const branch = leafId !== null ? buildContextEntries(this.#entries, leafId, this.#byId) : [];
+      const branch = leafId !== null ? getConversationHost().buildContextEntries(this.#entries, leafId, this.#byId) : [];
       const projections = branch.map((entry) => {
         let projected = this.#entryProjections.get(entry);
         if (!projected) {
@@ -1178,7 +1174,7 @@ export class NativeConversationReader {
               ...(entry.type === "message" ? { message: entry.message } : {}),
               entry,
             },
-            messages: sessionEntryToContextMessages(entry),
+            messages: getConversationHost().sessionEntryToContextMessages(entry),
           };
           this.#entryProjections.set(entry, projected);
         }

@@ -1,3 +1,4 @@
+import "./fixtures/conversation-host.js";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { createInteractiveTuiReference } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/tui-renderer.js";
 import { initTheme } from "@earendil-works/pi-coding-agent";

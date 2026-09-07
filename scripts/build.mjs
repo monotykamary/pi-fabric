@@ -39,6 +39,7 @@ const lazyEntryPoints = [
   "src/speculation/scanner.ts",
   "src/ui/dashboard.ts",
   "src/ui/conversation.ts",
+  "src/ui/conversation-host.ts",
   "src/ui/conversation-targets.ts",
   "src/ui/conversation-chrome.ts",
   "src/ui/conversation-native-reader.ts",

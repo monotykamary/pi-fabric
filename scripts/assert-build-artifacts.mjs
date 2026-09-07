@@ -37,6 +37,7 @@ const lazy = [
   "speculation/scanner.js",
   "ui/dashboard.js",
   "ui/conversation.js",
+  "ui/conversation-host.js",
   "ui/conversation-targets.js",
   "ui/conversation-chrome.js",
   "ui/conversation-native-reader.js",

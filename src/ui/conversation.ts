@@ -1,4 +1,4 @@
-import { copyToClipboard } from "@earendil-works/pi-coding-agent";
+import { getConversationHost } from "./conversation-host.js";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, KeyId, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import {
@@ -967,7 +967,7 @@ export class FabricConversationView implements Component, Focusable {
     const currentResult = (): boolean => current() && (command === undefined || this.commandNotification === notification);
     // Serialize writes so a slower older copy cannot overwrite a newer one.
     this.copyTask = this.copyTask.then(() => {
-      if (current()) return (this.options.copyToClipboard ?? copyToClipboard)(text);
+      if (current()) return (this.options.copyToClipboard ?? getConversationHost().copyToClipboard)(text);
     }).then(() => {
       if (!currentResult()) return;
       if (command !== undefined && id) {

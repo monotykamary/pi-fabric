@@ -1,5 +1,6 @@
 import path from "node:path";
 import { resolveAgentDir } from "../core/agent-dir.js";
+import * as piConversationHost from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { CodePreviewSettings } from "./code-preview.js";
@@ -179,6 +180,10 @@ export class FabricUiController {
     this.#conversationOpen = true;
     const epoch = this.#epoch;
     try {
+      // Native lazy imports cannot see Pi's extension-loader aliases/virtual modules.
+      const { initializeConversationHost } = await import("./conversation-host.js");
+      if (epoch !== this.#epoch) return;
+      initializeConversationHost(piConversationHost);
       const [{ FabricConversationView, FabricConversationState }, { conversationTargets, resolveConversationTarget }, { readConversationAppearance }, { NativeConversationReader }] =
         await Promise.all([import("./conversation.js"), import("./conversation-targets.js"), import("./conversation-chrome.js"), import("./conversation-native-reader.js")]);
       if (epoch !== this.#epoch) return;

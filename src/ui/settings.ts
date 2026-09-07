@@ -1,9 +1,6 @@
-import { type FabricState } from "../fabric-state.js";
-import { type CapturedToolCatalog } from "../capture/catalog.js";
-import {
-  type ExtensionContext,
-  type Theme,
-} from "@earendil-works/pi-coding-agent";
+import type { FabricState } from "../fabric-state.js";
+import type { CapturedToolCatalog } from "../capture/catalog.js";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { resolveAgentDir } from "../core/agent-dir.js";
 import {
   type FabricConfigScope,
@@ -29,7 +26,7 @@ import {
   populateClaudeModelSource,
   buildFabricSettingsItems,
 } from "./settings-sections.js";
-import { type SettingItem } from "@earendil-works/pi-tui";
+import type { SettingItem } from "@earendil-works/pi-tui";
 import { openRpcFabricSettings } from "./settings-rpc.js";
 
 const ROOT_ITEM_IDS = [
