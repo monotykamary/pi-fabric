@@ -176,7 +176,7 @@ describe("worker kernel contract", () => {
   });
 
   it.each([
-    { kernel: "inherit" as const, recursive: true },
+    { kernel: "inherit" as const, recursive: true, alternateCwd: true },
     { kernel: "typescript" as const, alternateCwd: true },
     { kernel: "python" as const, session: true },
     { extensions: false, alternateCwd: true },

@@ -974,22 +974,23 @@ describe("AgentsProvider runner support", () => {
     const properties = (descriptor: typeof run) =>
       (descriptor?.inputSchema as { properties: Record<string, unknown> }).properties;
 
-    expect(properties(run)).toHaveProperty("cwd");
+    expect(properties(run)).toHaveProperty("cwd", expect.objectContaining({ type: "string" }));
+    expect(properties(run)).toHaveProperty("recursive", { type: "boolean" });
     expect(properties(spawn)).toHaveProperty("cwd");
     expect(properties(handoff)).not.toHaveProperty("cwd");
     expect(properties(create)).not.toHaveProperty("cwd");
   });
 
-  it("rejects durable recursive cwd before the provider can transfer ownership", async () => {
+  it("rejects invalid durable recursive cwd before the provider can transfer ownership", async () => {
     const { provider, root } = setup();
 
     await expect(
       provider.invoke(
         "spawn",
-        { task: "must remain recursive", cwd: process.cwd(), recursive: true, residency: "durable" },
+        { task: "must remain recursive", cwd: path.join(root, "missing"), recursive: true, residency: "durable" },
         context,
       ),
-    ).rejects.toThrow(/only for non-recursive agents/);
+    ).rejects.toThrow(/Invalid Fabric agent cwd/);
     expect(fs.existsSync(path.join(root, "runs"))).toBe(false);
   });
 
@@ -1007,7 +1008,7 @@ describe("AgentsProvider runner support", () => {
 
     const runResult = await provider.invoke(
       "run",
-      { task: "report the launch directory", cwd: requested },
+      { task: "report the launch directory", cwd: requested, recursive: true },
       invocationContext,
     ) as { cwd: string };
     expect(runResult.cwd).toBe(canonical);
@@ -1016,7 +1017,7 @@ describe("AgentsProvider runner support", () => {
     updates.length = 0;
     const handle = await provider.invoke(
       "spawn",
-      { task: "report the launch directory", cwd: requested },
+      { task: "report the launch directory", cwd: requested, recursive: true },
       invocationContext,
     ) as { id: string; cwd: string };
     expect(handle.cwd).toBe(canonical);
@@ -1044,7 +1045,7 @@ describe("AgentsProvider runner support", () => {
 
     const runResult = await provider.invoke(
       "run",
-      { task: "report the launch directory", cwd: requested },
+      { task: "report the launch directory", cwd: requested, recursive: true },
       invocationContext,
     ) as { cwd: string };
     expect(runResult.cwd).toBe(canonical);
@@ -1053,7 +1054,7 @@ describe("AgentsProvider runner support", () => {
     updates.length = 0;
     const handle = await provider.invoke(
       "spawn",
-      { task: "report the launch directory", cwd: requested },
+      { task: "report the launch directory", cwd: requested, recursive: true },
       invocationContext,
     ) as { id: string; cwd: string };
     expect(handle.cwd).toBe(canonical);

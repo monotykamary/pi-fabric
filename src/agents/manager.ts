@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import {
   DEFAULT_FABRIC_CONFIG,
@@ -113,15 +114,6 @@ interface AgentParticipantGuidanceRequest {
 type AgentParticipantGuidanceResolver = (
   request: AgentParticipantGuidanceRequest,
 ) => string | undefined;
-
-/** Reject the cwd combination excluded from the leaf-agent release. */
-export const validateAgentCwdRequest = (
-  request: Pick<AgentRunRequest, "cwd" | "recursive">,
-): void => {
-  if (request.cwd !== undefined && request.recursive === true) {
-    throw new Error("Fabric agent cwd is supported only for non-recursive agents; omit cwd when recursive is true");
-  }
-};
 
 /** Resolve and validate a one-shot agent's filesystem execution directory. */
 export const resolveAgentCwd = (parentCwd: string, requestedCwd?: string): string => {
@@ -573,7 +565,6 @@ export class AgentManager {
       ...(request.recursive === true ? { extensions: true } : {}),
     });
     const pythonRuntime = kernel ? this.resolvePythonRuntime(request.pythonRuntime) : undefined;
-    validateAgentCwdRequest(request);
     // Validate explicit execution targets before any model preparation or budget side effects.
     // With no override this deliberately preserves the manager cwd without canonicalizing it.
     const selectedCwd = this.resolveCwd(request.cwd);
@@ -1480,9 +1471,12 @@ export class AgentManager {
     }
   }
 
+  readonly #inheritedToolAllowlist = readChildToolAllowlist();
+
   #childTools(request: AgentRunRequest, runner: FabricAgentRunner, requiresFabricKernel = false): string[] {
     const tools = [...(request.tools ?? this.config.defaultTools)].filter(
-      (tool) => tool !== "fabric_exec",
+      (tool) => tool !== "fabric_exec" &&
+        (this.#inheritedToolAllowlist === undefined || this.#inheritedToolAllowlist.has(tool)),
     );
     const extensions = request.recursive === true
       ? true

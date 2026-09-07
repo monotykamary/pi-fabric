@@ -41,12 +41,12 @@ return run.status;
   it("types cwd through one-shot helpers but not handoff or actors", () => {
     const accepted = typeCheckFabricCode(
       `
-await agents.run({ task: "run elsewhere", cwd: "../other" });
+await agents.run({ task: "run elsewhere", cwd: "../other", recursive: true });
 await agents.spawn({ task: "spawn elsewhere", cwd: "/tmp/other", residency: "durable" });
 await agents.create({ name: "durable actor", instructions: "watch", residency: "durable" });
 await workflow.agent("workflow elsewhere", { cwd: "worktree" });
 await council.run({ task: "council elsewhere", roles: ["reviewer"], cwd: "council" });
-return rlm.query({ task: "recursive elsewhere" });
+return rlm.query({ task: "recursive elsewhere", cwd: "../other", worktree: true });
 `,
       GUEST_TYPE_DECLARATIONS,
     );
@@ -56,7 +56,6 @@ return rlm.query({ task: "recursive elsewhere" });
       `
 await agents.handoff({ model: "provider/model", cwd: "other" });
 await agents.create({ name: "actor", instructions: "watch", cwd: "other" });
-await rlm.query({ task: "recursive elsewhere", cwd: "other" });
 return "never";
 `,
       GUEST_TYPE_DECLARATIONS,

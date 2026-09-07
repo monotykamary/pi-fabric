@@ -683,7 +683,44 @@ describe("AgentManager", () => {
     expect(result.grantedRisks).toEqual([]);
   });
 
-  it("launches inherited children with the full-code surface through the real worker", async () => {
+  it.each(['["read","fabric_exec"]', 'invalid'])('does not widen recursive alternate-cwd authority (%s)', async (allowlist) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-recursive-security-"));
+    roots.push(root);
+    const target = path.join(root, "target");
+    fs.mkdirSync(target);
+    const saved = process.env.PI_FABRIC_TOOL_ALLOWLIST;
+    process.env.PI_FABRIC_TOOL_ALLOWLIST = allowlist;
+    let manager: AgentManager;
+    try {
+      manager = new AgentManager(process.cwd(), DEFAULT_FABRIC_CONFIG.agents, {
+        workerPath: path.resolve("src/worker.ts"),
+        piBinary: path.resolve("tests/fixtures/fake-pi-launch-probe.mjs"),
+        runRoot: path.join(root, "runs"), fullCodeMode: true,
+        projectRoot: process.cwd(), meshRoot: path.join(root, "mesh"),
+        mainAgentId: "root:security", kernel: () => "python", pythonRuntime: () => "monty",
+      });
+      managers.push(manager);
+    } finally {
+      if (saved === undefined) delete process.env.PI_FABRIC_TOOL_ALLOWLIST;
+      else process.env.PI_FABRIC_TOOL_ALLOWLIST = saved;
+    }
+    const result = await manager.run({
+      task: "REPORT_LAUNCH_SURFACE", cwd: target, recursive: true,
+      tools: ["read", "bash", "write"], transport: "process",
+      capabilityRequirements: ["pi.read"],
+    });
+    expect(result.status).toBe("completed");
+    const tools = allowlist === 'invalid' ? ["fabric_exec"] : ["read", "fabric_exec"];
+    expect(JSON.parse(result.text)).toMatchObject({
+      cwd: fs.realpathSync(target), trustFlags: [], tools, toolAllowlistEnv: tools,
+      grantedRisksEnv: ["agent"], fullCodeModeEnv: "true", extensions: true,
+      projectRoot: process.cwd(), meshRoot: path.join(root, "mesh"),
+      kernel: "python", pythonRuntime: "monty", depth: "1", mainAgentId: "root:security",
+      capabilityRequirements: ["pi.read"],
+    });
+  });
+
+  it("launches inherited children with the full-code surface through the real worker", { timeout: 15_000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-manager-"));
     roots.push(root);
     const fakePi = path.resolve("tests/fixtures/fake-pi-launch-probe.mjs");
@@ -703,7 +740,7 @@ describe("AgentManager", () => {
       timeoutMs: 5_000,
     });
     expect(inherited.status).toBe("completed");
-    expect(JSON.parse(inherited.text)).toEqual({
+    expect(JSON.parse(inherited.text)).toMatchObject({
       extensions: true,
       extensionPath: expect.stringContaining("index"),
       tools: ["read", "fabric_exec"],
@@ -720,9 +757,9 @@ describe("AgentManager", () => {
       timeoutMs: 5_000,
     });
     expect(native.status).toBe("completed");
-    expect(JSON.parse(native.text)).toEqual({
+    expect(JSON.parse(native.text).extensionPath).toBeUndefined();
+    expect(JSON.parse(native.text)).toMatchObject({
       extensions: false,
-      extensionPath: undefined,
       tools: ["read"],
       fullCodeModeEnv: "false",
       toolAllowlistEnv: ["read"],

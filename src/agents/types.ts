@@ -57,7 +57,7 @@ export interface AgentRunRequest {
   timeoutMs?: number;
   extensions?: boolean;
   recursive?: boolean;
-  /** Filesystem execution directory override; relative paths resolve from the parent manager cwd. */
+  /** Leaf or recursive execution cwd; relative to the immediate caller, independent of project/mesh lineage. */
   cwd?: string;
   worktree?: boolean;
   residency?: FabricParticipantResidency;

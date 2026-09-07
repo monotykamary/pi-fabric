@@ -180,16 +180,25 @@ describe("one-shot agent cwd", () => {
     expect((manager.status(handle.id) as { cwd: string }).cwd).toBe(parent);
   });
 
-  it("rejects cwd on recursive requests before creating a run directory", async () => {
+  it("runs recursive children in a loose cwd while preserving lineage and relative descendant resolution", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-cwd-recursive-"));
     roots.push(root);
-    const runRoot = path.join(root, "runs");
-    const manager = createManager(root, runRoot, createWorker(root));
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-loose-target-"));
+    roots.push(target);
+    fs.mkdirSync(path.join(target, "nested"));
+    const projectRoot = fs.realpathSync(root);
+    const meshRoot = path.join(root, "mesh");
+    const worker = createWorker(root);
+    const manager = createManager(root, path.join(root, "runs"), worker, { projectRoot, meshRoot });
+    const handle = await manager.spawn({ task: "recursive elsewhere", cwd: target, recursive: true, transport: "process" });
+    expect(handle).toMatchObject({ recursive: true, cwd: fs.realpathSync(target) });
+    const result = await manager.wait(handle.id);
+    expect(result).toMatchObject({ recursive: true, cwd: fs.realpathSync(target), projectRoot, meshRoot });
 
-    await expect(
-      manager.spawn({ task: "must remain recursive", cwd: root, recursive: true, transport: "process" }),
-    ).rejects.toThrow(/only for non-recursive agents/);
-    expect(fs.existsSync(runRoot)).toBe(false);
+    // Reconstruct the child manager with the worker's effective cwd and inherited lineage.
+    const child = createManager(result.cwd, path.join(root, "nested-runs"), worker, { projectRoot, meshRoot });
+    const descendant = await child.run({ task: "descendant", cwd: "nested", recursive: true, transport: "process" });
+    expect(descendant).toMatchObject({ cwd: fs.realpathSync(path.join(target, "nested")), projectRoot, meshRoot });
   });
 
   it("rejects invalid cwd values before creating a run directory", async () => {
@@ -237,7 +246,7 @@ describe("one-shot agent cwd", () => {
     },
   );
 
-  it("reuses the selected repository and subdirectory for worktree launches", async () => {
+  it.each([false, true])("reuses the selected repository and subdirectory for worktree launches (recursive=%s)", async (recursive) => {
     const parent = initRepository("pi-fabric-parent-repo-");
     const target = initRepository("pi-fabric-target-repo-", path.join("packages", "app"));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-cwd-worktree-"));
@@ -253,6 +262,7 @@ describe("one-shot agent cwd", () => {
     try {
       result = await manager.run({
         task: "work in target repository",
+        recursive,
         cwd: selected,
         worktree: true,
         transport: "process",
@@ -313,7 +323,7 @@ describe("one-shot agent cwd", () => {
     expect(git(parent, "worktree", "list", "--porcelain")).toBe(before);
   });
 
-  it("retains the selected cwd across startup retries", async () => {
+  it.each([false, true])("retains the selected cwd across startup retries (recursive=%s)", async (recursive) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-cwd-retry-"));
     roots.push(root);
     const target = path.join(root, "target");
@@ -324,7 +334,7 @@ describe("one-shot agent cwd", () => {
       path.resolve("tests/fixtures/fake-worker-startup-retry.mjs"),
     );
 
-    const result = await manager.run({ task: "Recover startup", cwd: "target", transport: "process" });
+    const result = await manager.run({ task: "Recover startup", cwd: "target", recursive, transport: "process" });
 
     expect(result.status).toBe("completed");
     expect(result.cwd).toBe(fs.realpathSync(target));

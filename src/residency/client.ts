@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { FabricAgentLog, AgentHandleInfo, AgentRunRecord, AgentRunRequest, AgentRunResult } from "../agents/types.js";
-import { resolveAgentCwd, validateAgentCwdRequest } from "../agents/manager.js";
+import { readChildToolAllowlist } from "../core/child-tool-allowlist.js";
+import { resolveAgentCwd } from "../agents/manager.js";
 import { isFabricWorktreePath } from "../agents/worktree-paths.js";
 import { executeFile, processIsAlive, spawnDetached } from "../agents/transports/process-utils.js";
 import { readJsonlPage } from "../log-tail.js";
@@ -102,6 +103,7 @@ export class ResidencyClient {
   readonly #requestsPath: string;
   readonly #responsesPath: string;
   readonly #agentsPath: string;
+  readonly #inheritedToolAllowlist = readChildToolAllowlist();
   readonly #deliveryPrefix: string;
   readonly #hostPath: string;
   #deliveryTimer: NodeJS.Timeout | undefined;
@@ -222,10 +224,13 @@ export class ResidencyClient {
   }
 
   async spawnAgent(request: AgentRunRequest, signal?: AbortSignal): Promise<AgentHandleInfo> {
-    validateAgentCwdRequest(request);
     const resolvedRequest = request.cwd === undefined
       ? request
       : { ...request, cwd: resolveAgentCwd(this.options.config.cwd, request.cwd) };
+    // Freeze inherited optional-tool authority before transferring to an existing host.
+    const allowedTools = this.#inheritedToolAllowlist;
+    const tools = allowedTools === undefined ? undefined
+      : (request.tools ?? this.options.config.agents.defaultTools).filter((tool) => allowedTools.has(tool));
     await this.ensureHost();
     const response = await this.#command(
       {
@@ -233,7 +238,7 @@ export class ResidencyClient {
         operation: "spawn",
         requestId: randomUUID(),
         rootId: this.options.config.rootId,
-        request: { ...resolvedRequest, residency: "durable" },
+        request: { ...resolvedRequest, ...(tools ? { tools } : {}), residency: "durable" },
         createdAt: Date.now(),
       },
       signal,
@@ -255,6 +260,8 @@ export class ResidencyClient {
     return {
       ...record,
       cwd: metadata.handle.cwd,
+      ...(metadata.handle.kernel ? { kernel: metadata.handle.kernel } : {}),
+      ...(metadata.handle.recursive ? { recursive: true } : {}),
       residency: "durable",
       logFile: path.join(metadata.runDirectory, "events.jsonl"),
       ...(metadata.handle.sessionId ? { sessionId: metadata.handle.sessionId } : {}),

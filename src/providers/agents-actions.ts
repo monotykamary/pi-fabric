@@ -47,7 +47,7 @@ const runProperties = {
   recursive: { type: "boolean" },
   cwd: {
     type: "string",
-    description: "Filesystem execution directory; relative paths resolve from the parent Fabric agent cwd.",
+    description: "Filesystem execution directory for leaf or recursive Pi runs; relative paths resolve from the caller cwd. Does not change project/mesh ownership or grant target project trust.",
   },
   worktree: { type: "boolean" },
   schema: { type: "object", description: "Optional JSON Schema for validated structured output" },

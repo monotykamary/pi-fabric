@@ -1285,7 +1285,7 @@ declare function phase(name: string, options?: FabricWorkflowPhaseOptions): Prom
 declare function phase(input: FabricWorkflowPhaseInput): Promise<{ name: string; index: number; id?: string }>;
 declare function log(...values: unknown[]): void;
 declare const budget: FabricWorkflowApi["budget"];
-type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive" | "cwd"> & { runner?: "pi" };
+type FabricRlmRequest = Omit<FabricAgentRequest, "runner" | "recursive"> & { runner?: "pi" };
 declare const rlm: { query(args: FabricRlmRequest): Promise<FabricAgentResult> };
 interface FabricConsole {
   log(...args: unknown[]): void;

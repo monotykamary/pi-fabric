@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActorManager } from "../src/actors/manager.js";
 import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
@@ -193,6 +193,7 @@ const stopResident = async (config: ResidentHostConfig): Promise<void> => {
 };
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) {
     const residencyDirectory = path.join(root, "mesh", "residency");
     try {
@@ -210,7 +211,7 @@ afterEach(async () => {
 });
 
 describe("durable cwd validation", () => {
-  it("rejects recursive cwd before creating a resident host or request", async () => {
+  it("rejects invalid recursive cwd before creating a resident host or request", async () => {
     const state = await rootHarness("resident-cwd-rejection");
     const client = new ResidencyClient({
       config: state.config,
@@ -224,11 +225,11 @@ describe("durable cwd validation", () => {
       await expect(
         client.spawnAgent({
           task: "must remain recursive",
-          cwd: state.root,
+          cwd: path.join(state.root, "missing"),
           recursive: true,
           residency: "durable",
         }),
-      ).rejects.toThrow(/only for non-recursive agents/);
+      ).rejects.toThrow(/Invalid Fabric agent cwd/);
       expect(fs.existsSync(path.join(state.config.residencyRoot, "owner.json"))).toBe(false);
       expect(fs.existsSync(path.join(state.config.residencyRoot, "requests"))).toBe(false);
     } finally {
@@ -811,12 +812,13 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable parti
     }
   });
 
-  it("forwards and reports a canonical durable agent cwd", { timeout: 45_000 }, async () => {
+  it.each([false, true])("forwards and reports a canonical durable agent cwd (recursive=%s)", { timeout: 45_000 }, async (recursive) => {
     const state = await rootHarness("resident-agent-cwd");
     state.config.cwd = state.root;
     state.config.projectRoot = state.root;
     const target = path.join(state.root, "child");
     fs.mkdirSync(target);
+    if (recursive) vi.stubEnv("PI_FABRIC_TOOL_ALLOWLIST", '["read","fabric_exec"]');
     const client = new ResidencyClient({
       config: state.config,
       mesh: state.mesh,
@@ -826,18 +828,28 @@ describe.skipIf(!hasResidentHost || process.platform === "win32")("durable parti
     });
 
     const handle = await client.spawnAgent({
-      task: "STREAM_PREVIEW",
+      task: "REPORT_RECURSIVE_CWD",
+      kernel: "python",
       cwd: "child",
+      tools: ["read", "bash", "write"],
+      recursive,
       transport: "process",
       residency: "durable",
     });
     const canonical = fs.realpathSync(target);
     expect(handle.cwd).toBe(canonical);
+    expect(handle.kernel).toBe("python");
 
     const result = await client.waitAgent(handle.id);
     expect(result.cwd).toBe(canonical);
+    if (recursive) {
+      expect(result).toMatchObject({ recursive: true, tools: ["read", "fabric_exec"], grantedRisks: ["agent"] });
+    }
     expect(client.statusAgent(handle.id)).toMatchObject({ cwd: canonical });
     expect(client.readAgentLog(handle.id).status?.cwd).toBe(canonical);
+    const reopened = new ResidencyClient(client.options);
+    expect(reopened.statusAgent(handle.id)).toMatchObject({ cwd: canonical, kernel: "python", ...(recursive ? { recursive: true } : {}) });
+    await reopened.close();
     await expect(client.cleanupAgent(handle.id)).resolves.toEqual({ cleaned: true });
     await client.close();
     await state.participants.close();

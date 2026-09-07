@@ -46,7 +46,6 @@ import type {
 import {
   effectiveAgentTimeoutMs,
   AgentManager,
-  validateAgentCwdRequest,
 } from "../agents/manager.js";
 import { checkedHandoffCompaction } from "../agents/handoff.js";
 import type {
@@ -638,7 +637,6 @@ export class AgentsProvider implements FabricProvider {
         return this.handoff(args, context);
       case "spawn": {
         const request = runRequest(this.#resolvePiModelArgs(args, context), context, this.manager);
-        validateAgentCwdRequest(request);
         const kernel = this.manager.resolveKernel(request);
         const { kernel: _requestedKernel, ...baseRequest } = request;
         const durableRequest = {

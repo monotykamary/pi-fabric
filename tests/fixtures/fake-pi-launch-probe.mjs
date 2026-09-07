@@ -15,6 +15,15 @@ const flag = (name) => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 const surface = {
+  cwd: process.cwd(),
+  trustFlags: argv.filter((arg) => ["--approve", "--no-approve", "-a", "-na"].includes(arg)),
+  projectRoot: process.env.PI_FABRIC_PROJECT_ROOT,
+  meshRoot: process.env.PI_FABRIC_MESH_ROOT,
+  kernel: process.env.PI_FABRIC_KERNEL,
+  pythonRuntime: process.env.PI_FABRIC_PYTHON_RUNTIME,
+  depth: process.env.PI_FABRIC_DEPTH,
+  mainAgentId: process.env.PI_FABRIC_MAIN_AGENT_ID,
+  capabilityRequirements: JSON.parse(process.env.PI_FABRIC_CAPABILITY_REQUIREMENTS ?? "[]"),
   extensions: !argv.includes("--no-extensions"),
   extensionPath: flag("-e"),
   tools: flag("--tools")?.split(",") ?? [],

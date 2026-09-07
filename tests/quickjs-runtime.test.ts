@@ -757,11 +757,11 @@ await Promise.all([
     ]);
   });
 
-  it("forwards cwd through workflow and council leaf helpers", async () => {
+  it("forwards cwd and recursion through workflow and council helpers", async () => {
     const requests: Array<Record<string, unknown>> = [];
     const result = await new QuickJsRuntime().execute(
       `
-await workflow.agent("workflow task", { cwd: "workflow-target" });
+await workflow.agent("workflow task", { cwd: "workflow-target", recursive: true, worktree: true });
 await council.run({ task: "council task", roles: ["reviewer"], synthesize: false, cwd: "council-target" });
 return "done";
 `,
@@ -777,7 +777,7 @@ return "done";
     expect(result.error).toBeUndefined();
     expect(result.value).toBe("done");
     expect(requests).toEqual([
-      expect.objectContaining({ task: "workflow task", cwd: "workflow-target" }),
+      expect.objectContaining({ task: "workflow task", cwd: "workflow-target", recursive: true, worktree: true }),
       expect.objectContaining({ task: expect.stringContaining("council task"), cwd: "council-target" }),
     ]);
   });
@@ -800,18 +800,19 @@ return "done";
   it("forwards a dynamic rlm cwd to the recursive host request", async () => {
     let request: Record<string, unknown> | undefined;
     const result = await new QuickJsRuntime().execute(
-      `return rlm.query({ task: "map", cwd: "target" });`,
+      `return rlm.query({ task: "map", cwd: "target", worktree: true });`,
       async (ref, args) => {
         if (ref === "agents.run") {
           request = args;
-          throw new Error("recursive cwd guard");
+          return { status: "completed", text: "recursive target", usage: { input: 1, output: 1 } };
         }
         throw new Error(`Unexpected call: ${ref}`);
       },
       options,
     );
-    expect(result.error).toContain("recursive cwd guard");
-    expect(request).toMatchObject({ task: "map", cwd: "target", runner: "pi", recursive: true });
+    expect(result.error).toBeUndefined();
+    expect(result.value).toMatchObject({ status: "completed", text: "recursive target" });
+    expect(request).toMatchObject({ task: "map", cwd: "target", worktree: true, runner: "pi", recursive: true });
   });
 
   it("counts rlm.query usage and forces the Pi runner", async () => {
