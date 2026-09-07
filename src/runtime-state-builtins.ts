@@ -15,16 +15,19 @@ import { MeshProvider } from "./providers/mesh-provider.js";
 import { PiToolsProvider } from "./providers/pi-tools-provider.js";
 import { StateProvider } from "./providers/state-provider.js";
 
+import type { FabricManagedHost } from "./managed-host.js";
+
 /** Built-in provider recipes and policy; the runtime chooses installation order. */
 export class RuntimeStateBuiltins {
   constructor(
     private readonly manifest: FabricProviderComponentManifest,
     private readonly registry: ActionRegistry,
     private readonly onInstalled: (name: string) => void,
+    private readonly managedHost?: FabricManagedHost,
   ) {}
 
   async install(component: FabricProviderComponent): Promise<void> {
-    await this.manifest.install(component);
+    await this.manifest.install(this.managedHost?.component(component) ?? component);
     this.onInstalled(component.definition.name);
   }
 
@@ -48,6 +51,7 @@ export class RuntimeStateBuiltins {
           cwd,
           capturedTools,
           capturedToolsProvider,
+          this.managedHost ? {requireCapturedOverrides: true, powerShellToolDefinitionFactory: undefined} : undefined,
         ),
       }));
     }
@@ -89,7 +93,12 @@ export class RuntimeStateBuiltins {
   }
 
   async mesh(config: FabricConfig, mesh: MeshStore, identity: MeshIdentity, participants: ParticipantDirectory): Promise<void> {
-    if (config.mesh.enabled) {
+    if (this.managedHost) {
+      for (const provider of ["mesh", "state"]) {
+        if (this.managedHost.has(provider)) await this.install(createProviderComponent({provider, description: "Managed scoped provider", create: () => this.managedHost!.provider(provider)}));
+        else this.registry.markUnavailable(provider, "unavailable in managed host");
+      }
+    } else if (config.mesh.enabled) {
       await this.install(createProviderComponent({
         provider: "mesh",
         description: "Project mesh and participant directory",
@@ -110,7 +119,9 @@ export class RuntimeStateBuiltins {
   }
 
   async memory(context: ExtensionContext, config: FabricConfig, sessionId: string): Promise<void> {
-    if (config.memory.enabled) {
+    if (this.managedHost?.has("memory")) {
+      await this.install(createProviderComponent({provider: "memory", description: "Managed current-session recall", create: () => this.managedHost!.provider("memory")}));
+    } else if (config.memory.enabled) {
       const sessionFile = context.sessionManager.getSessionFile();
       const memoryContext: MemoryProviderContext = {
         agentDir: resolveAgentDir(),
@@ -141,11 +152,11 @@ export class RuntimeStateBuiltins {
       ...(config.fullCodeMode || config.schema.mode === "enforce" ? ["pi"] : []),
       ...(config.fullCodeMode && config.capture.enabled && config.schema.mode !== "enforce" ? ["extensions"] : []),
       "mcp",
-      ...(config.mesh.enabled ? ["mesh", "state"] : []),
+      ...(config.mesh.enabled ? ["mesh", "state"] : ["mesh", "state"].filter((name) => this.managedHost?.has(name))),
       "schema",
       "compact",
       "agents",
-      ...(config.memory.enabled ? ["memory"] : []),
+      ...(config.memory.enabled || this.managedHost?.has("memory") ? ["memory"] : []),
     ]);
     this.manifest.assertActive(expectedBuiltinProviders, this.registry);
   }

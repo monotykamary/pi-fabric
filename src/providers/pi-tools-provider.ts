@@ -68,6 +68,7 @@ const MAX_RENDERER_ARGUMENT_CHARS = 200_000;
 const MAX_REPLACE_ALL_FILE_CHARS = 2_000_000;
 
 interface PiToolsProviderHostCapabilities {
+  requireCapturedOverrides?: boolean;
   powerShellToolDefinitionFactory: ShellDefinitionFactory | undefined;
 }
 
@@ -217,6 +218,7 @@ export class PiToolsProvider implements FabricProvider {
   readonly #catalog: CapturedToolCatalog | undefined;
   readonly #capturedTools: CapturedToolsProvider | undefined;
   readonly #cwd: string;
+  readonly #requireCapturedOverrides: boolean;
   readonly #bashDefinitions = new BashCwdDefinitions();
   readonly #powershellDefinitions: PowerShellCwdDefinitions | undefined;
 
@@ -227,11 +229,12 @@ export class PiToolsProvider implements FabricProvider {
     hostCapabilities: PiToolsProviderHostCapabilities = DEFAULT_HOST_CAPABILITIES,
   ) {
     this.#cwd = cwd;
+    this.#requireCapturedOverrides = hostCapabilities.requireCapturedOverrides === true;
     const powerShellFactory = hostCapabilities.powerShellToolDefinitionFactory;
     this.#powershellDefinitions = powerShellFactory
       ? new PowerShellCwdDefinitions(powerShellFactory)
       : undefined;
-    this.#tools = {
+    this.#tools = this.#requireCapturedOverrides ? {} : {
       read: createReadToolDefinition(cwd),
       bash: createBashToolDefinition(cwd),
       ...(powerShellFactory ? { powershell: powerShellFactory(cwd) } : {}),
@@ -266,10 +269,10 @@ export class PiToolsProvider implements FabricProvider {
   ): Promise<FabricActionDescriptor | undefined> {
     const name = actionName as PiCoreToolName;
     if (this.#allowedTools && !this.#allowedTools.has(name)) return undefined;
-    const tool = this.#tools[name];
-    if (!tool) return undefined;
     const override = await this.#capturedTools?.describe(name, _context);
     if (override) return { ...override, namespace: "extension-override" };
+    const tool = this.#tools[name];
+    if (!tool || this.#requireCapturedOverrides) return undefined;
     return this.#descriptor(name, tool);
   }
 
@@ -345,6 +348,9 @@ export class PiToolsProvider implements FabricProvider {
   }
 
   #assertAllowed(name: string): void {
+    if (this.#requireCapturedOverrides && (!PI_CORE_TOOL_NAMES.includes(name as PiCoreToolName) || !this.#catalog?.get(name))) {
+      throw new Error(`Managed Pi tool requires an authorized captured override: ${name}`);
+    }
     if (this.#allowedTools && !this.#allowedTools.has(name)) {
       throw new Error(`Pi tool ${name} is not permitted by this child's tool allowlist`);
     }
@@ -385,8 +391,8 @@ export class PiToolsProvider implements FabricProvider {
   ): Promise<unknown> {
     const name = actionName as PiCoreToolName;
     this.#assertAllowed(name);
-    if (!this.#tools[name]) throw new Error(`Unknown Pi tool: ${actionName}`);
-    if (name === "bash") {
+    if (!this.#requireCapturedOverrides && !this.#tools[name]) throw new Error(`Unknown Pi tool: ${actionName}`);
+    if (name === "bash" && !this.#requireCapturedOverrides) {
       const intercepted = await tryExecuteGitWorktreeAdd(args, this.#cwd);
       if (intercepted) {
         this.#attachPreview(name, intercepted, args, context);

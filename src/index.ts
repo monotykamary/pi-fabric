@@ -158,7 +158,11 @@ const registrationFrom = (value: unknown): FabricProviderRegistration | undefine
 
 const SKILL_REFERENCE_CUSTOM_TYPE = "pi-fabric-skill-reference";
 
-export default async function piFabric(pi: ExtensionAPI): Promise<void> {
+export const FABRIC_MANAGED_HOST_VERSION = 1;
+export type { FabricManagedHostOptions } from "./managed-host.js";
+import type { FabricManagedHostOptions } from "./managed-host.js";
+
+export default async function piFabric(pi: ExtensionAPI, options: { managedHost?: FabricManagedHostOptions } = {}): Promise<void> {
   const codePreviewSettings = defaultCodePreviewSettings();
   const decorateShell: FabricToolShellDecorator = withCodePreviewShell;
   let compatibilityWarningShown = false;
@@ -168,7 +172,7 @@ export default async function piFabric(pi: ExtensionAPI): Promise<void> {
   );
   const capturedTools = new CapturedToolCatalog();
   const proxyContract = new ProxyContractLedger();
-  const state = new FabricState(pi, capturedTools, { paths: FABRIC_RUNTIME_PATHS });
+  const state = new FabricState(pi, capturedTools, { paths: FABRIC_RUNTIME_PATHS, ...(options.managedHost ? {managedHost: options.managedHost} : {}) });
   const directToolApproval = new FabricDirectToolApproval(
     pi,
     () => state.config,

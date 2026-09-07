@@ -51,6 +51,39 @@ async invoke(actionName, args, context) {
 }
 ```
 
+## Managed embedded hosts
+
+Trusted embedding code can opt into a closed-world provider authority:
+
+```ts
+import piFabric, { FABRIC_MANAGED_HOST_VERSION } from "pi-fabric";
+
+if (FABRIC_MANAGED_HOST_VERSION !== 1) throw new Error("Unsupported managed host");
+await piFabric(pi, { managedHost: { providers: ["agents", "memory", "compact"] } });
+// Register all three host-owned implementations using the v1 registration event before activation.
+```
+
+This option is a factory capability, not a project/global setting or an event field. Without it,
+reserved provider names still reject registration even with `overwrite: true`. Host-listed names
+must be exact members of `agents`, `memory`, `compact`, `schema`, `state`, `mesh`, or `mcp`.
+All listed implementations must register before activation. Re-publishing the same object is
+idempotent; changing an implementation after activation requires a new host. Providers belong to
+one host lifetime, and `close()` is awaited once after final publication withdrawal.
+
+Managed mode ignores ambient configuration and fixes execution to full-code TypeScript QuickJS.
+Native MCP, agent spawning, mesh, filesystem memory discovery, schema effects, speculative work,
+prewalk, repairs, entropy compilation, and model-visible component control are unavailable.
+A supplied memory implementation remains discoverable without enabling native memory scanning.
+Every pinned component activation/reload uses the same host replacement; it cannot resurrect a
+native provider. Non-core providers omitted from the host list expose no actions. Pi core calls
+require captured overrides, instantiate no native tools, and do not apply native shell/worktree
+interception. The embedding host must supply every desired override through its authorized broker.
+Missing or withdrawn overrides fail closed.
+
+The host remains responsible for OS isolation, resource loading, broker authorization and
+cancellation, and for exposing only trusted extension code. This option does not sandbox arbitrary
+host-side extensions. In particular, do not auto-load plugins from the agent's computer snapshot.
+
 ## Effect semantics and scoped acquisition
 
 Action descriptors can declare effect semantics. Descriptor hashes and committed component and actor views carry this metadata. Omitting it is the conservative choice. Read-risk actions then resolve as commutative `none`, and every other risk resolves as unknown-order `emission`.

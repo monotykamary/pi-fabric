@@ -131,7 +131,10 @@ const escapeXmlText = (value: string): string =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 
+import type { FabricManagedHost } from "./managed-host.js";
+
 export interface FabricRuntimeStateOptions {
+  managedHost?: FabricManagedHost;
   activity?: FabricActivityStore;
   prewalk?: PrewalkController;
   prewalkDrift?: PrewalkDriftTracker;
@@ -173,6 +176,7 @@ export class FabricRuntimeState {
   readonly prewalkDrift: PrewalkDriftTracker;
   readonly sessionApprovals: FabricSessionApprovals;
   readonly #paths: FabricRuntimePaths | undefined;
+  readonly #managedHost: FabricManagedHost | undefined;
   #widgetDismissedAt = 0;
   #suppressResidentGuidanceSync = false;
 
@@ -186,6 +190,7 @@ export class FabricRuntimeState {
     this.prewalkDrift = options.prewalkDrift ?? new PrewalkDriftTracker();
     this.sessionApprovals = options.sessionApprovals ?? new FabricSessionApprovals();
     this.#paths = options.paths;
+    this.#managedHost = options.managedHost;
   }
 
   get initialized(): boolean {
@@ -322,7 +327,8 @@ export class FabricRuntimeState {
     this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
     const projectTrusted = context.isProjectTrusted();
-    this.#config = bootstrapConfig ?? loadFabricConfig({
+    this.#managedHost?.seal();
+    this.#config = this.#managedHost?.config() ?? bootstrapConfig ?? loadFabricConfig({
       cwd: context.cwd,
       agentDir: resolveAgentDir(),
       projectTrusted,
@@ -368,7 +374,7 @@ export class FabricRuntimeState {
       this.componentCatalog,
       this.#componentSupervisor,
     );
-    this.#registry.register(new ComponentsProvider(this.#componentLoader));
+    this.#registry.register(this.#managedHost?.provider("components") ?? new ComponentsProvider(this.#componentLoader));
     const builtinManifest = new FabricProviderComponentManifest(
       this.componentCatalog,
       this.#componentLoader,
@@ -377,6 +383,7 @@ export class FabricRuntimeState {
       builtinManifest,
       this.#registry,
       (name) => this.#builtinComponentNames.add(name),
+      this.#managedHost,
     );
     const enforceSchema = this.#config.schema.mode === "enforce";
     await builtins.tools(context.cwd, this.#config, this.capturedTools);
@@ -831,6 +838,7 @@ export class FabricRuntimeState {
   // ExecutionService's runtime selection) see the change immediately without
   // a provider-topology rebuild. FabricState owns the coupling rules.
   setSchemaMode(mode: FabricSchemaMode, executorRuntime: FabricConfig["executor"]["runtime"]): void {
+    if (this.#managedHost) throw new Error("Managed host policy is immutable");
     if (!this.#config) return;
     this.#config.schema.mode = mode;
     this.#config.executor.runtime = executorRuntime;
@@ -838,6 +846,7 @@ export class FabricRuntimeState {
   }
 
   reloadConfig(context: ExtensionContext, next: FabricConfig): void {
+    if (this.#managedHost) next = this.#managedHost.config();
     if (!this.#config || !this.#cwd) return;
     next.schema.mode = this.#config.schema.mode;
     this.#speculation?.reset();
@@ -1081,6 +1090,7 @@ export class FabricRuntimeState {
   }
 
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
+    if (this.#managedHost) {this.#managedHost.register(provider, options.overwrite); return;}
     if (
       provider.name === "fabric" ||
       provider.name === "components" ||
@@ -1099,6 +1109,7 @@ export class FabricRuntimeState {
     component: FabricComponentDefinition,
     options: { overwrite?: boolean } = {},
   ): void {
+    if (this.#managedHost) throw new Error("Managed host component registration is disabled");
     if (component.name.startsWith(FABRIC_PROVIDER_COMPONENT_PREFIX)) {
       throw new Error(`Reserved Fabric component name: ${component.name}`);
     }

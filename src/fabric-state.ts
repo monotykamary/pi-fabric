@@ -45,7 +45,10 @@ import type {
 import type { FabricRuntimeState } from "./fabric-runtime-state.js";
 import type { FabricRuntimePaths } from "./runtime-paths.js";
 
+import { FabricManagedHost, type FabricManagedHostOptions } from "./managed-host.js";
+
 export interface FabricStateOptions {
+  managedHost?: FabricManagedHostOptions;
   paths?: FabricRuntimePaths;
   runtimeLoader?: () => Promise<typeof import("./fabric-runtime-state.js")>;
 }
@@ -69,6 +72,7 @@ export class FabricState {
   readonly #externalProviders = new Map<string, FabricProvider>();
   readonly #externalComponents = new Map<string, FabricComponentDefinition>();
   readonly #options: FabricStateOptions;
+  readonly #managedHost: FabricManagedHost | undefined;
   readonly activity = new FabricActivityStore();
   readonly prewalk = new PrewalkController();
   readonly prewalkDrift = new PrewalkDriftTracker();
@@ -81,6 +85,7 @@ export class FabricState {
     options: FabricStateOptions = {},
   ) {
     this.#options = options;
+    this.#managedHost = options.managedHost ? new FabricManagedHost(options.managedHost) : undefined;
   }
 
   get kernelReloadRequired(): boolean {
@@ -150,7 +155,7 @@ export class FabricState {
     // into this one: clear before the read so bootstrapped stays false and
     // presentation falls back to the safe default until a load succeeds.
     this.#config = undefined;
-    const config = loadFabricConfig({
+    const config = this.#managedHost?.config() ?? loadFabricConfig({
       cwd: context.cwd,
       agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
@@ -174,7 +179,7 @@ export class FabricState {
     if (!this.#config || this.#cwd !== context.cwd) {
       await this.bootstrap(context);
     } else {
-      const next = loadFabricConfig({
+      const next = this.#managedHost?.config() ?? loadFabricConfig({
         cwd: context.cwd,
         agentDir: resolveAgentDir(),
         projectTrusted: context.isProjectTrusted(),
@@ -261,6 +266,10 @@ export class FabricState {
   }
 
   registerExternal(provider: FabricProvider, options: { overwrite?: boolean } = {}): void {
+    if (this.#managedHost) {
+      this.#managedHost.register(provider, options.overwrite);
+      return;
+    }
     if (
       provider.name === "fabric" ||
       provider.name === "components" ||
@@ -279,6 +288,7 @@ export class FabricState {
     component: FabricComponentDefinition,
     options: { overwrite?: boolean } = {},
   ): void {
+    if (this.#managedHost) throw new Error("Managed host component registration is disabled");
     if (component.name.startsWith(FABRIC_PROVIDER_COMPONENT_PREFIX)) {
       throw new Error(`Reserved Fabric component name: ${component.name}`);
     }
@@ -290,7 +300,7 @@ export class FabricState {
   }
 
   reloadConfig(context: ExtensionContext): void {
-    const next = loadFabricConfig({
+    const next = this.#managedHost?.config() ?? loadFabricConfig({
       cwd: context.cwd,
       agentDir: resolveAgentDir(),
       projectTrusted: context.isProjectTrusted(),
@@ -316,6 +326,7 @@ export class FabricState {
   // touching fabric.json, so the next session starts from the configured mode.
   // reloadConfig preserves the override like the startup mode does.
   setSchemaMode(context: ExtensionContext, mode: FabricSchemaMode): void {
+    if (this.#managedHost) throw new Error("Managed host policy is immutable");
     if (!this.#config) throw new Error("Fabric is not initialized");
     const previous = this.#config.schema.mode;
     if (mode === "enforce" && previous !== "enforce" && !this.#config.fullCodeMode) {
@@ -351,6 +362,7 @@ export class FabricState {
   }
 
   #diskConfig(context: ExtensionContext): FabricConfig {
+    if (this.#managedHost) return this.#managedHost.config();
     const projectTrusted = context.isProjectTrusted();
     return loadFabricConfigForScope(
       { cwd: context.cwd, agentDir: resolveAgentDir(), projectTrusted },
@@ -368,6 +380,7 @@ export class FabricState {
     this.#runtime = undefined;
     try {
       await runtime?.shutdown();
+      await this.#managedHost?.close();
     } finally {
       if (generation === this.#generation) {
         this.#config = undefined;
@@ -456,6 +469,7 @@ export class FabricState {
       this.pi,
       this.capturedTools,
       {
+        ...(this.#managedHost ? {managedHost: this.#managedHost} : {}),
         activity: this.activity,
         prewalk: this.prewalk,
         prewalkDrift: this.prewalkDrift,
