@@ -258,6 +258,13 @@ const sessionsOutputSchema: Record<string, unknown> = {
   },
 };
 
+const SOURCE_ARG_SCHEMA = {
+  type: "string",
+  minLength: 1,
+  description:
+    "Registered portable memory source id. When set, the call resolves against that source only — filesystem scopes are never consulted and there is no filesystem fallback.",
+} as const;
+
 const descriptors: FabricActionDescriptor[] = [
   {
     name: "recall",
@@ -266,6 +273,7 @@ const descriptors: FabricActionDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
+        source: SOURCE_ARG_SCHEMA,
         query: { type: "string", maxLength: 4096 },
         queryMode: {
           type: "string",
@@ -378,7 +386,8 @@ const descriptors: FabricActionDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
-        session: { type: "string", description: "Exact session file path or unambiguous id." },
+        source: SOURCE_ARG_SCHEMA,
+        session: { type: "string", description: "Exact session file path, unambiguous id, or source session key." },
         expectedSourceHash: {
           type: "string",
           description: "SHA-256 from a prior pointer; stale sources are refused.",
@@ -456,6 +465,7 @@ const descriptors: FabricActionDescriptor[] = [
     inputSchema: {
       type: "object",
       properties: {
+        source: SOURCE_ARG_SCHEMA,
         scope: { type: "string" },
         branches: {
           type: "string",
@@ -504,6 +514,22 @@ export const normalizeMemoryArgs = actionArgNormalizer(
 
 export type { MemoryProviderContext } from "../memory/request-context.js";
 
+/** Lightweight recall/expand/sessions action schemas for managed proxies. */
+export const memoryActionSchemas: {
+  recall: { inputSchema: object; outputSchema: object };
+  expand: { inputSchema: object; outputSchema: object };
+  sessions: { inputSchema: object; outputSchema: object };
+} = Object.fromEntries(
+  descriptors.map((descriptor) => [
+    descriptor.name,
+    { inputSchema: descriptor.inputSchema, outputSchema: descriptor.outputSchema },
+  ]),
+) as {
+  recall: { inputSchema: object; outputSchema: object };
+  expand: { inputSchema: object; outputSchema: object };
+  sessions: { inputSchema: object; outputSchema: object };
+};
+
 export class MemoryProvider implements FabricProvider {
   readonly name = "memory";
   readonly description =
@@ -549,9 +575,9 @@ export class MemoryProvider implements FabricProvider {
         case "recall":
           return await processMemoryRecall(args, invocationContext, this.context, this.cache);
         case "expand":
-          return await processMemoryExpand(args, this.context, this.cache);
+          return await processMemoryExpand(args, this.context, this.cache, invocationContext.signal);
         case "sessions":
-          return await processMemorySessions(args, this.context);
+          return await processMemorySessions(args, this.context, invocationContext.signal);
         default:
           throw new Error(`Unknown memory action: ${actionName}`);
       }

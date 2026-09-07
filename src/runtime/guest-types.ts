@@ -817,6 +817,7 @@ interface FabricMemoryEntryRange {
   last: number;
 }
 interface FabricMemoryRecallArgs {
+  source?: string;
   query?: string;
   queryMode?: FabricMemoryQueryMode;
   queryMatch?: FabricMemoryQueryMatch;
@@ -846,6 +847,7 @@ interface FabricMemoryRecallArgs {
   entry_range?: FabricMemoryEntryRange;
 }
 interface FabricMemoryExpandArgs {
+  source?: string;
   session: string;
   expectedSourceHash?: string;
   expectedLineageFingerprint?: string;
@@ -995,6 +997,7 @@ interface FabricMemoryApi {
     ) => boolean | void | Promise<boolean | void>,
   ): Promise<FabricMemoryWalkResult>;
   sessions(args?: {
+    source?: string;
     scope?: string;
     branches?: FabricMemoryBranches;
     limit?: number;

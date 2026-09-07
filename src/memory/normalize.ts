@@ -539,26 +539,25 @@ const parseTimestamp = (raw: unknown): number | null => {
 };
 
 /**
- * Parse a session JSONL file into typed {@link NormalizedEntry} records.
+ * Normalize already-parsed session records (JSON values) into typed
+ * {@link NormalizedEntry} records. This is the single normalization engine:
+ * file-backed sessions parse JSONL lines into values and delegate here, and
+ * portable host sources pass adapter-supplied values directly. Records that
+ * are not JSON objects are skipped without consuming an ordinal, matching the
+ * file path's treatment of unparsable lines.
  *
  * Only entries that carry searchable text are emitted (message, compaction,
  * branch_summary, custom_message); structural-only entries (model_change,
  * thinking_level_change, label, custom, session_info) are skipped, so `index`
- * counts only content-bearing lines. The session header (line 0) is returned
- * separately via {@link readSessionHeader} when needed.
+ * counts only content-bearing records. A `type: "session"` record supplies
+ * the header; otherwise the explicit `identity` fallbacks apply.
  */
-export const normalizeSession = (
-  sessionFile: string,
+export const normalizeRecords = (
+  records: readonly unknown[],
+  identity: { sessionFile: string; sessionId?: string; cwd?: string },
   maxEntryChars: number,
   options: NormalizeSessionOptions = {},
 ): { entries: NormalizedEntry[]; header: SessionHeaderInfo | null; indexCoverage: NormalizationCoverage } => {
-  let content: string;
-  try {
-    content = fs.readFileSync(sessionFile, "utf8");
-  } catch {
-    return { entries: [], header: null, indexCoverage: { complete: false, reasons: ["source_unavailable"] } };
-  }
-  const lines = content.split("\n");
   let header: SessionHeaderInfo | null = null;
   const entries: NormalizedEntry[] = [];
   const reasons = new Set<string>();
@@ -568,15 +567,9 @@ export const normalizeSession = (
   let index = 0;
   let rawOrdinal = 0;
   let sessionId = "";
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let raw: Record<string, unknown>;
-    try {
-      raw = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+  for (const value of records) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const raw = value as Record<string, unknown>;
     if (asString(raw.type) === "session") {
       sessionId = asString(raw.id);
       header = {
@@ -608,8 +601,8 @@ export const normalizeSession = (
     const entryId = typeof raw.id === "string" ? raw.id : null;
     const parentId = typeof raw.parentId === "string" ? raw.parentId : null;
     const base: Omit<NormalizedEntry, "index"> = {
-      sessionFile,
-      sessionId: sessionId || "",
+      sessionFile: identity.sessionFile,
+      sessionId: sessionId || identity.sessionId || "",
       entryId,
       parentId,
       type,
@@ -661,6 +654,13 @@ export const normalizeSession = (
       }
     }
   }
+  if (header === null && (identity.sessionId !== undefined || identity.cwd !== undefined)) {
+    header = {
+      sessionId: identity.sessionId ?? "",
+      cwd: identity.cwd ?? "",
+    };
+    sessionId = sessionId || identity.sessionId || "";
+  }
 
   const entryIds = new Set<string>();
   const operationAddresses = new Set<string>();
@@ -680,6 +680,34 @@ export const normalizeSession = (
     header,
     indexCoverage: { complete: sortedReasons.length === 0, reasons: sortedReasons },
   };
+};
+
+/**
+ * Parse a session JSONL file into typed {@link NormalizedEntry} records.
+ * File-backed convenience wrapper over {@link normalizeRecords}.
+ */
+export const normalizeSession = (
+  sessionFile: string,
+  maxEntryChars: number,
+  options: NormalizeSessionOptions = {},
+): { entries: NormalizedEntry[]; header: SessionHeaderInfo | null; indexCoverage: NormalizationCoverage } => {
+  let content: string;
+  try {
+    content = fs.readFileSync(sessionFile, "utf8");
+  } catch {
+    return { entries: [], header: null, indexCoverage: { complete: false, reasons: ["source_unavailable"] } };
+  }
+  const records: unknown[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      records.push(JSON.parse(trimmed));
+    } catch {
+      continue;
+    }
+  }
+  return normalizeRecords(records, { sessionFile }, maxEntryChars, options);
 };
 
 /** Read only the session header (first JSONL line). */

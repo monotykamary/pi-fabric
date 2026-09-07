@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionRef } from "./discovery.js";
@@ -59,6 +60,32 @@ export const observeSource = (
     liveBranchSignature: branches === "active" ? liveBranchSignature(liveBranch) : null,
   };
 };
+
+const hostIdentity = (revision: string, sourceHash: string): SourceIdentity => {
+  const digest = crypto.createHash("sha256").update(`${revision}\u0000${sourceHash}`).digest("hex");
+  return {
+    device: BigInt(parseInt(digest.slice(0, 8), 16)),
+    inode: BigInt(parseInt(digest.slice(8, 16), 16)),
+    size: BigInt(parseInt(digest.slice(16, 24), 16)),
+    modifiedAt: BigInt(parseInt(digest.slice(24, 32), 16)),
+    changedAt: BigInt(parseInt(digest.slice(32, 40), 16)),
+  };
+};
+
+/**
+ * Observation identity for a portable host source snapshot: derived from the
+ * adapter revision plus the engine's source hash, so a changed or reloaded
+ * snapshot invalidates request caches without any filesystem access.
+ */
+export const observeHostSource = (
+  displayKey: string,
+  revision: string,
+  sourceHash: string,
+): SourceObservation => ({
+  file: displayKey,
+  identity: hostIdentity(revision, sourceHash),
+  liveBranchSignature: null,
+});
 
 export const observeSources = (
   refs: readonly SessionRef[],

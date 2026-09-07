@@ -41,10 +41,12 @@ export interface MemoryRecallCallArgs {
   since?: number;
   until?: number;
   entryRange?: EntryRange;
+  source?: string;
 }
 
 interface MemoryExpandCallArgs {
   session: string;
+  source?: string;
   expectedSourceHash?: string;
   expectedLineageFingerprint?: string;
   branches?: MemoryBranches;
@@ -63,6 +65,7 @@ interface MemoryExpandCallArgs {
 interface MemorySourceBinding {
   sessionId: string;
   sessionFile: string;
+  source?: string;
   sourceHash: string;
   branches: MemoryBranches;
   lineageFingerprint: string;
@@ -201,18 +204,20 @@ const makeSnippet = (
   };
 };
 
-const sourceFromSegment = (segment: SearchSegment): MemorySourceBinding => ({
+const sourceFromSegment = (segment: SearchSegment, sourceId?: string): MemorySourceBinding => ({
   sessionId: boundedMetadata(segment.sessionId) ?? "",
   sessionFile: segment.sessionFile,
+  ...(sourceId ? { source: sourceId } : {}),
   sourceHash: segment.sourceHash,
   branches: segment.branches,
   lineageFingerprint: segment.lineageFingerprint,
   tier: segment.tier,
 });
 
-const sourceFromDigest = (digest: DigestHit): MemorySourceBinding => ({
+const sourceFromDigest = (digest: DigestHit, sourceId?: string): MemorySourceBinding => ({
   sessionId: boundedMetadata(digest.sessionId) ?? "",
   sessionFile: digest.sessionFile,
+  ...(sourceId ? { source: sourceId } : {}),
   sourceHash: digest.sourceHash,
   branches: digest.branches,
   lineageFingerprint: digest.lineageFingerprint,
@@ -224,6 +229,7 @@ const expandArgs = (
   entry: SearchSegmentEntry["entry"],
 ): MemoryExpandCallArgs => ({
   session: source.sessionFile,
+  ...(source.source ? { source: source.source } : {}),
   expectedSourceHash: source.sourceHash,
   expectedLineageFingerprint: source.lineageFingerprint,
   branches: source.branches,
@@ -236,9 +242,10 @@ const entryHit = (
   query: string | undefined,
   queryMode: MemoryQueryMode,
   snippetChars: number,
+  sourceId?: string,
 ): MemoryRecallEntryHit => {
   const entry = item.entry;
-  const source = sourceFromSegment(segment);
+  const source = sourceFromSegment(segment, sourceId);
   const snippet = makeSnippet(entry.text, query, queryMode, snippetChars);
   return {
     kind: "entry",
@@ -281,8 +288,9 @@ const hydrationArgs = (
 const sessionHit = (
   digest: DigestHit,
   request: MemoryRecallCallArgs,
+  sourceId?: string,
 ): MemoryRecallSessionHit => {
-  const source = sourceFromDigest(digest);
+  const source = sourceFromDigest(digest, sourceId);
   return {
     kind: "session",
     sessionId: source.sessionId,
@@ -344,9 +352,10 @@ const materializeCandidate = (
   queryMode: MemoryQueryMode,
   snippetChars: number,
   request: MemoryRecallCallArgs,
+  sourceId?: string,
 ): MemoryRecallHit => candidate.kind === "session"
-  ? sessionHit(candidate.digest, request)
-  : entryHit(candidate.segment, candidate.item, query, queryMode, snippetChars);
+  ? sessionHit(candidate.digest, request, sourceId)
+  : entryHit(candidate.segment, candidate.item, query, queryMode, snippetChars, sourceId);
 
 const canonicalNextArgs = (
   request: MemoryRecallCallArgs,
@@ -369,6 +378,7 @@ export const presentRecall = (input: RecallPresentationInput): MemoryRecallRespo
         input.queryMode,
         input.snippetChars,
         input.requestArgs,
+        input.requestArgs.source,
       )
     );
     return {

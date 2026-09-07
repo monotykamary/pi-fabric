@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 const stable = [
   "index.js",
+  "memory.js",
   "protocol.js",
   "worker.js",
   "residency/host.js",

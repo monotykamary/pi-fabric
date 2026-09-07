@@ -1,12 +1,14 @@
-import { resolveSessionTarget } from "./discovery.js";
 import { RECALL_MAX_RESPONSE_CHARS } from "./context.js";
-import { reconstructSessionLineage } from "./lineage.js";
 import {
   expandSessionEntriesChecked,
-  normalizeSession,
   type ExpandSessionSelection,
 } from "./normalize.js";
-import { fingerprintSource } from "./index.js";
+import {
+  fileExpansionAccess,
+  hostExpansionAccess,
+  memorySourceFailure,
+  type ExpansionAccess,
+} from "./host-source.js";
 import {
   EXPAND_DEFAULT_MAX_CHARS,
   EXPAND_MAX_CHARS,
@@ -17,20 +19,27 @@ import {
 } from "./request-limits.js";
 import {
   parseBranches,
-  liveBranchResolver,
   addressError,
   stalePointerError,
   type MemoryProviderContext,
 } from "./request-context.js";
-import { observeSource, sameSourceObservation } from "./source-observation.js";
+import { sameSourceObservation } from "./source-observation.js";
 import {
   expansionSelectionKey,
   type CanonicalExpansionSelection,
   type ExpansionRequestCache,
 } from "./request-cache.js";
 
-export async function processMemoryExpand(args: Record<string, unknown>, context: MemoryProviderContext, cache: ExpansionRequestCache): Promise<unknown> {
+export async function processMemoryExpand(
+  args: Record<string, unknown>,
+  context: MemoryProviderContext,
+  cache: ExpansionRequestCache,
+  signal?: AbortSignal,
+): Promise<unknown> {
   const session = typeof args.session === "string" ? args.session : "";
+  const sourceId = typeof args.source === "string" && args.source.length > 0
+    ? args.source
+    : undefined;
   const expectedSourceHash = typeof args.expectedSourceHash === "string"
     ? args.expectedSourceHash
     : undefined;
@@ -91,17 +100,27 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
   const maxChars = Math.max(256, numeric(args.maxChars, EXPAND_DEFAULT_MAX_CHARS, EXPAND_MAX_CHARS));
   const maxEntries = Math.max(1, numeric(args.maxEntries, EXPAND_DEFAULT_MAX_ENTRIES, EXPAND_MAX_ENTRIES));
 
-  const ref = resolveSessionTarget(context.agentDir, session);
-  if (!ref) {
+  let access: ExpansionAccess | null;
+  if (sourceId !== undefined) {
+    try {
+      access = await hostExpansionAccess(sourceId, session, context, signal);
+    } catch (error) {
+      const failure = memorySourceFailure(error);
+      if (!failure) throw error;
+      return { session, error: failure, entries: [] };
+    }
+  } else {
+    access = fileExpansionAccess(session, context);
+  }
+  if (!access) {
     return {
       session,
       error: { code: "session_not_found", message: `Session not found: ${session}` },
       entries: [],
     };
   }
-  const liveResolver = liveBranchResolver(context);
-  const observedLiveBranch = branches === "active" ? liveResolver?.(ref.file) : undefined;
-  const observedSource = observeSource(ref.file, branches, observedLiveBranch);
+  const ref = access.ref;
+  const observedSource = access.observe(branches);
   let snapshot = cache.cachedExpansionSnapshot(ref.file, branches, observedSource);
   if (snapshot) {
     const sourceChanged = expectedSourceHash !== undefined &&
@@ -125,7 +144,7 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
   }
 
   if (!snapshot) {
-    const initialState = fingerprintSource(ref.file);
+    const initialState = access.state();
     if (!initialState) {
       return {
         session: ref.file,
@@ -133,12 +152,7 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
         entries: [],
       };
     }
-    const initialLiveBranch = branches === "active" ? liveResolver?.(ref.file) : undefined;
-    const initialLineage = reconstructSessionLineage(
-      ref.file,
-      branches,
-      initialLiveBranch,
-    );
+    const initialLineage = access.lineage(branches);
     const sourceChanged = expectedSourceHash !== undefined &&
       initialState.sourceHash !== expectedSourceHash;
     const lineageChanged = expectedLineageFingerprint !== undefined &&
@@ -158,23 +172,28 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
       };
     }
 
-    const normalized = normalizeSession(
-      ref.file,
-      Number.MAX_SAFE_INTEGER,
-      {
-        lineage: initialLineage,
-        indexThinking: true,
-        indexToolOutput: true,
-      },
-    ).entries;
-    const finalState = fingerprintSource(ref.file);
-    const finalLiveBranch = branches === "active" ? liveResolver?.(ref.file) : undefined;
-    const finalLineage = reconstructSessionLineage(
-      ref.file,
+    const normalizedFull = access.normalizeFull(
       branches,
-      finalLiveBranch,
+      { indexThinking: true, indexToolOutput: true },
+      initialLineage,
     );
-    const finalObservation = observeSource(ref.file, branches, finalLiveBranch);
+    if (!normalizedFull) {
+      return {
+        session: ref.file,
+        error: stalePointerError(
+          ref.file,
+          expectedSourceHash ?? initialState.sourceHash,
+          initialState.sourceHash,
+          expectedLineageFingerprint ?? initialLineage.fingerprint,
+          initialLineage.fingerprint,
+        ),
+        entries: [],
+      };
+    }
+    const normalized = normalizedFull.entries;
+    const finalState = access.state();
+    const finalLineage = access.lineage(branches);
+    const finalObservation = access.observe(branches);
     if (
       !finalState ||
       !finalObservation ||
@@ -416,6 +435,7 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
     const hasNext = cursor.position < selected.length;
     const nextArgs = hasNext
       ? {
+          ...(sourceId ? { source: sourceId } : {}),
           session: ref.file,
           expectedSourceHash: finalState.sourceHash,
           expectedLineageFingerprint: finalLineage.fingerprint,
@@ -503,12 +523,11 @@ export async function processMemoryExpand(args: Record<string, unknown>, context
     }
   }
 
-  const endingLiveBranch = branches === "active" ? liveResolver?.(ref.file) : undefined;
-  const endingObservation = observeSource(ref.file, branches, endingLiveBranch);
+  const endingObservation = access.observe(branches);
   if (!endingObservation || !sameSourceObservation(snapshot.observation, endingObservation)) {
     cache.forgetExpansionSnapshot(snapshot);
-    const actualState = fingerprintSource(ref.file);
-    const actualLineage = reconstructSessionLineage(ref.file, branches, endingLiveBranch);
+    const actualState = access.state();
+    const actualLineage = access.lineage(branches);
     if (
       !actualState ||
       !endingObservation ||

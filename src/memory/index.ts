@@ -90,9 +90,9 @@ export const digestPathForSession = (
 
 const policyPrivacy = (options: MemoryIndexOptions): string =>
   `thinking:${options.indexThinking ?? DEFAULT_MEMORY_INDEX_PRIVACY.indexThinking};tool-output:${options.indexToolOutput ?? DEFAULT_MEMORY_INDEX_PRIVACY.indexToolOutput}`;
-const shardPolicy = (options: MemoryIndexOptions, lineage: SessionLineage): string =>
+export const shardPolicy = (options: MemoryIndexOptions, lineage: SessionLineage): string =>
   `entry:${options.maxEntryChars};branches:${lineage.branches};lineage:${lineage.fingerprint};${policyPrivacy(options)}`;
-const digestPolicy = (options: MemoryIndexOptions, lineage: SessionLineage): string =>
+export const digestPolicy = (options: MemoryIndexOptions, lineage: SessionLineage): string =>
   `vocab:${options.maxColdVocabularyBytes ?? DEFAULT_MAX_COLD_VOCABULARY_BYTES};cache:${options.maxColdCacheBytes ?? DEFAULT_MAX_COLD_CACHE_BYTES};branches:${lineage.branches};lineage:${lineage.fingerprint};${policyPrivacy(options)}`;
 
 const resolveLineage = (sessionFile: string, options: MemoryIndexOptions): SessionLineage =>
@@ -280,7 +280,7 @@ const isCacheFresh = (
   cache.sourceHash === state.sourceHash &&
   cache.policy === policy;
 
-const missingShard = (
+export const missingShard = (
   ref: SessionRef,
   lineage: SessionLineage,
   reason = "source_unavailable",
@@ -412,7 +412,7 @@ const hydrateShard = (
   };
 };
 
-const missingDigest = (
+export const missingDigest = (
   ref: SessionRef,
   lineage: SessionLineage,
   reason = "source_unavailable",
@@ -455,7 +455,7 @@ const maxFittingPrefix = <T>(
   return values.slice(0, low);
 };
 
-const fitDigestCache = (digest: DigestShard, maxBytes: number): DigestShard => {
+export const fitDigestCache = (digest: DigestShard, maxBytes: number): DigestShard => {
   applyCacheMetrics(digest);
   if (digest.cacheBytes <= maxBytes) return digest;
 
@@ -549,7 +549,7 @@ const compareRefsByRecency = (left: SessionRef, right: SessionRef): number => {
   return compareLexical(left.file, right.file);
 };
 
-const classifySessionTiers = (
+export const classifySessionTiers = (
   refs: SessionRef[],
   hotSessions = DEFAULT_HOT_SESSIONS,
 ): Map<string, MemoryTier> => {

@@ -3,6 +3,7 @@ import { build } from "esbuild";
 
 const primaryEntryPoints = [
   "src/index.ts",
+  "src/memory.ts",
   "src/protocol.ts",
   "src/worker.ts",
   "src/residency/host.ts",

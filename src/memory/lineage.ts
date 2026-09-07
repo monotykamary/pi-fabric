@@ -22,6 +22,36 @@ interface PersistedNode {
   ordinal: number;
 }
 
+interface PersistedRecord {
+  type?: unknown;
+  id?: unknown;
+  parentId?: unknown;
+}
+
+const asPersistedRecord = (value: unknown): PersistedRecord | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as PersistedRecord
+    : null;
+
+const isHeaderRecord = (record: PersistedRecord): boolean => record.type === "session";
+
+const hasParentLink = (
+  record: PersistedRecord,
+): record is PersistedRecord & { id: string; parentId: string | null } =>
+  typeof record.id === "string" && (record.parentId === null || typeof record.parentId === "string");
+
+const persistedNodesFromRecords = (records: readonly unknown[]): PersistedNode[] => {
+  const nodes: PersistedNode[] = [];
+  let ordinal = 0;
+  for (const value of records) {
+    const record = asPersistedRecord(value);
+    if (!record || isHeaderRecord(record)) continue;
+    if (hasParentLink(record)) nodes.push({ id: record.id, parentId: record.parentId, ordinal });
+    ordinal += 1;
+  }
+  return nodes;
+};
+
 const fingerprint = (branches: MemoryBranches, leafId: string | null, ids: string[]): string =>
   crypto.createHash("sha256").update(JSON.stringify({ branches, leafId, ids })).digest("hex");
 
@@ -32,23 +62,16 @@ const readPersistedNodes = (sessionFile: string): PersistedNode[] => {
   } catch {
     return [];
   }
-  const nodes: PersistedNode[] = [];
-  let ordinal = 0;
+  const records: unknown[] = [];
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
-    let raw: Record<string, unknown>;
     try {
-      raw = JSON.parse(line) as Record<string, unknown>;
+      records.push(JSON.parse(line));
     } catch {
       continue;
     }
-    if (raw.type === "session") continue;
-    if (typeof raw.id === "string" && (raw.parentId === null || typeof raw.parentId === "string")) {
-      nodes.push({ id: raw.id, parentId: raw.parentId, ordinal });
-    }
-    ordinal += 1;
   }
-  return nodes;
+  return persistedNodesFromRecords(records);
 };
 
 const allLineage = (): SessionLineage => ({
@@ -69,10 +92,10 @@ export const reconstructSessionLineage = (
   sessionFile: string,
   branches: MemoryBranches,
   liveBranch?: LiveSessionBranch,
-): SessionLineage => {
-  if (branches === "all") return allLineage();
+): SessionLineage =>
+  branches === "all" ? allLineage() : buildActiveLineage(readPersistedNodes(sessionFile), liveBranch);
 
-  const nodes = readPersistedNodes(sessionFile);
+const buildActiveLineage = (nodes: PersistedNode[], liveBranch?: LiveSessionBranch): SessionLineage => {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const liveIds = liveBranch?.entries.flatMap((entry) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
@@ -112,3 +135,14 @@ export const reconstructSessionLineage = (
     coverageReasons: [...reasons].sort(),
   };
 };
+
+/**
+ * Records variant of {@link reconstructSessionLineage}: identical Pi 0.80.6
+ * leaf semantics applied to already-parsed session records instead of a file.
+ */
+export const reconstructRecordsLineage = (
+  records: readonly unknown[],
+  branches: MemoryBranches,
+  liveBranch?: LiveSessionBranch,
+): SessionLineage =>
+  branches === "all" ? allLineage() : buildActiveLineage(persistedNodesFromRecords(records), liveBranch);

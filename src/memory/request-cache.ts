@@ -45,7 +45,7 @@ export interface RecallContinuationCache {
   result: SearchResult;
   coverage: MemoryCoverage;
   requestArgs: MemoryRecallCallArgs;
-  observations: SourceObservation[];
+  observations: readonly SourceObservation[];
   touchedAt: number;
 }
 
@@ -88,7 +88,7 @@ export class MemoryRequestCache {
 
   cachedRecallContinuation(
     key: string,
-    observations: SourceObservation[] | null,
+    observations: readonly SourceObservation[] | null,
   ): RecallContinuationCache | undefined {
     const cached = this.recallContinuation;
     if (!cached || cached.key !== key) return undefined;

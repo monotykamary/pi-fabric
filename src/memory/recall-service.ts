@@ -28,18 +28,25 @@ import {
   resolveRefs,
   liveBranchResolver,
   resolveIndexOptions,
-  resolveTierRefs,
   addressError,
   recallFailure,
   stalePointerError,
   type MemoryProviderContext,
 } from "./request-context.js";
-import { observeSources, sameSourceObservations } from "./source-observation.js";
+import {
+  checkAbort,
+  fileRecallPlan,
+  hostRecallPlan,
+  memorySourceFailure,
+  resolveRegisteredSource,
+  type RecallSourcePlan,
+} from "./host-source.js";
+import { sameSourceObservations, type SourceObservation } from "./source-observation.js";
 import { recallContinuationKey, type RecallRequestCache } from "./request-cache.js";
 
 export async function processMemoryRecall(
   args: Record<string, unknown>,
-  invocationContext: Pick<FabricInvocationContext, "update">,
+  invocationContext: Pick<FabricInvocationContext, "update" | "signal">,
   context: MemoryProviderContext,
   cache: RecallRequestCache,
 ): Promise<unknown> {
@@ -104,15 +111,42 @@ export async function processMemoryRecall(
       ? Math.min(Math.floor(args.snippetChars), RECALL_MAX_SNIPPET_CHARS)
       : RECALL_DEFAULT_SNIPPET_CHARS;
 
-  const refs = resolveRefs(scope, context, false);
-  const liveResolver = liveBranchResolver(context);
+  const sourceId = typeof args.source === "string" && args.source.length > 0
+    ? args.source
+    : undefined;
+  let plan: RecallSourcePlan;
+  if (sourceId !== undefined) {
+    if (scope !== undefined && scope !== `source:${sourceId}` && !scope.startsWith("session:")) {
+      throw new Error(
+        'memory.recall scope must name the selected source, one of its sessions, or be omitted',
+      );
+    }
+    try {
+      plan = await hostRecallPlan(
+        resolveRegisteredSource(context.sources, sourceId),
+        sourceId,
+        scope?.startsWith("session:") ? scope.slice("session:".length).trim() : null,
+        context,
+        invocationContext.signal,
+      );
+    } catch (error) {
+      const failure = memorySourceFailure(error);
+      if (!failure) throw error;
+      return recallFailure(failure);
+    }
+  } else {
+    plan = fileRecallPlan(resolveRefs(scope, context, false), context);
+  }
+  const refs = plan.refs;
   const options = resolveIndexOptions(
     context.config,
     context.agentDir,
     branches,
-    liveResolver,
+    sourceId === undefined ? liveBranchResolver(context) : undefined,
   );
-  const hydrate = scope?.trim().startsWith("session:") ?? false;
+  const hydrate = sourceId !== undefined
+    ? plan.sessionKey !== null
+    : scope?.trim().startsWith("session:") ?? false;
   if ((expectedSourceHash !== undefined || expectedLineageFingerprint !== undefined) && !hydrate) {
     throw new Error("memory.recall integrity expectations require scope session:<id-or-path>");
   }
@@ -151,13 +185,18 @@ export async function processMemoryRecall(
   if (since !== undefined) filters.since = since;
   if (until !== undefined) filters.until = until;
   const baseRequestArgs: MemoryRecallCallArgs = {
+    ...(sourceId ? { source: sourceId } : {}),
     ...(query === undefined ? {} : { query }),
     queryMode,
     ...(queryMode === "literal" ? { queryMatch } : {}),
     ...(expectedSourceHash ? { expectedSourceHash } : {}),
     ...(expectedLineageFingerprint ? { expectedLineageFingerprint } : {}),
     branches,
-    scope: scope ?? "session",
+    scope: sourceId
+      ? plan.sessionKey !== null
+        ? `session:${plan.refs[0]?.file ?? plan.sessionKey}`
+        : `source:${sourceId}`
+      : scope ?? "session",
     ...(offset === undefined ? {} : { offset }),
     pageSize,
     snippetChars,
@@ -182,7 +221,7 @@ export async function processMemoryRecall(
             : `memory.recall: ${searchResult.matchedCount} recent entries`,
     );
   };
-  const observationsBefore = observeSources(refs, branches, liveResolver);
+  const observationsBefore: readonly SourceObservation[] | null = await plan.observeAll(branches);
   const cached = offset === undefined
     ? undefined
     : cache.cachedRecallContinuation(
@@ -200,7 +239,7 @@ export async function processMemoryRecall(
       snippetChars,
       requestArgs: cached.requestArgs,
     });
-    const observationsAfterCachedPage = observeSources(refs, branches, liveResolver);
+    const observationsAfterCachedPage = await plan.observeAll(branches);
     if (
       observationsBefore &&
       observationsAfterCachedPage &&
@@ -214,12 +253,8 @@ export async function processMemoryRecall(
   }
 
   if (hydrate && refs[0]) {
-    const state = fingerprintSource(refs[0].file);
-    const lineage = reconstructSessionLineage(
-      refs[0].file,
-      branches,
-      liveResolver?.(refs[0].file),
-    );
+    const state = plan.stateFor(refs[0]);
+    const lineage = plan.lineageFor(refs[0], branches);
     const sourceChanged = expectedSourceHash !== undefined &&
       state?.sourceHash !== expectedSourceHash;
     const lineageChanged = expectedLineageFingerprint !== undefined &&
@@ -235,13 +270,7 @@ export async function processMemoryRecall(
     }
   }
 
-  const index = loadTieredIndex(
-    refs,
-    resolveTierRefs(refs, context),
-    options,
-    hydrate,
-    selectedRange,
-  );
+  const index = plan.loadIndex(options, hydrate, selectedRange);
   const hydratedShard = index.shards[0];
   const hydratedSourceChanged = expectedSourceHash !== undefined &&
     hydratedShard?.sourceHash !== expectedSourceHash;
@@ -329,7 +358,7 @@ export async function processMemoryRecall(
     snippetChars,
     requestArgs,
   });
-  const observationsAfter = observeSources(refs, branches, liveResolver);
+  const observationsAfter = await plan.observeAll(branches);
   if (
     response.next !== null &&
     observationsBefore &&

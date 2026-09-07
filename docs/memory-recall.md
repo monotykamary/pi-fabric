@@ -1,7 +1,8 @@
 # Memory & Recall
 
-Pi Fabric's `memory` provider searches Pi session JSONL files. Session JSONL
-forms the source of truth. The memory index holds derived, disposable state.
+Pi Fabric's `memory` provider searches Pi session JSONL files or explicit
+host-backed session sources. The retained source records remain authoritative;
+the memory index holds derived, disposable state.
 
 Structural extraction is the only indexing method. Regexes never classify
 goals, preferences, errors, or other prose concepts. Roles, tool names,
@@ -25,6 +26,55 @@ scan, or parse Pi session files themselves. Follow calls carry source hashes and
 selected lineages without duplicating that integrity metadata on each hit;
 single-session page continuations preserve the same bindings. Coverage explains
 when indexed absence is not authoritative.
+
+## Portable host sources
+
+The lightweight `pi-fabric/memory` entry exports `PortableMemorySource`,
+`MEMORY_SOURCE_INTERFACE_VERSION`, `defineMemorySource`,
+`createMemorySourceRegistry`, `createMemorySourceClient`, and
+`memoryActionSchemas`. It does not load the extension or UI runtime.
+
+```ts
+import {
+  createMemorySourceClient,
+  createMemorySourceRegistry,
+  type PortableMemorySource,
+} from "pi-fabric/memory";
+
+function recallClient(authorizedSource: PortableMemorySource) {
+  const sources = createMemorySourceRegistry();
+  sources.register(authorizedSource);
+  return createMemorySourceClient({ sources, config: { maxSessions: 32 } });
+}
+```
+
+A source implements interface version `1`, has an opaque stable `id`, and
+provides `listSessions({ limit, signal? })` and
+`loadSession(sessionKey, { signal? })`. Session descriptors have an opaque
+`sessionKey` and content-sensitive `revision`; snapshots add standard Pi
+`records`. Optional `authorize(action, sessionKey)` is rechecked around
+asynchronous reads. Bind principals and permissions in the host, never in
+model-supplied arguments. The host also owns sanitization and retention.
+
+Lists may return a descriptor array or `{ sessions, coverage }`; snapshots
+also support `coverage: { complete: false, reason }`. Report every partial
+projection or enumeration cap; a truncated archive is never presented as
+complete. The engine preserves these reasons alongside its own work budgets.
+
+Client `recall`, `expand`, and `sessions` calls require `args.source` and accept
+`{ signal }` as their second argument. They use only the registered source,
+never implicit filesystem discovery. Provider actions accept the same optional
+`source` argument; omitting it preserves the normal filesystem behavior.
+Source-qualified follow pointers and guest `memory.walk` retain this binding.
+
+Host records reuse the normal branch, normalization, ranking, structural trace,
+coverage, and lossless expansion paths. Revision/content hashes and lineage
+fingerprints reject stale follow pointers. Host shards are rebuilt within
+bounds for each call and are not persisted to the filesystem index.
+
+These are explicit retrieval primitives. Fabric does not automatically recall
+before a turn, inject historical context, choose bot/group permissions, or
+require a hosted memory vendor. Such recipes belong to the embedding product.
 
 ## Active branches
 

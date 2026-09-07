@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { FabricMemoryConfig } from "../config.js";
+import type { MemorySourceRegistry } from "./portable.js";
 import {
   enumerateAllSessions,
   resolveScope,
@@ -16,6 +17,8 @@ export interface MemoryProviderContext {
   sessionId?: string;
   sessionFile?: string;
   getLiveBranch?: () => LiveSessionBranch;
+  /** Registered portable memory sources; present enables host-backed calls. */
+  sources?: MemorySourceRegistry;
 }
 
 export const parseBranches = (value: unknown, action: string): MemoryBranches => {
