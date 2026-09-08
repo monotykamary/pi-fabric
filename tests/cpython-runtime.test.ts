@@ -1,4 +1,6 @@
 import * as childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { Duplex, PassThrough } from "node:stream";
 import fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import net from "node:net";
@@ -142,7 +144,9 @@ describe.skipIf(!hasPython)("CPythonRuntime", () => {
   });
 
   it("kills synchronous infinite loops and preserves pre-timeout logs", async () => {
-    const result = await run('print("started", flush=True)\nwhile True:\n    pass', echo, { timeoutMs: 300 });
+    // The wall deadline includes interpreter startup. Leave room for a cold
+    // process on busy CI before checking log preservation during termination.
+    const result = await run('print("started", flush=True)\nwhile True:\n    pass', echo, { timeoutMs: 1500 });
     expect(result.terminationReason).toBe("timed_out");
     expect(result.logs).toContain("started");
   });
@@ -203,8 +207,45 @@ describe.skipIf(!hasPython)("CPythonRuntime", () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       completed = true;
     });
+    expect(result.terminationReason, result.error).toBe("completed");
     expect(result.value).toBe(1);
     expect(completed).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("does not write late host replies after a terminal guest frame", async () => {
+    const writes: string[] = [];
+    const channel = new Duplex({
+      read() {},
+      write(chunk, _encoding, callback) {
+        const message = JSON.parse(chunk.toString());
+        writes.push(message.type);
+        if (message.type === "response") {
+          callback(new Error("EPIPE: guest already exited"));
+          return;
+        }
+        callback();
+        queueMicrotask(() => channel.push([
+          JSON.stringify({ type: "call", id: 1, ref: "schema.status", args: {} }),
+          JSON.stringify({ type: "result", result: { terminationReason: "completed", value: 1 } }),
+          "",
+        ].join("\n")));
+      },
+    });
+    const child = Object.assign(new EventEmitter(), {
+      pid: undefined,
+      stdout: new PassThrough(), stderr: new PassThrough(),
+      stdio: [null, null, null, channel], kill: vi.fn(),
+    });
+    vi.mocked(childProcess.spawn).mockReturnValue(child as unknown as ReturnType<typeof childProcess.spawn>);
+    let completed = false;
+    const result = await run("return 1", async () => {
+      await new Promise(resolve => setImmediate(resolve));
+      completed = true;
+      return "late result";
+    });
+    expect(result).toMatchObject({ terminationReason: "completed", value: 1 });
+    expect(completed).toBe(true);
+    expect(writes).toEqual(["execute"]);
   });
 
   it("bounds non-cooperative host calls after guest failure", async () => {

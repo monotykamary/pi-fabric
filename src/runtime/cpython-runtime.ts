@@ -192,7 +192,9 @@ export class CPythonRuntime implements FabricKernelRuntime {
         deadline.unref?.();
       };
       const send = (message: unknown): void => {
-        if (settled || !channel || channel.destroyed) return;
+        // A terminal guest result closes its reply channel while issued host
+        // work may still be settling. Its late replies are no longer consumed.
+        if (settled || finishing || !channel || channel.destroyed) return;
         try {
           const frame = JSON.stringify(message) + "\n";
           const bytes = Buffer.byteLength(frame);
@@ -200,7 +202,7 @@ export class CPythonRuntime implements FabricKernelRuntime {
             fail("CPython IPC frame or write buffer exceeds its 16 MiB frame limit");
             return;
           }
-          channel.write(frame, (error) => { if (error && !settled) fail(`CPython IPC failed: ${error.message}`); });
+          channel.write(frame, (error) => { if (error && !settled && !finishing) fail(`CPython IPC failed: ${error.message}`); });
         } catch (error) { fail(`CPython IPC serialization failed: ${errorText(error)}`); }
       };
       const handleMessage = (message: unknown): void => {
