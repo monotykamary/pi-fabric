@@ -96,19 +96,21 @@ const levenshtein = (left: string, right: string): number => {
   if (left === right) return 0;
   if (left.length === 0) return right.length;
   if (right.length === 0) return left.length;
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  let previous = new Array<number>(right.length + 1);
+  let current = new Array<number>(right.length + 1);
+  for (let j = 0; j <= right.length; j++) previous[j] = j;
   for (let i = 1; i <= left.length; i++) {
-    const current = [i];
+    current[0] = i;
     for (let j = 1; j <= right.length; j++) {
-      current.push(
-        Math.min(
-          previous[j]! + 1,
-          current[j - 1]! + 1,
-          previous[j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1),
-        ),
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1),
       );
     }
+    const swap = previous;
     previous = current;
+    current = swap;
   }
   return previous[right.length]!;
 };
@@ -131,20 +133,48 @@ const tokenAligned = (spilled: string[], declared: string[]): boolean => {
 const sortNames = (names: readonly string[]): string[] =>
   [...new Set(names)].sort((left, right) => left.localeCompare(right));
 
+interface CatalogForm {
+  name: string;
+  form: string;
+  singular: string;
+  tokens: string[];
+}
+
+// Catalog identity is weakly held; validate its contents so mutable provider
+// registrations cannot retain stale names, ambiguity, or authorization targets.
+interface CatalogSnapshot {
+  forms: CatalogForm[];
+  repairs: Map<string, ActionNameRepair>;
+}
+
+const catalogCache = new WeakMap<readonly string[], CatalogSnapshot>();
+const catalogSnapshot = (declared: readonly string[]): CatalogSnapshot => {
+  const cached = catalogCache.get(declared);
+  if (cached?.forms.length === declared.length && cached.forms.every((entry, index) => entry.name === declared[index])) {
+    return cached;
+  }
+  const forms = declared.map((name) => {
+    const form = normalizeActionForm(name);
+    return { name, form, singular: singularActionForm(form), tokens: camelTokens(name) };
+  });
+  const snapshot = { forms, repairs: new Map<string, ActionNameRepair>() };
+  catalogCache.set(declared, snapshot);
+  return snapshot;
+};
+
 /**
  * Repair a spilled action name against the provider's declared names.
  * Returns the canonical name when exactly one declared candidate fits, or
  * ranked suggestions for the didactic failure message.
  */
-export const repairActionName = (
-  declared: readonly string[],
+const computeActionRepair = (
+  catalog: readonly CatalogForm[],
   actionName: string,
 ): ActionNameRepair => {
   const spilledForm = normalizeActionForm(actionName);
   if (spilledForm.length === 0) return { suggestions: [] };
-  const rest = declared.filter((name) => name !== actionName);
-  if (rest.length === 0) return { suggestions: [] };
-  const forms = rest.map((name) => ({ name, form: normalizeActionForm(name) }));
+  const forms = catalog.filter((entry) => entry.name !== actionName);
+  if (forms.length === 0) return { suggestions: [] };
 
   // Tier 1 — semantic verb classes: the spilled verb belongs to a shared
   // synonym class; repair only when exactly one class member is declared.
@@ -164,12 +194,13 @@ export const repairActionName = (
   // casing variants, singular/plural, camelCase token alignment, and unique
   // raw prefixes. Weak signals must agree on exactly one canonical name.
   const spilledTokens = camelTokens(actionName);
+  const spilledSingular = singularActionForm(spilledForm);
   const derived: string[] = [];
   for (const entry of forms) {
     if (
       entry.form === spilledForm ||
-      singularActionForm(entry.form) === singularActionForm(spilledForm) ||
-      (spilledTokens.length > 0 && tokenAligned(spilledTokens, camelTokens(entry.name))) ||
+      entry.singular === spilledSingular ||
+      (spilledTokens.length > 0 && tokenAligned(spilledTokens, entry.tokens)) ||
       (spilledForm.length >= 4 && entry.form.startsWith(spilledForm))
     ) {
       derived.push(entry.name);
@@ -202,6 +233,22 @@ export const repairActionName = (
     .slice(0, 3)
     .map((entry) => entry.name);
   return { suggestions: sortNames(suggestions) };
+};
+
+// Bound memoized near-misses per live catalogue. Every call revalidates the
+// names above, so replacement/removal invalidates repairs as well as forms.
+export const repairActionName = (declared: readonly string[], actionName: string): ActionNameRepair => {
+  const catalog = catalogSnapshot(declared);
+  let result = catalog.repairs.get(actionName);
+  if (!result) {
+    result = computeActionRepair(catalog.forms, actionName);
+    if (actionName.length <= 512) {
+      if (catalog.repairs.size >= 128) catalog.repairs.delete(catalog.repairs.keys().next().value!);
+      catalog.repairs.set(actionName, result);
+    }
+  }
+  // Callers own suggestions; never expose mutable cached values.
+  return { ...result, suggestions: [...result.suggestions] };
 };
 
 /**
