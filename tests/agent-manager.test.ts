@@ -1647,7 +1647,8 @@ describe("AgentManager steering", () => {
       manager.compact(handle.id, "Preserve the test plan");
       await waitFor(
         () => fs.existsSync(received) && fs.readFileSync(received, "utf8").includes("compact"),
-        3_000,
+        // Includes two cold Node processes and Pi settlement, not just RPC latency.
+        10_000,
       );
       const forwarded = fs
         .readFileSync(received, "utf8")
@@ -1668,5 +1669,5 @@ describe("AgentManager steering", () => {
     } finally {
       delete process.env.FAKE_PI_STEER_LOG;
     }
-  });
+  }, 20_000);
 });
