@@ -24,6 +24,16 @@ You can give `fabric_exec` optional `agentBudget` and `tokenBudget` limits. Conf
 
 ## Agents
 
+### Requested models are authoritative
+
+For Pi workers, Fabric reapplies the resolved `provider/model` over RPC **after startup extensions finish**, reapplies the requested thinking level, and independently reads `get_state` before sending the task. A successful `set_model` response alone is insufficient: it can echo the requested model even when an extension switches away during `model_select`. Thinking is reported at Pi's effective, capability-clamped level.
+
+Unavailable models, rejected/malformed RPC responses, admission timeouts, or a remaining model mismatch fail the run without sending its task. Queued controls wait for admission too. Fabric does not substitute an MRU model or silently fall back. Standalone `AgentManager` callers can also supply a unique exact bare model ID; ambiguous IDs must be provider-qualified.
+
+`requestedModel` preserves launch intent in run records; `model` follows verified child state and actual assistant attribution. The manager and participant UI preserve that observed value; the launch label cannot overwrite it. If assistant attribution drifts after admission, Fabric terminates the child and reports both requested and observed models in the failure. This verifies Pi's local provider/model identity, not a remote provider's internal routing.
+
+Existing workers are not retroactively changed by rebuilding or reloading the parent. Stop and respawn affected workers to apply model admission.
+
 ### Choose the child's language
 
 `agents.run`, `agents.spawn`, `agents.create`, and `agents.handoff` accept `kernel: "typescript" | "python" | "inherit"`. Omit it or use `"inherit"` to inherit the caller's `executor.kernel`; use a concrete value so a skill or model can choose its strongest language for the task. Workflow agents, `rlm.query`, and council members/synthesis forward the same option. This selects the **child's** Fabric language, not the language of the current `fabric_exec` program; that program still uses its configured kernel.

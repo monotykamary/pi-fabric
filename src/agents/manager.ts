@@ -1530,6 +1530,8 @@ export class AgentManager {
   }
 
   #handleInfo(managed: ManagedAgent, status: AgentHandleInfo["status"]): AgentHandleInfo {
+    const model = managed.latestRecord?.model ?? managed.model;
+    const thinking = managed.latestRecord?.thinking ?? managed.thinking;
     return {
       id: managed.id,
       name: managed.name,
@@ -1539,8 +1541,8 @@ export class AgentManager {
       transport: managed.transport.kind,
       cwd: managed.cwd,
       ...(managed.residency === "durable" ? { residency: "durable" as const } : {}),
-      ...(managed.model ? { model: managed.model } : {}),
-      ...(managed.thinking ? { thinking: managed.thinking } : {}),
+      ...(model ? { model } : {}),
+      ...(thinking ? { thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
       ...(managed.capabilityRequirements
@@ -1590,6 +1592,8 @@ export class AgentManager {
     );
     const budget = this.#budgetSummary();
     const { logFile: _logFile, nestedAgents: _nestedAgents, ...safeRecord } = record;
+    const model = record.model ?? managed.model;
+    const thinking = record.thinking ?? managed.thinking;
     return {
       ...safeRecord,
       cwd: managed.cwd,
@@ -1599,8 +1603,8 @@ export class AgentManager {
       logFile: path.join(managed.runDirectory, "events.jsonl"),
       ...(nestedAgents.length > 0 ? { nestedAgents } : {}),
       ...(budget ? { budget } : {}),
-      ...(managed.model ? { model: managed.model } : {}),
-      ...(managed.thinking ? { thinking: managed.thinking } : {}),
+      ...(model ? { model } : {}),
+      ...(thinking ? { thinking } : {}),
       ...(managed.actorId ? { actorId: managed.actorId } : {}),
       ...(managed.actorName ? { actorName: managed.actorName } : {}),
       ...(managed.capabilityRequirements

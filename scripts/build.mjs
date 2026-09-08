@@ -49,6 +49,7 @@ const lazyEntryPoints = [
   "src/ui/conversation-native-reader.ts",
   "src/ui/model-picker.ts",
   "src/ui/settings.ts",
+  "src/worker/model-control.ts",
   "src/worker/options.ts",
   "src/worker/run-record.ts",
   "src/worker/session-export.ts",

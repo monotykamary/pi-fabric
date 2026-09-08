@@ -106,6 +106,8 @@ export interface AgentCompactionStatus {
 }
 
 export interface AgentRunRecord {
+  /** Requested launch model; model below follows verified state/assistant attribution. */
+  requestedModel?: string;
   id: string;
   name: string;
   task: string;

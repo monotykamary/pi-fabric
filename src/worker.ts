@@ -27,6 +27,14 @@ type CompactControlModule = typeof import("./agents/compact-control.js");
 type WorkerOptionsModule = typeof import("./worker/options.js");
 type WorkerRunRecordModule = typeof import("./worker/run-record.js");
 type WorkerSessionExportModule = typeof import("./worker/session-export.js");
+type WorkerModelControlModule = typeof import("./worker/model-control.js");
+
+const loadWorkerModelControl = async (): Promise<WorkerModelControlModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./worker/model-control.js");
+  const sourceModulePath = "./worker/model-control.ts";
+  return import(sourceModulePath) as Promise<WorkerModelControlModule>;
+};
+
 type AgentResultModule = typeof import("./agents/result.js");
 
 const loadAgentResult = async (): Promise<AgentResultModule> => {
@@ -186,11 +194,12 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}, { PiModelControl }] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
     loadAgentResult(),
+    loadWorkerModelControl(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -363,6 +372,41 @@ const main = async (): Promise<void> => {
   let retryPending = false;
 
   const update = (): void => updateRunRecord(options.statusFile, record);
+
+  let modelTimer: NodeJS.Timeout | undefined;
+  const modelControl = new PiModelControl(options.id, options.model, thinking, {
+    send(frame) {
+      if (terminalStatus) return;
+      child.stdin?.write(`${JSON.stringify(frame)}\n`);
+    },
+    observed(model) {
+      if (record.model === model) return;
+      record.model = model;
+      update();
+    },
+    admitted(model, effectiveThinking) {
+      if (modelTimer) clearTimeout(modelTimer);
+      if (terminalStatus) return;
+      if (model) record.model = model;
+      if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effectiveThinking ?? "")) {
+        record.thinking = effectiveThinking as NonNullable<AgentRunRecord["thinking"]>;
+      }
+      update();
+      child.stdin?.write(`${JSON.stringify({ type: "prompt", message: task, ...(images.length > 0 ? { images } : {}) })}\n`);
+    },
+    fail(error) {
+      if (terminalStatus) return;
+      if (modelTimer) clearTimeout(modelTimer);
+      terminalStatus = "failed";
+      terminalError = error;
+      record.error = error;
+      update();
+      appendLog(`${JSON.stringify({ type: "fabric_model_error", requestedModel: options.model, model: record.model, error })}\n`);
+      terminateChild(child, "SIGTERM");
+      setTimeout(() => terminateChild(child, "SIGKILL"), KILL_GRACE_MS).unref();
+      child.stdin?.end();
+    },
+  });
 
   // Attributed token telemetry. Every usage-bearing child event emits one
   // tokens.usage lifecycle entry identified by this run/actor/runner/depth.
@@ -757,16 +801,23 @@ const main = async (): Promise<void> => {
       return;
     }
     compactControl.observe(event);
+    if (modelControl.observe(event)) return;
+    if (event.type === "message_start" || event.type === "message_update") {
+      const message = event.message;
+      if (typeof message === "object" && message !== null && !Array.isArray(message)) {
+        modelControl.observeAssistant(message as Record<string, unknown>);
+      }
+    }
     if (event.type === "agent_start") {
       emitLifecycle("pi.agent_start");
       retryPending = false;
       sawAgentError = false;
-      terminalError = undefined;
+      if (!terminalStatus) terminalError = undefined;
       return;
     }
     if (event.type === "response" && event.command === "prompt" && event.success === false) {
       sawAgentError = true;
-      terminalError = typeof event.error === "string" ? event.error : "Pi rejected the prompt";
+      if (!terminalStatus) terminalError = typeof event.error === "string" ? event.error : "Pi rejected the prompt";
       child.stdin?.end();
       return;
     }
@@ -837,8 +888,9 @@ const main = async (): Promise<void> => {
         model: stringField(messageRecord.model),
         provider: stringField(messageRecord.provider),
       });
+      modelControl.observeAssistant(messageRecord);
       enforceTokenLimit();
-      if (messageRecord.stopReason === "error") {
+      if (messageRecord.stopReason === "error" && !terminalStatus) {
         sawAgentError = true;
         terminalError = assistantError(messageRecord);
       } else {
@@ -901,13 +953,11 @@ const main = async (): Promise<void> => {
     child.stdin?.write(sections.join("\n\n"));
     child.stdin?.end();
   } else {
-    child.stdin?.write(
-      `${JSON.stringify({
-        type: "prompt",
-        message: task,
-        ...(images.length > 0 ? { images } : {}),
-      })}\n`,
-    );
+    if (options.model) {
+      modelTimer = setTimeout(() => modelControl.fail("RPC admission timed out; task was not sent"), Math.min(15_000, options.timeoutMs));
+      modelTimer.unref();
+    }
+    modelControl.start();
   }
 
   // Tail a control file (steer.jsonl) the parent appends to and forward each
@@ -921,7 +971,7 @@ const main = async (): Promise<void> => {
   let steerRemainder = Buffer.alloc(0);
   let skippingOversizedSteerLine = false;
   const pollSteer = (): void => {
-    if (!options.steerFile || terminalStatus) return;
+    if (!options.steerFile || terminalStatus || (options.runner === "pi" && !modelControl.ready)) return;
     let descriptor: number | undefined;
     try {
       descriptor = fs.openSync(options.steerFile, "r");
@@ -1080,6 +1130,7 @@ const main = async (): Promise<void> => {
   child.stderr?.on("error", () => {});
 
   const timeout = setTimeout(() => {
+    if (terminalStatus) return;
     terminalStatus = "timed_out";
     terminalError = `Agent timed out after ${options.timeoutMs}ms`;
     terminateChild(child, "SIGTERM");
@@ -1110,6 +1161,11 @@ const main = async (): Promise<void> => {
   if (steerTimer) clearInterval(steerTimer);
   if (claudeCloseTimer) clearTimeout(claudeCloseTimer);
   clearTimeout(timeout);
+  if (modelTimer) clearTimeout(modelTimer);
+  if (options.runner === "pi" && !modelControl.ready && !terminalStatus) {
+    terminalStatus = "failed";
+    terminalError = `Child Pi exited before requested model admission completed; task was not sent${stderr.trim() ? `: ${stderr.trim()}` : ""}`;
+  }
   if (process.env.PI_FABRIC_INJECT_CRASH === "close") throw new Error("simulated close crash");
   if (options.runner === "veda") {
     vedaOutput += outputDecoder.end();

@@ -31,7 +31,7 @@ export const createRunningRecord = (
   ...(options.kernel ? { kernel: options.kernel } : {}),
   transport: options.transport,
   cwd: options.cwd,
-  ...(options.model ? { model: options.model } : {}),
+  ...(options.model ? { model: options.model, requestedModel: options.model } : {}),
   ...(thinking ? { thinking } : {}),
   ...(options.actorId ? { actorId: options.actorId } : {}),
   ...(options.actorName ? { actorName: options.actorName } : {}),
