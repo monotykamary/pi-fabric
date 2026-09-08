@@ -126,11 +126,61 @@ const isFailedResult = (value: unknown): boolean => {
   return status === "failed" || status === "stopped" || status === "timed_out";
 };
 
+// Store payloads are bounded JSON values. Freeze copies, never provider objects.
+const freezeProjection = (value: unknown): void => {
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (current === null || typeof current !== "object" || Object.isFrozen(current)) continue;
+    Object.freeze(current);
+    for (const child of Object.values(current)) pending.push(child);
+  }
+};
+
+const createRowProjection = (detailed: boolean, revisions: WeakMap<object, number>) => {
+  const cache = new WeakMap<object, {
+    source: Record<string, unknown>;
+    value: Record<string, unknown>;
+    revision: number;
+  }>();
+  return <T extends object>(row: T): T => {
+    const revision = revisions.get(row) ?? 0;
+    const previous = cache.get(row);
+    if (previous?.revision === revision) return previous.value as T;
+    const source = { ...row } as Record<string, unknown>;
+    if (!detailed) {
+      delete source.args;
+      delete source.result;
+      delete source.preview;
+      delete source.data;
+    }
+    const keys = Object.keys(source);
+    if (previous && keys.length === Object.keys(previous.source).length &&
+      keys.every((key) => Object.hasOwn(previous.source, key) &&
+        Object.is(source[key], previous.source[key]))) {
+      previous.revision = revision;
+      return previous.value as T;
+    }
+    const value: Record<string, unknown> = {};
+    for (const key of keys) {
+      value[key] = previous && Object.hasOwn(previous.source, key) &&
+        Object.is(source[key], previous.source[key])
+        ? previous.value[key] : structuredClone(source[key]);
+      freezeProjection(value[key]);
+    }
+    Object.freeze(value);
+    cache.set(row, { source, value, revision });
+    return value as T;
+  };
+};
+
 export class FabricActivityStore {
   readonly #runs = new Map<string, FabricActivityRun>();
   readonly #callIndex = new Map<string, Map<string, FabricActivityCall>>();
   readonly #listeners = new Set<() => void>();
   #revision = 0;
+  readonly #runRevisions = new WeakMap<FabricActivityRun, number>();
+  readonly #rowRevisions = new WeakMap<object, number>();
 
   revision(): number {
     return this.#revision;
@@ -171,7 +221,7 @@ export class FabricActivityStore {
     this.#runs.set(id, run);
     this.#callIndex.set(id, new Map());
     this.#prune();
-    this.#emit();
+    this.#emit(run);
     return structuredClone(run);
   }
 
@@ -181,7 +231,7 @@ export class FabricActivityStore {
     run.updatedAt = Date.now();
     delete run.finishedAt;
     delete run.error;
-    this.#emit();
+    this.#emit(run);
   }
 
   configure(runId: string, display: FabricRunDisplay): FabricActivityRun {
@@ -191,7 +241,7 @@ export class FabricActivityStore {
     if (name) run.name = name;
     if (description) run.description = description;
     run.updatedAt = Date.now();
-    this.#emit();
+    this.#emit(run);
     return structuredClone(run);
   }
 
@@ -248,7 +298,7 @@ export class FabricActivityStore {
     run.currentPhaseId = phase.id;
     run.updatedAt = now;
     if (run.name === "Fabric program" && run.phases.length === 1) run.name = name;
-    this.#emit();
+    this.#emit(run, run.phases);
     return structuredClone(phase);
   }
 
@@ -310,7 +360,7 @@ export class FabricActivityStore {
     }
 
     run.updatedAt = now;
-    this.#emit();
+    this.#emit(run, item);
     return structuredClone(item);
   }
 
@@ -328,7 +378,7 @@ export class FabricActivityStore {
     });
     if (run.events.length > MAX_EVENTS) run.events.splice(0, run.events.length - MAX_EVENTS);
     run.updatedAt = Date.now();
-    this.#emit();
+    this.#emit(run, run.events.at(-1));
   }
 
   // Streaming providers may report lifecycle events after session teardown resets
@@ -359,7 +409,7 @@ export class FabricActivityStore {
       delete existing.detail;
       delete existing.progress;
       run.updatedAt = now;
-      this.#emit();
+      this.#emit(run, existing);
       return;
     }
     if (run.calls.length >= MAX_CALLS) {
@@ -380,7 +430,7 @@ export class FabricActivityStore {
     run.calls.push(call);
     index.set(call.id, call);
     run.updatedAt = now;
-    this.#emit();
+    this.#emit(run, call);
   }
 
   updateCallArgs(runId: string, callId: string, args: Record<string, unknown>): void {
@@ -392,7 +442,7 @@ export class FabricActivityStore {
     call.label = labelForCall(call.ref, args);
     call.updatedAt = Date.now();
     run.updatedAt = call.updatedAt;
-    this.#emit();
+    this.#emit(run, call);
   }
 
   updateCall(runId: string, callId: string, update: FabricInvocationActivityUpdate): void {
@@ -400,6 +450,8 @@ export class FabricActivityStore {
     if (!run) return;
     const call = this.#callIndex.get(runId)?.get(callId);
     if (!call) return;
+    const before = { progress: call.progress, entityId: call.entityId, entityKind: call.entityKind,
+      label: call.label, metrics: call.metrics };
     const now = Date.now();
     if (update.type === "progress") {
       const message = cleanText(update.message, MAX_DETAIL_CHARS);
@@ -419,9 +471,18 @@ export class FabricActivityStore {
         ...(typeof update.cost === "number" ? { cost: Math.max(0, update.cost) } : {}),
       };
     }
+    if (before.progress === call.progress && before.entityId === call.entityId &&
+      before.entityKind === call.entityKind && before.label === call.label &&
+      Object.is(before.metrics?.tokens, call.metrics?.tokens) &&
+      Object.is(before.metrics?.toolCalls, call.metrics?.toolCalls) &&
+      Object.is(before.metrics?.cost, call.metrics?.cost)) {
+      if (before.metrics) call.metrics = before.metrics;
+      else delete call.metrics;
+      return;
+    }
     call.updatedAt = now;
     run.updatedAt = now;
-    this.#emit();
+    this.#emit(run, call);
   }
 
   finishCall(
@@ -463,7 +524,7 @@ export class FabricActivityStore {
       }
     }
     run.updatedAt = now;
-    this.#emit();
+    this.#emit(run, call);
   }
 
   finish(runId: string, success: boolean, error?: string): void {
@@ -495,7 +556,45 @@ export class FabricActivityStore {
       item.updatedAt = now;
       item.finishedAt = now;
     }
-    this.#emit();
+    this.#emit(run, [...run.phases, ...run.calls, ...run.items]);
+  }
+
+  // Reader-local, weakly keyed projections never own execution state. Switching
+  // detail mode drops the previous cache rather than retaining both payload tiers.
+  createRunView(): (detailed?: boolean) => FabricActivityRun[] {
+    let detailed = false;
+    let revision = -1;
+    let ordered: FabricActivityRun[] = [];
+    let runs = new WeakMap<FabricActivityRun, { revision: number; value: FabricActivityRun }>();
+    let rows = createRowProjection(false, this.#rowRevisions);
+    return (nextDetailed = false) => {
+      if (detailed !== nextDetailed) {
+        detailed = nextDetailed;
+        runs = new WeakMap();
+        rows = createRowProjection(detailed, this.#rowRevisions);
+        revision = -1;
+      }
+      if (revision !== this.#revision) {
+        ordered = this.#orderedRuns().map((run) => {
+          const runRevision = this.#runRevisions.get(run) ?? 0;
+          const cached = runs.get(run);
+          if (cached?.revision === runRevision) return cached.value;
+          const value: FabricActivityRun = {
+            ...run,
+            phases: Object.freeze(run.phases.map(rows)) as FabricActivityPhase[],
+            calls: Object.freeze(run.calls.map(rows)) as FabricActivityCall[],
+            items: Object.freeze(run.items.map(rows)) as FabricActivityItem[],
+            events: Object.freeze(run.events.map(rows)) as FabricActivityRun["events"],
+          };
+          Object.freeze(value);
+          runs.set(run, { revision: runRevision, value });
+          return value;
+        });
+        revision = this.#revision;
+      }
+      // The outer list remains independently sortable; its contents are read-only.
+      return ordered.slice();
+    };
   }
 
   runs(): FabricActivityRun[] {
@@ -547,8 +646,12 @@ export class FabricActivityStore {
     }
   }
 
-  #emit(): void {
+  #emit(run?: FabricActivityRun, changed?: object): void {
     this.#revision++;
+    if (run) this.#runRevisions.set(run, this.#revision);
+    if (Array.isArray(changed)) {
+      for (const row of changed) this.#rowRevisions.set(row, this.#revision);
+    } else if (changed) this.#rowRevisions.set(changed, this.#revision);
     for (const listener of this.#listeners) {
       try {
         listener();

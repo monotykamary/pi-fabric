@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FabricState } from "../src/fabric-state.js";
+import { FabricActivityStore } from "../src/activity/store.js";
 import { createDashboardSnapshot, FabricDashboardSnapshotCache } from "../src/ui/snapshot.js";
 
 const worker = (id: string, actorId: string, status = "completed", updatedAt = 1, startedAt = 1) => ({
@@ -16,6 +17,37 @@ const stateFor = (records: ReturnType<typeof worker>[], actorIds: string[]) => (
 }) as unknown as FabricState;
 
 describe("conversation dashboard projection", () => {
+  it("shares immutable activity in the poll cache while still copying externally mutable domains", () => {
+    const activity = new FabricActivityStore();
+    activity.start("live");
+    activity.beginCall("live", { callId: "call", ref: "pi.read", args: { path: "a.ts" } });
+    const read = activity.createRunView();
+    const records = [worker("a", "actor")];
+    const state = stateFor(records, ["actor"]);
+    const cache = new FabricDashboardSnapshotCache();
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    try {
+      const runs = read();
+      clone.mockClear();
+      const first = createDashboardSnapshot(state, [], undefined, runs, cache, true);
+      // Cache input copies exclude the already immutable activity tree.
+      expect(clone.mock.calls.some(([input]) => input !== null && typeof input === "object" && "runs" in input)).toBe(false);
+      const unchanged = createDashboardSnapshot(state, [], undefined, read(), cache, true);
+      expect(unchanged.agents).toBe(first.agents);
+      expect(unchanged.runs[0]).toBe(runs[0]);
+      records[0]!.usage.output = 12;
+      const usage = createDashboardSnapshot(state, [], undefined, read(), cache, true);
+      expect(usage.actors[0]!.worker!.usage!.output).toBe(12);
+      activity.updateCall("live", "call", { type: "progress", message: "new" });
+      const progress = createDashboardSnapshot(state, [], undefined, read(), cache, true);
+      expect(progress.runs[0]!.calls[0]!.progress).toBe("new");
+      expect(first.runs[0]!.calls[0]).not.toHaveProperty("progress");
+      activity.reset();
+      expect(createDashboardSnapshot(state, [], undefined, read(), cache, true).runs).toEqual([]);
+    } finally {
+      clone.mockRestore();
+    }
+  });
   it("indexes workers once, preserving active/finite recency/source-order ties", () => {
     const ids = Array.from({ length: 80 }, (_, i) => `actor-${i}`);
     const records = ids.flatMap((id) => [

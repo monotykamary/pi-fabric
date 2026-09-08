@@ -76,8 +76,17 @@ export class FabricDashboardSnapshotCache {
       ? { ...this.snapshot, now: Date.now() } : undefined;
   }
 
-  set(inputs: unknown, snapshot: FabricDashboardSnapshot): void {
-    this.inputs = structuredClone(inputs);
+  set(
+    inputs: { runs: FabricActivityRun[] } & Record<string, unknown>,
+    snapshot: FabricDashboardSnapshot,
+    immutableActivity = false,
+  ): void {
+    // Only the controller-owned revision view guarantees deep immutability.
+    // Legacy/mutable inputs must still be copied to detect in-place updates.
+    const { runs, ...other } = inputs;
+    this.inputs = immutableActivity
+      ? { ...structuredClone(other), runs: runs.slice() }
+      : structuredClone(inputs);
     this.snapshot = snapshot;
   }
 
@@ -93,6 +102,7 @@ export const createDashboardSnapshot = (
   context?: ExtensionContext,
   activityRuns?: FabricActivityRun[],
   cache?: FabricDashboardSnapshotCache,
+  immutableActivity = false,
 ): FabricDashboardSnapshot => {
   const runs = activityRuns ?? state.activity.runs();
   const agentRecords =
@@ -318,6 +328,6 @@ export const createDashboardSnapshot = (
     state: stateEntries,
     events: events.map((event) => structuredClone(event)),
   };
-  cache?.set(inputs, snapshot);
+  cache?.set(inputs, snapshot, immutableActivity);
   return snapshot;
 };

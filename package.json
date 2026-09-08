@@ -39,6 +39,7 @@
     "benchmark:real-resume": "bun run build && node scripts/benchmark-real-resume.mjs",
     "benchmark:memory-heads": "bun run build && node scripts/benchmark-memory-heads.mjs",
     "benchmark:conversation": "bun run build && node --expose-gc scripts/benchmark-conversation.mjs",
+    "benchmark:activity": "node --expose-gc scripts/benchmark-activity.mjs",
     "lint:dead": "knip --no-gitignore",
     "check": "bun run typecheck && bun run build && bun run assert:lazy-graph && bun run test && bun run lint:dead",
     "assert:lazy-graph": "node scripts/assert-lazy-graph-host-free.mjs",

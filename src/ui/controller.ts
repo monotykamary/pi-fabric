@@ -85,6 +85,7 @@ export class FabricUiController {
   // paying a deep clone of up to 1,000 bounded call payloads per tick.
   #activityRunsDetailed = true;
   #activityRuns: FabricActivityRun[] = [];
+  #activityView: ((detailed?: boolean) => FabricActivityRun[]) | undefined;
   readonly #transcripts = new AgentTranscriptReader();
   readonly #conversationReaders = new Map<string, NativeConversationReader>();
   #activeConversationReader: string | undefined;
@@ -149,6 +150,7 @@ export class FabricUiController {
     this.#activityRevision = undefined;
     this.#activityRunsDetailed = true;
     this.#activityRuns = [];
+    this.#activityView = undefined;
     this.#transcripts.clear();
     for (const reader of this.#conversationReaders.values()) reader.clear();
     this.#conversationReaders.clear();
@@ -676,8 +678,12 @@ export class FabricUiController {
         revision !== this.#activityRevision ||
         detailed !== this.#activityRunsDetailed
       ) {
-        this.#activityRuns =
-          detailed || typeof this.state.activity.runSummaries !== "function"
+        if (!this.#activityView && typeof this.state.activity.createRunView === "function") {
+          this.#activityView = this.state.activity.createRunView();
+        }
+        this.#activityRuns = this.#activityView
+          ? this.#activityView(detailed)
+          : detailed || typeof this.state.activity.runSummaries !== "function"
             ? this.state.activity.runs()
             : this.state.activity.runSummaries();
         this.#activityRevision = revision;
@@ -691,6 +697,7 @@ export class FabricUiController {
         context,
         this.#activityRuns,
         this.#dashboardOpen ? undefined : this.#snapshotCache,
+        this.#activityView !== undefined,
       );
       this.#renderWidget(context);
       // Read the native source even when manager metadata is unchanged: log

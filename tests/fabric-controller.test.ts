@@ -2,6 +2,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { FabricActivityRun } from "../src/activity/types.js";
+import { FabricActivityStore } from "../src/activity/store.js";
 import type { FabricState } from "../src/fabric-state.js";
 import { FabricUiController } from "../src/ui/controller.js";
 import type { FabricDashboard } from "../src/ui/dashboard.js";
@@ -82,6 +83,57 @@ const stubState = () =>
   }) as unknown as FabricState;
 
 describe("FabricUiController dashboard wiring", () => {
+  it("uses incremental views, skips duplicate progress refreshes, and releases readers on stop", async () => {
+    vi.useFakeTimers();
+    const state = stubState();
+    const activity = new FabricActivityStore();
+    Object.assign(state, { activity });
+    activity.start("history");
+    activity.finish("history", true);
+    activity.start("live");
+    activity.beginCall("live", { callId: "call", ref: "pi.read", args: { path: "file.ts" } });
+    const createView = vi.spyOn(activity, "createRunView");
+    const fullReads = vi.spyOn(activity, "runs");
+    const legacySummaries = vi.spyOn(activity, "runSummaries");
+    const tui = { requestRender: vi.fn() } as unknown as TUI;
+    const controller = new FabricUiController(state);
+    const context = {
+      mode: "tui", modelRegistry: { getAvailable: () => [] }, ui: {
+        custom: vi.fn(async (factory: (t: TUI, theme: Theme, keys: unknown, done: () => void) => FabricDashboard) => {
+          factory(tui, theme, {}, () => {});
+          expect(controller.snapshot().runs[0]!.calls[0]!.args).toEqual({ path: "file.ts" });
+        }),
+        notify: vi.fn(), setWidget: vi.fn(),
+      },
+    } as unknown as ExtensionContext;
+    try {
+      controller.start(context);
+      const history = controller.snapshot().runs[1];
+      expect(controller.snapshot().runs[0]!.calls[0]).not.toHaveProperty("args");
+      activity.updateCall("live", "call", { type: "progress", message: "working" });
+      await vi.advanceTimersByTimeAsync(110);
+      // The public snapshot() API deliberately returns isolated copies.
+      expect(controller.snapshot().runs[1]).toEqual(history);
+      expect(controller.snapshot().runs[0]!.calls[0]!.progress).toBe("working");
+      vi.mocked(state.mainAgentInfo).mockClear();
+      for (let i = 0; i < 100; i++) activity.updateCall("live", "call", { type: "progress", message: "working" });
+      await vi.advanceTimersByTimeAsync(110);
+      expect(state.mainAgentInfo).not.toHaveBeenCalled();
+      await controller.openDashboard(context);
+      expect(controller.snapshot().runs[0]!.calls[0]).not.toHaveProperty("args");
+      expect(fullReads).not.toHaveBeenCalled();
+      expect(legacySummaries).not.toHaveBeenCalled();
+      expect(createView).toHaveBeenCalledTimes(1);
+      controller.stop();
+      controller.start(context);
+      expect(createView).toHaveBeenCalledTimes(2);
+      expect(context.ui.notify).not.toHaveBeenCalled();
+    } finally {
+      controller.stop();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
   it("passes every actor callback to the dashboard so all pickers are available", async () => {
     const state = stubState();
     const controller = new FabricUiController(state);

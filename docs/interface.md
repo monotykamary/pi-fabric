@@ -66,6 +66,39 @@ Unchanged history reuses native component rows and transcript projections. Inact
 
 After a build, run an individual scenario with `node --expose-gc scripts/benchmark-conversation.mjs latency` (or `append` / `retention`). Correctness tests enforce operation counts and preserve native rendering, history, queues, and lifecycle behavior.
 
+## Incremental activity reads
+
+The activity controller owns a revisioned read view over the existing activity store.
+Unchanged runs and rows retain identity; changing one call does not copy every retained
+call's arguments, results, or previews. The poll snapshot cache shares these immutable
+projections while continuing to copy and inspect externally mutable participant domains.
+Run ordering and membership still follow the existing lifecycle and recency rules.
+
+The internal `FabricActivityStore.createRunView()` returns an independent reader. Calling
+it without an argument reads payload-free summaries; `read(true)` includes full detail.
+The returned outer list is independently sortable, but runs, rows, metrics, and nested
+payloads are frozen. Readers do not consume one another's changes. Revisions, not wall-clock
+timestamps, invalidate same-millisecond changes. Switching detail mode drops the reader's
+old cache, reset/pruning disappear on its next read, and stopping the controller releases
+its reader. Weakly keyed row caches cannot keep removed source records alive.
+`runs()`, `get()`, and `runSummaries()` retain their isolated, mutable-copy contracts.
+This is an internal UI API, not another guest capability, registry, or event log.
+
+Repeated normalized progress, entity, or metric values do not advance activity timestamps
+or revisions and do not schedule another refresh. Real changes still use the configured
+update debounce. Explicit workflow events, call completion, failures, cancellation, native
+transcript polling, and live animation retain their existing behavior. Progress messages
+are presentation state, not execution-owner heartbeats. No retention, authorization,
+selection, layout, or durable-audit policy changes accompany this optimization.
+
+Run `bun run benchmark:activity` for synthetic source-level projection latency, row
+replacement counts, duplicate-progress notifications, and retained heap after repeated
+reset/repopulation. `bun run benchmark:activity 1` probes a single live run; the default
+includes 12 retained/live runs with 300 calls each. The script bundles the source subject
+in memory and makes no model calls. Timings are diagnostic, not CI thresholds or whole-UI
+speedups; the controller already skips activity reads at unchanged revisions. Tests pin
+snapshot equivalence, sharing counts, independent readers, and lifecycle transitions.
+
 ## Activity surface
 
 Fabric ships a general-purpose, theme-aware activity surface that works with any agent setup:

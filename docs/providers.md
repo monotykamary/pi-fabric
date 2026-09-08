@@ -51,6 +51,27 @@ async invoke(actionName, args, context) {
 }
 ```
 
+## Invocation costs and guarantees
+
+| Access pattern | Work and allocation | Guarantees |
+| --- | --- | --- |
+| Known direct call, such as `memory.recall(args)` | Avoids an explicit discovery round trip; arguments/results still cross the host bridge | Same registry validation, committed capability binding where applicable, approvals, audit, and cancellation |
+| `tools.search` / `tools.describe`, then `tools.call({ ref, args })` | Adds catalog lookup and descriptor transport before the action call | Discovery describes capabilities; it does not grant permission or freeze future authorization |
+| Reusing a discovered ref | Avoids rediscovering the name; each invocation still resolves through the registry | A saved name is not a saved approval or a bypass around generation/lifecycle checks |
+| Independent calls in `Promise.all` | Overlaps independent work and reduces outer model round trips; each nested call still pays bridge/validation/serialization costs | Calls remain separately governed and observable; `Promise.all` itself adds no transaction, rollback, or sibling cancellation. Normal execution-failure and host-cancellation handling still apply |
+| Provider-specific bulk action | Can amortize provider work and transport if the provider implements it | Atomicity, partial results, and cancellation granularity belong to that action's declared contract; Fabric does not infer them |
+
+Return only the evidence the model needs. Intermediate work stays out of the final model
+result unless returned, but still follows the existing live activity and bounded audit
+policies. Large payloads can dominate local cloning and transport cost even when provider
+latency is unchanged. UI read-view caching reduces observation costs only; it never caches
+an action's permission decision or substitutes a stale result for a new invocation.
+
+Providers should report current presentation values through `context.activity`. Repeating
+the same normalized progress, entity, or metrics value is a UI no-op, not a heartbeat or a
+durable event. Actual lifecycle completion and failure still travel through the normal
+invocation path. See [incremental activity reads](interface.md#incremental-activity-reads).
+
 ## Managed embedded hosts
 
 Trusted embedding code can opt into a closed-world provider authority:
