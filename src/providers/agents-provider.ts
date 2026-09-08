@@ -71,6 +71,7 @@ import { loadModelUsage } from "../core/model-usage.js";
 import { AGENTS_ACTION_DESCRIPTORS } from "./agents-actions.js";
 import { actionArgNormalizer } from "./arg-normalization.js";
 import { isFabricThinking } from "../thinking.js";
+import { normalizeAgentRunRequest } from "../agents/request.js";
 import { ResidencyClient } from "../residency/client.js";
 import { ResidentActorClient } from "../residency/actor-client.js";
 import { AgentTranscriptReader } from "../ui/transcript.js";
@@ -161,67 +162,7 @@ const checkedKernel = (value: unknown): AgentRunRequest["kernel"] => {
   throw new Error(`Invalid Fabric agent kernel: ${String(value)}`);
 };
 
-const runRequest = (
-  args: Record<string, unknown>,
-  context: FabricInvocationContext,
-  manager: AgentManager,
-  options: { allowCwd?: boolean } = {},
-): AgentRunRequest => {
-  const transport =
-    args.transport === "auto" ||
-    args.transport === "process" ||
-    args.transport === "tmux" ||
-    args.transport === "screen" ||
-    args.transport === "localterm" ||
-    args.transport === "herdr"
-      ? args.transport
-      : undefined;
-  const thinking = isFabricThinking(args.thinking) ? args.thinking : undefined;
-  const tools = stringArray(args.tools);
-  const timeoutMs = longerTimeoutOverride(args.timeoutMs, manager);
-  const runner =
-    args.runner === "pi" || args.runner === "claude" || args.runner === "veda"
-      ? args.runner
-      : manager.config.runner;
-  const inheritedModel =
-    runner === "pi" && !manager.config.model && context.extensionContext.model
-      ? `${context.extensionContext.model.provider}/${context.extensionContext.model.id}`
-      : undefined;
-  const kernel = checkedKernel(args.kernel);
-  if (args.recursive === true && args.extensions === false) {
-    throw new Error("Recursive Fabric requires extensions enabled; omit recursive or extensions: false");
-  }
-  return {
-    task: String(args.task),
-    runner,
-    ...(kernel !== undefined ? { kernel } : {}),
-    ...(typeof args.name === "string" ? { name: args.name } : {}),
-    ...(transport ? { transport } : {}),
-    ...(typeof args.model === "string"
-      ? { model: args.model }
-      : inheritedModel
-        ? { model: inheritedModel }
-        : {}),
-    ...(typeof args.persona === "string" && args.persona.trim()
-      ? { persona: args.persona.trim() }
-      : {}),
-    ...(thinking ? { thinking } : {}),
-    ...(tools ? { tools } : {}),
-    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(typeof args.extensions === "boolean"
-      ? { extensions: args.extensions }
-      : args.recursive === true ? { extensions: true } : {}),
-    ...(typeof args.recursive === "boolean" ? { recursive: args.recursive } : {}),
-    ...(options.allowCwd !== false && typeof args.cwd === "string" ? { cwd: args.cwd } : {}),
-    ...(typeof args.worktree === "boolean" ? { worktree: args.worktree } : {}),
-    ...(args.residency === "session" || args.residency === "durable"
-      ? { residency: args.residency }
-      : {}),
-    ...(typeof args.schema === "object" && args.schema !== null && !Array.isArray(args.schema)
-      ? { schema: args.schema as Record<string, unknown> }
-      : {}),
-  };
-};
+const runRequest = (args: Record<string, unknown>, context: FabricInvocationContext, manager: AgentManager, options: {allowCwd?: boolean} = {}): AgentRunRequest => normalizeAgentRunRequest({...args, timeoutMs: longerTimeoutOverride(args.timeoutMs, manager)}, { ...manager.config, ...(context.extensionContext.model ? {inheritedModel: context.extensionContext.model} : {}) }, options);
 
 const handoffTask = (args: Record<string, unknown>): string => {
   const task = typeof args.task === "string" ? args.task.trim() : "";

@@ -25,4 +25,6 @@ export type {
   MemorySourceCallOptions,
   MemorySourceClientOptions,
 } from "./memory/client.js";
+export { createMemoryProvider } from "./memory/provider.js";
+export type { MemoryProviderAction, MemoryProviderDispatch, MemoryProviderOptions } from "./memory/provider.js";
 export { memoryActionSchemas } from "./providers/memory-provider.js";

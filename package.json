@@ -1,6 +1,6 @@
 {
   "name": "pi-fabric",
-  "version": "0.89.1",
+  "version": "0.90.0",
   "description": "A programmable tool and agent runtime for Pi",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,6 +13,14 @@
     "./protocol": {
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
+    },
+    "./agents": {
+      "types": "./dist/agents.d.ts",
+      "import": "./dist/agents.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp.d.ts",
+      "import": "./dist/mcp.js"
     },
     "./memory": {
       "types": "./dist/memory.d.ts",

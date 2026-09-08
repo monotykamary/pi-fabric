@@ -232,8 +232,13 @@ interface FabricAgentHandle {
   name: string;
   status: string;
   runner: FabricAgentRunner;
-  transport: FabricTransport;
-  cwd: string;
+  /** Local execution metadata is absent for hosted participants. */
+  transport?: FabricTransport;
+  cwd?: string;
+  rootId?: string;
+  parentId?: string;
+  depth?: number;
+  generation?: number;
   model?: string;
   thinking?: FabricThinking;
   actorId?: string;
@@ -665,6 +670,8 @@ interface FabricActorMessage {
 type FabricAgentTargetArgs = { id: string; agentId?: string; agent_id?: string };
 interface FabricAgentsApi {
   run(args: FabricAgentRequest): Promise<FabricAgentResult>;
+  /** Hosted capability only; resumes a paused direct child without exposing its checkpoint. */
+  resume(args: FabricAgentTargetArgs & { task?: string }): Promise<FabricAgentResult>;
   handoff(args: FabricHandoffRequest): Promise<FabricHandoffResult>;
   spawn(args: FabricAgentRequest): Promise<FabricAgentHandle>;
   wait(args: FabricAgentTargetArgs): Promise<FabricAgentResult>;

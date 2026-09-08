@@ -61,6 +61,7 @@ export interface HostSnapshot {
   metadata: MemorySourceSessionMetadata;
   records: readonly MemorySourceRecord[];
   coverageReasons: string[];
+  selectedLeafId?: string | null;
 }
 
 /** Opaque, stable, non-filesystem session key shown in public outputs. */
@@ -164,6 +165,11 @@ const loadHostSnapshot = async (
       "Memory source snapshot records are not JSON-serializable.",
     );
   }
+  if (response.selectedLeafId !== undefined && response.selectedLeafId !== null &&
+      (typeof response.selectedLeafId !== "string" || !records.some(record =>
+        record.type !== "session" && record.id === response.selectedLeafId))) {
+    throw new MemorySourceError("invalid_source_response", "Memory source selected leaf is invalid.");
+  }
   return {
     sourceId: source.id,
     sessionKey,
@@ -172,6 +178,7 @@ const loadHostSnapshot = async (
     revision,
     metadata: { ...(response.metadata ?? {}) },
     records,
+    ...(response.selectedLeafId !== undefined ? { selectedLeafId: response.selectedLeafId } : {}),
     coverageReasons: coverageReasons(response.coverage),
   };
 };
@@ -236,7 +243,7 @@ const hostRef = (snapshot: HostSnapshot): SessionRef => ({
 });
 
 const hostLineage = (snapshot: HostSnapshot, branches: MemoryBranches): SessionLineage =>
-  reconstructRecordsLineage(snapshot.records, branches);
+  reconstructRecordsLineage(snapshot.records, branches, undefined, snapshot.selectedLeafId);
 
 const hostIdentity = (sessionFile: string, sessionId: string | undefined, cwd: string | undefined) => ({
   sessionFile,
@@ -473,7 +480,7 @@ export const hostRecallPlan = async (
     sessionKey,
     observeAll: (branches) =>
       snapshots.map((snapshot) =>
-        observeHostSource(snapshot.displayKey, snapshot.revision, stateOf(snapshot).sourceHash)),
+        ({ ...observeHostSource(snapshot.displayKey, snapshot.revision, stateOf(snapshot).sourceHash), liveBranchSignature: hostLineage(snapshot, branches).fingerprint })),
     stateFor: (ref) => {
       const snapshot = byKey.get(ref.file);
       return snapshot ? stateOf(snapshot) : null;
@@ -547,7 +554,7 @@ export const hostExpansionAccess = async (
     ref,
     state: () => state,
     lineage: (branches) => hostLineage(snapshot, branches),
-    observe: () => observeHostSource(snapshot.displayKey, snapshot.revision, state.sourceHash),
+    observe: (branches) => ({ ...observeHostSource(snapshot.displayKey, snapshot.revision, state.sourceHash), liveBranchSignature: hostLineage(snapshot, branches).fingerprint }),
     normalizeFull: (branches, policy) => {
       const normalized = normalizeRecords(
         snapshot.records,

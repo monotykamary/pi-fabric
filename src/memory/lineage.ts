@@ -95,14 +95,14 @@ export const reconstructSessionLineage = (
 ): SessionLineage =>
   branches === "all" ? allLineage() : buildActiveLineage(readPersistedNodes(sessionFile), liveBranch);
 
-const buildActiveLineage = (nodes: PersistedNode[], liveBranch?: LiveSessionBranch): SessionLineage => {
+const buildActiveLineage = (nodes: PersistedNode[], liveBranch?: LiveSessionBranch, selectedLeafId?: string | null): SessionLineage => {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const liveIds = liveBranch?.entries.flatMap((entry) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
     const id = (entry as Record<string, unknown>).id;
     return typeof id === "string" ? [id] : [];
   });
-  const leafId = liveBranch ? liveBranch.leafId : (nodes[nodes.length - 1]?.id ?? null);
+  const leafId = liveBranch ? liveBranch.leafId : selectedLeafId !== undefined ? selectedLeafId : (nodes[nodes.length - 1]?.id ?? null);
   const path: PersistedNode[] = [];
   const reasons = new Set<string>();
 
@@ -144,5 +144,6 @@ export const reconstructRecordsLineage = (
   records: readonly unknown[],
   branches: MemoryBranches,
   liveBranch?: LiveSessionBranch,
+  selectedLeafId?: string | null,
 ): SessionLineage =>
-  branches === "all" ? allLineage() : buildActiveLineage(persistedNodesFromRecords(records), liveBranch);
+  branches === "all" ? allLineage() : buildActiveLineage(persistedNodesFromRecords(records), liveBranch, selectedLeafId);

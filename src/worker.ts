@@ -5,7 +5,6 @@ import path from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import crossSpawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
-import { Value } from "typebox/value";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
   AgentRunRecord,
@@ -28,6 +27,13 @@ type CompactControlModule = typeof import("./agents/compact-control.js");
 type WorkerOptionsModule = typeof import("./worker/options.js");
 type WorkerRunRecordModule = typeof import("./worker/run-record.js");
 type WorkerSessionExportModule = typeof import("./worker/session-export.js");
+type AgentResultModule = typeof import("./agents/result.js");
+
+const loadAgentResult = async (): Promise<AgentResultModule> => {
+  if (!import.meta.url.endsWith(".ts")) return import("./agents/result.js");
+  const sourceModulePath = "./agents/result.ts";
+  return import(sourceModulePath) as Promise<AgentResultModule>;
+};
 
 const loadWorkerOptions = async (): Promise<WorkerOptionsModule> => {
   if (!import.meta.url.endsWith(".ts")) return import("./worker/options.js");
@@ -154,53 +160,7 @@ const terminateChild = (child: ChildProcess, signal: NodeJS.Signals): void => {
   } catch { /* child process group already exited */ }
 };
 
-const extractBalancedJson = (text: string, start: number): string | null => {
-  const open = text[start];
-  if (open !== "{" && open !== "[") return null;
-  const close = open === "{" ? "}" : "]";
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') inString = true;
-    else if (ch === open) depth++;
-    else if (ch === close) {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
-    }
-  }
-  return null;
-};
 
-const parseStructuredValue = (text: string): unknown => {
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Whole text is not JSON; try extraction below.
-  }
-  const fenced = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n```/i);
-  if (fenced?.[1]) {
-    try {
-      return JSON.parse(fenced[1].trim());
-    } catch {
-      // Fenced block is not JSON; try balanced extraction below.
-    }
-  }
-  const start = trimmed.search(/[{\[]/);
-  if (start >= 0) {
-    const balanced = extractBalancedJson(trimmed, start);
-    if (balanced) return JSON.parse(balanced);
-  }
-  return JSON.parse(trimmed);
-};
 
 let crashContext: { statusFile: string; record: AgentRunRecord } | undefined;
 let runRecordHelpers: WorkerRunRecordModule | undefined;
@@ -226,10 +186,11 @@ process.on("unhandledRejection", (error) => {
 });
 
 const main = async (): Promise<void> => {
-  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers] = await Promise.all([
+  const [optionHelpers, loadedRunRecordHelpers, sessionExportHelpers, {parseStructuredValue, validateAgentResult}] = await Promise.all([
     loadWorkerOptions(),
     loadWorkerRunRecord(),
     loadWorkerSessionExport(),
+    loadAgentResult(),
   ]);
   runRecordHelpers = loadedRunRecordHelpers;
   const {
@@ -1258,15 +1219,7 @@ const main = async (): Promise<void> => {
         string,
         unknown
       >;
-      const value = record.value ?? parseStructuredValue(record.text);
-      if (!Value.Check(schema, value)) {
-        const errors = [...Value.Errors(schema, value)]
-          .slice(0, 5)
-          .map((error) => error.message)
-          .join("; ");
-        throw new Error(errors || "value does not match schema");
-      }
-      record.value = value;
+      validateAgentResult(record, schema);
     } catch (error) {
       record.status = "failed";
       const reason = error instanceof Error ? error.message : String(error);

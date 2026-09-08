@@ -326,7 +326,7 @@ export class FabricRuntimeState {
     this.activity.reset();
     this.sessionApprovals.approvedRisks.clear();
     this.#cwd = context.cwd;
-    const projectTrusted = context.isProjectTrusted();
+    const projectTrusted = this.#managedHost ? false : context.isProjectTrusted();
     this.#managedHost?.seal();
     this.#config = this.#managedHost?.config() ?? bootstrapConfig ?? loadFabricConfig({
       cwd: context.cwd,
@@ -387,6 +387,20 @@ export class FabricRuntimeState {
     );
     const enforceSchema = this.#config.schema.mode === "enforce";
     await builtins.tools(context.cwd, this.#config, this.capturedTools);
+    if (this.#managedHost) {
+      // Closed-world hosts must never construct unused native managers, stores or model history.
+      for (const name of ["agents", "schema", "compact", "memory", "mesh", "state"]) {
+        if (["agents", "schema", "compact"].includes(name) || this.#managedHost.has(name)) {
+          await builtins.install(createProviderComponent({
+            provider: name, description: "Managed host provider",
+            create: () => this.#managedHost!.provider(name),
+          }));
+        } else this.#registry.markUnavailable(name, "unavailable in managed host");
+      }
+      builtins.assertActive(this.#config);
+      await this.#mountExecution(context, false);
+      return;
+    }
     const sessionId = context.sessionManager.getSessionId();
     const { identity, mainAgentId } = resolveFabricIdentity(sessionId);
     const fabricSessionId = process.env.PI_FABRIC_SESSION_ID?.trim() || sessionId;
@@ -754,29 +768,7 @@ export class FabricRuntimeState {
     }));
     await builtins.memory(context, this.#config, sessionId);
     builtins.assertActive(this.#config);
-    for (const provider of this.#externalProviders.values()) {
-      this.#registry.register(provider);
-    }
-    this.#execution = new FabricExecutionService(
-      this.#registry,
-      this.#config,
-      this.activity,
-      this.#schema,
-      undefined,
-      this.sessionApprovals,
-      this.capturedTools,
-    );
-    const discovery: FabricProviderDiscovery = {
-      version: 1,
-      register: (provider, options) => this.registerExternal(provider, options),
-    };
-    this.pi.events.emit(FABRIC_PROVIDER_DISCOVER_EVENT, discovery);
-    const componentDiscovery: FabricComponentDiscovery = {
-      version: 1,
-      register: (component, options) => this.registerExternalComponent(component, options),
-    };
-    this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
-    await this.#componentLoader.reconcile(enforceSchema ? [] : this.#config.components);
+    await this.#mountExecution(context, enforceSchema);
     const inheritedRequirements = inheritedCapabilityRequirements();
     const inheritedDigest = process.env.PI_FABRIC_CAPABILITY_DIGEST;
     const hasInheritedCommit =
@@ -804,7 +796,7 @@ export class FabricRuntimeState {
         );
       }
       this.#sessionCapabilityLease = lease;
-      this.#execution.setCapabilityView(lease.view);
+      this.execution.setCapabilityView(lease.view);
     }
     this.#repairs = new RepairCompiler({
       agentDir: resolveAgentDir(),
@@ -822,6 +814,33 @@ export class FabricRuntimeState {
     setActiveCompiledSurface(
       this.#config.entropy.compile ? loadCompiledSurface(resolveAgentDir()).file : undefined,
     );
+  }
+
+  async #mountExecution(context: ExtensionContext, enforceSchema: boolean): Promise<void> {
+    for (const provider of this.#externalProviders.values()) {
+      this.registry.register(provider);
+    }
+    this.#execution = new FabricExecutionService(
+      this.registry,
+      this.config,
+      this.activity,
+      this.#schema,
+      undefined,
+      this.sessionApprovals,
+      this.capturedTools,
+      this.#managedHost ? (name) => this.#managedHost!.ownsProvider(name) : undefined,
+    );
+    const discovery: FabricProviderDiscovery = {
+      version: 1,
+      register: (provider, options) => this.registerExternal(provider, options),
+    };
+    this.pi.events.emit(FABRIC_PROVIDER_DISCOVER_EVENT, discovery);
+    const componentDiscovery: FabricComponentDiscovery = {
+      version: 1,
+      register: (component, options) => this.registerExternalComponent(component, options),
+    };
+    this.pi.events.emit(FABRIC_COMPONENT_DISCOVER_EVENT, componentDiscovery);
+    await this.components.reconcile(enforceSchema ? [] : this.config.components);
   }
 
   async ensure(context: ExtensionContext): Promise<void> {

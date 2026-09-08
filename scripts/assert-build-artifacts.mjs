@@ -9,6 +9,8 @@ const dist = join(root, "dist");
 const stable = [
   "index.js",
   "memory.js",
+  "mcp.js",
+  "agents.js",
   "protocol.js",
   "worker.js",
   "residency/host.js",
@@ -24,6 +26,7 @@ const stable = [
 const lazy = [
   "agents/claude-cli.js",
   "agents/compact-control.js",
+  "agents/result.js",
   "agents/veda-cli.js",
   "fabric-runtime-state.js",
   "runtime/core-override-guest-types.js",

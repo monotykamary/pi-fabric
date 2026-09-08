@@ -8,6 +8,7 @@ import { FabricComponentCatalog } from "../src/components/catalog.js";
 import { FabricComponentLoader } from "../src/components/loader.js";
 import { FabricComponentSupervisor } from "../src/components/supervisor.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
+import { ApprovalController } from "../src/core/approval-controller.js";
 import { RuntimeStateBuiltins } from "../src/runtime-state-builtins.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 import { CapturedToolsProvider } from "../src/providers/captured-tools-provider.js";
@@ -60,6 +61,31 @@ describe("explicit managed host", () => {
     expect(registry.has("agents")).toBe(false);
     await host.close(); await host.close();
     expect(agents.close).toHaveBeenCalledOnce();
+  });
+  it("delegates network approval only to sealed live host providers", async () => {
+    vi.stubEnv("PI_FABRIC_GRANTED_RISKS", "network");
+    try {
+      const host = new FabricManagedHost({ providers: ["mcp"] });
+      const approvals = new ApprovalController(host.config().approvals, ctx.extensionContext,
+        undefined, undefined, undefined, name => host.ownsProvider(name));
+      const action = { name: "read", description: "brokered", inputSchema: {}, risk: "network" as const,
+        ref: "mcp.read", provider: "mcp" };
+      await expect(approvals.approve(action)).rejects.toThrow("denied");
+      host.register(provider("mcp"));
+      await expect(approvals.approve(action)).rejects.toThrow("denied");
+      host.seal();
+      expect(host.config().approvals.network).toBe("deny");
+      await expect(approvals.approve(action)).resolves.toBeUndefined();
+      approvals.sessionApprovals.approvedRisks.add("network");
+      for (const name of ["external", "mcp-other", "pi", "extensions"]) {
+        await expect(approvals.approve({ ...action, ref: `${name}.read`, provider: name }))
+          .rejects.toThrow("denied");
+      }
+      await host.close();
+      await expect(approvals.approve(action)).rejects.toThrow("denied");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
   it("fixes the execution policy independently of ambient configuration", () => {
     const host = new FabricManagedHost({providers: []});

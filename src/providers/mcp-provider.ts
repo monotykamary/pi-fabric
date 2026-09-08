@@ -124,7 +124,31 @@ export interface McpProviderHooks {
   onSliceChanged?: (descriptors: FabricActionDescriptor[]) => void;
 }
 
+export interface HostedMcpTool {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: FabricToolAnnotations;
+}
+
+/** Authorized metadata and transport only; never configuration or credentials. */
+export interface HostedMcpSource {
+  listServers(): string[];
+  listTools(server: string): Promise<HostedMcpTool[]>;
+  callTool(server: string, tool: string, options: {
+    args: Record<string, unknown>;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    disableOAuth?: boolean;
+  }): Promise<unknown>;
+  close?(server?: string): Promise<void>;
+}
+
+type ToolRuntime = Pick<Runtime, "listServers" | "listTools" | "callTool" | "close"> | HostedMcpSource;
+
 export interface McpProviderOptions {
+  source?: HostedMcpSource;
   cache?: McpDescriptorCacheStore;
   hooks?: McpProviderHooks;
 }
@@ -179,6 +203,7 @@ export class McpProvider implements FabricProvider {
     { expiresAt: number; promise: Promise<ServerToolInfo[]> }
   >();
 
+  readonly #source: HostedMcpSource | undefined;
   readonly #store: McpDescriptorCacheStore | undefined;
   readonly #hooks: McpProviderHooks;
   #generation = 0;
@@ -202,12 +227,13 @@ export class McpProvider implements FabricProvider {
     readonly config: FabricMcpConfig,
     options: McpProviderOptions = {},
   ) {
-    this.#store = options.cache;
+    this.#source = options.source;
+    this.#store = options.source ? undefined : options.cache;
     this.#hooks = options.hooks ?? {};
   }
 
   get #cacheOn(): boolean {
-    return this.config.cache.enabled;
+    return !this.#source && this.config.cache.enabled;
   }
 
   async list(
@@ -248,9 +274,18 @@ export class McpProvider implements FabricProvider {
     context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor | undefined> {
     const management = managementDescriptors.find((descriptor) => descriptor.name === actionName);
-    if (management) return management;
+    if (management) {
+      if (this.#source) throw new Error("MCP management is unavailable for a hosted source");
+      return management;
+    }
     if (!this.config.enabled) return undefined;
-    if (!this.#cacheOn) return this.#describeLegacy(actionName, context);
+    if (!this.#cacheOn) {
+      const descriptor = await this.#describeLegacy(actionName, context);
+      // Hosted identities are authority, not spelling suggestions. Prevent registry repair
+      // from turning an unknown source/tool (including ambiguous aliases) into a call.
+      if (this.#source && !descriptor) throw new Error(`Unknown hosted MCP action: ${actionName}`);
+      return descriptor;
+    }
     const parsed = this.#parseToolName(actionName);
     if (!parsed) return undefined;
     await this.#hydrate();
@@ -272,6 +307,9 @@ export class McpProvider implements FabricProvider {
     context: FabricInvocationContext,
   ): Promise<unknown> {
     if (!this.config.enabled) throw new Error("MCP support is disabled in Fabric configuration");
+    if (this.#source && actionName.startsWith("$")) {
+      throw new Error("MCP management is unavailable for a hosted source");
+    }
     if (actionName === "$servers") {
       const runtime = await this.#getRuntime();
       return runtime.listServers().map((server) => {
@@ -345,7 +383,9 @@ export class McpProvider implements FabricProvider {
   }
 
   async close(): Promise<void> {
+    if (this.#closed) return;
     this.#closed = true;
+    await this.#source?.close?.();
     this.#revalidateQueue.length = 0;
     this.#revalidateQueued.clear();
     if (this.#notifyTimer) clearTimeout(this.#notifyTimer);
@@ -735,7 +775,13 @@ export class McpProvider implements FabricProvider {
     }
   }
 
+  async #getToolRuntime(): Promise<ToolRuntime> {
+    if (this.#closed) throw new Error("MCP provider is closed");
+    return this.#source ?? this.#getRuntime();
+  }
+
   async #getRuntime(): Promise<Runtime> {
+    if (this.#source) throw new Error("Hosted MCP cannot construct an ambient runtime");
     if (this.#closed) throw new Error("MCP provider is closed");
     if (this.#runtime) return this.#runtime;
     const generation = this.#generation;
@@ -825,7 +871,7 @@ export class McpProvider implements FabricProvider {
     return Object.fromEntries(entries) as Record<string, string>;
   }
 
-  #resolveServerName(runtime: Runtime, requested: string): string | undefined {
+  #resolveServerName(runtime: ToolRuntime, requested: string): string | undefined {
     const servers = runtime.listServers();
     if (servers.includes(requested)) return requested;
     const matches = servers.filter((server) => sanitizeMcpRefPart(server) === requested);
@@ -833,10 +879,10 @@ export class McpProvider implements FabricProvider {
   }
 
   #resolveTool(tools: ServerToolInfo[], requested: string): ServerToolInfo | undefined {
-    return (
-      tools.find((tool) => tool.name === requested) ??
-      tools.find((tool) => sanitizeMcpRefPart(tool.name) === requested)
-    );
+    const exact = tools.find((tool) => tool.name === requested);
+    if (exact) return exact;
+    const matches = tools.filter((tool) => sanitizeMcpRefPart(tool.name) === requested);
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   #parseToolName(actionName: string): { server: string; tool: string } | undefined {
@@ -866,8 +912,9 @@ export class McpProvider implements FabricProvider {
     request: FabricProviderListRequest,
     _context: FabricInvocationContext,
   ): Promise<FabricActionDescriptor[]> {
-    const runtime = await this.#getRuntime();
-    const servers = request.namespace ? [request.namespace] : runtime.listServers();
+    const runtime = await this.#getToolRuntime();
+    const selected = request.namespace ? this.#resolveServerName(runtime, request.namespace) : undefined;
+    const servers = request.namespace ? (selected ? [selected] : []) : runtime.listServers();
     const settled = await Promise.allSettled(
       servers.map(async (server) => {
         const tools = await this.#listToolsLegacy(runtime, server);
@@ -883,7 +930,7 @@ export class McpProvider implements FabricProvider {
           `${descriptor.name} ${descriptor.description}`.toLowerCase().includes(query),
         )
       : descriptors;
-    return request.namespace ? filtered : [...managementDescriptors, ...filtered];
+    return request.namespace || this.#source ? filtered : [...managementDescriptors, ...filtered];
   }
 
   async #describeLegacy(
@@ -892,7 +939,7 @@ export class McpProvider implements FabricProvider {
   ): Promise<FabricActionDescriptor | undefined> {
     const parsed = this.#parseToolName(actionName);
     if (!parsed) return undefined;
-    const runtime = await this.#getRuntime();
+    const runtime = await this.#getToolRuntime();
     const server = this.#resolveServerName(runtime, parsed.server);
     if (!server) return undefined;
     const tool = await this.#findToolLegacy(runtime, server, parsed.tool);
@@ -906,7 +953,7 @@ export class McpProvider implements FabricProvider {
     signal?: AbortSignal,
   ): Promise<unknown> {
     if (signal?.aborted) throw new Error("MCP call cancelled");
-    const runtime = await this.#getRuntime();
+    const runtime = await this.#getToolRuntime();
     const server = this.#resolveServerName(runtime, serverName);
     if (!server) throw new Error(`Unknown MCP server: ${serverName}`);
     const tool = await this.#findToolLegacy(runtime, server, toolName);
@@ -914,11 +961,12 @@ export class McpProvider implements FabricProvider {
     if (!tool) throw new Error(`Unknown MCP tool: ${serverName}.${toolName}`);
     const operation = runtime.callTool(server, tool.name, {
       args,
+      ...(this.#source && signal ? { signal } : {}),
       timeoutMs: this.config.callTimeoutMs,
       disableOAuth: this.config.disableOAuth,
     });
     try {
-      const result = await this.#withAbort(operation, signal, () => runtime.close(server));
+      const result = await this.#withAbort(operation, signal, () => runtime.close?.(server));
       return normalizeMcpResult(result);
     } catch (error) {
       this.#toolMetadata.delete(server);
@@ -927,13 +975,14 @@ export class McpProvider implements FabricProvider {
   }
 
   async #listToolsLegacy(
-    runtime: Runtime,
+    runtime: ToolRuntime,
     server: string,
     refresh = false,
   ): Promise<ServerToolInfo[]> {
+    if (this.#source) return this.#source.listTools(server);
     const cached = this.#toolMetadata.get(server);
     if (!refresh && cached && cached.expiresAt > Date.now()) return cached.promise;
-    const promise = runtime.listTools(server, {
+    const promise = (runtime as Runtime).listTools(server, {
       includeSchema: true,
       disableOAuth: this.config.disableOAuth,
     });
@@ -948,7 +997,7 @@ export class McpProvider implements FabricProvider {
   }
 
   async #findToolLegacy(
-    runtime: Runtime,
+    runtime: ToolRuntime,
     server: string,
     requested: string,
   ): Promise<ServerToolInfo | undefined> {

@@ -3,6 +3,8 @@
   "entry": [
     "src/index.ts",
     "src/memory.ts",
+    "src/mcp.ts",
+    "src/agents.ts",
     "src/protocol.ts",
     "tests/**/*.test.ts"
   ],

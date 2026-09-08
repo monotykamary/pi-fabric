@@ -34,6 +34,8 @@ export interface MemorySourceSessionDescriptor {
 
 export interface MemorySourceSnapshot extends MemorySourceSessionDescriptor {
   records: readonly MemorySourceRecord[];
+  /** Authoritative live leaf; null means an empty active path, omitted uses persisted semantics. */
+  selectedLeafId?: string | null;
   /** Record-loading coverage; omitted means complete. */
   coverage?: MemorySourceCoverage;
 }

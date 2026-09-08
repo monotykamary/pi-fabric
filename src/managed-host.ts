@@ -32,6 +32,8 @@ export class FabricManagedHost {
     this.#sealed = true;
   }
   has(name: string): boolean { return this.#allowed.has(name); }
+  /** Only sealed, live host providers delegate effect approval to the host broker. */
+  ownsProvider(name: string): boolean { return this.#sealed && this.#providers.has(name); }
   provider(name: string): FabricProvider {
     const source = this.#providers.get(name);
     if (!source) return {name, description: "Unavailable in managed host", list: async () => [], describe: async () => undefined, invoke: async () => {throw new Error(`Managed host provider unavailable: ${name}`);}};

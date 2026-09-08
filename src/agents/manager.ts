@@ -26,7 +26,7 @@ import { mapVedaTools, normalizeVedaModel } from "./veda-cli.js";
 import { resolvePiBinary } from "./pi-binary.js";
 import { tokenUsagePayloadFromValue } from "../lifecycle/types.js";
 import type { FabricTokenUsagePayload } from "../lifecycle/types.js";
-import { Semaphore } from "./semaphore.js";
+import { AgentAdmission, assertAgentTask, beginAgentSettlement, createAgentLifecycle, finishAgentSettlement, terminalAgentStatuses, type AgentLifecycleState } from "./lifecycle.js";
 import { removeTree } from "./rm.js";
 import { HerdrTransport } from "./transports/herdr-transport.js";
 import { LocaltermTransport } from "./transports/localterm-transport.js";
@@ -137,7 +137,7 @@ export const resolveAgentCwd = (parentCwd: string, requestedCwd?: string): strin
     throw new Error(`Invalid Fabric agent cwd ${JSON.stringify(requested)}: ${reason}`);
   }
 };
-interface ManagedAgent {
+interface ManagedAgent extends AgentLifecycleState<AgentRunResult> {
   id: string;
   name: string;
   task: string;
@@ -158,11 +158,6 @@ interface ManagedAgent {
   // The dead-transport failure we are retrying past; preferred over a bare
   // timed_out verdict if the run deadline lands mid-retry.
   lastRetriedTransportFailure?: AgentRunResult;
-  result: Promise<AgentRunResult> | undefined;
-  resolve: ((result: AgentRunResult) => void) | undefined;
-  release(): void;
-  abortSignal: AbortSignal | undefined;
-  abortHandler: (() => void) | undefined;
   model?: string;
   thinking?: AgentRunRequest["thinking"];
   actorId?: string;
@@ -176,7 +171,6 @@ interface ManagedAgent {
   nestedSnapshotAt?: number;
   latestRecord?: AgentRunRecord;
   latestUiRecord?: AgentRunRecord;
-  settled: boolean;
   background: boolean;
   lastLivenessCheckAt: number;
   /** Sum of tokens.usage deltas drained from the worker so far. Settle closes
@@ -185,7 +179,7 @@ interface ManagedAgent {
   usageEmitted: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
-const terminalStatuses = new Set(["completed", "failed", "stopped", "timed_out"]);
+const terminalStatuses = terminalAgentStatuses;
 
 const delay = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -363,7 +357,7 @@ const failedRecord = (
 
 export class AgentManager {
   readonly #runs = new Map<string, ManagedAgent>();
-  readonly #semaphore: Semaphore;
+  readonly #semaphore: AgentAdmission;
   readonly #worktrees = new WorktreeManager();
   readonly #runRoot: string;
   readonly #managedTempRoot: boolean;
@@ -430,7 +424,7 @@ export class AgentManager {
       resolveParticipantGuidance?: AgentParticipantGuidanceResolver;
     } = {},
   ) {
-    this.#semaphore = new Semaphore(config.maxConcurrent);
+    this.#semaphore = new AgentAdmission(config.maxConcurrent, Infinity, config.maxDepth);
     this.#managedTempRoot = options.runRoot === undefined && process.env.PI_FABRIC_RUN_ROOT === undefined;
     this.#runRoot =
       options.runRoot ?? process.env.PI_FABRIC_RUN_ROOT ?? fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-runs-"));
@@ -556,10 +550,7 @@ export class AgentManager {
     if (this.#currentDepth >= this.config.maxDepth) {
       throw new Error(`Fabric agent depth limit reached (${this.config.maxDepth})`);
     }
-    if (!request.task.trim()) throw new Error("Agent task must not be empty");
-    if (request.recursive === true && request.extensions === false) {
-      throw new Error("Recursive Fabric requires extensions enabled; omit recursive or extensions: false");
-    }
+    assertAgentTask(request);
     const kernel = this.resolveKernel({
       ...request,
       ...(request.recursive === true ? { extensions: true } : {}),
@@ -616,9 +607,10 @@ export class AgentManager {
         );
       }
     }
-    const release = await this.#semaphore.acquire(signal);
+    const release = await this.#semaphore.acquire("native", signal);
     try {
       if (runner === "pi") model = await this.#prepareModel(model);
+      this.#semaphore.admit(this.#currentDepth + 1);
     } catch (error) {
       release();
       throw error;
@@ -791,11 +783,7 @@ export class AgentManager {
         workerArguments,
       };
       const transport = await adapter.launch(launch);
-      let resolveResult: ((result: AgentRunResult) => void) | undefined;
-      const result = new Promise<AgentRunResult>((resolve) => {
-        resolveResult = resolve;
-      });
-      if (!resolveResult) throw new Error("Failed to create agent result promise");
+      const lifecycle = createAgentLifecycle<AgentRunResult>(release);
       if (signal?.aborted) {
         await transport.stop();
         throw new Error("Agent launch aborted");
@@ -818,9 +806,7 @@ export class AgentManager {
         adapter,
         launch,
         startupAttempts: 1,
-        result,
-        resolve: resolveResult,
-        release,
+        ...lifecycle,
         abortSignal: signal,
         abortHandler: undefined,
         ...(model ? { model } : {}),
@@ -1300,7 +1286,7 @@ export class AgentManager {
   #settle(managed: ManagedAgent, result: AgentRunResult): void {
     if (managed.settled) return;
     this.#drainLifecycle(managed);
-    managed.settled = true;
+    if (!beginAgentSettlement(managed)) return;
     // Images are transport inputs, not retained run artifacts. Startup retries
     // have finished by settlement, so remove the owner-only handoff file for
     // every terminal outcome even when retainRuns keeps the rest of the run.
@@ -1308,13 +1294,7 @@ export class AgentManager {
     this.#emitLifecycle(managed, `run.${result.status}`, result.finishedAt ?? Date.now(), {
       status: result.status,
     });
-    if (managed.abortSignal && managed.abortHandler) {
-      managed.abortSignal.removeEventListener("abort", managed.abortHandler);
-    }
-    managed.abortSignal = undefined;
-    managed.abortHandler = undefined;
-    managed.release();
-    managed.release = () => {};
+
     if (this.#budget) {
       this.#settleBudgetGap(managed, result);
       const summary = this.#budgetSummary();
@@ -1330,9 +1310,7 @@ export class AgentManager {
     }
     this.#pruneRetainedUiRecords();
     this.#invalidateUiList();
-    managed.resolve?.(result);
-    managed.result = undefined;
-    managed.resolve = undefined;
+    finishAgentSettlement(managed, result);
     managed.task = "";
     if (
       managed.background &&

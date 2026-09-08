@@ -84,17 +84,22 @@ export class ApprovalController {
       audit: FabricAutoApprovalAudit,
       decision?: FabricAutoApprovalDecision,
     ) => void,
+    readonly brokeredNetwork?: (provider: string) => boolean,
   ) {}
 
   async approve(
     action: ResolvedFabricAction,
     args: Record<string, unknown> = {},
   ): Promise<void> {
+    // This is an immutable host capability, not a model/configurable network grant.
+    if (action.risk === "network" && this.brokeredNetwork?.(action.provider) === true) return;
     const mode = this.config[action.risk];
     if (
       mode === "allow" ||
-      this.#inheritedRisks.has(action.risk) ||
-      this.sessionApprovals.approvedRisks.has(action.risk)
+      (!this.brokeredNetwork && (
+        this.#inheritedRisks.has(action.risk) ||
+        this.sessionApprovals.approvedRisks.has(action.risk)
+      ))
     ) return;
     if (mode === "deny") {
       throw new FabricTraceSafeError(`${action.ref} is denied by the Fabric ${action.risk} policy`);

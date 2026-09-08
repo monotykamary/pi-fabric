@@ -4,6 +4,8 @@ import { build } from "esbuild";
 const primaryEntryPoints = [
   "src/index.ts",
   "src/memory.ts",
+  "src/mcp.ts",
+  "src/agents.ts",
   "src/protocol.ts",
   "src/worker.ts",
   "src/residency/host.ts",
@@ -26,6 +28,7 @@ const primaryEntryPoints = [
 const lazyEntryPoints = [
   "src/agents/claude-cli.ts",
   "src/agents/compact-control.ts",
+  "src/agents/result.ts",
   "src/agents/veda-cli.ts",
   "src/fabric-runtime-state.ts",
   "src/runtime/core-override-guest-types.ts",

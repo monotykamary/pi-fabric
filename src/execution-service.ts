@@ -140,6 +140,7 @@ export class FabricExecutionService {
     readonly autoApprovalClassifier = new FabricAutoApprovalClassifier(),
     readonly sessionApprovals = new FabricSessionApprovals(),
     readonly capturedTools?: CapturedToolCatalog,
+    readonly brokeredNetwork?: (provider: string) => boolean,
   ) {}
 
   setCapabilityView(view: FabricCommittedCapabilityView | undefined): void {
@@ -256,6 +257,7 @@ export class FabricExecutionService {
       this.sessionApprovals,
       this.autoApprovalClassifier,
       recordAutoDecision,
+      this.brokeredNetwork,
     );
     const audits: FabricCallAudit[] = [];
     const phases: string[] = [];

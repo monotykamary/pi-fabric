@@ -265,7 +265,7 @@ const SOURCE_ARG_SCHEMA = {
     "Registered portable memory source id. When set, the call resolves against that source only — filesystem scopes are never consulted and there is no filesystem fallback.",
 } as const;
 
-const descriptors: FabricActionDescriptor[] = [
+export const memoryActionDescriptors: FabricActionDescriptor[] = [
   {
     name: "recall",
     description:
@@ -485,6 +485,8 @@ const descriptors: FabricActionDescriptor[] = [
     namespace: "memory",
   },
 ];
+
+const descriptors = memoryActionDescriptors;
 
 // Value spellings models reliably substitute for the documented memory scopes,
 // e.g. scope "cwd" for "project". Same discipline as the key aliases below:
