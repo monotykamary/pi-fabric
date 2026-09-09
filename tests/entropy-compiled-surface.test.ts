@@ -4,6 +4,7 @@ import { parseCompiledSurfaceArtifact } from "../src/entropy/compiled-store.js";
 import { emptyCompiledSurface, COMPILED_SURFACE_VERSION } from "../src/entropy/compiled-surface.js";
 import {
   applyCompiledSurface,
+  comparableCompiledSurfaceScore,
   compiledSurfaceEffectChanged,
   effectiveSchemaFor,
   isQuarantinedRef,
@@ -146,6 +147,20 @@ describe("compiled surface preservation", () => {
     expect(compiledSurfaceEffectChanged(normalized, emptyCompiledSurface())).toBe(true);
     expect(compiledSurfaceEffectChanged(undefined, emptyCompiledSurface())).toBe(false);
     expect(compiledSurfaceEffectChanged(normalized, { ...normalized, evidenceDigest: "new" })).toBe(false);
+  });
+
+  it("yields a baseline score only for comparable current-version artifacts", () => {
+    const current = {
+      ...emptyCompiledSurface(),
+      metricVersion: 7,
+      gate: { passed: true, beforeScore: 0.004458, afterScore: 0.004458, reasons: [] },
+    };
+    expect(comparableCompiledSurfaceScore(current, 7)).toBe(0.004458);
+    expect(comparableCompiledSurfaceScore({ ...current, metricVersion: 6 }, 7)).toBeUndefined();
+    expect(comparableCompiledSurfaceScore(undefined, 7)).toBeUndefined();
+    const legacy = compiledArtifact(liveSurface());
+    expect(legacy.version).toBe(1);
+    expect(comparableCompiledSurfaceScore(legacy, 7)).toBeUndefined();
   });
 
   it("preserves digest-matched and stale declarations by identity", () => {

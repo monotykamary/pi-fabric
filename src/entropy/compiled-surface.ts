@@ -37,6 +37,15 @@ export const emptyCompiledSurface = (): CompiledSurfaceFile => ({
 export const compiledSurfaceEffectChanged = (before: CompiledSurfaceFile | undefined, after: CompiledSurfaceFile): boolean =>
   stableJsonHash(before?.version === COMPILED_SURFACE_VERSION ? before.normalizations ?? [] : []) !==
   stableJsonHash(after.version === COMPILED_SURFACE_VERSION ? after.normalizations ?? [] : []);
+// Scores are comparable across compiles only under the same metric version;
+// legacy (v1) or stale-metric artifacts yield no baseline for a lowering.
+export const comparableCompiledSurfaceScore = (
+  file: CompiledSurfaceFile | undefined,
+  metricVersion: number,
+): number | undefined =>
+  file?.version === COMPILED_SURFACE_VERSION && file.metricVersion === metricVersion
+    ? file.gate.afterScore
+    : undefined;
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 export const schemaDigest = (schema: unknown): string => stableJsonHash(schema);

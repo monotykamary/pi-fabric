@@ -14,8 +14,8 @@ import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import {
+  comparableCompiledSurfaceScore,
   compileEntropySurfaceAsync,
-  compiledSurfaceEffectChanged,
   entropyRepairRows,
   formatEntropyCompileNotice,
   liveSurfaceSnapshot,
@@ -408,9 +408,12 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       if (current()) {
         // Activate even when another process already persisted identical bytes.
         setActiveCompiledSurface(saved.file);
-        if (saved.written && compiledSurfaceEffectChanged(loaded.file, saved.file) && context.hasUI) {
+        // The notice is progress evidence, not a heartbeat: show it only when
+        // the fresh score measurably lowered the previously persisted surface.
+        const previousScore = comparableCompiledSurfaceScore(loaded.file, saved.file.metricVersion);
+        if (previousScore !== undefined && outcome.report.score < previousScore && context.hasUI) {
           context.ui.notify(formatEntropyCompileNotice({
-            beforeScore: outcome.report.score,
+            beforeScore: previousScore,
             afterScore: outcome.report.score,
             normalizations: saved.file.normalizations?.length ?? 0,
           }), "info");
