@@ -1550,6 +1550,12 @@ describe("AgentManager steering", () => {
       managers.push(manager);
       const handle = await manager.spawn({ task: "STEER_ME", transport: "process" });
       await waitFor(() => manager.status(handle.id).status === "running");
+      // The worker is running before its cold child process is RPC-ready.
+      // Wait for that handshake separately; retain the forwarding deadline.
+      await waitFor(
+        () => fs.existsSync(received) && fs.readFileSync(received, "utf8").includes('"type":"prompt"'),
+        10_000,
+      );
       manager.setSteeringMode(handle.id, "all");
       manager.followUp(handle.id, "then run the tests");
       await waitFor(
@@ -1573,7 +1579,7 @@ describe("AgentManager steering", () => {
     } finally {
       delete process.env.FAKE_PI_STEER_LOG;
     }
-  });
+  }, 20_000);
 
   it("compact appends a compact entry to the steer channel for a running pi child", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-compact-"));
