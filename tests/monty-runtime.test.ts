@@ -118,10 +118,21 @@ describe.skipIf(Boolean(missing))(`MontyRuntime native 0.0.23${missing ? " (" + 
 
   it("rejects non-JSON host returns without leaking capabilities", async () => {
     const cycle: Record<string, unknown> = {}; cycle.self = cycle;
-    for (const value of [1n, Infinity, Buffer.from("data"), new Set([1]), cycle, { fn: () => 1 }, { nested: undefined }]) {
+    for (const value of [1n, Infinity, Buffer.from("data"), new Set([1]), cycle, { fn: () => 1 }]) {
       expect((await run("return await schema.status()", async () => value)).terminationReason).toBe("runtime_error");
     }
     expect(await run("return await schema.status()", async () => undefined)).toMatchObject({ value: null, terminationReason: "completed" });
+    const optional = await run("return await schema.status()", async () => ({
+      text: "ok",
+      details: { scope: { path: undefined, language: undefined, kind: "function" }, seeds: 1 },
+      holes: [1, undefined, 3],
+    }));
+    expect(optional).toMatchObject({ terminationReason: "completed" });
+    expect(optional.value).toEqual({
+      text: "ok",
+      details: { scope: { kind: "function" }, seeds: 1 },
+      holes: [1, null, 3],
+    });
   });
 
   it("preserves dangerous-looking JSON dictionary keys without prototype or native-marker interpretation", async () => {

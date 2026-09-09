@@ -1,6 +1,8 @@
 const MAX_VALUE_BYTES = 16 * 1024 * 1024;
 
-/** Strict JSON boundary: never silently stringify bytes, sets, unsafe ints or cycles. */
+/** Strict JSON boundary: never silently stringify bytes, sets, unsafe ints or cycles.
+ * Host results follow JSON.stringify for `undefined`: omit object keys, null array holes.
+ */
 export function normalizeMontyValue(value: unknown, hostValue = false): unknown {
   let remaining = MAX_VALUE_BYTES;
   let nodes = 0;
@@ -12,6 +14,7 @@ export function normalizeMontyValue(value: unknown, hostValue = false): unknown 
     if (remaining < 0) throw new TypeError("Monty JSON value exceeds 16 MiB");
     if (item === null || typeof item === "string" || typeof item === "boolean") return item;
     if (typeof item === "number" && Number.isFinite(item) && (!Number.isInteger(item) || Number.isSafeInteger(item))) return item;
+    if (hostValue && item === undefined) return null;
     if (typeof item !== "object" || item === null) throw new TypeError("Monty boundary requires JSON-compatible values (finite numbers and safe integers)");
     if (active.has(item)) throw new TypeError("Monty boundary cannot serialize cyclic values");
     active.add(item);
@@ -24,6 +27,7 @@ export function normalizeMontyValue(value: unknown, hostValue = false): unknown 
       const result: Record<string, unknown> = {};
       for (const [key, entry] of item instanceof Map ? item.entries() : Object.entries(item)) {
         if (typeof key !== "string") throw new TypeError("Monty JSON dictionary keys must be strings");
+        if (hostValue && entry === undefined) continue;
         visit(key, depth + 1);
         Object.defineProperty(result, key, { value: visit(entry, depth + 1), enumerable: true, configurable: true, writable: true });
       }
