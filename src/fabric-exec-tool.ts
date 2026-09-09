@@ -286,9 +286,10 @@ export const createFabricExecTool = (
       // promotes a compact card to the full transcript below.
       if (mode === "compact" && !context.expanded) {
         const display = normalizeRunDisplay(params.display);
-        // Session-wide memo keyed by the program string: the same hint serves
-        // the live card, the activity feed, and compaction intent.
-        const title = display?.name?.trim() || (python ? "Python program" : fabricExecTitleHintCached(code));
+        // The kernel-aware memo serves the live card, activity and compaction.
+        const title = display?.name?.trim()
+          || (fabricExecTitleHintCached(code, python ? "python" : "typescript")
+            ?? (python ? "Python program" : undefined));
         const header = renderBoundedLines(
           [
             theme.fg("toolTitle", theme.bold(safeTerminalText(title || "Fabric"))),

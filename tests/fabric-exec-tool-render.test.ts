@@ -94,6 +94,18 @@ const renderResult = (
 const nestedRows = (rendered: string): string[] => rendered.split("\n").slice(1);
 
 describe("registered fabric_exec compact transcript rendering", () => {
+  it("infers Python compact titles while preserving explicit intent and neutral fallbacks", () => {
+    const state = stateFor("compact");
+    state.config.executor = { kernel: "python" } as FabricState["config"]["executor"];
+    const tool = toolFor(state);
+    const code = '# pi.bash("fake")\nreturn await pi.read(path="src/config.ts")';
+    expect(renderCall(tool, { code })).toContain("Read config.ts");
+    expect(renderCall(tool, { code, display: { name: " ", description: "Verify configuration" } }))
+      .toContain("Verify configuration");
+    expect(renderCall(tool, { code, display: { name: "Declared intent" } })).toContain("Declared intent");
+    expect(renderCall(tool, { code: '# pi.bash("fake")\nreturn 1' })).toContain("Python program");
+  });
+
   it("keeps full source while compact elevates intent and falls back to Fabric for absent or blank names", () => {
     const args = {
       code: "const implementationSecret = await discover();\nreturn implementationSecret;",

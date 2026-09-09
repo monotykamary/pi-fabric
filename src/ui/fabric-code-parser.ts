@@ -1,3 +1,6 @@
+import { parser as pythonParser } from "@lezer/python";
+import type { FabricKernel } from "../runtime/kernel.js";
+
 export interface FabricWriteBinding {
   path: string;
   stringKey: string;
@@ -33,6 +36,66 @@ const readEscape = (source: string, index: number): { value: string; next: numbe
     if (/^[0-9a-f]{4}$/i.test(digits)) return { value: String.fromCharCode(Number.parseInt(digits, 16)), next: index + 5 };
   }
   return { value: char, next: index + 1 };
+};
+
+// Use the Python grammar so comments, docstrings and interpolated strings
+// cannot masquerade as capability calls. Normalize keyword arguments to the
+// same token shape as object/dictionary fields for the shared title renderer.
+const tokenizePython = (source: string): Token[] => {
+  const tokens: Token[] = [];
+  pythonParser.parse(source).iterate({
+    enter(node) {
+      if (node.name === "Comment" || node.name === "FormatString") return false;
+      const text = source.slice(node.from, node.to);
+      if (node.name === "String") {
+        const match = /^(r|u)?('''|"""|'|")/i.exec(text);
+        if (!match) return false;
+        const quote = match[2]!;
+        if (!text.endsWith(quote) || text.length < match[0].length + quote.length) return false;
+        const body = text.slice(match[0].length, -quote.length);
+        let value = "";
+        for (let index = 0; index < body.length;) {
+          if (body[index] === "\\" && match[1]?.toLowerCase() !== "r") {
+            const escape = body[index + 1] ?? "";
+            const width = escape === "x" ? 2 : escape === "u" ? 4 : escape === "U" ? 8 : 0;
+            if (width) {
+              const digits = body.slice(index + 2, index + 2 + width);
+              if (digits.length !== width || !/^[0-9a-f]+$/i.test(digits)) return false;
+              const point = Number.parseInt(digits, 16);
+              if (point > 0x10ffff) return false;
+              value += String.fromCodePoint(point);
+              index += width + 2;
+            } else if (/[0-7]/.test(escape)) {
+              const digits = /^[0-7]{1,3}/.exec(body.slice(index + 1))![0];
+              value += String.fromCharCode(Number.parseInt(digits, 8));
+              index += digits.length + 1;
+            } else if (escape === "a") {
+              value += "\x07";
+              index += 2;
+            } else if (/[\\'"nrtbfv\n\r]/.test(escape)) {
+              const escaped = readEscape(body, index + 1);
+              value += escaped.value;
+              index = escaped.next;
+            } else if (escape === "N") {
+              // Unicode-name lookup needs Python's database; stay conservative.
+              return false;
+            } else {
+              // Unknown Python escapes remain literal, unlike JavaScript.
+              value += body.slice(index, index + 2);
+              index += 2;
+            }
+          } else value += body[index++]!;
+        }
+        tokens.push({ kind: "string", text: value });
+        return false;
+      }
+      if (node.node.firstChild) return;
+      if (node.name === "VariableName" || node.name === "PropertyName") {
+        tokens.push({ kind: "identifier", text });
+      } else tokens.push({ kind: "punctuation", text: text === "=" ? ":" : text });
+    },
+  });
+  return tokens;
 };
 
 const tokenize = (source: string): Token[] => {
@@ -314,8 +377,8 @@ const piCallTarget = (
 // budget. π payload keys are skipped so named strings never surface in
 // titles. Returns undefined when the program holds no recognizable Fabric
 // call, letting callers keep a neutral fallback.
-export const fabricExecTitleHint = (code: string): string | undefined => {
-  const tokens = tokenize(code);
+export const fabricExecTitleHint = (code: string, kernel: FabricKernel = "typescript"): string | undefined => {
+  const tokens = kernel === "python" ? tokenizePython(code) : tokenize(code);
   const groups = new Map<string, (string | undefined)[]>();
   const record = (verb: string, target: string | undefined): void => {
     const list = groups.get(verb);

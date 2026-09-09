@@ -233,7 +233,10 @@ interface FabricRunIntent {
   description?: string;
 }
 
-const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undefined => {
+const fabricRunIntent = (call: PendingCall | undefined, details: unknown): FabricRunIntent | undefined => {
+  // Recorded kernel identity, not the current setting, governs historical runs.
+  const python = typeof details === "object" && details !== null
+    && "kernel" in details && details.kernel === "python";
   if (!call || call.name !== "fabric_exec") return undefined;
   const display = normalizeRunDisplay(call.args.display);
   // Fallback parity with the compact card header and the activity feed: when
@@ -243,7 +246,8 @@ const fabricRunIntent = (call: PendingCall | undefined): FabricRunIntent | undef
   const intentName = display?.name?.trim()
     ? display.name
     : typeof call.args.code === "string"
-      ? fabricExecTitleHintCached(call.args.code)
+      ? fabricExecTitleHintCached(call.args.code, python ? "python" : "typescript")
+        ?? (python ? "Python program" : undefined)
       : undefined;
   if (intentName === undefined) return undefined;
   const name = clipUtf8(intentName.trim(), FABRIC_BRANCH_RUN_NAME_MAX_BYTES);
@@ -415,7 +419,7 @@ export const normalizeEntries = (entries: SessionEntry[]): CompactionEvent[] => 
       }
       if (toolName === "fabric_exec") {
         const nested = readFabricProjectionTrace(toolResult.details);
-        const intent = fabricRunIntent(pending);
+        const intent = fabricRunIntent(pending, toolResult.details);
         if (intent && pending) {
           const subordinal = `call:${toolCallId}`;
           push({

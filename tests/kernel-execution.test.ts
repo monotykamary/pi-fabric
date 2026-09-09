@@ -8,6 +8,7 @@ import { rmTempSync } from "./fixtures/temp-cleanup.js";
 import { normalizeFabricConfig, type FabricPythonRuntime } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { FabricExecutionService } from "../src/execution-service.js";
+import { FabricActivityStore } from "../src/activity/store.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
 import type { FabricActionDescriptor } from "../src/protocol.js";
 
@@ -25,7 +26,8 @@ const fixture = (pythonRuntime: FabricPythonRuntime) => {
   registries.push(registry);
   registry.register(new PiToolsProvider(cwd));
   const config = normalizeFabricConfig({ executor: { kernel: "python", ...(pythonRuntime === "cpython" ? { pythonRuntime } : { cpython: { binary: "/nonexistent/python3" } }), memoryLimitBytes: 256 * 1024 * 1024 } });
-  const service = new FabricExecutionService(registry, config);
+  const activity = new FabricActivityStore();
+  const service = new FabricExecutionService(registry, config, activity);
   let sequence = 0;
   const run = (code: string, strings?: Record<string, string>) => service.execute({
     code, ...(strings ? { strings } : {}), signal: undefined,
@@ -35,7 +37,7 @@ const fixture = (pythonRuntime: FabricPythonRuntime) => {
     } } as unknown as ExtensionContext,
     onPartial() {},
   });
-  return { cwd, registry, config, service, run };
+  return { cwd, registry, config, service, activity, run };
 };
 
 const registerEcho = (registry: ActionRegistry, name = "demo", action = "echo", risk: "read" | "agent" = "read") => {
@@ -65,6 +67,16 @@ describe.each(pythonBackends)("%s Python kernel host integration", (pythonRuntim
     const result = await run('return {"sum": sum([1, 2, 3]), "same": payloads["numbers"] == π.numbers}', { numbers: "[1,2,3]" });
     expect(result).toMatchObject({ success: true, value: { sum: 6, same: true }, audits: [] });
     expect(declarations).not.toHaveBeenCalled();
+  });
+
+  runTest("infers Python activity names without inventing descriptions", async () => {
+    const { run, activity } = fixture(pythonRuntime);
+    const result = await run('# pi.bash("fake")\nreturn await pi.ls(path=".")');
+    expect(result.success, result.error).toBe(true);
+    expect(activity.get("python-1")?.name).toBe("Search");
+    expect(activity.get("python-1")).not.toHaveProperty("description");
+    await run('# pi.read("fake.ts")\nreturn 1');
+    expect(activity.get("python-2")?.name).toBe("Python program");
   });
 
   runTest("routes core file operations through the audited registry", async () => {

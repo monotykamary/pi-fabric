@@ -127,6 +127,57 @@ describe("fabricExecTitleHint", () => {
   }
 });
 
+describe("Python title hints", () => {
+  const pythonCases: [string, string | undefined][] = [
+    ['return await pi.read(path="src/config.ts")', "Read config.ts"],
+    ['return await pi.read({"path": "src/config.ts"})', "Read config.ts"],
+    ['return await pi.read("src/config.ts")', "Read config.ts"],
+    ['await pi.grep(pattern="fallback", path="src")\nreturn await pi.read("src/config.ts")', 'Search "fallback" in src + Read config.ts'],
+    ['await pi.write(path="src/title.py", text=π.body)', "Write title.py"],
+    ['await pi.bash(cmd="bun run check")', "Shell bun run check"],
+    ['return await agents(task="Fix the failing tests")', "Agent Fix the failing tests"],
+    ['await memory.set(key="plan", value=True)\nreturn await memory.get(key="plan")', "Memory plan ×2"],
+    ['return await mcp.github.get_issue(owner="x")', "Mcp github.get_issue"],
+    ['# pi.bash("not executed")\nreturn 1', undefined],
+    ['"""pi.read("fake.ts")"""\nreturn await pi.read("real.ts")', "Read real.ts"],
+    ["'''pi.bash(\"fake\")'''\nreturn 1", undefined],
+    ['await pi.bash(cmd=f"echo {name}")', "Shell"],
+    ['await pi.bash(cmd=f"{pi.read(\"fake.ts\")}")', "Shell"],
+    ['await pi.bash(cmd=rf"echo {name}")', "Shell"],
+    ['return await pi.read(r"src/config.ts")', "Read config.ts"],
+    ['return await pi.read(u"src/config.ts")', "Read config.ts"],
+    ['await pi.bash(cmd="""bun run check\nbun run build""")', "Shell bun run check"],
+    ['return await pi.read(π["secret.ts"])', "Read"],
+    ['n = 4 // 2\nreturn await pi.read("real.ts")', "Read real.ts"],
+    ['return sum([1, 2])', undefined],
+  ];
+  it.each(pythonCases)("infers %s", (code, expected) => {
+    expect(fabricExecTitleHint(code, "python")).toBe(expected);
+    expect(fabricExecTitleHintCached(code, "python")).toBe(expected);
+    expect(fabricExecTitleHintCached(code, "python")).toBe(expected);
+  });
+
+  it.each([
+    [String.raw`await pi.read("src/\u0063onfig.ts")`, "Read config.ts"],
+    [String.raw`await pi.read("src/\U00000063onfig.ts")`, "Read config.ts"],
+    [String.raw`await pi.read("src/\143onfig.ts")`, "Read config.ts"],
+    [String.raw`await pi.bash(cmd=r"echo \n")`, String.raw`Shell echo \n`],
+    [String.raw`await pi.bash(cmd="echo \q")`, String.raw`Shell echo \q`],
+    [String.raw`await pi.read("\Uffffffff")`, "Read"],
+    [String.raw`await pi.read("\u{ffffff}")`, "Read"],
+    [String.raw`await pi.read("\N{LATIN SMALL LETTER A}.ts")`, "Read"],
+  ])("decodes Python escapes conservatively: %s", (code, expected) => {
+    expect(fabricExecTitleHint(code, "python")).toBe(expected);
+  });
+
+  it("isolates cache entries by kernel", () => {
+    const code = '# pi.bash("not executed")\nreturn 1';
+    expect(fabricExecTitleHintCached(code, "typescript")).toBe("Shell not executed");
+    expect(fabricExecTitleHintCached(code, "python")).toBeUndefined();
+    expect(fabricExecTitleHintCached(code, "typescript")).toBe("Shell not executed");
+  });
+});
+
 describe("fabricExecTitleHintCached", () => {
   for (const [name, code, expected] of cases) {
     it(`mirrors the pure hint: ${name}`, () => {

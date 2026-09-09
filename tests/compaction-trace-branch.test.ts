@@ -219,6 +219,25 @@ describe("Fabric execution trace compaction", () => {
   });
 
 
+  it("uses the recorded Python kernel for inferred intent and retains declared descriptions", () => {
+    const code = '# pi.bash("fake")\nreturn await pi.grep(pattern="fallback", path="src")';
+    const events = normalizeEntries([
+      fabricCall("py1", "py", code, null, { name: " ", description: "Verify fallback parity" }),
+      fabricResult("py2", "py", { kernel: "python" }),
+      fabricCall("py3", "neutral", '# pi.read("fake.ts")\nreturn 1'),
+      fabricResult("py4", "neutral", { kernel: "python" }),
+      fabricCall("py5", "explicit", code, null, { name: "Declared intent" }),
+      fabricResult("py6", "explicit", { kernel: "python" }),
+    ]).filter((event) => event.kind === "fabricRun");
+    expect(events).toMatchObject([
+      { name: 'Search "fallback" in src', description: "Verify fallback parity" },
+      { name: "Python program" },
+      { name: "Declared intent" },
+    ]);
+    expect(events[1]).not.toHaveProperty("description");
+    expect(events[2]).not.toHaveProperty("description");
+  });
+
   it("keeps multibyte intent bounded without clipping outcome or source address", () => {
     const events = normalizeEntries([
       fabricCall("mb1", "multibyte", "fake", null, {

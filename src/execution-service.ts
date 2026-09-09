@@ -153,9 +153,9 @@ export class FabricExecutionService {
     this.activity?.start(
       options.parentToolCallId,
       options.display,
-      options.display?.name?.trim() ? undefined : this.config.executor.kernel === "python"
-        ? "Python program"
-        : fabricExecTitleHintCached(options.code),
+      options.display?.name?.trim() ? undefined
+        : fabricExecTitleHintCached(options.code, this.config.executor.kernel)
+          ?? (this.config.executor.kernel === "python" ? "Python program" : undefined),
     );
     const effectiveFullCodeMode =
       this.config.fullCodeMode || this.config.schema.mode === "enforce";
