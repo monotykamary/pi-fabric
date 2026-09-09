@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentManager } from "../src/agents/manager.js";
 import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
+import { rmTempSync } from "./fixtures/temp-cleanup.js";
 
 const workerPath = path.resolve("dist/worker.js");
 const requested = "openai-codex/gpt-5.6-sol";
@@ -14,7 +15,7 @@ describe.skipIf(!fs.existsSync(workerPath))("real worker model admission", () =>
   afterEach(async () => {
     await Promise.all(managers.splice(0).map(manager => manager.close()));
     vi.unstubAllEnvs();
-    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+    for (const root of roots.splice(0)) rmTempSync(root);
   });
   const root = () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "fabric-model-admission-"));

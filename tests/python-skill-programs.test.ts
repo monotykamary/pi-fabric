@@ -11,9 +11,12 @@ const failed = { status: "failed", text: "", error: "worker unavailable" };
 const model = (id: string) => ({ provider: "test", id, name: id, key: `test/${id}` });
 const models = [model("one"), model("two"), model("three")];
 const fusionPayloads = { task: "inspect", panel: JSON.stringify([{ model: "test/one" }, { model: "test/two" }]), mode: "compare", thinking: "", judge: "", tools: "", actor: "test/three", actorTools: "" };
-const programs = (relative: string) => [...fs.readFileSync(`skillsets/python/${relative}`, "utf8").matchAll(/```python\n([\s\S]*?)\n```/g)].map((m) => m[1]!);
+const extractPythonPrograms = (source: string) => [...source.matchAll(/```python\r?\n([\s\S]*?)\r?\n```/g)].map((m) => m[1]!.replace(/\r\n?/g, "\n"));
+const programs = (relative: string) => extractPythonPrograms(fs.readFileSync(`skillsets/python/${relative}`, "utf8"));
 const execute = async (relative: string, payloads: Record<string, string>, host: SkillHost, index = 0) => {
-  const result = await new MontyRuntime().execute(programs(relative)[index]!, async (ref, args) => {
+  const extracted = programs(relative);
+  expect(extracted[index], relative).toBeDefined();
+  const result = await new MontyRuntime().execute(extracted[index]!, async (ref, args) => {
     if (ref.startsWith("agents.")) {
       const descriptor = AGENTS_ACTION_DESCRIPTORS.find((entry) => entry.name === ref.slice(7));
       expect(descriptor, ref).toBeDefined();
@@ -32,6 +35,12 @@ const catalog: SkillHost = async (ref) => {
   throw new Error(`Unexpected action ${ref}`);
 };
 
+it("extracts python fences from CRLF checkouts", () => {
+  const lf = fs.readFileSync("skillsets/python/fabric-council/SKILL.md", "utf8");
+  expect(extractPythonPrograms(lf.replace(/\n/g, "\r\n"))).toEqual(extractPythonPrograms(lf));
+  expect(extractPythonPrograms(lf).length).toBeGreaterThan(0);
+});
+
 describe.skipIf(!availablePythonBackends.monty)("Python-native skill behavior in Monty", () => {
   it("runs every execution reference and its Python-only branches", async () => {
     const host: SkillHost = async (ref, args) => {
@@ -45,6 +54,7 @@ describe.skipIf(!availablePythonBackends.monty)("Python-native skill behavior in
       return "example";
     };
     for (const file of ["fabric-exec/SKILL.md", "fabric-exec/references/agents.md", "fabric-exec/references/mesh.md", "fabric-exec/references/mcp.md"]) {
+      expect(programs(file).length, file).toBeGreaterThan(0);
       for (let index = 0; index < programs(file).length; index++) await execute(file, {}, host, index);
     }
   });

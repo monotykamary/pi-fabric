@@ -14,6 +14,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Windows runners often inherit core.autocrlf=true; keep repository LF
+          # so markdown fence parsers and path fixtures stay hermetic.
+          core.autocrlf: false
       - uses: oven-sh/setup-bun@v2
       - name: Install ripgrep
         # pi's grep tool downloads rg on first use when it is absent; on shared
