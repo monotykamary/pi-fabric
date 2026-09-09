@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renameAtomic } from "./core/atomic-write.js";
+import { quarantineDamagedFile } from "./core/damaged-file.js";
 import { normalizeModelAliases } from "./core/model-resolution.js";
 import { PI_CORE_TOOL_NAME_SET } from "./core/pi-tools.js";
 import {
@@ -489,17 +490,25 @@ interface JsonObjectFile {
 }
 
 const readJsonObjectFile = (filePath: string): JsonObjectFile | undefined => {
+  let source: string;
   try {
-    const source = fs.readFileSync(filePath, "utf8");
-    const parsed: unknown = JSON.parse(source);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw new Error("configuration root must be an object");
-    }
-    return { document: parsed as Record<string, unknown>, source };
+    source = fs.readFileSync(filePath, "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to read ${filePath}: ${message}`);
+    // Unreadable settings must not take down extension load.
+    return undefined;
+  }
+  if (!source.trim()) return { document: {}, source };
+  try {
+    const parsed: unknown = JSON.parse(source);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      quarantineDamagedFile(filePath);
+      return undefined;
+    }
+    return { document: parsed as Record<string, unknown>, source };
+  } catch {
+    quarantineDamagedFile(filePath);
+    return undefined;
   }
 };
 

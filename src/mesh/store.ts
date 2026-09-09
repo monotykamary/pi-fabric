@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../core/atomic-write.js";
+import { quarantineDamagedFile } from "../core/damaged-file.js";
 import { readJsonlPage } from "../log-tail.js";
 
 export interface MeshIdentity {
@@ -143,24 +144,32 @@ const recoverConcatenatedState = (serialized: string): MeshStateFile | undefined
   return start < 0 && documents > 1 ? snapshots.at(-1) : undefined;
 };
 
+const emptyState = (): MeshStateFile => ({ format: 1, entries: {} });
+
 const readState = (filePath: string, maxBytes: number): MeshStateFile => {
+  let serialized: string;
   try {
     const stat = fs.statSync(filePath);
     if (stat.size > maxBytes) throw new Error(`state exceeds ${maxBytes} bytes`);
-    const serialized = fs.readFileSync(filePath, "utf8");
-    try {
-      const parsed: unknown = JSON.parse(serialized);
-      if (isMeshStateFile(parsed)) return parsed;
-      throw new Error("invalid state format");
-    } catch (error) {
-      const recovered = recoverConcatenatedState(serialized);
-      if (recovered) return recovered;
-      throw error;
-    }
+    if (stat.size === 0) return emptyState();
+    serialized = fs.readFileSync(filePath, "utf8");
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return { format: 1, entries: {} };
+    if (errorCode(error) === "ENOENT") return emptyState();
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to read Fabric mesh state: ${message}`);
+  }
+  if (!serialized.trim()) return emptyState();
+  try {
+    const parsed: unknown = JSON.parse(serialized);
+    if (isMeshStateFile(parsed)) return parsed;
+    throw new Error("invalid state format");
+  } catch (error) {
+    const recovered = recoverConcatenatedState(serialized);
+    if (recovered) return recovered;
+    // Truncated or garbage JSON must not take down extension load: keep the
+    // damaged bytes for inspection and continue with an empty table.
+    quarantineDamagedFile(filePath);
+    return emptyState();
   }
 };
 
@@ -613,7 +622,7 @@ export class MeshStore {
       }
     } catch (error) {
       this.#stateCache = undefined;
-      if (errorCode(error) === "ENOENT") return { format: 1, entries: {} };
+      if (errorCode(error) === "ENOENT") return emptyState();
       throw error;
     }
     const state = readState(this.#statePath, this.#maxStateBytes);

@@ -522,6 +522,31 @@ describe("Fabric configuration", () => {
     expect(capture.keepVisible).toEqual(["fabric_exec", "custom"]);
   });
 
+  it("loads defaults when fabric.json is empty or unreadable JSON", () => {
+    const root = temporaryDirectory();
+    const cwd = path.join(root, "project");
+    const agentDir = path.join(root, "agent");
+    fs.mkdirSync(cwd, { recursive: true });
+    fs.mkdirSync(agentDir, { recursive: true });
+    const globalConfig = path.join(agentDir, "fabric.json");
+    const location = { cwd, agentDir, projectTrusted: false };
+
+    fs.writeFileSync(globalConfig, "");
+    expect(loadFabricConfig(location).approvals.network).toBe(DEFAULT_FABRIC_CONFIG.approvals.network);
+    expect(JSON.parse(fs.readFileSync(globalConfig, "utf8"))).toEqual({ configVersion: 4 });
+
+    fs.writeFileSync(globalConfig, "{");
+    expect(loadFabricConfig(location).approvals.network).toBe(DEFAULT_FABRIC_CONFIG.approvals.network);
+    expect(fs.existsSync(globalConfig)).toBe(false);
+    const damaged = fs.readdirSync(agentDir).filter((name) => name.startsWith("fabric.json.damaged."));
+    expect(damaged).toHaveLength(1);
+    expect(fs.readFileSync(path.join(agentDir, damaged[0]!), "utf8")).toBe("{");
+
+    const saved = saveFabricConfig(location, { approvals: { network: "allow" } });
+    expect(saved.path).toBe(globalConfig);
+    expect(loadFabricConfig(location).approvals.network).toBe("allow");
+  });
+
   it("merges global and trusted project configuration", () => {
     const root = temporaryDirectory();
     const cwd = path.join(root, "project");

@@ -205,7 +205,7 @@ describe("Fabric tool display lifecycle", () => {
     expect(activeInvalidate).toHaveBeenCalledTimes(3);
   });
 
-  it("does not leak the previous session's preference when a re-bootstrap fails", async () => {
+  it("does not leak the previous session's preference when the next session's config is damaged", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-failed-rebootstrap-"));
     const cwdA = path.join(root, "session-a");
     const cwdB = path.join(root, "session-b");
@@ -216,9 +216,9 @@ describe("Fabric tool display lifecycle", () => {
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(
       path.join(cwdA, ".pi", "fabric.json"),
-      JSON.stringify({ ui: { toolDisplay: "compact" }, mesh: { enabled: false } }),
+      JSON.stringify({ ui: { toolDisplay: "full" }, mesh: { enabled: false } }),
     );
-    // Malformed config: bootstrap() throws after #cwd moves to session B.
+    // Malformed config: load repairs to defaults instead of taking down the extension.
     fs.writeFileSync(path.join(cwdB, ".pi", "fabric.json"), "{ not valid json ");
     process.env.PI_CODING_AGENT_DIR = agentDir;
     try {
@@ -236,7 +236,7 @@ describe("Fabric tool display lifecycle", () => {
         sessionManager: { getBranch: () => [], getSessionId: () => sessionId },
       }) as unknown as ExtensionContext;
 
-      // Session A bootstraps compact successfully.
+      // Session A bootstraps full display successfully.
       await emit(handlers, "session_start", contextFor(cwdA, "session-a"));
       const resumed = renderCard(
         fabricTool,
@@ -244,22 +244,22 @@ describe("Fabric tool display lifecycle", () => {
         { code: "await pi.read('/tmp/leaf');", display: { name: "Resume history" } },
         vi.fn(),
       );
-      expect(resumed).toContain("Resume history");
-      expect(resumed).not.toContain("await pi.read('/tmp/leaf');");
+      expect(resumed).toContain("TypeScript");
+      expect(resumed).toContain("await pi.read('/tmp/leaf');");
       expect(mockRuntimeActivations.count).toBe(0);
 
-      // Session B's malformed config fails to bootstrap; the failed load must
-      // not leave session A's compact preference effective in session B.
-      await expect(emit(handlers, "session_start", contextFor(cwdB, "session-b"))).rejects.toThrow();
-      const afterFailedRebootstrap = renderCard(
+      // Session B's damaged config must boot with compact defaults, not session A's full view.
+      await emit(handlers, "session_start", contextFor(cwdB, "session-b"));
+      const afterDamagedRebootstrap = renderCard(
         fabricTool,
         "session-b-call",
         { code: "await pi.read('/tmp/leaf');", display: { name: "Resume history" } },
         vi.fn(),
       );
-      expect(afterFailedRebootstrap).toContain("TypeScript");
-      expect(afterFailedRebootstrap).toContain("await pi.read('/tmp/leaf');");
+      expect(afterDamagedRebootstrap).toContain("Resume history");
+      expect(afterDamagedRebootstrap).not.toContain("await pi.read('/tmp/leaf');");
       expect(mockRuntimeActivations.count).toBe(0);
+      expect(fs.existsSync(path.join(cwdB, ".pi", "fabric.json"))).toBe(false);
     } finally {
       if (inheritedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = inheritedAgentDir;

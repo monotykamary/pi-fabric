@@ -105,6 +105,38 @@ describe("MeshStore", () => {
     expect(store.get("shared/value")?.value).toEqual({ revision: 1 });
   });
 
+  it("treats an empty state file as a missing table", () => {
+    const store = createStore();
+    const statePath = path.join(store.root, "state.json");
+    fs.mkdirSync(store.root, { recursive: true });
+    fs.writeFileSync(statePath, "");
+
+    expect(store.listAll()).toEqual([]);
+    expect(store.get("shared/value")).toBeUndefined();
+    expect(fs.readFileSync(statePath, "utf8")).toBe("");
+  });
+
+  it("quarantines unrecoverable state JSON and keeps serving an empty table", async () => {
+    const store = createStore();
+    const statePath = path.join(store.root, "state.json");
+    fs.mkdirSync(store.root, { recursive: true });
+    fs.writeFileSync(statePath, "{");
+
+    expect(store.listAll()).toEqual([]);
+    expect(store.get("shared/value")).toBeUndefined();
+    expect(fs.existsSync(statePath)).toBe(false);
+    const damaged = fs.readdirSync(store.root).filter((name) => name.startsWith("state.json.damaged."));
+    expect(damaged).toHaveLength(1);
+    expect(fs.readFileSync(path.join(store.root, damaged[0]!), "utf8")).toBe("{");
+
+    const restored = await store.put({ key: "shared/value", value: { revision: 1 }, identity });
+    expect(restored.value).toEqual({ revision: 1 });
+    expect(store.get("shared/value")?.value).toEqual({ revision: 1 });
+    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).entries["shared/value"].value).toEqual({
+      revision: 1,
+    });
+  });
+
   it("supports complete internal prefix scans independently of public read limits", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fabric-mesh-scan-"));
     roots.push(root);
