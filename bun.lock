@@ -9,6 +9,7 @@
         "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
         "@lezer/common": "^1.5.2",
         "@lezer/python": "^1.1.19",
+        "@pydantic/monty": "0.0.23",
         "@shikijs/langs": "4.4.3",
         "@shikijs/themes": "4.4.3",
         "cross-spawn": "^7.0.6",
@@ -28,9 +29,6 @@
         "esbuild": "^0.25.12",
         "knip": "^6.29.0",
         "vitest": "^4.1.10",
-      },
-      "optionalDependencies": {
-        "@pydantic/monty": "0.0.23",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": ">=0.80.6",

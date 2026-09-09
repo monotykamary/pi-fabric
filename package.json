@@ -93,6 +93,7 @@
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
     "@lezer/common": "^1.5.2",
     "@lezer/python": "^1.1.19",
+    "@pydantic/monty": "0.0.23",
     "@shikijs/langs": "4.4.3",
     "@shikijs/themes": "4.4.3",
     "cross-spawn": "^7.0.6",
@@ -124,8 +125,5 @@
     "ajv": {
       "fast-uri": "^3.1.6"
     }
-  },
-  "optionalDependencies": {
-    "@pydantic/monty": "0.0.23"
   }
 }
