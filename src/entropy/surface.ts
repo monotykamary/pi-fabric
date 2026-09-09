@@ -44,10 +44,8 @@ export const liveSurfaceSnapshot = async (input: {
   extensionContext: ExtensionContext;
   cwd: string;
 }): Promise<EntropySurfaceSnapshot> => {
-  // Declared truth, never the enforced view: the compile's base surface
-  // keeps quarantined refs visible so base-digest proofs and artifact
-  // carry-forward read the declared schema. The model-facing catalog keeps
-  // hiding them.
+  // Snapshot the declaration, which remains the public capability contract.
+  // Normal forms live behind it and never remove actions or enum members.
   const actions = await input.registry.list(
     { limit: SURFACE_LIST_LIMIT, declared: true },
     surfaceInvocationContext(input),

@@ -66,4 +66,25 @@ Two failure modes stay visible, never silent:
 
 Disable with `"enabled": false`. Promotion never edits execution guidance or Schema text.
 
-The repair table is the profiler for [tool entropy](entropy.md): the deterministic meter, ratchet gate, and `certify:entropy` compiler loop turn promoted rows into reviewable surface diffs.
+## Relationship to entropy normal forms
+
+The repair table and [entropy normal forms](entropy.md) are separate host-side
+compatibility mechanisms. Repairs learn unique spilled-to-declared name maps;
+entropy statically derives schema-bound key spelling, enum spelling, lossless
+numeric-string, and optional-null conventions. Both use the existing registry
+boundary; neither adds model tools or arguments, rewrites guest programs, or
+bypasses schema validation, authorization, approvals, or effects.
+
+There is no confirmation loop. An absent or ambiguous live proof leaves the
+input unchanged. Canonical inputs remain identity, and no static check claims
+to prove actual comprehension or task success. Normal-form witnesses record
+representation changes, not successful operations.
+
+Metric v3 measures invocation rejections per action operation. Repair counts
+are diagnostic, not objective terms. Observation pooling supports advisory
+`declare-enum` review only for author-opted-in open properties; it never
+licenses a capability restriction. Compiled v2 entropy artifacts contain
+normalizations with empty overlay/quarantine arrays; legacy v1 restrictions
+load inert. Every declared schema, action, and canonical enum member remains
+available. `certify:entropy` checks preservation and the shared normalizer,
+not an enum-pruning ratchet.

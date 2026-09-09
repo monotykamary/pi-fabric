@@ -95,9 +95,10 @@ export const formatEntropyCompileNotice = (input: {
   beforeScore: number;
   afterScore: number;
   reviewCount?: number;
+  normalizations?: number;
 }): string => {
   const review = input.reviewCount
     ? ` · ${input.reviewCount} suggestion${input.reviewCount === 1 ? "" : "s"} await review (/fabric entropy)`
     : "";
-  return `entropy: background optimization complete · ${scoreChange(input.beforeScore, input.afterScore)} · safety checks passed${review}`;
+  return `entropy: background optimization complete · ${input.normalizations ?? 0} normal-form plans · canonical capabilities preserved · ${scoreChange(input.beforeScore, input.afterScore)} · safety checks passed${review}`;
 };

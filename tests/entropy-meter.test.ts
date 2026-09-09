@@ -200,7 +200,7 @@ describe("measureEntropy", () => {
       traces: convergedTraces(),
       surface: convergedSurface(),
     });
-    expect(report.score).toBe(0.21875);
+    expect(report.score).toBe(0);
     expect(report.staticFreedom).toBe(3.5);
     expect(report.shapeEntropyBits).toBe(0);
     expect(report.churnRate).toBe(0);
@@ -208,13 +208,15 @@ describe("measureEntropy", () => {
     expect(report.flowEntropyBits).toBe(0);
     expect(report.totals.succeeded).toBe(4);
     expect(report.totals.actionOperations).toBe(4);
-    expect(report.staticScore).toBe(0.21875);
+    expect(report.staticScore).toBe(0.3125);
     expect(report.behavioralScore).toBe(0);
   });
 
   it("computes every wobble species exactly", () => {
     const report = measureEntropy({ traces: wobbleTraces() });
     const expand = report.refs.find((ref) => ref.ref === "memory.expand");
+    expect(report.score).toBe(0.166667);
+    expect(expand?.score).toBe(0.5);
     expect(expand?.shapeEntropyBits).toBe(0.811278);
     expect(expand?.failureStageEntropyBits).toBe(1);
     expect(expand?.churnRate).toBe(0.48);
@@ -268,6 +270,103 @@ describe("measureEntropy", () => {
     expect(actual).toEqual(expected);
   });
 
+  it("preserves rates and diagnostics under 100x identical-distribution duplication", async () => {
+    const input = {
+      traces: wobbleTraces().map((source, index) => ({
+        ...source,
+        model: index === 0 ? "p/alpha" : "p/beta",
+      })),
+      surface: convergedSurface(),
+      repairs: [{ kind: "keyAlias" as const, ref: "pi.read", from: "file", to: "path" }],
+    };
+    const baseline = measureEntropy(input);
+    const repeatedInput = { ...input, traces: Array.from({ length: 100 }, () => input.traces).flat() };
+    const repeated = measureEntropy(repeatedInput);
+    for (const key of [
+      "score", "behavioralScore", "staticScore", "staticFreedom", "shapeEntropyBits",
+      "failureStageEntropyBits", "churnRate", "navigationRatio", "flowEntropyBits", "lexiconRows",
+    ] as const) expect(repeated[key]).toBe(baseline[key]);
+    expect(repeated.totals.actionOperations).toBe(baseline.totals.actionOperations * 100);
+    expect(repeated.totals.invocationRejections).toBe(baseline.totals.invocationRejections * 100);
+    expect(repeated.refs.map(({ ref, score }) => ({ ref, score }))).toEqual(
+      baseline.refs.map(({ ref, score }) => ({ ref, score })),
+    );
+    expect(repeated.byModel.map(({ model, behavioralScore }) => ({ model, behavioralScore }))).toEqual(
+      baseline.byModel.map(({ model, behavioralScore }) => ({ model, behavioralScore })),
+    );
+    expect(await measureEntropyAsync(repeatedInput)).toEqual(repeated);
+  });
+
+  it.each(["resolve", "prepare", "validate"])("scores repeated identical %s failures as one", (stage) => {
+    const report = measureEntropy({
+      traces: [trace(Array.from({ length: 100 }, () => op("pi.read", {}, "failed", stage)))],
+      surface: convergedSurface(),
+    });
+    expect(report.score).toBe(1);
+    expect(report.behavioralScore).toBe(1);
+    expect(report.refs[0]?.score).toBe(1);
+    expect(report.totals.invocationRejectionsPer1k).toBe(1000);
+    expect(report.shapeEntropyBits).toBe(0);
+    expect(report.failureStageEntropyBits).toBe(0);
+    expect(report.churnRate).toBe(0);
+    expect(report.staticScore).toBe(0.375);
+  });
+
+  it("does not penalize legitimate optional shapes, capabilities, repairs, or navigation", () => {
+    const surface = surfaceOf([{
+      ref: "pi.read",
+      inputSchema: {
+        type: "object", required: ["path"], additionalProperties: false,
+        properties: { path: { type: "string" }, limit: { type: "integer" } },
+      },
+    }]);
+    const baseline = measureEntropy({ traces: [trace([op("pi.read", { path: "a" })])], surface });
+    const varied = measureEntropy({
+      traces: [
+        trace([op("pi.read", { path: "a" })]),
+        trace([op("fabric.discovery.search", {}), op("pi.read", { path: "b", limit: 5 })]),
+      ],
+      surface,
+      repairs: [{ kind: "keyAlias", ref: "pi.read", from: "file", to: "path" }],
+    });
+    expect(varied.shapeEntropyBits).toBe(1);
+    expect(varied.navigationRatio).toBe(0.5);
+    expect(varied.lexiconRows).toBe(1);
+    expect(varied.staticScore).toBeGreaterThan(0);
+    expect(varied.staticScore).toBe(baseline.staticScore);
+    expect(varied.score).toBe(baseline.score);
+    expect(varied.behavioralScore).toBe(0);
+  });
+
+  it("counts all action outcomes in the denominator but only invocation failures in the numerator", () => {
+    const report = measureEntropy({ traces: [trace([
+      op("pi.read", {}, "failed", "resolve"),
+      op("pi.read", {}, "failed", "invoke"),
+      op("pi.read", {}, "failed"),
+      { ...op("pi.read", {}), outcome: "aborted", failureStage: "validate" },
+      { ...op("pi.read", {}), outcome: "timed_out", failureStage: "prepare" },
+      op("fabric.discovery.search", {}, "failed", "resolve"),
+      op("fabric.workflow.phase", {}, "failed", "validate"),
+    ])] });
+    expect(report.score).toBe(0.2);
+    expect(report.refs[0]?.score).toBe(0.2);
+    expect(report.totals.actionOperations).toBe(5);
+    expect(report.totals.invocationRejections).toBe(1);
+  });
+
+  it("reports zero rates and static diagnostic without action calls", async () => {
+    const input = {
+      traces: [{ ...trace([op("fabric.discovery.search", {}, "failed", "resolve")]), model: "p/a" }],
+      surface: convergedSurface(),
+    };
+    const report = measureEntropy(input);
+    expect(report.score).toBe(0);
+    expect(report.behavioralScore).toBe(0);
+    expect(report.staticScore).toBe(0);
+    expect(report.byModel[0]?.behavioralScore).toBe(0);
+    expect(await measureEntropyAsync(input)).toEqual(report);
+  });
+
   it("measures an empty corpus as zero", () => {
     const report = measureEntropy({ traces: [] });
     expect(report.score).toBe(0);
@@ -280,7 +379,7 @@ describe("per-model attribution", () => {
   it("attributes behavioral terms per producing model with exact scores", () => {
     const wobbleA: EntropyTraceInput = {
       ...trace(
-        [op("pi.read", { path: "a" }), op("pi.read", { path: "a", limit: 5 })],
+        [op("pi.read", { path: "a" }, "failed", "validate"), op("pi.read", { path: "a", limit: 5 })],
         "ta",
       ),
       model: "p/alpha",
@@ -294,14 +393,16 @@ describe("per-model attribution", () => {
     };
     const unstamped = trace([op("pi.bash", { command: "x" })], "tc");
     const report = measureEntropy({ traces: [wobbleA, stillB, unstamped] });
-    expect(report.metricVersion).toBe(2);
+    expect(report.metricVersion).toBe(3);
     expect(report.totals.operations).toBe(5);
     expect(report.byModel.map((entry) => entry.model)).toEqual(["p/alpha", "p/beta"]);
     expect(report.byModel[0]).toMatchObject({
       model: "p/alpha",
       operations: 2,
       actionOperations: 2,
-      succeeded: 2,
+      succeeded: 1,
+      invocationRejections: 1,
+      invocationRejectionsPer1k: 500,
       behavioralScore: 0.5,
     });
     expect(report.byModel[1]).toMatchObject({
@@ -310,7 +411,7 @@ describe("per-model attribution", () => {
       succeeded: 2,
       behavioralScore: 0,
     });
-    // The global report keeps every call: 1 bit of shape over 5 successes.
+    // The global report includes unstamped calls: one rejection in five calls.
     expect(report.score).toBe(0.2);
     expect(report.behavioralScore).toBe(0.2);
   });

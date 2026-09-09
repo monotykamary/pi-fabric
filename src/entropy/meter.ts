@@ -182,7 +182,6 @@ const finalizeMeasure = (
   let staticWeighted = 0;
   let shapeWeighted = 0;
   let failureStageWeighted = 0;
-  let scoreSum = 0;
   for (const [ref, acc] of refEntries) {
     const shapeEntropyBits = shannonEntropyBits([...acc.signatures.values()]);
     const failureStageEntropyBits = shannonEntropyBits([...acc.stages.values()]);
@@ -192,17 +191,14 @@ const finalizeMeasure = (
       ? staticFreedomFromSchema(state.surfaceByRef.get(ref))
       : 0;
     staticFreedomTotal += staticFreedom;
-    staticWeighted += ENTROPY_WEIGHTS.staticFreedom * staticFreedom;
+    staticWeighted += ENTROPY_WEIGHTS.staticFreedom * staticFreedom * acc.calls;
     shapeWeighted += shapeEntropyBits * acc.calls;
     failureStageWeighted += failureStageEntropyBits * acc.failed;
-    const score = roundMetric(
-      ENTROPY_WEIGHTS.shape * shapeEntropyBits +
-        ENTROPY_WEIGHTS.failureStage * failureStageEntropyBits +
-        ENTROPY_WEIGHTS.churn * refChurnRate +
-        ENTROPY_WEIGHTS.lexicon * lexicon +
-        ENTROPY_WEIGHTS.staticFreedom * staticFreedom,
+    const invocationRejections = ENTROPY_INVOCATION_STAGES.reduce(
+      (sum, stage) => sum + (acc.stages.get(stage) ?? 0),
+      0,
     );
-    scoreSum += score;
+    const score = roundMetric(invocationRejections / acc.calls);
     const shapeSignatures: EntropyShapeSignature[] = [...acc.signatures.entries()]
       .map(([signature, count]) => ({ signature, count }))
       .sort(
@@ -241,14 +237,15 @@ const finalizeMeasure = (
   state.totals.invocationRejectionsPer1k = state.totals.actionOperations > 0
     ? roundMetric((state.totals.invocationRejections / state.totals.actionOperations) * 1000)
     : 0;
-  const score = roundMetric(
-    (scoreSum +
-      ENTROPY_WEIGHTS.navigation * navigationRatio +
-      ENTROPY_WEIGHTS.flow * flowEntropyBits) /
-      Math.max(1, state.totals.succeeded),
-  );
-  const staticScore = roundMetric(staticWeighted / Math.max(1, state.totals.succeeded));
-  const behavioralScore = roundMetric(score - staticScore);
+  // Operational burden is a rejection fraction, not entropy or capability size.
+  const score = state.totals.actionOperations > 0
+    ? roundMetric(state.totals.invocationRejections / state.totals.actionOperations)
+    : 0;
+  // Call-weighted schema freedom is diagnostic only, independent of corpus size.
+  const staticScore = state.totals.actionOperations > 0
+    ? roundMetric(staticWeighted / state.totals.actionOperations)
+    : 0;
+  const behavioralScore = score;
   const sortedRefs = [...refReports].sort(
     (left, right) => right.score - left.score || compareCodeUnits(left.ref, right.ref),
   );

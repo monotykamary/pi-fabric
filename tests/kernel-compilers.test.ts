@@ -99,7 +99,8 @@ for (const backend of ["typescript", "monty", "cpython"] as const) {
         { kind: "actionAlias", provider: "demo", from: "search", to: "recall" },
         { kind: "keyAlias", ref: "demo.recall", from: "sessionId", to: "session" },
       ]));
-      expect((await f.call("demo.search", { session: "canonical", sessionId: "spill", format: "pdf" })).value)
+      expect((await f.call("demo.search", { session: "canonical", sessionId: "spill", format: "pdf" })).success).toBe(false);
+      expect((await f.call("demo.search", { session: "canonical", format: "pdf" })).value)
         .toEqual({ session: "canonical", format: "pdf" });
       f.compiler.observeInvalidArgs("demo.recall", { path: "p" }, ["session", "format"], "extra");
       const ambiguous = await f.call("demo.recall", { sessionId: "one", path: "two", format: "pdf" });
@@ -130,7 +131,7 @@ for (const backend of ["typescript", "monty", "cpython"] as const) {
       expect(reloaded.status().fingerprints).toEqual([]);
     });
 
-    it("compiles actual host audits and enforces across a language switch, then invalidates on schema drift", async () => {
+    it("compiles normal forms across language switches without losing rare capabilities", async () => {
       const f = fixture(backend);
       const lines: string[] = [];
       for (const format of ["pdf", "pdf", "pdf", "pdf", "pdf", "pdf", "pdf", "html"]) {
@@ -144,23 +145,29 @@ for (const backend of ["typescript", "monty", "cpython"] as const) {
       const compiled = compileEntropySurface(input);
       expect(compiled.status).toBe("compiled");
       expect(await compileEntropySurfaceAsync(input)).toEqual(compiled);
-      expect(compiled.artifact?.actions[0]?.inputSchema).toMatchObject({ properties: { format: { enum: ["pdf", "html"] } } });
+      expect(compiled.artifact?.actions).toEqual([]);
+      expect(compiled.artifact?.normalizations?.[0]?.ref).toBe("demo.recall");
       setActiveCompiledSurface(compiled.artifact);
-      expect((await f.call("demo.recall", { session: "s", format: "text" })).success).toBe(false);
+      expect((await f.call("demo.recall", { session: "s", format: "text" })).success).toBe(true);
+      const repaired = await f.call("demo.recall", { session: "s", format: "TEXT" });
+      expect(repaired.success, repaired.error).toBe(true);
+      expect(repaired.value).toEqual({ session: "s", format: "text" });
+      expect(repaired.trace?.operations[0]?.normalization?.rules).toContainEqual({ kind: "enum-form", key: "format" });
       f.config.executor.kernel = backend === "typescript" ? "python" : "typescript";
-      expect((await f.call("demo.recall", { session: "s", format: "text" })).success).toBe(false);
+      expect((await f.call("demo.recall", { session: "s", format: "TEXT" })).success).toBe(true);
       expect((await f.call("demo.recall", { session: "s", format: "pdf" })).success).toBe(true);
       f.descriptor.inputSchema = { ...schema(), description: "new declared revision" };
       expect((await f.call("demo.recall", { session: "s", format: "text" })).success).toBe(true);
+      expect((await f.call("demo.recall", { session: "s", format: "TEXT" })).success).toBe(false);
       f.config.executor.kernel = backend === "typescript" ? "typescript" : "python";
       setActiveCompiledSurface({
-        ...compiled.artifact!, actions: [],
+        ...compiled.artifact!, version: 1, actions: [],
         quarantined: [{ ref: "demo.recall", baseSchemaDigest: schemaDigest(f.descriptor.inputSchema) }],
       });
-      const callsBeforeQuarantine = f.invoke.mock.calls.length;
-      expect((await f.call("demo.recall", { session: "s", format: "pdf" })).success).toBe(false);
-      expect((await f.call("demo.search", { sessionId: "s", format: "pdf" })).success).toBe(false);
-      expect(f.invoke).toHaveBeenCalledTimes(callsBeforeQuarantine);
+      const callsBeforeLegacy = f.invoke.mock.calls.length;
+      expect((await f.call("demo.recall", { session: "s", format: "pdf" })).success).toBe(true);
+      expect((await f.call("demo.search", { sessionId: "s", format: "pdf" })).success).toBe(true);
+      expect(f.invoke).toHaveBeenCalledTimes(callsBeforeLegacy + 2);
     });
   });
 }
@@ -182,15 +189,15 @@ describe("language-neutral artifact guards", () => {
       expect(mergeCompiledSurfaces(undefined, file, surface())).toMatchObject({ droppedOverlays: 1, file: { actions: [] } });
     }
     const restricted = { ...base, properties: { ...base.properties, format: { type: "string", enum: ["pdf"] } } };
-    expect(effectiveSchemaFor("demo.recall", base, artifact(restricted))).toEqual(restricted);
+    expect(effectiveSchemaFor("demo.recall", base, artifact(restricted))).toBe(base);
   });
 
   it("does not import inherited aliases or let Object.prototype beat a Python dictionary key", () => {
     const repairs = [{ kind: "keyAlias" as const, ref: "demo.recall", from: "sessionId", to: "session" }];
     const inherited = Object.create({ sessionId: "not supplied" }) as Record<string, unknown>;
     expect(applyCatalogArgRepairs("demo.recall", inherited, repairs, schema()).changed).toBe(false);
-    const args = Object.assign(Object.create({ session: "inherited" }), { sessionId: "supplied" });
-    expect(applyCatalogArgRepairs("demo.recall", args, repairs, schema()).args).toEqual({ session: "supplied" });
+    const args = Object.assign(Object.create({ session: "inherited" }), { sessionId: "supplied", format: "pdf" });
+    expect(applyCatalogArgRepairs("demo.recall", args, repairs, schema()).args).toEqual({ session: "supplied", format: "pdf" });
     const protoSchema = { type: "object", additionalProperties: false, properties: JSON.parse('{"__proto__":{"type":"object"}}') };
     const proto = applyCatalogArgRepairs("demo.recall", { proto: { safe: true } }, [
       { kind: "keyAlias", ref: "demo.recall", from: "proto", to: "__proto__" },

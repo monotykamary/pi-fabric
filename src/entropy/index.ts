@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./normal-form.js";
 export * from "./fingerprint.js";
 export * from "./meter.js";
 export * from "./passes.js";

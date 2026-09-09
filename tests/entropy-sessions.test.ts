@@ -227,7 +227,7 @@ describe("measureSessionCorpus", () => {
     expect(result.sessions).toHaveLength(1);
     expect(result.latest?.catalogDigest).toBe("deadbeef");
     expect(result.latest?.staticFreedom).toBe(1.5);
-    expect(result.latest?.score).toBe(0.375);
+    expect(result.latest?.score).toBe(0);
     expect(result.latest?.staticScore).toBe(0.375);
     expect(result.latest?.behavioralScore).toBe(0);
   });
@@ -347,8 +347,8 @@ describe("per-model session attribution", () => {
     expect(result.models[0]).toMatchObject({
       model: "p/alpha",
       sessions: 2,
-      latestBehavioralScore: 0.5,
-      slopePerSession: 0.5,
+      latestBehavioralScore: 0,
+      slopePerSession: 0,
       latestRejectionsPer1k: 0,
     });
   });

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { deriveNormalFormPlan, MAX_NORMAL_FORM_PLANS, MAX_NORMAL_FORM_RULES } from "../src/entropy/normal-form.js";
+import { parseCompiledSurfaceArtifact } from "../src/entropy/compiled-store.js";
+import { emptyCompiledSurface, COMPILED_SURFACE_VERSION } from "../src/entropy/compiled-surface.js";
 import {
   applyCompiledSurface,
   compiledSurfaceEffectChanged,
@@ -87,7 +90,41 @@ const op = (
   outcome: "succeeded" | "failed" = "succeeded",
 ): EntropyTraceInput["operations"][number] => ({ ref, args, outcome });
 
-describe("compiled surface overlay", () => {
+describe("compiled artifact parser", () => {
+  const plan = deriveNormalFormPlan("memory.recall", liveSurface().actions[2]!.inputSchema)!;
+  const valid = { ...emptyCompiledSurface(), normalizations: [plan] };
+
+  it("accepts bounded v2 plans and retains v1 restrictions only as migration data", () => {
+    expect(COMPILED_SURFACE_VERSION).toBe(2);
+    expect(parseCompiledSurfaceArtifact(valid)).toEqual(valid);
+    const legacy = compiledArtifact(liveSurface());
+    expect(parseCompiledSurfaceArtifact(legacy)).toEqual(legacy);
+    expect(parseCompiledSurfaceArtifact({ ...valid, normalizations: Array.from({ length: MAX_NORMAL_FORM_PLANS }, (_, i) => ({ ...plan, ref: `demo.action${i}` })) })).toBeDefined();
+  });
+
+  it.each([
+    { version: 3 }, { normalizations: undefined }, { normalizations: [plan, plan] },
+    { normalizations: [{ ...plan, version: 2 }] },
+    { normalizations: [{ ...plan, baseSchemaDigest: "forged" }] },
+    { normalizations: [{ ...plan, rules: [] }] },
+    { normalizations: [{ ...plan, rules: [{ kind: "invented", key: "query" }] }] },
+    { normalizations: [{ ...plan, rules: [{ kind: "key-form", key: "__proto__" }] }] },
+    { normalizations: [{ ...plan, rules: Array(MAX_NORMAL_FORM_RULES + 1).fill(plan.rules[0]) }] },
+    { normalizations: Array.from({ length: MAX_NORMAL_FORM_PLANS + 1 }, (_, i) => ({ ...plan, ref: `demo.action${i}` })) },
+    { actions: compiledArtifact(liveSurface()).actions },
+    { quarantined: compiledArtifact(liveSurface()).quarantined },
+    { metricVersion: 0 }, { gate: { passed: true, beforeScore: Infinity, afterScore: 0, reasons: [] } },
+  ])("rejects invalid, duplicate, oversized plans and v2 restrictions (case %#)", patch => {
+    expect(parseCompiledSurfaceArtifact({ ...valid, ...patch })).toBeUndefined();
+  });
+
+  it("rejects malformed legacy duplicates instead of silently choosing an overlay", () => {
+    const legacy = compiledArtifact(liveSurface());
+    expect(parseCompiledSurfaceArtifact({ ...legacy, actions: [legacy.actions[0], legacy.actions[0]] })).toBeUndefined();
+  });
+});
+
+describe("compiled surface preservation", () => {
   it("distinguishes enforcement changes from provenance-only updates", () => {
     const artifact = compiledArtifact(liveSurface());
     const provenanceOnly = {
@@ -102,22 +139,28 @@ describe("compiled surface overlay", () => {
         ...provenanceOnly,
         quarantined: provenanceOnly.quarantined.slice(1),
       }),
-    ).toBe(true);
+    ).toBe(false);
+    const plan = deriveNormalFormPlan("memory.recall", liveSurface().actions[2]!.inputSchema)!;
+    const normalized = { ...emptyCompiledSurface(), normalizations: [plan] };
+    expect(compiledSurfaceEffectChanged(artifact, normalized)).toBe(true);
+    expect(compiledSurfaceEffectChanged(normalized, emptyCompiledSurface())).toBe(true);
+    expect(compiledSurfaceEffectChanged(undefined, emptyCompiledSurface())).toBe(false);
+    expect(compiledSurfaceEffectChanged(normalized, { ...normalized, evidenceDigest: "new" })).toBe(false);
   });
 
-  it("applies digest-matched entries and drops stale ones", () => {
+  it("preserves digest-matched and stale declarations by identity", () => {
     const live = liveSurface();
     const liveJson = JSON.stringify(live);
     const effective = applyCompiledSurface(live, compiledArtifact(live));
     expect(JSON.stringify(live)).toBe(liveJson);
+    expect(effective).toBe(live);
     expect(effective.actions.map((action) => action.ref)).toEqual([
-      "mcp.stale.old",
-      "memory.recall",
+      "mcp.flaky.run", "mcp.stale.old", "memory.recall",
     ]);
     const recall = effective.actions.find((action) => action.ref === "memory.recall")!;
     const schema = recall.inputSchema as Record<string, unknown>;
     const query = (schema.properties as Record<string, { enum?: unknown[] }>).query;
-    expect(query?.enum).toEqual(["search", "expand", "recall"]);
+    expect(query?.enum).toBeUndefined();
     const stale = effective.actions.find((action) => action.ref === "mcp.stale.old")!;
     expect(JSON.stringify(stale.inputSchema)).toBe(
       JSON.stringify(liveSurface().actions.find((a) => a.ref === "mcp.stale.old")!.inputSchema),
@@ -132,25 +175,25 @@ describe("compiled surface overlay", () => {
     });
   });
 
-  it("consults the overlay per ref with digest proof", () => {
+  it("ignores even digest-matched legacy overlays", () => {
     const live = liveSurface();
     const file = compiledArtifact(live);
     const recallLive = live.actions.find((a) => a.ref === "memory.recall")!.inputSchema;
     expect(effectiveSchemaFor("memory.recall", recallLive, file)).toBe(
-      file.actions[0]!.inputSchema,
+      recallLive,
     );
     const staleLive = live.actions.find((a) => a.ref === "mcp.stale.old")!.inputSchema;
     expect(effectiveSchemaFor("mcp.stale.old", staleLive, file)).toBe(staleLive);
   });
 
-  it("denies quarantine only with digest proof", () => {
+  it("never quarantines either matched or stale legacy refs", () => {
     const live = liveSurface();
     const file = compiledArtifact(live);
     const flakyLive = live.actions.find((a) => a.ref === "mcp.flaky.run")!.inputSchema;
-    expect(isQuarantinedRef("mcp.flaky.run", flakyLive, file)).toBe(true);
+    expect(isQuarantinedRef("mcp.flaky.run", flakyLive, file)).toBe(false);
     const staleLive = live.actions.find((a) => a.ref === "mcp.stale.old")!.inputSchema;
     expect(isQuarantinedRef("mcp.stale.old", staleLive, file)).toBe(false);
-    expect(quarantinedRefNames(file)).toEqual(new Set(["mcp.flaky.run", "mcp.stale.old"]));
+    expect(quarantinedRefNames(file)).toEqual(new Set());
   });
 });
 
@@ -158,7 +201,9 @@ describe("replay preservation", () => {
   it("checks only touched refs and skips failures", () => {
     const live = liveSurface();
     const file = compiledArtifact(live);
-    const effective = applyCompiledSurface(live, file);
+    // Exercise the generic replay guard with an explicitly narrowed candidate,
+    // not the retired artifact restriction application.
+    const effective: EntropySurfaceSnapshot = { version: 1, actions: [{ ref: "memory.recall", inputSchema: file.actions[0]!.inputSchema }] };
     const touched = new Set(["memory.recall", "mcp.flaky.run"]);
     const traces: EntropyTraceInput[] = [
       {

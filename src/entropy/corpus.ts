@@ -33,6 +33,7 @@ export const entropyTraceFromFabricTrace = (
     args: operation.args,
     outcome: operation.outcome,
     ...(operation.failureStage !== undefined ? { failureStage: operation.failureStage } : {}),
+    ...(operation.normalization ? { normalization: operation.normalization } : {}),
   })),
   taskKey: trace.phases[0] ?? DEFAULT_TASK_KEY,
   ...(model ? { model } : {}),

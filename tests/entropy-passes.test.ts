@@ -133,203 +133,74 @@ const structureTraces = (): EntropyTraceInput[] => [
   ),
 ];
 
-const compiledRatchet = () => {
-  const before = measureEntropy({
-    traces: ratchetTraces(),
-    surface: ratchetSurface(),
-    repairs: ratchetRepairs(),
-  });
-  const proposals = proposeEntropyReductions({
-    report: before,
-    traces: ratchetTraces(),
-    surface: ratchetSurface(),
-    repairs: ratchetRepairs(),
-  });
-  const compiled = applyProposalsToSurface(ratchetSurface(), proposals);
-  return { before, proposals, compiled };
-};
-
-describe("proposeEntropyReductions", () => {
-  it("proposes only mechanically supported reductions for the ratchet corpus", () => {
-    const { proposals } = compiledRatchet();
-    expect(proposals).toHaveLength(2);
-    expect(proposals.find((proposal) => proposal.kind === "enum-tighten")).toMatchObject({
-      ref: "mcp.report.render",
-      key: "format",
-      values: ["pdf", "html"],
-      calls: 8,
-      distinct: 2,
-      topShare: 0.875,
-    });
-    expect(
-      proposals.find((proposal) => proposal.kind === "noise-quarantine"),
-    ).toMatchObject({
-      ref: "mcp.flaky.run",
-      calls: 4,
-      succeeded: 0,
-      failed: 4,
-      failureStageEntropyBits: 1,
-    });
-  });
-
-  it("converges while retaining repair rows as compatibility aliases", () => {
-    const { compiled } = compiledRatchet();
-    const after = measureEntropy({
-      traces: ratchetTraces(),
-      surface: compiled,
-      repairs: ratchetRepairs(),
-    });
-    expect(
-      proposeEntropyReductions({
-        report: after,
-        traces: ratchetTraces(),
-        surface: compiled,
-        repairs: ratchetRepairs(),
-      }),
-    ).toEqual([]);
-  });
-
-  it("keeps a gate-proven enum as a floor: pre-birth observations never widen", () => {
-    const incumbent = surfaceOf([
-      {
-        ref: "mcp.render",
-        inputSchema: {
-          type: "object",
-          properties: { format: { type: "string", enum: ["pdf", "html"] } },
-          required: ["format"],
-          additionalProperties: false,
-        },
-      },
-    ]);
-    const traces = [
-      trace([
-        ...Array.from({ length: 5 }, () => op("mcp.render", { format: "pdf" })),
-        op("mcp.render", { format: "html" }),
-        op("mcp.render", { format: "html" }),
-        op("mcp.render", { format: "docx" }),
-      ]),
-    ];
-    const valueObservations = [
-      ...Array.from({ length: 5 }, () => ({ ref: "mcp.render", key: "format", value: "pdf" })),
-      { ref: "mcp.render", key: "format", value: "html" },
-      { ref: "mcp.render", key: "format", value: "html" },
-      { ref: "mcp.render", key: "format", value: "docx" },
-    ];
-    const report = measureEntropy({ traces, surface: incumbent });
-    expect(
-      proposeEntropyReductions({ report, traces, surface: incumbent, valueObservations }),
-    ).toEqual([]);
-  });
-
-  it("still tightens beneath a floor when incumbent values age out", () => {
-    const incumbent = surfaceOf([
-      {
-        ref: "mcp.render",
-        inputSchema: {
-          type: "object",
-          properties: { format: { type: "string", enum: ["pdf", "html", "docx"] } },
-          required: ["format"],
-          additionalProperties: false,
-        },
-      },
-    ]);
-    const traces = [
-      trace([
-        ...Array.from({ length: 6 }, () => op("mcp.render", { format: "pdf" })),
-        op("mcp.render", { format: "html" }),
-        op("mcp.render", { format: "html" }),
-      ]),
-    ];
-    const valueObservations = [
-      ...Array.from({ length: 6 }, () => ({ ref: "mcp.render", key: "format", value: "pdf" })),
-      { ref: "mcp.render", key: "format", value: "html" },
-      { ref: "mcp.render", key: "format", value: "html" },
-    ];
-    const report = measureEntropy({ traces, surface: incumbent });
-    expect(
-      proposeEntropyReductions({ report, traces, surface: incumbent, valueObservations }),
-    ).toEqual([
-      expect.objectContaining({
-        kind: "enum-tighten",
-        ref: "mcp.render",
-        key: "format",
-        values: ["pdf", "html"],
-      }),
-    ]);
-  });
-
-  it("never proposes enum-tighten for a declared boolean parameter", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.flags.set",
-        inputSchema: {
-          type: "object",
-          properties: { force: { type: "boolean" } },
-          required: ["force"],
-          additionalProperties: false,
-        },
-      },
-    ]);
-    const traces = [
-      trace([
-        ...Array.from({ length: 5 }, () => op("mcp.flags.set", { force: true })),
-        ...Array.from({ length: 3 }, () => op("mcp.flags.set", { force: false })),
-      ]),
-    ];
-    const valueObservations = [
-      ...Array.from({ length: 5 }, () => ({ ref: "mcp.flags.set", key: "force", value: true })),
-      ...Array.from({ length: 3 }, () => ({ ref: "mcp.flags.set", key: "force", value: false })),
-    ];
-    expect(
-      proposeEntropyReductions({
-        report: measureEntropy({ traces, surface }),
-        traces,
-        surface,
-        valueObservations,
-      }),
-    ).toEqual([]);
-    expect(
-      proposeEntropyReductions({
-        report: measureEntropy({ traces }),
-        traces,
-        valueObservations,
-      }),
-    ).toEqual([]);
-  });
-
-  it("applies proposals without mutating the input surface", () => {
+describe("capability-preserving entropy proposals", () => {
+  it("derives normal forms without any observations and never proposes restrictions", () => {
     const surface = ratchetSurface();
-    const snapshot = JSON.stringify(surface);
-    const before = measureEntropy({
-      traces: ratchetTraces(),
-      surface: ratchetSurface(),
-      repairs: ratchetRepairs(),
+    const proposals = proposeEntropyReductions({ report: measureEntropy({ traces: [], surface }), traces: [], surface });
+    expect(proposals).toHaveLength(3);
+    expect(proposals.every((proposal) => proposal.kind === "normal-form")).toBe(true);
+    expect(applyProposalsToSurface(surface, proposals)).toBe(surface);
+    const busy = proposeEntropyReductions({ report: measureEntropy({ traces: ratchetTraces(), surface }), traces: ratchetTraces(), surface });
+    expect(busy.filter((proposal) => proposal.kind === "normal-form")).toEqual(proposals);
+    expect(busy.some((proposal) => ["enum-tighten", "noise-quarantine"].includes(proposal.kind))).toBe(false);
+  });
+
+  it("leaves canonical names and every rare enum capability untouched", () => {
+    const surface = ratchetSurface();
+    const saved = JSON.stringify(surface);
+    const proposals = proposeEntropyReductions({ report: measureEntropy({ traces: ratchetTraces(), surface }), traces: ratchetTraces(), surface, repairs: ratchetRepairs() });
+    expect(applyProposalsToSurface(surface, proposals)).toBe(surface);
+    expect(JSON.stringify(surface)).toBe(saved);
+    expect(applyProposalsToSurface(surface, [
+      { kind: "enum-tighten", ref: "mcp.report.render", key: "format", values: ["pdf"], calls: 8, distinct: 1, topShare: 1 },
+      { kind: "noise-quarantine", ref: "mcp.flaky.run", calls: 4, failed: 4, succeeded: 0, failureStageEntropyBits: 1 },
+    ])).toBe(surface);
+  });
+
+  it("does not infer domains from strings, numeric ranges, booleans, or unknown refs", () => {
+    const surface = surfaceOf([{ ref: "demo.call", inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: { text: { type: "string" }, count: { type: "number", minimum: 1 }, all: { type: "boolean" } },
+    } }]);
+    const traces = [trace(Array.from({ length: 8 }, (_, index) => op("demo.call", { text: index < 7 ? "a" : "b", count: index % 2 + 1, all: index % 2 === 0, undeclared: "x" }))), trace([op("ghost.run", { value: "a" })])];
+    const proposals = proposeEntropyReductions({ report: measureEntropy({ traces, surface }), traces, surface });
+    expect(proposals.every((proposal) => proposal.kind === "normal-form")).toBe(true);
+    expect(proposals).toHaveLength(1);
+  });
+
+  it("retains opted-in vocabulary suggestions without applying them", () => {
+    const surface = surfaceOf([{ ref: "demo.call", inputSchema: {
+      type: "object", additionalProperties: false, properties: { format: { type: "string", "x-fabric-enum-candidate": true } },
+    } }]);
+    const valueObservations = [
+      { ref: "demo.call", key: "format", value: "pdf", count: 7 },
+      { ref: "demo.call", key: "format", value: "html", count: 1 },
+    ];
+    const report = measureEntropy({ traces: [], surface });
+    const proposals = proposeEntropyReductions({ report, traces: [], surface, valueObservations });
+    expect(proposals.find((proposal) => proposal.kind === "declare-enum")).toMatchObject({ values: ["pdf", "html"], calls: 8, distinct: 2, topShare: 0.875 });
+    expect(applyProposalsToSurface(surface, proposals)).toBe(surface);
+    expect(proposeEntropyReductions({ report, traces: [], surface }).some((proposal) => proposal.kind === "declare-enum")).toBe(false);
+  });
+
+  it("does not reinterpret a declared enum when pooled or pre-birth values differ", () => {
+    const surface = ratchetSurface();
+    const proposals = proposeEntropyReductions({ report: measureEntropy({ traces: [], surface }), traces: [], surface,
+      valueObservations: [
+        { ref: "mcp.report.render", key: "format", value: "pdf", count: 70 },
+        { ref: "mcp.report.render", key: "format", value: "rtf", count: 10 },
+      ],
     });
-    const proposals = proposeEntropyReductions({
-      report: before,
-      traces: ratchetTraces(),
-      surface: ratchetSurface(),
-      repairs: ratchetRepairs(),
-    });
-    const compiled = applyProposalsToSurface(surface, proposals);
-    expect(JSON.stringify(surface)).toBe(snapshot);
-    expect(compiled.actions.map((action) => action.ref)).toEqual([
-      "mcp.report.render",
-      "memory.expand",
-    ]);
-    const render = compiled.actions.find((action) => action.ref === "mcp.report.render");
-    expect(
-      (render?.inputSchema as { properties: { format: { enum?: unknown } } }).properties
-        .format.enum,
-    ).toEqual(["pdf", "html"]);
-    const expand = compiled.actions.find((action) => action.ref === "memory.expand");
-    const expandSchema = expand?.inputSchema as {
-      properties: Record<string, unknown>;
-      required: string[];
-    };
-    expect(expandSchema.properties.session).toBeDefined();
-    expect(expandSchema.properties.sessionId).toBeUndefined();
-    expect(expandSchema.required).toEqual(["session"]);
+    expect(proposals.every((proposal) => proposal.kind === "normal-form")).toBe(true);
+    expect(applyProposalsToSurface(surface, proposals)).toBe(surface);
+  });
+
+  it("checks observed regression without rewarding surface shrinkage", () => {
+    const before = measureEntropy({ traces: ratchetTraces(), surface: ratchetSurface() });
+    const same = measureEntropy({ traces: ratchetTraces(), surface: ratchetSurface() });
+    expect(evaluateGate(before, same)).toMatchObject({ passed: true, delta: 0 });
+    expect(evaluateGate(before, { ...same, score: before.score + 0.1 }).passed).toBe(false);
+    expect(evaluateGate(before, { ...same, totals: { ...same.totals, succeeded: 0 } }).reasons.join(" ")).toContain("successful calls dropped");
   });
 
   it("does not mistake repeated Pi primitives for a composite action", () => {
@@ -392,270 +263,5 @@ describe("proposeEntropyReductions", () => {
     ).toEqual([]);
   });
 
-  it("does not quarantine healthy refs", () => {
-    const traces: EntropyTraceInput[] = [
-      trace([
-        op("mcp.ok.run", { a: 1 }, "failed", "validate"),
-        op("mcp.ok.run", { a: 1 }),
-        op("mcp.ok.run", { a: 1 }),
-      ]),
-    ];
-    const report = measureEntropy({ traces });
-    expect(proposeEntropyReductions({ report, traces })).toEqual([]);
-  });
 
-  it("keeps repair rows as aliases without rewriting canonical action names", () => {
-    const traces: EntropyTraceInput[] = [
-      trace([op("memory.expand", { session: "s1" })]),
-    ];
-    const surface = surfaceOf([
-      {
-        ref: "memory.expand",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["session"],
-          properties: { session: { type: "string" } },
-        },
-      },
-    ]);
-    const repairs = [
-      { kind: "actionAlias" as const, ref: "memory.expand", from: "expandEntry", to: "expand" },
-    ];
-    const report = measureEntropy({ traces, surface, repairs });
-    const proposals = proposeEntropyReductions({ report, traces, surface, repairs });
-    expect(proposals).toEqual([]);
-    expect(applyProposalsToSurface(surface, proposals)).toEqual(surface);
-  });
-
-  it("does not infer enums for dynamic strings or numeric ranges", () => {
-    const surface = surfaceOf([
-      {
-        ref: "agents.run",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          properties: { model: { type: "string" } },
-        },
-      },
-      {
-        ref: "memory.expand",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            maxChars: { type: "number", minimum: 256, maximum: 24_000 },
-          },
-        },
-      },
-    ]);
-    const traces = [
-      trace([
-        ...Array.from({ length: 7 }, () => op("agents.run", { model: "xai/grok" })),
-        op("agents.run", { model: "openai/gpt" }),
-        ...Array.from({ length: 6 }, () => op("memory.expand", { maxChars: 24_000 })),
-        ...Array.from({ length: 2 }, () => op("memory.expand", { maxChars: 12_000 })),
-      ]),
-    ];
-    expect(
-      proposeEntropyReductions({
-        report: measureEntropy({ traces, surface }),
-        traces,
-        surface,
-      }),
-    ).toEqual([]);
-  });
-
-  it("routes explicitly marked vocabularies to declare-enum review, never auto", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.report.render",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["format"],
-          properties: {
-            format: { type: "string", "x-fabric-enum-candidate": true },
-          },
-        },
-      },
-    ]);
-    const traces: EntropyTraceInput[] = [
-      trace([
-        ...Array.from({ length: 7 }, () => op("mcp.report.render", { format: "pdf" })),
-        op("mcp.report.render", { format: "html" }),
-      ]),
-    ];
-    const proposals = proposeEntropyReductions({
-      report: measureEntropy({ traces, surface }),
-      traces,
-      surface,
-    });
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({
-      kind: "declare-enum",
-      ref: "mcp.report.render",
-      key: "format",
-      values: ["pdf", "html"],
-      calls: 8,
-      distinct: 2,
-      topShare: 0.875,
-    });
-  });
-
-  it("does not infer finite domains for undeclared keys or unknown refs", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.report.render",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["format"],
-          properties: { format: { type: "string", enum: ["docx", "html", "pdf"] } },
-        },
-      },
-    ]);
-    const traces: EntropyTraceInput[] = [
-      trace([
-        ...Array.from({ length: 4 }, () => op("mcp.report.render", { format: "pdf", dpi: 300 })),
-        ...Array.from({ length: 4 }, () => op("mcp.report.render", { format: "pdf", dpi: 600 })),
-      ]),
-      trace([
-        ...Array.from({ length: 6 }, () => op("mcp.ghost.run", { level: "info" })),
-        ...Array.from({ length: 2 }, () => op("mcp.ghost.run", { level: "debug" })),
-      ]),
-    ];
-    expect(
-      proposeEntropyReductions({
-        report: measureEntropy({ traces, surface }),
-        traces,
-        surface,
-      }),
-    ).toEqual([]);
-  });
-
-  it("converges when the observed vocabulary equals the declared enum", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.report.render",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["format"],
-          properties: { format: { type: "string", enum: ["html", "pdf"] } },
-        },
-      },
-    ]);
-    const traces: EntropyTraceInput[] = [
-      trace([
-        ...Array.from({ length: 7 }, () => op("mcp.report.render", { format: "pdf" })),
-        op("mcp.report.render", { format: "html" }),
-      ]),
-    ];
-    expect(
-      proposeEntropyReductions({
-        report: measureEntropy({ traces, surface }),
-        traces,
-        surface,
-      }),
-    ).toEqual([]);
-  });
-
-  it("drops observations outside the declared domain and tightens to the remainder", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.report.render",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["format"],
-          properties: { format: { type: "string", enum: ["html", "pdf", "web"] } },
-        },
-      },
-    ]);
-    const traces: EntropyTraceInput[] = [
-      trace([
-        ...Array.from({ length: 6 }, () => op("mcp.report.render", { format: "pdf" })),
-        op("mcp.report.render", { format: "html" }),
-        op("mcp.report.render", { format: "rtf" }),
-      ]),
-    ];
-    const proposals = proposeEntropyReductions({
-      report: measureEntropy({ traces, surface }),
-      traces,
-      surface,
-    });
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({
-      kind: "enum-tighten",
-      ref: "mcp.report.render",
-      key: "format",
-      values: ["pdf", "html"],
-      distinct: 2,
-    });
-  });
-
-  it("weights pooled observations by count multiplicity", () => {
-    const surface = surfaceOf([
-      {
-        ref: "mcp.report.render",
-        inputSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["format"],
-          properties: { format: { type: "string", enum: ["docx", "html", "pdf"] } },
-        },
-      },
-    ]);
-    const traces: EntropyTraceInput[] = [trace([op("mcp.report.render", { format: "pdf" })])];
-    const valueObservations = [
-      { ref: "mcp.report.render", key: "format", value: "pdf", count: 7 },
-      { ref: "mcp.report.render", key: "format", value: "html", count: 1 },
-    ];
-    const proposals = proposeEntropyReductions({
-      report: measureEntropy({ traces, surface }),
-      traces,
-      surface,
-      valueObservations,
-    });
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({
-      kind: "enum-tighten",
-      values: ["pdf", "html"],
-      calls: 8,
-      distinct: 2,
-      topShare: 0.875,
-    });
-  });
-});
-
-describe("evaluateGate", () => {
-  it("passes a strict decrease and fails any increase", () => {
-    const { before, compiled } = compiledRatchet();
-    const after = measureEntropy({
-      traces: ratchetTraces(),
-      surface: compiled,
-      repairs: ratchetRepairs(),
-    });
-    const gate = evaluateGate(before, after);
-    expect(gate.passed).toBe(true);
-    expect(gate.delta).toBe(-0.01823);
-    expect(before.staticScore).toBe(0.036458);
-    expect(before.behavioralScore).toBe(0.286561);
-    expect(after.staticScore).toBe(0.018229);
-    expect(after.behavioralScore).toBe(0.28656);
-    const regress = evaluateGate(after, before);
-    expect(regress.passed).toBe(false);
-    expect(regress.reasons[0]).toContain("score increased");
-  });
-
-  it("fails when successful calls drop", () => {
-    const full = measureEntropy({ traces: ratchetTraces(), surface: ratchetSurface() });
-    const partial = measureEntropy({
-      traces: [trace([op("pi.read", { path: "src/a.ts", limit: 50 })])],
-    });
-    const gate = evaluateGate(full, partial);
-    expect(gate.passed).toBe(false);
-    expect(gate.reasons.join(" ")).toContain("successful calls dropped");
-  });
 });

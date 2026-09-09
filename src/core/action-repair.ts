@@ -4,10 +4,9 @@
 // 1. The registry resolve stage canonicalizes near-miss action spellings
 //    (memory.search → memory.recall) before the provider descriptor is
 //    demanded. The repair surface is mostly derived from the provider's
-//    declared action names rather than maintained by hand — casing,
-//    separator, and underscore forms, singular/plural near-misses, camelCase
-//    token alignment, and bounded edit distance — so new providers gain
-//    repair behavior for free, exactly like schema-derived argument repair.
+//    declared action names rather than maintained by hand. Exact casing and
+//    separator forms and unique authored synonyms authorize repair; plural,
+//    prefix, token-alignment, and edit-distance matches only suggest names.
 // 2. The resolution failure tier owns the didactic failure: ambiguous or
 //    unmatched names fail with the closest declared candidates named, and
 //    the original "Unknown Fabric action" prefix is preserved.
@@ -173,16 +172,22 @@ const computeActionRepair = (
 ): ActionNameRepair => {
   const spilledForm = normalizeActionForm(actionName);
   if (spilledForm.length === 0) return { suggestions: [] };
-  const forms = catalog.filter((entry) => entry.name !== actionName);
+  if (catalog.some((entry) => entry.name === actionName)) return { suggestions: [] };
+  const forms = [...new Map(catalog.map((entry) => [entry.name, entry])).values()];
+
+  // Exact case/separator forms prove identity before semantic aliases.
+  const exact = forms.filter((entry) => entry.form === spilledForm).map((entry) => entry.name);
+  if (exact.length === 1) return { repaired: exact[0]!, suggestions: exact };
+  if (exact.length > 1) return { suggestions: sortNames(exact) };
   if (forms.length === 0) return { suggestions: [] };
 
   // Tier 1 — semantic verb classes: the spilled verb belongs to a shared
   // synonym class; repair only when exactly one class member is declared.
-  const classCandidates = ACTION_CLASS_FORMS
+  const classCandidates = sortNames(ACTION_CLASS_FORMS
     .filter((classForms) => classForms.has(spilledForm))
     .flatMap((classForms) =>
       forms.filter((entry) => classForms.has(entry.form)).map((entry) => entry.name)
-    );
+    ));
   if (classCandidates.length === 1) {
     return { repaired: classCandidates[0]!, suggestions: [classCandidates[0]!] };
   }
@@ -190,9 +195,8 @@ const computeActionRepair = (
     return { suggestions: sortNames(classCandidates) };
   }
 
-  // Tier 2 — structural forms derived from the declared names: separator and
-  // casing variants, singular/plural, camelCase token alignment, and unique
-  // raw prefixes. Weak signals must agree on exactly one canonical name.
+  // Similarity is only didactic evidence, even with a unique candidate.
+  // Singular/plural, token alignment, and prefixes never authorize repair.
   const spilledTokens = camelTokens(actionName);
   const spilledSingular = singularActionForm(spilledForm);
   const derived: string[] = [];
@@ -206,10 +210,9 @@ const computeActionRepair = (
       derived.push(entry.name);
     }
   }
-  if (derived.length === 1) return { repaired: derived[0]!, suggestions: [derived[0]!] };
-  if (derived.length > 1) return { suggestions: sortNames(derived) };
+  if (derived.length > 0) return { suggestions: sortNames(derived) };
 
-  // Tier 3 — bounded edit distance with a strict unique minimum.
+  // Bounded edit distance ranks suggestions, never semantic proof.
   const distances = forms.map((entry) => ({
     name: entry.name,
     distance: levenshtein(spilledForm, entry.form),
@@ -220,7 +223,6 @@ const computeActionRepair = (
     const nearest = sortNames(
       distances.filter((entry) => entry.distance === min).map((entry) => entry.name),
     );
-    if (nearest.length === 1) return { repaired: nearest[0]!, suggestions: [nearest[0]!] };
     return { suggestions: nearest };
   }
 

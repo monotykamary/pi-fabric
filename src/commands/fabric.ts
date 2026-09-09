@@ -39,6 +39,7 @@ import { entropyReviewSignals, formatEntropyReviewSignal } from "../entropy/comp
 import { loadObservationPoolAsync } from "../entropy/pool-store.js";
 import { mergeObservationWindowAsync, poolToValueObservations } from "../entropy/pool.js";
 import { applyCompiledSurface } from "../entropy/compiled-surface.js";
+import { normalFormEvidenceSummary } from "../entropy/normal-form.js";
 import {
   loadCompiledSurfaceAsync,
   parseCompiledSurfaceArtifact,
@@ -940,7 +941,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
               mode: 0o600,
             });
             context.ui.notify(
-              `Exported compiled surface (${loaded.file.actions.length} tightened · ${loaded.file.quarantined.length} quarantined) → ${dest}`,
+              `Exported compiled surface (${loaded.file.normalizations?.length ?? 0} normal-form plans; legacy restrictions inert) → ${dest}`,
               "info",
             );
           } catch (error) {
@@ -982,7 +983,7 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
             const saved = await saveCompiledSurfaceAsync(agentDir, merged.file);
             if (state.config.entropy.compile) setActiveCompiledSurface(saved.file);
             context.ui.notify(
-              `Imported compiled surface: ${merged.file.actions.length} tightened · ${merged.file.quarantined.length} quarantined · ${merged.droppedOverlays + merged.droppedQuarantines} dropped (base digest mismatch)`,
+              `Imported compiled surface: ${merged.file.normalizations?.length ?? 0} normal-form plans · ${merged.droppedOverlays + merged.droppedQuarantines + merged.droppedNormalizations} dropped (unproved rules or legacy restrictions)`,
               "info",
             );
           } catch (error) {
@@ -1066,10 +1067,10 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           const sessionsLine =
             corpus.sessions.length === 0 || latest === undefined
               ? `session entropy (observed): no fabric_exec traces in the latest ${files.length} ${projectScope ? "project" : "machine"} sessions`
-              : `session entropy (observed): ${corpus.sessions.length} sessions · latest ${latest.totals.operations} ops · behavioral ${formatEntropyMetric(latest.behavioralScore)} + surface ${formatEntropyMetric(latest.staticScore)} = ${formatEntropyMetric(latest.behavioralScore + latest.staticScore)} · lower is better · slope ${formatEntropyMetric(corpus.trend.slopePerStep)}/session · ${
+              : `session entropy (observed): ${corpus.sessions.length} sessions · latest ${latest.totals.operations} ops · invocation rejection rate ${formatEntropyMetric(latest.score)} · ${formatEntropyMetric(latest.totals.invocationRejectionsPer1k)}/1k calls · lower is better · slope ${formatEntropyMetric(corpus.trend.slopePerStep)}/session · ${
                   latest.totals.invocationRejectionsPer1k === 0 && corpus.trend.slopePerStep <= 0
-                    ? "ratchet holding"
-                    : "ratchet slipping"
+                    ? "no invocation rejections"
+                    : "invocation friction remains"
                 }`;
           const modelsLine =
             corpus.models.length > 1
@@ -1083,17 +1084,20 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
           const compiledLine = loadedCompiled.error
             ? `compiled: unavailable — ${loadedCompiled.error}`
             : loadedCompiled.file
-              ? `compiled: v${loadedCompiled.file.metricVersion} · ${loadedCompiled.file.actions.length} tightened · ${loadedCompiled.file.quarantined.length} quarantined · ${loadedCompiled.file.applied.length} applied · gate ${loadedCompiled.file.gate.passed ? "pass" : "REJECTED"} (${formatEntropyMetric(loadedCompiled.file.gate.beforeScore)} → ${formatEntropyMetric(loadedCompiled.file.gate.afterScore)})`
+              ? `compiled: artifact v${loadedCompiled.file.version} · ${loadedCompiled.file.normalizations?.length ?? 0} normal-form plans · canonical capabilities preserved${loadedCompiled.file.version === 1 ? " · legacy restrictions inert (migration pending)" : ""}`
               : "compiled: none";
           // Review listing: the signals the compiler declined to apply,
           // derived read-only from the current window plus the pool (the
           // merge is in memory; the listing never writes the pool).
           let reviewLine: string;
+          let normalizationLine = "normal forms: no witness evidence";
           try {
             const [windowEvidence, poolLoaded] = await Promise.all([
               sessionWindowEvidenceAsync(files),
               loadObservationPoolAsync(agentDir),
             ]);
+            const normal = normalFormEvidenceSummary(windowEvidence.traces);
+            normalizationLine = `normal forms: ${normal.normalizedCalls} calls normalized · ${normal.rulesApplied} rules applied · ${normal.succeeded} succeeded · ${normal.subsequentFailures} subsequent failures (not masked)`;
             if (poolLoaded.error) {
               reviewLine = `review: unavailable — ${poolLoaded.error}`;
             } else if (windowEvidence.traces.length === 0) {
@@ -1130,8 +1134,9 @@ export function registerFabricCommand(pi: ExtensionAPI, deps: FabricCommandDeps)
               `entropy: metric v${ENTROPY_METRIC_VERSION} · surface ${surfaceDigest.slice(0, 12)} · ${freedom.actions.length} actions`,
               `live: invocation errors ${status.invocationErrors} · effect dropped ${status.effectDropped} · aliases ${status.repairCount} · alias hits ${status.applyHits}`,
               compiledLine,
+              normalizationLine,
               reviewLine,
-              `surface freedom (potential): mean ${formatFreedom(freedom.mean)}${worst ? ` · worst ${worst}` : ""}`,
+              `surface freedom (diagnostic, not objective): mean ${formatFreedom(freedom.mean)}${worst ? ` · worst ${worst}` : ""}`,
               sessionsLine,
               ...(modelsLine ? [modelsLine] : []),
               ...formatEntropyCommandHints(),

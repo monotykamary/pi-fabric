@@ -14,13 +14,10 @@ import { installRegisteredToolCapture } from "./capture/interceptor.js";
 import { registerFabricCommand } from "./commands/fabric.js";
 import { resolveAgentDir } from "./core/agent-dir.js";
 import {
-  AUTO_APPLY_PROPOSAL_KINDS,
   compileEntropySurfaceAsync,
   compiledSurfaceEffectChanged,
   entropyRepairRows,
-  entropyReviewKey,
   formatEntropyCompileNotice,
-  formatEntropyReviewNotice,
   liveSurfaceSnapshot,
   loadCompiledSurfaceAsync,
   loadObservationPoolAsync,
@@ -364,7 +361,6 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
   let entropyEvidenceThisTurn = false;
   let entropyCompileInFlight: Promise<void> | undefined;
   let entropyCompilePending: EntropyCompileRequest | undefined;
-  let entropyLastReview = "";
   let entropyLifecycleEpoch = 0;
 
   interface EntropyCompileRequest {
@@ -389,14 +385,14 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       loadObservationPoolAsync(agentDir),
       liveSurfaceSnapshot({ registry: state.registry, extensionContext: context, cwd }),
     ]);
-    if (!current() || files.length === 0 || loaded.error || poolLoaded.error) return;
+    if (!current() || loaded.error) return;
     const evidence = await sessionWindowEvidenceAsync(files);
-    if (!current() || evidence.traces.length === 0) return;
+    if (!current()) return;
     const mergedPool = await mergeObservationWindowAsync(
       poolLoaded.file,
       evidence.observationWindows,
     );
-    await saveObservationPoolAsync(agentDir, mergedPool.file);
+    if (!poolLoaded.error) await saveObservationPoolAsync(agentDir, mergedPool.file);
     if (!current()) return;
     const outcome = await compileEntropySurfaceAsync({
       traces: evidence.traces,
@@ -407,39 +403,22 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
       ...(loaded.file ? { artifact: loaded.file } : {}),
     });
     if (!current()) return;
-    const review = outcome.proposals.filter(
-      (proposal) => !(AUTO_APPLY_PROPOSAL_KINDS as readonly string[]).includes(proposal.kind),
-    );
-    const reviewKey = entropyReviewKey(review);
-    const reviewChanged = reviewKey !== entropyLastReview;
-    let compileNotified = false;
     if (outcome.status === "compiled" && outcome.artifact) {
       const saved = await saveCompiledSurfaceAsync(agentDir, outcome.artifact);
-      if (saved.written && current()) {
-        // Activate immediately: enforcement follows the background compile,
-        // never waiting for the next session start. Provenance-only artifact
-        // updates stay silent because they do not alter the live surface.
-        setActiveCompiledSurface(outcome.artifact);
-        if (compiledSurfaceEffectChanged(loaded.file, outcome.artifact) && context.hasUI) {
-          context.ui.notify(
-            formatEntropyCompileNotice({
-              beforeScore: outcome.report.score,
-              afterScore: outcome.after?.score ?? outcome.report.score,
-              ...(reviewChanged && review.length > 0 ? { reviewCount: review.length } : {}),
-            }),
-            "info",
-          );
-          compileNotified = true;
+      if (current()) {
+        // Activate even when another process already persisted identical bytes.
+        setActiveCompiledSurface(saved.file);
+        if (saved.written && compiledSurfaceEffectChanged(loaded.file, saved.file) && context.hasUI) {
+          context.ui.notify(formatEntropyCompileNotice({
+            beforeScore: outcome.report.score,
+            afterScore: outcome.report.score,
+            normalizations: saved.file.normalizations?.length ?? 0,
+          }), "info");
         }
       }
     }
-    if (epoch !== entropyLifecycleEpoch) return;
-    if (reviewChanged) {
-      entropyLastReview = reviewKey;
-      if (review.length > 0 && !compileNotified && context.hasUI) {
-        context.ui.notify(formatEntropyReviewNotice(review), "info");
-      }
-    }
+    // Advisory abstraction suggestions remain available on demand. Static
+    // normalization never asks the user to approve a compatibility repair.
   };
 
   const launchEntropyCompile = (request: EntropyCompileRequest): void => {
@@ -487,7 +466,6 @@ export default async function piFabric(pi: ExtensionAPI, options: { managedHost?
     entropyLifecycleEpoch += 1;
     entropyEvidenceThisTurn = false;
     entropyCompilePending = undefined;
-    entropyLastReview = "";
     pendingHandoffs.clear();
     directToolApproval.clear();
     toolDisplay.clear();

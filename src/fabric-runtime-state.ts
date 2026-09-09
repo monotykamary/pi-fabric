@@ -807,13 +807,11 @@ export class FabricRuntimeState {
     // committed yet must never persist under a mid-reconcile catalog.
     this.#refreshRepairCatalog();
     setActiveRepairCompiler(this.#repairs);
-    // The compiled entropy surface loads beside the repair table: every
-    // enforcement consult re-proves the recorded base digest against the
-    // live declared schema, so the overlay follows the live surface. A
-    // damaged artifact keeps enforcement off and surfaces in /fabric entropy.
-    setActiveCompiledSurface(
-      this.#config.entropy.compile ? loadCompiledSurface(resolveAgentDir()).file : undefined,
-    );
+    // Static compatibility is enabled on first use, even without a corpus.
+    // Loaded plans re-prove their rule language and live schema at consult.
+    // A damaged artifact disables normalization and surfaces on demand.
+    const compiled = this.#config.entropy.compile ? loadCompiledSurface(resolveAgentDir()) : {};
+    setActiveCompiledSurface(compiled.file, this.#config.entropy.compile && !compiled.error);
   }
 
   async #mountExecution(context: ExtensionContext, enforceSchema: boolean): Promise<void> {

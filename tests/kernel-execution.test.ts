@@ -114,11 +114,20 @@ describe.each(pythonBackends)("%s Python kernel host integration", (pythonRuntim
 
   runTest("repairs core aliases and numeric options for direct and generic calls", async () => {
     const { run, cwd } = fixture(pythonRuntime);
-    const result = await run('await pi.write(file="notes.txt", text="alpha\\nbeta\\n")\nawait pi.edit(file_path="notes.txt", edits=[{"old_string":"beta", "new_string":"gamma"}])\ntext = await tools.call(ref="pi.reed", args={"file_path":"notes.txt", "start":"2", "max":"1"})\nshell = await pi.bash(cmd="printf repaired", timeoutMs="1500")\nfailed = await tools.call(ref="pi.bash", args={"cmd":"exit 7", "settle":True})\nreturn {"text":text, "shell":shell["output"], "failed":failed["ok"], "exit":failed["exitCode"]}');
+    const result = await run('await pi.write(file="notes.txt", text="alpha\\nbeta\\n")\nawait pi.edit(file_path="notes.txt", edits=[{"old_string":"beta", "new_string":"gamma"}])\ntext = await tools.call(ref="pi.READ", args={"file_path":"notes.txt", "start":"2", "max":"1"})\nshell = await pi.bash(cmd="printf repaired", timeoutMs="1500")\nfailed = await tools.call(ref="pi.bash", args={"cmd":"exit 7", "settle":True})\nreturn {"text":text, "shell":shell["output"], "failed":failed["ok"], "exit":failed["exitCode"]}');
     expect(result.success, result.error).toBe(true);
     expect(result.value).toMatchObject({ text: expect.stringContaining("gamma"), shell: "repaired", failed: false, exit: 7 });
     expect(fs.readFileSync(path.join(cwd, "notes.txt"), "utf8")).toBe("alpha\ngamma\n");
-    expect(result.trace.operations.some((operation) => operation.ref === "pi.reed")).toBe(true);
+    expect(result.trace.operations.some((operation) => operation.ref === "pi.READ")).toBe(true);
+  });
+
+  runTest("refuses fuzzy action names before any tool executes", async () => {
+    const { run } = fixture(pythonRuntime);
+    const result = await run('return await tools.call(ref="pi.reed", args={"path":"never-executed.txt"})');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Unknown Fabric action: pi.reed");
+    expect(result.error).toContain("pi.read");
+    expect(result.trace.operations[0]?.failureStage).toBe("resolve");
   });
 
   runTest("preserves canonical values when aliases collide", async () => {

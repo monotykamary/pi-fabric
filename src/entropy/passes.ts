@@ -4,22 +4,16 @@ import type {
   EntropyRefReport,
   EntropyReport,
   EntropyRepairRowInput,
-  EntropySurfaceAction,
   EntropySurfaceSnapshot,
   EntropyTraceInput,
   EntropyValueObservation,
 } from "./types.js";
 import { compareCodeUnits, roundMetric } from "./fingerprint.js";
+import { deriveNormalFormPlan, MAX_NORMAL_FORM_PLANS } from "./normal-form.js";
 
-// Deterministic reduction proposals. Each pass is a pure function over the
-// same typed artifacts the meter reads, with fixed thresholds, and every
-// proposal carries the evidence that triggered it. `applyProposalsToSurface`
-// rewrites only the mechanically applicable kinds. Overload-split and
-// sequence-fuse author new composite definitions, while declare-enum requires
-// an explicit schema annotation, so all three stay review-only. Repair rows
-// remain compatibility aliases and never rewrite canonical names. The gate is
-// the ratchet: a compiled surface must never increase the measured score and
-// must never drop successful calls.
+// Normal forms are statically proved against declarations. Observations can
+// suggest authored abstractions, but cannot remove enum values or actions.
+// The schema surface itself is an invariant, not an optimization variable.
 
 export interface EntropyProposalInput {
   report: EntropyReport;
@@ -38,8 +32,6 @@ const FUSE_MIN_SEQUENCE_LENGTH = 3;
 const FUSE_MAX_SEQUENCE_LENGTH = 6;
 const FUSE_MIN_OCCURRENCES = 3;
 const FUSE_MIN_EXECUTIONS = 3;
-const QUARANTINE_MIN_CALLS = 3;
-const QUARANTINE_MIN_STAGE_ENTROPY_BITS = 1;
 const MAX_PROPOSALS_PER_KIND = 8;
 
 export const ENTROPY_ENUM_CANDIDATE_ANNOTATION = "x-fabric-enum-candidate";
@@ -53,17 +45,6 @@ const schemaProperties = (schema: unknown): Record<string, unknown> | undefined 
   if (!isPlainRecord(schema)) return undefined;
   const properties = schema.properties;
   return isPlainRecord(properties) ? properties : undefined;
-};
-
-const enumKeys = (schema: unknown): Set<string> | undefined => {
-  if (!isPlainRecord(schema) || !Array.isArray(schema.enum)) return undefined;
-  const keys = new Set<string>();
-  for (const entry of schema.enum) {
-    if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
-      keys.add(valueKey(entry));
-    }
-  }
-  return keys;
 };
 
 const contains = (outer: readonly string[], inner: readonly string[]): boolean => {
@@ -92,44 +73,24 @@ interface EnumCandidate {
   topShare: number;
 }
 
-// An enum the effective schema already declares is a floor. Observed
-// values outside it are pre-birth evidence: calls recorded before the
-// overlay existed (the live session carries them for its whole life) or
-// after a digest proof fell. The fresh derivation drops them instead of
-// re-proposing a wider enum the ratchet must then reject every turn.
-// Tightening beneath the floor still proposes; a derivation identical to
-// the declared enum converges. Widening resets only when the base schema
-// drifts (the digest proof drops the overlay and the enum re-derives from
-// the live surface) or through review.
-const tightenBeneathDeclaredEnum = (
-  candidate: EnumCandidate,
-  declaredDomain: ReadonlySet<string>,
-): EnumCandidate | undefined => {
-  const ranked = candidate.ranked.filter((item) => declaredDomain.has(valueKey(item.value)));
-  if (ranked.length === 0 || ranked.length === declaredDomain.size) return undefined;
-  return { ...candidate, ranked };
-};
-
 export const proposeEntropyReductions = (input: EntropyProposalInput): EntropyProposal[] => {
   const calledRefs = new Map<string, EntropyRefReport>();
   for (const ref of input.report.refs) calledRefs.set(ref.ref, ref);
   const surfaceByRef = new Map<string, unknown>();
-  const surfaceRefs = new Set<string>();
   if (input.surface) {
     for (const action of input.surface.actions) {
       surfaceByRef.set(action.ref, action.inputSchema);
-      surfaceRefs.add(action.ref);
     }
   }
 
   const proposals: EntropyProposal[] = [];
+  for (const action of [...(input.surface?.actions ?? [])].sort((a, b) => compareCodeUnits(a.ref, b.ref)).slice(0, MAX_NORMAL_FORM_PLANS)) {
+    const plan = deriveNormalFormPlan(action.ref, action.inputSchema);
+    if (plan) proposals.push({ kind: "normal-form", ref: plan.ref, baseSchemaDigest: plan.baseSchemaDigest, rules: plan.rules });
+  }
 
-  // enum-tighten: a closed-domain parameter whose observed values are few
-  // and concentrated tightens beneath its declared enum, so future
-  // off-modal values fail (or repair) deterministically instead of
-  // slipping through an unused declared value. An unbounded parameter is not
-  // evidence of a finite domain; declare-enum is considered only when its
-  // schema author explicitly marks it as an enum candidate.
+  // Open vocabulary observations are advisory only, and require an author's
+  // explicit annotation. Finite declared domains are never pruned by usage.
   const observations = new Map<
     string,
     {
@@ -192,47 +153,13 @@ export const proposeEntropyReductions = (input: EntropyProposalInput): EntropyPr
       return { entry, ranked, topShare: roundMetric(ranked[0]!.count / entry.total) };
     })
     .filter((candidate) => candidate.topShare >= ENUM_MIN_TOP_SHARE);
-  // Closed-domain rule: auto enum-tighten may only remove freedom the
-  // effective schema already declares finite. Observations over free strings,
-  // numeric ranges, undeclared keys, and unknown refs do not prove a finite
-  // domain. Authors can opt a declared property into a review-only
-  // declare-enum signal with x-fabric-enum-candidate: true. A declared boolean
-  // is already closed and priced below any enum, so it never proposes.
-  const closedCandidates: EnumCandidate[] = [];
-  const openCandidates: EnumCandidate[] = [];
-  for (const candidate of eligibleCandidates) {
-    const properties = input.surface
-      ? schemaProperties(surfaceByRef.get(candidate.entry.ref))
-      : undefined;
-    const target = properties ? properties[candidate.entry.key] : undefined;
-    if (isPlainRecord(target) && target.type === "boolean") continue;
-    const declaredDomain = target ? enumKeys(target) : undefined;
-    if (declaredDomain) {
-      const tightened = tightenBeneathDeclaredEnum(candidate, declaredDomain);
-      if (tightened) closedCandidates.push(tightened);
-    } else if (
-      isPlainRecord(target) &&
-      target[ENTROPY_ENUM_CANDIDATE_ANNOTATION] === true
-    ) {
-      openCandidates.push(candidate);
-    }
-  }
+  const openCandidates = eligibleCandidates.filter((candidate) => {
+    const target = schemaProperties(surfaceByRef.get(candidate.entry.ref))?.[candidate.entry.key];
+    return isPlainRecord(target) && target.type !== "boolean" && !Array.isArray(target.enum) &&
+      target[ENTROPY_ENUM_CANDIDATE_ANNOTATION] === true;
+  });
   const byRefKey = (left: EnumCandidate, right: EnumCandidate): number =>
-    compareCodeUnits(
-      `${left.entry.ref}\u0000${left.entry.key}`,
-      `${right.entry.ref}\u0000${right.entry.key}`,
-    );
-  for (const candidate of closedCandidates.sort(byRefKey).slice(0, MAX_PROPOSALS_PER_KIND)) {
-    proposals.push({
-      kind: "enum-tighten",
-      ref: candidate.entry.ref,
-      key: candidate.entry.key,
-      values: candidate.ranked.map((item) => item.value),
-      calls: candidate.entry.total,
-      distinct: candidate.ranked.length,
-      topShare: candidate.topShare,
-    });
-  }
+    compareCodeUnits(`${left.entry.ref}\u0000${left.entry.key}`, `${right.entry.ref}\u0000${right.entry.key}`);
   for (const candidate of openCandidates.sort(byRefKey).slice(0, MAX_PROPOSALS_PER_KIND)) {
     proposals.push({
       kind: "declare-enum",
@@ -385,70 +312,15 @@ export const proposeEntropyReductions = (input: EntropyProposalInput): EntropyPr
     });
   }
 
-  // noise-quarantine: a called ref that fails more than it succeeds, with
-  // more than one failure stage, is a candidate to hide from the
-  // model-facing catalog. The precondition (more failures than successes)
-  // carries the replay-safety argument for retiring it.
-  const quarantineCandidates = input.report.refs
-    .filter(
-      (ref) =>
-        ref.calls >= QUARANTINE_MIN_CALLS &&
-        ref.failed > ref.succeeded &&
-        ref.failureStageEntropyBits >= QUARANTINE_MIN_STAGE_ENTROPY_BITS,
-    )
-    .filter((ref) => !input.surface || surfaceRefs.has(ref.ref))
-    .slice(0, MAX_PROPOSALS_PER_KIND);
-  for (const ref of quarantineCandidates) {
-    proposals.push({
-      kind: "noise-quarantine",
-      ref: ref.ref,
-      calls: ref.calls,
-      succeeded: ref.succeeded,
-      failed: ref.failed,
-      failureStageEntropyBits: ref.failureStageEntropyBits,
-    });
-  }
-
   return proposals;
 };
 
-const deepCloneJson = (value: unknown): unknown =>
-  value === undefined ? {} : (JSON.parse(JSON.stringify(value)) as unknown);
-
-// Apply the mechanically applicable proposals as a pure surface rewrite.
-// The input surface is never mutated; enum-tighten injects the observed enum
-// beneath the declared one and noise-quarantine removes the action.
-// Overload-split, sequence-fuse, and declare-enum stay review-only.
+// Compatibility normal forms live behind the registry. This API no longer
+// interprets legacy restriction proposals, even when explicitly supplied.
 export const applyProposalsToSurface = (
   surface: EntropySurfaceSnapshot,
-  proposals: readonly EntropyProposal[],
-): EntropySurfaceSnapshot => {
-  const actions: EntropySurfaceAction[] = surface.actions.map((action) => ({
-    ref: action.ref,
-    inputSchema: deepCloneJson(action.inputSchema),
-  }));
-  const quarantined = new Set<string>();
-  for (const proposal of proposals) {
-    if (proposal.kind === "noise-quarantine") {
-      quarantined.add(proposal.ref);
-      continue;
-    }
-    if (proposal.kind === "enum-tighten") {
-      const action = actions.find((candidate) => candidate.ref === proposal.ref);
-      if (!action || !isPlainRecord(action.inputSchema)) continue;
-      const properties = schemaProperties(action.inputSchema);
-      if (!properties || !isPlainRecord(properties[proposal.key])) continue;
-      properties[proposal.key] = {
-        ...(properties[proposal.key] as Record<string, unknown>),
-        enum: [...proposal.values],
-      };
-    }
-  }
-  const survivors = actions
-    .filter((action) => !quarantined.has(action.ref))
-    .sort((left, right) => compareCodeUnits(left.ref, right.ref));
-  return { version: 1, actions: survivors };
-};
+  _proposals: readonly EntropyProposal[],
+): EntropySurfaceSnapshot => surface;
 
 // The ratchet: a compiled surface must not increase the measured score and
 // must preserve every successful call. Monotonicity is measured, never

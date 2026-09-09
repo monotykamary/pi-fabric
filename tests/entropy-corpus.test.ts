@@ -215,15 +215,15 @@ describe("entropyValueObservationsFromSessionJsonl", () => {
       ],
     };
     const report = measureEntropy({ traces, surface });
-    expect(proposeEntropyReductions({ report, traces, surface })).toEqual([]);
+    expect(proposeEntropyReductions({ report, traces, surface }).every((proposal) => proposal.kind === "normal-form")).toBe(true);
     const proposals = proposeEntropyReductions({
       report,
       traces,
       surface,
       valueObservations: observations,
     });
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toMatchObject({
+    expect(proposals.filter((proposal) => proposal.kind === "declare-enum")).toHaveLength(1);
+    expect(proposals.find((proposal) => proposal.kind === "declare-enum")).toMatchObject({
       kind: "declare-enum",
       ref: "mcp.report.render",
       key: "format",

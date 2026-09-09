@@ -2,6 +2,29 @@ import { describe, expect, it } from "vitest";
 import { repairActionName } from "../src/core/action-repair.js";
 
 describe("action repair catalogue reuse", () => {
+  it.each([
+    ["staus", "status"],
+    ["switch", "switchModel"],
+    ["message", "messages"],
+    ["set_steer_mode", "setSteeringMode"],
+  ])("only suggests fuzzy match %s -> %s, including cached calls", (query, target) => {
+    const names = [target];
+    for (let i = 0; i < 2; i++) {
+      expect(repairActionName(names, query)).toEqual({ suggestions: [target] });
+    }
+  });
+
+  it("repairs unique exact forms and authored synonyms, not canonical declarations", () => {
+    expect(repairActionName(["switchModel"], "SWITCH_model").repaired).toBe("switchModel");
+    expect(repairActionName(["recall"], "search").repaired).toBe("recall");
+    expect(repairActionName(["get"], "GET").repaired).toBe("get");
+    expect(repairActionName(["get", "status"], "GET").repaired).toBe("get");
+    expect(repairActionName(["search", "recall"], "search")).toEqual({ suggestions: [] });
+    expect(repairActionName(["get", "status"], "get")).toEqual({ suggestions: [] });
+    expect(repairActionName(["switchModel", "switch-model"], "switch_model"))
+      .toEqual({ suggestions: ["switch-model", "switchModel"] });
+    expect(repairActionName(["recall", "recall"], "search").repaired).toBe("recall");
+  });
   it("invalidates same-length replacements without stale repair targets", () => {
     const names = ["recall"];
     expect(repairActionName(names, "search").repaired).toBe("recall");

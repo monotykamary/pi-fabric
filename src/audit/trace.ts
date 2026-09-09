@@ -1,4 +1,5 @@
 import { isPiShellRef } from "../core/pi-tools.js";
+import { isNormalFormWitness, type NormalFormWitness } from "../entropy/normal-form.js";
 import { projectFabricAuditArgs, projectFabricAuditResult } from "./projection.js";
 
 export const FABRIC_EXECUTION_TRACE_KIND = "pi-fabric.execution" as const;
@@ -40,6 +41,7 @@ export interface FabricExecutionTraceOperationV1 {
   action?: string;
   args: { [key: string]: FabricTraceJsonValue };
   outcome: FabricExecutionOutcomeV1;
+  normalization?: NormalFormWitness;
   failureStage?: FabricExecutionFailureStageV1;
   error?: string;
   result?: FabricTraceJsonValue;
@@ -88,6 +90,7 @@ interface MutableOperation {
   causeSafe?: boolean;
   args: Sanitized<{ [key: string]: FabricTraceJsonValue }>;
   outcome?: FabricExecutionOutcomeV1;
+  normalization?: NormalFormWitness;
   failureStage?: FabricExecutionFailureStageV1;
   error?: Sanitized<string>;
   result?: Sanitized<FabricTraceJsonValue>;
@@ -412,6 +415,11 @@ export class FabricExecutionTraceOperationHandle {
     this.operation.args = projectedArgs(this.operation.projectionRef, args);
   }
 
+  normalized(witness: NormalFormWitness): void {
+    if (!this.operation || this.recorder.sealed || !isNormalFormWitness(witness)) return;
+    this.operation.normalization = { ...witness, rules: witness.rules.map((rule) => ({ ...rule })) };
+  }
+
   succeed(result: unknown, meta?: TraceResultMeta): void {
     if (!this.operation || this.recorder.sealed) return;
     const projected = projectFabricAuditResult(this.operation.projectionRef, result);
@@ -544,6 +552,7 @@ export class FabricExecutionTraceRecorder {
         ...(operation.action ? { action: operation.action } : {}),
         args: operation.args.value,
         outcome: operation.outcome!,
+        ...(operation.normalization ? { normalization: operation.normalization } : {}),
         ...(operation.failureStage ? { failureStage: operation.failureStage } : {}),
         ...(operation.error ? { error: operation.error.value } : {}),
         ...(operation.result ? { result: operation.result.value } : {}),
@@ -672,7 +681,7 @@ const isFabricExecutionTraceOperationV1Unchecked = (
   value: unknown,
 ): value is FabricExecutionTraceOperationV1 => {
   if (!isRecord(value)) return false;
-  if (!hasOnlyKeys(value, ["type", "sequence", "ref", "provider", "action", "args", "outcome", "failureStage", "error", "result", "resultTruncated"])) return false;
+  if (!hasOnlyKeys(value, ["type", "sequence", "ref", "provider", "action", "args", "outcome", "normalization", "failureStage", "error", "result", "resultTruncated"])) return false;
   if (value.type !== "call" || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0) return false;
   if (typeof value.ref !== "string" || !isRecord(value.args) || !isJsonValue(value.args)) return false;
   if (!outcomes.has(value.outcome as FabricExecutionOutcomeV1)) return false;
@@ -680,6 +689,7 @@ const isFabricExecutionTraceOperationV1Unchecked = (
   if (value.action !== undefined && typeof value.action !== "string") return false;
   if (value.failureStage !== undefined && !stages.has(value.failureStage as FabricExecutionFailureStageV1)) return false;
   if (value.error !== undefined && typeof value.error !== "string") return false;
+  if (value.normalization !== undefined && !isNormalFormWitness(value.normalization)) return false;
   if (value.resultTruncated !== undefined && typeof value.resultTruncated !== "boolean") return false;
   return value.result === undefined || isJsonValue(value.result);
 };

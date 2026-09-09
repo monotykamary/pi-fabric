@@ -5,6 +5,7 @@
 // clock-free, so saving byte-identical content is a no-op.
 
 import fs from "node:fs";
+import { isNormalFormPlan, MAX_NORMAL_FORM_PLANS } from "./normal-form.js";
 import path from "node:path";
 import { writeJsonAtomic, writeJsonAtomicAsync } from "../core/atomic-write.js";
 import { withExclusiveFileLock, withExclusiveFileLockAsync } from "../core/file-lock.js";
@@ -71,7 +72,8 @@ const parseAppliedProposal = (value: unknown): CompiledSurfaceAppliedProposal | 
 
 const parseGateRecord = (value: unknown): CompiledSurfaceGateRecord | undefined => {
   if (!isRecord(value) || typeof value.passed !== "boolean") return undefined;
-  if (typeof value.beforeScore !== "number" || typeof value.afterScore !== "number") {
+  if (typeof value.beforeScore !== "number" || typeof value.afterScore !== "number" ||
+      !Number.isFinite(value.beforeScore) || !Number.isFinite(value.afterScore)) {
     return undefined;
   }
   if (!Array.isArray(value.reasons) || !value.reasons.every((r) => typeof r === "string")) {
@@ -85,11 +87,18 @@ const parseGateRecord = (value: unknown): CompiledSurfaceGateRecord | undefined 
   };
 };
 
-// Guarded parse of the whole artifact. Any metric version is accepted: the
-// overlay schemas are data gated against recorded calls, so a metric bump
-// does not invalidate them; the version rides along as provenance.
+// Version 1 is accepted only as inert migration data. Version 2 cannot carry
+// restrictions. Its bounded plans are re-proved against live schemas at use;
+// a persisted gate flag or metric version never grants execution authority.
 const parseCompiledSurfaceFile = (value: unknown): CompiledSurfaceFile | undefined => {
-  if (!isRecord(value) || value.version !== COMPILED_SURFACE_VERSION) return undefined;
+  if (!isRecord(value) || (value.version !== 1 && value.version !== COMPILED_SURFACE_VERSION)) return undefined;
+  if (value.version === COMPILED_SURFACE_VERSION) {
+    if (!Array.isArray(value.normalizations) || value.normalizations.length > MAX_NORMAL_FORM_PLANS ||
+        !value.normalizations.every(isNormalFormPlan) ||
+        new Set(value.normalizations.map((plan) => plan.ref)).size !== value.normalizations.length) return undefined;
+    if (!Array.isArray(value.actions) || value.actions.length !== 0 ||
+        !Array.isArray(value.quarantined) || value.quarantined.length !== 0) return undefined;
+  }
   if (!Number.isSafeInteger(value.metricVersion) || (value.metricVersion as number) < 1) {
     return undefined;
   }
@@ -118,7 +127,8 @@ const parseCompiledSurfaceFile = (value: unknown): CompiledSurfaceFile | undefin
     overlaySeen.add(parsed.ref);
   }
   return {
-    version: COMPILED_SURFACE_VERSION,
+    version: value.version,
+    ...(value.version === COMPILED_SURFACE_VERSION ? { normalizations: value.normalizations as import("./normal-form.js").NormalFormPlan[] } : {}),
     metricVersion: value.metricVersion as number,
     actions: value.actions.map((entry) => parseOverlayEntry(entry)!),
     quarantined: value.quarantined.map((entry) => parseQuarantineEntry(entry)!),

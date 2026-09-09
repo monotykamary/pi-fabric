@@ -29,6 +29,9 @@ const timeIters = (iters: number, run: () => void): number => {
 describe("repair performance", () => {
   it("keeps per-repair cost trivial on realistic catalogs", () => {
     const spilled = ["search", "snd", "staus", "setsteermode", "mesage", "dstroy", "zzz"];
+    for (const name of ["staus", "setsteermode", "mesage", "dstroy"]) {
+      expect(repairActionName(AGENTS_ACTIONS, name).repaired).toBeUndefined();
+    }
     const elapsed = timeIters(2000, () => {
       for (const name of spilled) {
         repairActionName(AGENTS_ACTIONS, name);

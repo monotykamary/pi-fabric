@@ -1,76 +1,33 @@
-// The autonomous compile step: measure → propose → apply the mechanical
-// subset → re-measure → gate. The gate proves two things on the retained
-// corpus: the score never increases, and every successful call to a ref
-// the compile touched still parses against the candidate surface.
-// Overload-split and sequence-fuse author new composite definitions, so they
-// stay surfaced for review and never auto-apply. enum-tighten only ever
-// tightens beneath a declared enum (the closed-domain rule), while an open
-// vocabulary produces a declare-enum review signal only when the schema
-// author explicitly opts into learning that domain.
-
-import { stableJsonHash, stableJsonHashArrayAsync } from "../core/stable-hash.js";
+// Static normal-form compilation. Observations diagnose friction but cannot
+// authorize capability loss. Rule derivation preserves the declared surface
+// for every input, rather than only preserving a retained replay window.
+import { stableJsonHash } from "../core/stable-hash.js";
 import { measureEntropy, measureEntropyAsync } from "./meter.js";
+import { proposeEntropyReductions, type EntropyProposalInput } from "./passes.js";
 import {
-  applyProposalsToSurface,
-  evaluateGate,
-  proposeEntropyReductions,
-  type EntropyProposalInput,
-} from "./passes.js";
-import {
-  COMPILED_SURFACE_VERSION,
-  MAX_COMPILED_SURFACE_PROPOSALS,
-  applyCompiledSurface,
-  replaySuccessfulCalls,
-  replaySuccessfulCallsAsync,
-  schemaDigest,
-  type CompiledSurfaceAppliedProposal,
-  type CompiledSurfaceFile,
+  COMPILED_SURFACE_VERSION, MAX_COMPILED_SURFACE_PROPOSALS,
+  emptyCompiledSurface, type CompiledSurfaceFile,
 } from "./compiled-surface.js";
+import { deriveNormalFormPlan, MAX_NORMAL_FORM_PLANS, type NormalFormPlan } from "./normal-form.js";
 import { entropySurfaceHash } from "./surface.js";
-import { ENTROPY_METRIC_VERSION } from "./types.js";
 import type {
-  EntropyAuditCall,
-  EntropyGateResult,
-  EntropyProposal,
-  EntropyRepairRowInput,
-  EntropyReport,
-  EntropySurfaceSnapshot,
-  EntropyTraceInput,
-  EntropyValueObservation,
+  EntropyAuditCall, EntropyGateResult, EntropyProposal, EntropyRepairRowInput,
+  EntropyReport, EntropySurfaceSnapshot, EntropyTraceInput, EntropyValueObservation,
 } from "./types.js";
 
-// The kinds the autonomous loop may apply. Every other proposal carries its
-// evidence to the surfaced review queue instead.
-export const AUTO_APPLY_PROPOSAL_KINDS: readonly string[] = ["enum-tighten", "noise-quarantine"];
-
-// The review queue for display: every proposal the autonomous loop declined
-// to apply, derived from the same evidence a tick would use. Each signal
-// names freedom the compiler found and refused to invent.
+export const AUTO_APPLY_PROPOSAL_KINDS: readonly string[] = ["normal-form"];
 export const entropyReviewSignals = (input: EntropyProposalInput): EntropyProposal[] =>
-  proposeEntropyReductions(input).filter(
-    (proposal) => !(AUTO_APPLY_PROPOSAL_KINDS as readonly string[]).includes(proposal.kind),
-  );
-
-// One-line rendering of a review signal for the /fabric entropy display.
+  proposeEntropyReductions(input).filter((proposal) =>
+    ["declare-enum", "overload-split", "sequence-fuse"].includes(proposal.kind));
 export const formatEntropyReviewSignal = (proposal: EntropyProposal): string => {
   if (proposal.kind === "declare-enum") {
-    const values = proposal.values
-      .slice(0, 4)
-      .map((value) => String(value))
-      .join(", ");
-    return `declare-enum ${proposal.ref}.${proposal.key} (${values}${
-      proposal.values.length > 4 ? ", ..." : ""
-    })`;
+    const values = proposal.values.slice(0, 4).map(String).join(", ");
+    return `declare-enum ${proposal.ref}.${proposal.key} (${values}${proposal.values.length > 4 ? ", ..." : ""})`;
   }
-  if (proposal.kind === "overload-split") {
-    return `overload-split ${proposal.ref} (${proposal.clusters.length} key-set clusters)`;
-  }
-  if (proposal.kind === "sequence-fuse") {
-    return `sequence-fuse ${proposal.sequence.join(" -> ")}`;
-  }
+  if (proposal.kind === "overload-split") return `overload-split ${proposal.ref} (${proposal.clusters.length} key-set clusters)`;
+  if (proposal.kind === "sequence-fuse") return `sequence-fuse ${proposal.sequence.join(" -> ")}`;
   return `${proposal.kind} ${proposal.ref}`;
 };
-
 export interface CompileEntropyInput {
   traces: readonly EntropyTraceInput[];
   surface: EntropySurfaceSnapshot;
@@ -80,280 +37,57 @@ export interface CompileEntropyInput {
   artifact?: CompiledSurfaceFile;
   catalogDigest?: string;
 }
-
 export type CompileEntropyStatus = "compiled" | "converged" | "rejected";
-
 export interface CompileEntropyOutcome {
   status: CompileEntropyStatus;
-  /** The maintained artifact: new when compiled, the input artifact otherwise. */
   artifact?: CompiledSurfaceFile;
   report: EntropyReport;
   after?: EntropyReport;
   proposals: EntropyProposal[];
   gate?: EntropyGateResult;
 }
-
-const proposalDetail = (proposal: EntropyProposal): { ref: string; detail: string } => {
-  if (proposal.kind === "enum-tighten") {
-    return { ref: proposal.ref, detail: `${proposal.key}: ${proposal.values.length} observed values` };
+const sortedActions = (surface: EntropySurfaceSnapshot) =>
+  [...surface.actions].sort((a, b) => a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0);
+const finishCompile = (input: CompileEntropyInput, report: EntropyReport, plans: NormalFormPlan[]): CompileEntropyOutcome => {
+  const review = entropyReviewSignals({ ...input, report });
+  const previous = input.artifact;
+  const current = previous?.version === COMPILED_SURFACE_VERSION &&
+    previous.actions.length === 0 && previous.quarantined.length === 0 &&
+    stableJsonHash(previous.normalizations ?? []) === stableJsonHash(plans);
+  if (current || (!previous && plans.length === 0)) {
+    return { status: "converged", ...(previous ? { artifact: previous } : {}), report, proposals: review };
   }
-  if (proposal.kind === "noise-quarantine") {
-    return { ref: proposal.ref, detail: `${proposal.failed} failed vs ${proposal.succeeded} succeeded` };
-  }
-  return { ref: "n/a", detail: "review-only" };
-};
-
-// Refs the compile touched: tightened schemas and quarantined actions. The
-// replay gate scopes to this set; untouched refs keep their schema by
-// identity, so projection artifacts elsewhere cannot poison a compile.
-const touchedRefs = (before: EntropySurfaceSnapshot, after: EntropySurfaceSnapshot): Set<string> => {
-  const beforeByRef = new Map(before.actions.map((action) => [action.ref, action.inputSchema]));
-  const touched = new Set<string>();
-  for (const action of after.actions) {
-    if (stableJsonHash(beforeByRef.get(action.ref)) !== stableJsonHash(action.inputSchema)) {
-      touched.add(action.ref);
-    }
-  }
-  for (const ref of beforeByRef.keys()) {
-    if (!after.actions.some((action) => action.ref === ref)) touched.add(ref);
-  }
-  return touched;
-};
-
-// Build the maintained artifact from the candidate surface against the live
-// surface: overlay entries carry the live base digest, quarantined actions
-// carry theirs, and the applied ledger accumulates across compiles.
-const artifactFromCandidate = (
-  live: EntropySurfaceSnapshot,
-  candidate: EntropySurfaceSnapshot,
-  proposals: readonly EntropyProposal[],
-  gate: { passed: boolean; beforeScore: number; afterScore: number; reasons: string[] },
-  evidenceDigest: string,
-  previous?: CompiledSurfaceFile,
-): CompiledSurfaceFile => {
-  const liveByRef = new Map(live.actions.map((action) => [action.ref, action.inputSchema]));
-  const actions = candidate.actions
-    .filter(
-      (action) => stableJsonHash(action.inputSchema) !== stableJsonHash(liveByRef.get(action.ref)),
-    )
-    .map((action) => ({
-      ref: action.ref,
-      inputSchema: action.inputSchema as Record<string, unknown>,
-      baseSchemaDigest: schemaDigest(liveByRef.get(action.ref)),
-    }));
-  const candidateRefs = new Set(candidate.actions.map((action) => action.ref));
-  const quarantined = live.actions
-    .filter((action) => !candidateRefs.has(action.ref))
-    .map((action) => ({ ref: action.ref, baseSchemaDigest: schemaDigest(action.inputSchema) }));
-  const applied: CompiledSurfaceAppliedProposal[] = [...(previous?.applied ?? [])];
-  const seen = new Set(applied.map((entry) => `${entry.kind}:${entry.ref}:${entry.detail}`));
-  for (const proposal of proposals) {
-    const { ref, detail } = proposalDetail(proposal);
-    const identity = `${proposal.kind}:${ref}:${detail}`;
-    if (seen.has(identity)) continue;
-    seen.add(identity);
-    applied.push({ kind: proposal.kind, ref, detail });
-  }
-  return {
-    version: COMPILED_SURFACE_VERSION,
-    metricVersion: ENTROPY_METRIC_VERSION,
-    actions,
-    quarantined,
-    applied: applied.slice(0, MAX_COMPILED_SURFACE_PROPOSALS),
-    gate,
-    evidenceDigest,
+  const proposals: EntropyProposal[] = plans.map((plan) => ({
+    kind: "normal-form", ref: plan.ref, baseSchemaDigest: plan.baseSchemaDigest, rules: plan.rules,
+  }));
+  // Historical outcomes are not rewritten into counterfactual successes.
+  // A static proof preserves capability; future witness counts measure use.
+  const gate: EntropyGateResult = { passed: true, beforeScore: report.score, afterScore: report.score, delta: 0, reasons: [] };
+  const artifact: CompiledSurfaceFile = {
+    ...emptyCompiledSurface(), normalizations: plans,
+    applied: plans.slice(0, MAX_COMPILED_SURFACE_PROPOSALS).map((plan) => ({ kind: "normal-form", ref: plan.ref, detail: `${plan.rules.length} proven rules` })),
+    gate: { passed: true, beforeScore: report.score, afterScore: report.score, reasons: [] },
+    evidenceDigest: stableJsonHash({ surface: entropySurfaceHash(input.surface), plans }),
   };
+  return { status: "compiled", artifact, report, after: report, proposals: [...proposals, ...review], gate };
 };
-
 export const compileEntropySurface = (input: CompileEntropyInput): CompileEntropyOutcome => {
-  const effective = applyCompiledSurface(input.surface, input.artifact);
-  const report = measureEntropy({
-    traces: input.traces,
-    surface: effective,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    catalogDigest: input.catalogDigest ?? entropySurfaceHash(effective),
-  });
-  const proposals = proposeEntropyReductions({
-    report,
-    traces: input.traces,
-    surface: effective,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    ...(input.valueObservations ? { valueObservations: input.valueObservations } : {}),
-  });
-  const auto = proposals.filter((proposal) =>
-    (AUTO_APPLY_PROPOSAL_KINDS as readonly string[]).includes(proposal.kind),
-  );
-  if (auto.length === 0) {
-    return {
-      status: "converged",
-      ...(input.artifact ? { artifact: input.artifact } : {}),
-      report,
-      proposals,
-    };
+  const report = measureEntropy({ ...input, catalogDigest: input.catalogDigest ?? entropySurfaceHash(input.surface) });
+  const plans: NormalFormPlan[] = [];
+  for (const action of sortedActions(input.surface)) {
+    const plan = deriveNormalFormPlan(action.ref, action.inputSchema);
+    if (plan && plans.length < MAX_NORMAL_FORM_PLANS) plans.push(plan);
   }
-  const candidate = applyProposalsToSurface(effective, auto);
-  const after = measureEntropy({
-    traces: input.traces,
-    surface: candidate,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    catalogDigest: entropySurfaceHash(candidate),
-  });
-  const scoreGate = evaluateGate(report, after);
-  const violations = replaySuccessfulCalls(
-    candidate,
-    effective,
-    input.traces,
-    touchedRefs(effective, candidate),
-    input.auditCalls,
-  );
-  const reasons = [
-    ...scoreGate.reasons,
-    ...violations.map((violation) => `${violation.ref}: ${violation.reason}`),
-  ];
-  const gate: EntropyGateResult = {
-    passed: scoreGate.passed && violations.length === 0,
-    beforeScore: report.score,
-    afterScore: after.score,
-    delta: scoreGate.delta,
-    reasons: scoreGate.passed && violations.length === 0 ? [] : reasons,
-  };
-  if (gate.passed) {
-    const evidenceDigest = stableJsonHash({
-      traces: input.traces.length,
-      operations: report.totals.operations,
-      succeeded: report.totals.succeeded,
-      failed: report.totals.failed,
-      surface: entropySurfaceHash(effective),
-      repairs: input.repairs?.length ?? 0,
-      valueObservations: stableJsonHash(input.valueObservations ?? []),
-      auditCalls: stableJsonHash(input.auditCalls ?? []),
-    });
-    return {
-      status: "compiled",
-      artifact: artifactFromCandidate(
-        input.surface,
-        candidate,
-        auto,
-        { passed: true, beforeScore: report.score, afterScore: after.score, reasons: [] },
-        evidenceDigest,
-        input.artifact,
-      ),
-      report,
-      after,
-      proposals,
-      gate,
-    };
-  }
-  return {
-    status: "rejected",
-    ...(input.artifact ? { artifact: input.artifact } : {}),
-    report,
-    after,
-    proposals,
-    gate,
-  };
+  return finishCompile(input, report, plans);
 };
-
-const yieldToLoop = (): Promise<void> =>
-  new Promise((resolve) => setImmediate(resolve));
-
-// Hook-safe compile path: streamed session ingestion and async stores keep I/O
-// off the TUI thread, while these checkpoints split the remaining pure CPU
-// phases. The synchronous compiler remains the deterministic certification API.
-export const compileEntropySurfaceAsync = async (
-  input: CompileEntropyInput,
-): Promise<CompileEntropyOutcome> => {
-  const effective = applyCompiledSurface(input.surface, input.artifact);
-  const report = await measureEntropyAsync({
-    traces: input.traces,
-    surface: effective,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    catalogDigest: input.catalogDigest ?? entropySurfaceHash(effective),
-  });
-  await yieldToLoop();
-  const proposals = proposeEntropyReductions({
-    report,
-    traces: input.traces,
-    surface: effective,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    ...(input.valueObservations ? { valueObservations: input.valueObservations } : {}),
-  });
-  const auto = proposals.filter((proposal) =>
-    (AUTO_APPLY_PROPOSAL_KINDS as readonly string[]).includes(proposal.kind),
-  );
-  if (auto.length === 0) {
-    return {
-      status: "converged",
-      ...(input.artifact ? { artifact: input.artifact } : {}),
-      report,
-      proposals,
-    };
+export const compileEntropySurfaceAsync = async (input: CompileEntropyInput): Promise<CompileEntropyOutcome> => {
+  const report = await measureEntropyAsync({ ...input, catalogDigest: input.catalogDigest ?? entropySurfaceHash(input.surface) });
+  const plans: NormalFormPlan[] = [];
+  let processed = 0;
+  for (const action of sortedActions(input.surface)) {
+    const plan = deriveNormalFormPlan(action.ref, action.inputSchema);
+    if (plan && plans.length < MAX_NORMAL_FORM_PLANS) plans.push(plan);
+    if (++processed % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  await yieldToLoop();
-  const candidate = applyProposalsToSurface(effective, auto);
-  const after = await measureEntropyAsync({
-    traces: input.traces,
-    surface: candidate,
-    ...(input.repairs ? { repairs: input.repairs } : {}),
-    catalogDigest: entropySurfaceHash(candidate),
-  });
-  const scoreGate = evaluateGate(report, after);
-  await yieldToLoop();
-  const violations = await replaySuccessfulCallsAsync(
-    candidate,
-    effective,
-    input.traces,
-    touchedRefs(effective, candidate),
-    input.auditCalls,
-  );
-  const reasons = [
-    ...scoreGate.reasons,
-    ...violations.map((violation) => `${violation.ref}: ${violation.reason}`),
-  ];
-  const gate: EntropyGateResult = {
-    passed: scoreGate.passed && violations.length === 0,
-    beforeScore: report.score,
-    afterScore: after.score,
-    delta: scoreGate.delta,
-    reasons: scoreGate.passed && violations.length === 0 ? [] : reasons,
-  };
-  if (gate.passed) {
-    const [valueObservationsDigest, auditCallsDigest] = await Promise.all([
-      stableJsonHashArrayAsync(input.valueObservations ?? []),
-      stableJsonHashArrayAsync(input.auditCalls ?? []),
-    ]);
-    const evidenceDigest = stableJsonHash({
-      traces: input.traces.length,
-      operations: report.totals.operations,
-      succeeded: report.totals.succeeded,
-      failed: report.totals.failed,
-      surface: entropySurfaceHash(effective),
-      repairs: input.repairs?.length ?? 0,
-      valueObservations: valueObservationsDigest,
-      auditCalls: auditCallsDigest,
-    });
-    return {
-      status: "compiled",
-      artifact: artifactFromCandidate(
-        input.surface,
-        candidate,
-        auto,
-        { passed: true, beforeScore: report.score, afterScore: after.score, reasons: [] },
-        evidenceDigest,
-        input.artifact,
-      ),
-      report,
-      after,
-      proposals,
-      gate,
-    };
-  }
-  return {
-    status: "rejected",
-    ...(input.artifact ? { artifact: input.artifact } : {}),
-    report,
-    after,
-    proposals,
-    gate,
-  };
+  return finishCompile(input, report, plans);
 };

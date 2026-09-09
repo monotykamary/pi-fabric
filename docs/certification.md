@@ -2,19 +2,48 @@
 
 The repository provides three evaluation commands:
 
-- `pnpm certify:context` is deterministic, runs offline, and costs nothing.
-- `bun run certify:entropy` is deterministic and offline: fixed corpora through the versioned [tool-entropy meter](entropy.md), with a ratchet proof, the compile loop (applied, gate-rejected, and converged rounds), ingestion checks, and, against a real corpus with `--trial`, the held-out divergence trial that fails if the compiled artifact would reject any recorded successful call.
-- `pnpm benchmark:real-resume` is an opt-in, billable Pi RPC benchmark with a safe skip as its default behavior.
+- `bun run certify:context` is deterministic, runs offline, and costs nothing.
+- `bun run certify:entropy` is deterministic and offline: metric v3 invocation-rejection rates, static normal-form preservation, deterministic compilation (including an empty corpus), identical-plan convergence, canonical identity/idempotence, ambiguity refusal, forged-plan/schema-drift rejection, inert v1 migration, store round trips, and verbatim-audit/model-attribution ingestion checks. Its [representation trial](entropy.md#representation-trials) uses the runtime normalizer without inventing operation successes.
 
-`pnpm test` excludes these commands, which keeps the normal test suite offline and fast.
+- `bun run benchmark:real-resume` is an opt-in, billable Pi RPC benchmark with a safe skip as its default behavior.
+
+`bun run test` excludes these commands, which keeps the normal test suite offline and fast.
+
+## Entropy certification
+
+```sh
+bun run certify:entropy
+bun run certify:entropy --sessions <dir> --surface <snapshot.json> --trial --artifact <compiled.json> --json <report.json>
+```
+
+The wrapper builds first and imports `dist/entropy/index.js`. `--sessions`
+reads the directory's `.jsonl` files; `--surface` requires sessions; `--trial`
+requires both. Without `--artifact`, a trial loads the agent directory's compiled
+artifact. `--json` writes the full report. Failed checks or invalid inputs exit
+nonzero. No LLM calls or confirmation loop are involved.
+
+Metric v3 is `score = behavioralScore = invocationRejections / actionOperations`;
+static freedom and shape/flow diagnostics do not contribute. Duplicating a
+corpus leaves the rate unchanged, and an all-invocation-rejected corpus scores
+one. Compile keeps historical before/after reports identical. V2 artifacts
+contain normalizations and empty restriction/quarantine arrays; all v1
+restrictions load inert. Import rederives exact schema-bound plans.
+
+Trials prefer verbatim audits by ref over projected traces. `normalizationWin`
+counts invalid representations made schema-valid, not successful operations.
+Canonical identity, idempotence, and acceptance costs fail certification;
+quarantine earns no wins. A `clean` trial is not evidence of task success, and
+`no-evidence` is not a benefit claim. Unprovable candidates do nothing. These
+checks certify the bounded compatibility implementation, not actual model
+comprehension or arbitrary future execution behavior.
 
 ## Deterministic certification
 
 Use Node 24 or newer:
 
 ```sh
-pnpm certify:context
-pnpm certify:context -- --json /tmp/pi-fabric-certification.json
+bun run certify:context
+bun run certify:context --json /tmp/pi-fabric-certification.json
 ```
 
 The package command builds `dist/` first, then runs `scripts/certify-context.mjs`. It prints a human summary followed by the complete JSON report. When any threshold fails, the command exits nonzero.
@@ -101,7 +130,7 @@ The RPC reader implements strict LF JSONL framing. It splits only on `\n`, strip
 Without configuration, this command exits zero and reports `SKIP`:
 
 ```sh
-pnpm benchmark:real-resume
+bun run benchmark:real-resume
 ```
 
 A billable run requires all of these gates:
@@ -114,7 +143,7 @@ PI_FABRIC_BENCH_KEY_ENV=ANTHROPIC_API_KEY \
 PI_FABRIC_BENCH_REPEATS=3 \
 PI_FABRIC_BENCH_MAX_USD=5 \
 PI_VCC_EXTENSION=/absolute/path/to/pi-vcc/extension.ts \
-pnpm benchmark:real-resume
+bun run benchmark:real-resume
 ```
 
 `PI_FABRIC_BENCH_KEY_ENV` names an already-set credential environment variable. The benchmark checks the observed session cost before each next arm starts. It stops once the run reaches the configured budget. A single in-flight request can still exceed the remaining budget. Treat the maximum as a stop boundary. Hard spending caps live on the provider side.

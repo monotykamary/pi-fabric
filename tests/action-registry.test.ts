@@ -14,7 +14,8 @@ import type {
 import { setActiveRepairCompiler } from "../src/repairs/active.js";
 import { RepairCompiler } from "../src/repairs/compiler.js";
 import { setActiveCompiledSurface } from "../src/entropy/active.js";
-import { schemaDigest, type CompiledSurfaceFile } from "../src/entropy/index.js";
+import { schemaDigest, compileEntropySurface, type CompiledSurfaceFile } from "../src/entropy/index.js";
+import { FabricExecutionTraceRecorder, readFabricExecutionTraceV1 } from "../src/audit/trace.js";
 
 const provider = (): FabricProvider => ({
   name: "demo",
@@ -166,15 +167,13 @@ describe("ActionRegistry", () => {
     });
   });
 
-  it("repairs derived structural near-misses without a synonym table", async () => {
+  it("repairs exact spelling forms but only suggests fuzzy action matches", async () => {
     const registry = new ActionRegistry();
     registry.register(actionProvider("checkGoal", "setSteeringMode", "echo", "sessions"));
     expect(await registry.invoke("demo.check_goal", {}, invokeContext())).toBe("checkGoal");
-    expect(await registry.invoke("demo.setSteerMode", {}, invokeContext())).toBe(
-      "setSteeringMode",
-    );
-    expect(await registry.invoke("demo.ech", {}, invokeContext())).toBe("echo");
-    expect(await registry.invoke("demo.session", {}, invokeContext())).toBe("sessions");
+    for (const spelling of ["setSteerMode", "ech", "session"]) {
+      await expect(registry.invoke(`demo.${spelling}`, {}, invokeContext())).rejects.toThrow("Unknown Fabric action");
+    }
   });
 
   it("leaves ambiguous synonyms unrepaired and names the candidates", async () => {
@@ -789,12 +788,12 @@ const overlayArtifact = (baseSchema: unknown): CompiledSurfaceFile => ({
   evidenceDigest: "test",
 });
 
-describe("compiled entropy surface enforcement", () => {
+describe("compiled entropy capability preservation", () => {
   afterEach(() => {
     setActiveCompiledSurface(undefined);
   });
 
-  it("enforces the compiled enum at the validate stage", async () => {
+  it("never enforces legacy restrictions at the validate stage", async () => {
     const registry = new ActionRegistry();
     registry.register(provider());
     await registry.invoke("demo.echo", { value: "free-form" }, invokeContext());
@@ -802,10 +801,10 @@ describe("compiled entropy surface enforcement", () => {
     await registry.invoke("demo.echo", { value: "alpha" }, invokeContext());
     await expect(
       registry.invoke("demo.echo", { value: "off-modal" }, invokeContext()),
-    ).rejects.toThrow(/Invalid arguments for demo\.echo/);
+    ).resolves.toBe("off-modal");
   });
 
-  it("records a validate-rejected attempt as a failed-call audit for declared enum members", async () => {
+  it("preserves declared enum members and rejects out-of-domain values without persisting them", async () => {
     const enumProvider = (): FabricProvider => ({
       name: "demo",
       description: "Demo provider",
@@ -864,7 +863,7 @@ describe("compiled entropy surface enforcement", () => {
     await registry.invoke("demo.echo", { value: "alpha" }, invokeContext(audits));
     await expect(
       registry.invoke("demo.echo", { value: "beta" }, invokeContext(audits)),
-    ).rejects.toThrow(/Invalid arguments for demo\.echo/);
+    ).resolves.toBe("beta");
     await expect(
       registry.invoke("demo.echo", { value: "untrusted-secret" }, invokeContext(audits)),
     ).rejects.toThrow(/Invalid arguments for demo\.echo/);
@@ -874,8 +873,7 @@ describe("compiled entropy surface enforcement", () => {
       ref: "demo.echo",
       tool: "echo",
       provider: "demo",
-      success: false,
-      error: expect.stringContaining("Invalid arguments for demo.echo"),
+      success: true,
       args: { value: "beta" },
     });
     expect(audits[1]?.startedAt).toBeGreaterThan(0);
@@ -892,7 +890,7 @@ describe("compiled entropy surface enforcement", () => {
     await registry.invoke("demo.echo", { value: "still free" }, invokeContext());
   });
 
-  it("hides quarantined refs from the catalog and denies resolution", async () => {
+  it("keeps legacy-quarantined refs visible and callable", async () => {
     const registry = new ActionRegistry();
     registry.register(provider());
     expect((await registry.list({ limit: 10 }, context)).map((a) => a.ref)).toEqual([
@@ -909,19 +907,19 @@ describe("compiled entropy surface enforcement", () => {
       gate: { passed: true, beforeScore: 0.25, afterScore: 0.18, reasons: [] },
       evidenceDigest: "test",
     });
-    expect(await registry.list({ limit: 10 }, context)).toEqual([]);
+    expect((await registry.list({ limit: 10 }, context)).map((action) => action.ref)).toEqual(["demo.echo"]);
     await expect(
       registry.invoke("demo.echo", { value: "x" }, invokeContext()),
-    ).rejects.toThrow(/demo\.echo/);
+    ).resolves.toBe("x");
   });
-  it("teaches the compiled schema in the model-facing listing", async () => {
+  it("keeps one unchanged canonical schema in model-facing discovery", async () => {
     const registry = new ActionRegistry();
     registry.register(provider());
     const artifact = overlayArtifact(liveEchoSchema());
     setActiveCompiledSurface(artifact);
     const listed = await registry.list({ limit: 10 }, context);
     expect(listed).toHaveLength(1);
-    expect(listed[0]!.inputSchema).toEqual(artifact.actions[0]!.inputSchema);
+    expect(listed[0]!.inputSchema).toEqual(liveEchoSchema());
     const declared = await registry.list({ limit: 10, declared: true }, context);
     expect(declared[0]!.inputSchema).toEqual(liveEchoSchema());
   });
@@ -940,12 +938,12 @@ describe("compiled entropy surface enforcement", () => {
       gate: { passed: true, beforeScore: 0.25, afterScore: 0.18, reasons: [] },
       evidenceDigest: "test",
     });
-    expect(await registry.list({ limit: 10 }, context)).toEqual([]);
+    expect((await registry.list({ limit: 10 }, context)).map((action) => action.ref)).toEqual(["demo.echo"]);
     const declared = await registry.list({ limit: 10, declared: true }, context);
     expect(declared.map((action) => action.ref)).toEqual(["demo.echo"]);
   });
 
-  it("never launches speculation the compiled surface rejects", async () => {
+  it("preserves speculation capabilities despite legacy restrictions", async () => {
     const registry = new ActionRegistry();
     registry.register(provider());
     registry.setSpeculation(undefined, () => true);
@@ -953,7 +951,7 @@ describe("compiled entropy surface enforcement", () => {
     setActiveCompiledSurface(overlayArtifact(liveEchoSchema()));
     expect(
       await registry.speculate("demo.echo", { value: "off-modal" }, invokeContext(), replay),
-    ).toBeUndefined();
+    ).toMatchObject({ preparedArgs: { value: "off-modal" } });
     const launched = await registry.speculate(
       "demo.echo",
       { value: "alpha" },
@@ -974,7 +972,74 @@ describe("compiled entropy surface enforcement", () => {
     });
     expect(
       await registry.speculate("demo.echo", { value: "alpha" }, invokeContext(), replay),
-    ).toBeUndefined();
+    ).toMatchObject({ preparedArgs: { value: "alpha" } });
+    registry.setSpeculation(undefined);
+  });
+
+  it("normalizes on the first call without a corpus, preserves approval, and records a bounded witness", async () => {
+    const registry = new ActionRegistry();
+    const p = provider();
+    const invoke = vi.fn(p.invoke.bind(p));
+    registry.register({ ...p, invoke });
+    const snapshot = { version: 1 as const, actions: [{ ref: "demo.echo", inputSchema: liveEchoSchema() }] };
+    const compiled = compileEntropySurface({ traces: [], surface: snapshot });
+    expect(compiled.artifact?.normalizations).toHaveLength(1);
+    setActiveCompiledSurface(undefined, true);
+    const recorder = new FabricExecutionTraceRecorder();
+    const approve = vi.fn(async () => {});
+    const raw = { VALUE: "sensitive payload" };
+    const value = await registry.invoke("demo.echo", raw, { ...invokeContext(), approve, trace: recorder });
+    expect(value).toBe("sensitive payload");
+    expect(raw).toEqual({ VALUE: "sensitive payload" });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(approve).toHaveBeenCalledWith(expect.anything(), { value: "sensitive payload" });
+    const trace = recorder.seal("succeeded", []);
+    expect(readFabricExecutionTraceV1(trace)).toBe(trace);
+    const witness = trace.operations[0]!.normalization!;
+    expect(witness.rules).toEqual([{ kind: "key-form", key: "value" }]);
+    expect(JSON.stringify(witness)).not.toContain("sensitive payload");
+    expect(readFabricExecutionTraceV1({ ...trace, operations: [{ ...trace.operations[0], normalization: { ...witness, beforeShape: "raw-secret" } }] })).toBeUndefined();
+    setActiveCompiledSurface(undefined);
+    await expect(registry.invoke("demo.echo", raw, invokeContext())).rejects.toThrow("Invalid arguments");
+  });
+
+  it.each(["guard", "approve", "invoke"] as const)("never masks a %s failure or bypasses its gate", async (stage) => {
+    const registry = new ActionRegistry();
+    const p = provider();
+    const invoke = vi.fn(async () => { if (stage === "invoke") throw new Error("effect failed"); return "ok"; });
+    registry.register({ ...p, invoke });
+    setActiveCompiledSurface(undefined, true);
+    const recorder = new FabricExecutionTraceRecorder();
+    const approve = vi.fn(async () => { if (stage === "approve") throw new Error("approval denied"); });
+    const authorize = vi.fn(async () => { if (stage === "guard") throw new Error("authorization denied"); });
+    await expect(registry.invoke("demo.echo", { VALUE: "x" }, { ...invokeContext(), authorize, approve, trace: recorder })).rejects.toThrow();
+    const operation = recorder.seal("failed", []).operations[0]!;
+    expect(operation).toMatchObject({ outcome: "failed", failureStage: stage });
+    expect(invoke).toHaveBeenCalledTimes(stage === "invoke" ? 1 : 0);
+    if (stage === "guard") expect(operation.normalization).toBeUndefined();
+    else expect(operation.normalization?.rules).toEqual([{ kind: "key-form", key: "value" }]);
+  });
+
+  it("preserves provider preparation precedence over generic normal forms", async () => {
+    const registry = new ActionRegistry();
+    const p = provider();
+    registry.register({ ...p, prepareArguments(_name, args) {
+      if (args.VALUE === "deny") throw new Error("provider preparation refused");
+      return Object.hasOwn(args, "VALUE") ? { value: "provider interpretation" } : args;
+    } });
+    setActiveCompiledSurface(undefined, true);
+    expect(await registry.invoke("demo.echo", { VALUE: "x" }, invokeContext())).toBe("provider interpretation");
+    await expect(registry.invoke("demo.echo", { VALUE: "deny" }, invokeContext())).rejects.toThrow("provider preparation refused");
+  });
+
+  it("uses the same normal form in speculation without changing discovery", async () => {
+    const registry = new ActionRegistry();
+    registry.register(provider());
+    registry.setSpeculation(undefined, () => true);
+    setActiveCompiledSurface(undefined, true);
+    const replay = {} as Parameters<typeof registry.speculate>[3];
+    expect((await registry.speculate("demo.echo", { VALUE: "x" }, invokeContext(), replay))?.preparedArgs).toEqual({ value: "x" });
+    expect((await registry.describe("demo.echo", context)).inputSchema).toEqual(liveEchoSchema());
     registry.setSpeculation(undefined);
   });
 });

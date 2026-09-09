@@ -1,38 +1,23 @@
-// The active compiled surface, mirroring the active repair compiler: the
-// runtime consults it at resolution, validation, and catalog time. Entries
-// re-prove their recorded base digest against the live declared schema on
-// every consult, so enforcement follows the live surface, never a stale
-// snapshot.
-
-import {
-  effectiveSchemaFor,
-  isQuarantinedRef,
-  quarantinedRefNames,
-  type CompiledSurfaceFile,
-} from "./compiled-surface.js";
+// Runtime-only compatibility policy. No schema or discovery entry changes.
+import type { CompiledSurfaceFile } from "./compiled-surface.js";
+import { applyNormalFormPlan, deriveNormalFormPlan, type NormalFormResult } from "./normal-form.js";
 
 let active: CompiledSurfaceFile | undefined;
-
-export const setActiveCompiledSurface = (file: CompiledSurfaceFile | undefined): void => {
+let enabled = false;
+export const setActiveCompiledSurface = (file: CompiledSurfaceFile | undefined, enable = file !== undefined): void => {
   active = file;
+  enabled = enable;
 };
+export const clearActiveCompiledSurface = (): void => { active = undefined; enabled = false; };
+export const effectiveInputSchema = (_ref: string, liveSchema: unknown): unknown => liveSchema;
+export const activeQuarantinedRefNames = (): ReadonlySet<string> => new Set();
+export const isActiveQuarantine = (_provider: string, _actionName: string, _liveSchema: unknown): boolean => false;
 
-export const clearActiveCompiledSurface = (): void => {
-  active = undefined;
+export const normalizeActiveArguments = (ref: string, schema: unknown, args: Record<string, unknown>): NormalFormResult => {
+  if (!enabled) return { args };
+  const stored = active?.version === 2 ? active.normalizations?.find((plan) => plan.ref === ref) : undefined;
+  // New actions gain the same statically proven rules on their first call,
+  // without waiting for session evidence or a background persistence tick.
+  // A stored stale/forged plan is refused, never silently substituted.
+  return applyNormalFormPlan(ref, schema, args, stored ?? deriveNormalFormPlan(ref, schema));
 };
-
-// The compiled schema replaces the declared schema while the recorded base
-// digest still matches the live schema.
-export const effectiveInputSchema = (ref: string, liveSchema: unknown): unknown =>
-  effectiveSchemaFor(ref, liveSchema, active);
-
-// Name-only quarantine view for catalog filtering and suggestions: hiding
-// there is advisory, so no digest proof is required.
-export const activeQuarantinedRefNames = (): ReadonlySet<string> => quarantinedRefNames(active);
-
-// Digest-proofed quarantine denial for resolution.
-export const isActiveQuarantine = (
-  provider: string,
-  actionName: string,
-  liveSchema: unknown,
-): boolean => isQuarantinedRef(`${provider}.${actionName}`, liveSchema, active);

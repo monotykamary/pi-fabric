@@ -50,6 +50,7 @@ import {
 import {
   activeQuarantinedRefNames,
   effectiveInputSchema,
+  normalizeActiveArguments,
   isActiveQuarantine,
 } from "../entropy/active.js";
 import { formatFabricEffectConflict } from "./effect-conflict.js";
@@ -814,6 +815,7 @@ export class ActionRegistry {
         catalogInput.observedUnexpected,
       );
       traceOperation?.prepared(catalog.args);
+      if (catalog.normalization) traceOperation?.normalized(catalog.normalization);
       // TypeBox validator messages describe schema expectations only — they
       // never echo argument values — so they are safe for durable traces.
       if (catalog.invalid) {
@@ -1124,11 +1126,9 @@ export class ActionRegistry {
       ) {
         return undefined;
       }
-      const repairedArgs = applyActiveArgRepairs(
-        action.ref,
-        preparedArgs,
-        effectiveSchema,
-      );
+      const repairedArgs = normalizeActiveArguments(action.ref, effectiveSchema,
+        applyActiveArgRepairs(action.ref, preparedArgs, effectiveSchema),
+      ).args;
       if (validationMessage(effectiveSchema, repairedArgs)) return undefined;
       const nestedToolCallId = `${NESTED_TOOL_CALL_ID_PREFIX}spec-${randomUUID()}`;
       return {

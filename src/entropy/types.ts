@@ -1,15 +1,16 @@
 // Deterministic tool-entropy measurement for the Fabric tool surface.
 //
-// Entropy here is operational, not psychological: it counts the bits of
-// corrective freedom a surface leaves open, measured only from artifacts
-// Fabric already records in typed form (trace V1 operations, the repair
-// table, live JSON schemas). No model judges anything; the same inputs and
-// the same metric version always produce the same report.
+// The operational score is an invocation rejection fraction, not bits.
+// Shape, failure-stage, flow, churn, navigation, lexicon, and schema freedom
+// remain separate diagnostics from typed traces, repairs, and live schemas.
+// No model judges anything; identical inputs and metric version give the
+// same report. Derived metrics are rounded to six decimal places.
 
-export const ENTROPY_METRIC_VERSION = 2 as const;
+export const ENTROPY_METRIC_VERSION = 3 as const;
 
-// Fixed weights per metric version. Changing any weight bumps
-// ENTROPY_METRIC_VERSION so trend lines never mix formulas.
+// Legacy diagnostic weights retained for export compatibility. In v3 only
+// staticFreedom scales staticScore; none contribute to the operational score.
+// Changes to metric formulas require an ENTROPY_METRIC_VERSION bump.
 export const ENTROPY_WEIGHTS = {
   shape: 1,
   failureStage: 1,
@@ -41,6 +42,7 @@ export interface EntropyOperationInput {
   args: Record<string, unknown>;
   outcome: EntropyOutcome;
   failureStage?: string;
+  normalization?: import("./normal-form.js").NormalFormWitness;
 }
 
 export interface EntropyTraceInput {
@@ -90,11 +92,17 @@ export interface EntropyRefReport {
   succeeded: number;
   failed: number;
   shapeSignatures: EntropyShapeSignature[];
+  /** Shannon entropy of argument shapes, in bits. */
   shapeEntropyBits: number;
+  /** Shannon entropy of failed-call stages, in bits. */
   failureStageEntropyBits: number;
+  /** Mean normalized shape distance between a failure and the next same-ref call. */
   churnRate: number;
+  /** Count of repair rows targeting this ref. */
   lexiconRows: number;
+  /** Heuristic schema-freedom units; zero for an unknown schema. */
   staticFreedom: number;
+  /** Invocation rejections / calls, a fraction in [0, 1]. */
   score: number;
 }
 
@@ -112,8 +120,7 @@ export interface EntropyTotals {
   invocationRejectionsPer1k: number;
 }
 
-// Per-model behavioral attribution: each stamped trace measures against the
-// same surface, so the breakdown names which model exercised the freedom.
+// Per-model behavioral attribution over stamped traces only.
 export interface EntropyModelReport {
   model: string;
   operations: number;
@@ -121,6 +128,7 @@ export interface EntropyModelReport {
   succeeded: number;
   invocationRejections: number;
   invocationRejectionsPer1k: number;
+  /** Invocation rejections / action operations for this model, in [0, 1]; zero if none. */
   behavioralScore: number;
 }
 
@@ -128,17 +136,27 @@ export interface EntropyReport {
   metricVersion: typeof ENTROPY_METRIC_VERSION;
   catalogDigest: string;
   totals: EntropyTotals;
+  /** Call-weighted mean per-ref shape entropy, in bits. */
   shapeEntropyBits: number;
+  /** Failed-call-weighted mean per-ref failure-stage entropy, in bits. */
   failureStageEntropyBits: number;
+  /** Mean normalized failure-to-next-same-ref shape distance within traces. */
   churnRate: number;
+  /** Discovery operations / action operations; zero without action operations. */
   navigationRatio: number;
+  /** Trace-weighted mean per-task action-sequence entropy, in bits. */
   flowEntropyBits: number;
+  /** Total count of supplied repair rows. */
   lexiconRows: number;
+  /** Sum of heuristic schema-freedom units over distinct called refs. */
   staticFreedom: number;
-  /** Surface share of the score: static freedom of the refs the corpus used. */
+  /** 0.25 × call-weighted mean schema freedom; unknown schemas contribute zero.
+   * Diagnostic only, zero without action calls; never added to score. */
   staticScore: number;
-  /** Everything models exercised: wobble, churn, rejections, navigation, flow, lexicon. */
+  /** Identical to score: invocation rejection fraction, not entropy bits. */
   behavioralScore: number;
+  /** Failed resolve/prepare/validate calls / all action operations, in [0, 1].
+   * Zero without action operations. Discovery/workflow operations are excluded. */
   score: number;
   refs: EntropyRefReport[];
   /** Behavioral attribution per producing model; empty when no trace carries one. */
@@ -146,6 +164,12 @@ export interface EntropyReport {
 }
 
 export type EntropyProposal =
+  | {
+      kind: "normal-form";
+      ref: string;
+      baseSchemaDigest: string;
+      rules: import("./normal-form.js").NormalFormRule[];
+    }
   | {
       kind: "enum-tighten";
       ref: string;

@@ -1,3 +1,4 @@
+import { Value } from "typebox/value";
 import { repairActionName } from "../core/action-repair.js";
 import { uniqueDeclaredKeyForSpelling } from "../providers/arg-normalization.js";
 import type { CatalogRepair } from "./types.js";
@@ -36,25 +37,30 @@ const applyKeyAliasRepairs = (
       declaredSet.has(repair.to) &&
       uniqueDeclaredKeyForSpelling(repair.from, declared) === repair.to,
   );
-  const sourceCountByTarget = new Map<string, number>();
+  const sourcesByTarget = new Map<string, Set<string>>();
   for (const repair of applicable) {
-    sourceCountByTarget.set(repair.to, (sourceCountByTarget.get(repair.to) ?? 0) + 1);
+    const sources = sourcesByTarget.get(repair.to) ?? new Set<string>();
+    sources.add(repair.from);
+    sourcesByTarget.set(repair.to, sources);
+    // Refuse the whole transaction, including unrelated otherwise-safe aliases.
+    if (Object.hasOwn(args, repair.to) || sources.size > 1) return { args, changed: false };
   }
-  let out = args;
-  let changed = false;
-  for (const repair of applicable) {
-    const canonicalPresent = Object.hasOwn(args, repair.to);
-    if (!canonicalPresent && sourceCountByTarget.get(repair.to) !== 1) continue;
-    if (out === args) out = { ...args };
-    if (!Object.hasOwn(out, repair.to)) {
-      Object.defineProperty(out, repair.to, {
-        value: out[repair.from], enumerable: true, writable: true, configurable: true,
-      });
-    }
-    delete out[repair.from];
-    changed = true;
+  if (applicable.length === 0) return { args, changed: false };
+  const out = { ...args };
+  for (const [target, sources] of sourcesByTarget) {
+    const source = [...sources][0]!;
+    Object.defineProperty(out, target, {
+      value: args[source], enumerable: true, writable: true, configurable: true,
+    });
+    delete out[source];
   }
-  return { args: out, changed };
+  // Stored mappings are not proof that the resulting live input is valid.
+  try {
+    if (Value.Check(schema, out)) return { args: out, changed: true };
+  } catch {
+    // Unsupported or malformed live schemas cannot authorize a repair.
+  }
+  return { args, changed: false };
 };
 
 export const applyActionAliasRepairs = (

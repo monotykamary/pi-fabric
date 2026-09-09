@@ -31,7 +31,7 @@ describe("entropy user-facing messages", () => {
         reviewCount: 13,
       }),
     ).toBe(
-      "entropy: background optimization complete · entropy score improved 0.004458 → 0.004455 (−0.000003; lower is better) · safety checks passed · 13 suggestions await review (/fabric entropy)",
+      "entropy: background optimization complete · 0 normal-form plans · canonical capabilities preserved · entropy score improved 0.004458 → 0.004455 (−0.000003; lower is better) · safety checks passed · 13 suggestions await review (/fabric entropy)",
     );
   });
 

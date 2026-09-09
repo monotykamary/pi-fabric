@@ -1,191 +1,106 @@
 import { describe, expect, it } from "vitest";
 import {
-  runEntropyTrial,
-  schemaDigest,
-  type CompiledSurfaceFile,
-  type EntropySurfaceSnapshot,
+  applyNormalFormPlan, compileEntropySurface, emptyCompiledSurface, runEntropyTrial,
+  type CompiledSurfaceFile, type EntropySurfaceSnapshot, type EntropyTraceInput,
 } from "../src/entropy/index.js";
 
-const renderSchema = {
-  type: "object",
-  properties: { format: { type: "string" } },
-  required: ["format"],
-  additionalProperties: false,
+const ref = "mcp.report.render";
+const schema = {
+  type: "object", additionalProperties: false,
+  properties: {
+    outputFormat: { type: "string", enum: ["pdf", "html", "rare-format"] },
+    limit: { type: "integer", minimum: 1 }, note: { type: "string" },
+  }, required: ["outputFormat", "limit"],
 };
+const live: EntropySurfaceSnapshot = { version: 1, actions: [{ ref, inputSchema: schema }] };
+const artifact = () => compileEntropySurface({ traces: [], surface: live }).artifact!;
+const traces = (args: Record<string, unknown>[], outcome: "failed" | "succeeded" = "failed"): EntropyTraceInput[] =>
+  [{ operations: args.map((args) => ({ ref, args, outcome, failureStage: "validate" })) }];
+const canonical = { outputFormat: "rare-format", limit: 2 };
+const spelling = { "output-format": "RARE FORMAT", limit: "2", note: null };
 
-const bashSchema = {
-  type: "object",
-  properties: { command: { type: "string" } },
-  required: ["command"],
-  additionalProperties: false,
-};
+describe("normal-form trial", () => {
+  it("counts invalid representation normalization without inventing operation success", () => {
+    const input = { live, artifact: artifact(), traces: traces([spelling, canonical, { ...canonical, limit: "02" }]) };
+    const before = JSON.stringify(input);
+    const report = runEntropyTrial(input);
+    expect(report.totals).toEqual({
+      operations: 3, bothAccept: 1, bothReject: 1, normalizationWin: 1,
+      canonicalIdentityChecks: 1, canonicalIdentityCost: 0, idempotenceCost: 0,
+      tighteningCost: 0, typedFailureWin: 0, quarantineWin: 0, quarantineCost: 0,
+    });
+    expect(report).toMatchObject({ verdict: "clean", declaredScore: 1, effectiveScore: 1, delta: 0 });
+    expect(report.divergences).toEqual([{ ref, trialClass: "normalization-win", count: 1 }]);
+    expect(JSON.stringify(runEntropyTrial(input))).toBe(JSON.stringify(report));
+    expect(JSON.stringify(input)).toBe(before);
+  });
 
-const live = (): EntropySurfaceSnapshot => ({
-  version: 1,
-  actions: [
-    { ref: "mcp.report.render", inputSchema: renderSchema },
-    { ref: "pi.bash", inputSchema: bashSchema },
-  ],
-});
-
-const artifact = (): CompiledSurfaceFile => ({
-  version: 1,
-  metricVersion: 2,
-  actions: [
-    {
-      ref: "mcp.report.render",
-      inputSchema: {
-        type: "object",
-        properties: { format: { type: "string", enum: ["pdf", "html"] } },
-        required: ["format"],
-        additionalProperties: false,
-      },
-      baseSchemaDigest: schemaDigest(renderSchema),
-    },
-  ],
-  quarantined: [{ ref: "pi.bash", baseSchemaDigest: schemaDigest(bashSchema) }],
-  applied: [],
-  gate: { passed: true, beforeScore: 0.3, afterScore: 0.2, reasons: [] },
-  evidenceDigest: "test",
-});
-
-const op = (
-  ref: string,
-  args: Record<string, unknown>,
-  outcome: "succeeded" | "failed" = "succeeded",
-  failureStage?: string,
-) => ({ ref, args, outcome, ...(failureStage ? { failureStage } : {}) });
-
-const trace = (operations: ReturnType<typeof op>[]) => ({ operations });
-
-describe("runEntropyTrial", () => {
-  it("classifies every counterfactual divergence", () => {
+  it("prefers verbatim audits by ref, preserving fallback for unaudited refs", () => {
+    const other = "pi.other";
     const report = runEntropyTrial({
-      traces: [
-        trace([
-          op("mcp.report.render", { format: "pdf" }),
-          op("mcp.report.render", { format: "docx" }),
-          op("mcp.report.render", { format: "weird" }, "failed", "effect"),
-          op("pi.bash", { command: "ls" }, "failed", "effect"),
-          op("pi.bash", { command: "bun test" }),
-          op("pi.bash", { command: 42 }, "failed", "validate"),
-          op("pi.read", { path: "a.ts" }),
-          op("fabric.workflow", {}),
-        ]),
-      ],
-      live: live(),
+      live: { version: 1, actions: [...live.actions, { ref: other, inputSchema: schema }] },
       artifact: artifact(),
+      traces: [{ operations: [
+        ...traces([{}, {}, {}], "succeeded")[0]!.operations,
+        { ref: other, args: canonical, outcome: "succeeded" },
+        { ref: "unknown", args: {}, outcome: "failed" },
+        { ref: "fabric.discovery.search", args: {}, outcome: "succeeded" },
+      ] }],
+      auditCalls: [{ ref, args: canonical }, { ref, args: spelling }],
     });
-    expect(report.totals).toEqual({
-      operations: 6,
-      bothAccept: 1,
-      bothReject: 1,
-      tighteningCost: 1,
-      typedFailureWin: 1,
-      quarantineWin: 1,
-      quarantineCost: 1,
-    });
-    expect(report.verdict).toBe("costly");
-    expect(report.delta).toBeLessThan(0);
-    expect(report.divergences).toEqual([
-      { ref: "mcp.report.render", trialClass: "tightening-cost", count: 1 },
-      { ref: "mcp.report.render", trialClass: "typed-failure-win", count: 1 },
-      { ref: "pi.bash", trialClass: "quarantine-cost", count: 1 },
-      { ref: "pi.bash", trialClass: "quarantine-win", count: 1 },
-    ]);
+    expect(report.totals).toMatchObject({ operations: 3, bothAccept: 2, bothReject: 0, normalizationWin: 1 });
+    expect(report.effectiveScore).toBe(report.declaredScore);
   });
 
-  it("stale entries fall back to the declared surface and cost nothing", () => {
-    const stale: CompiledSurfaceFile = {
-      ...artifact(),
-      actions: [
-        {
-          ref: "mcp.report.render",
-          inputSchema: {
-            type: "object",
-            properties: { format: { type: "string", enum: ["pdf"] } },
-            required: ["format"],
-            additionalProperties: false,
-          },
-          baseSchemaDigest: schemaDigest({ type: "object" }),
-        },
-      ],
-      quarantined: [{ ref: "pi.bash", baseSchemaDigest: schemaDigest({ type: "object" }) }],
-    };
-    const report = runEntropyTrial({
-      traces: [
-        trace([
-          op("mcp.report.render", { format: "docx" }),
-          op("pi.bash", { command: "bun test" }),
-        ]),
-      ],
-      live: live(),
-      artifact: stale,
-    });
-    expect(report.totals).toEqual({
-      operations: 2,
-      bothAccept: 2,
-      bothReject: 0,
-      tighteningCost: 0,
-      typedFailureWin: 0,
-      quarantineWin: 0,
-      quarantineCost: 0,
-    });
-    expect(report.verdict).toBe("clean");
-    expect(report.delta).toBe(0);
+  it("preserves every canonical enum member and direct normalizer identity/idempotence", () => {
+    const plan = artifact().normalizations![0]!;
+    for (const outputFormat of schema.properties.outputFormat.enum) {
+      const args = { outputFormat, limit: 1 };
+      expect(applyNormalFormPlan(ref, schema, args, plan)).toEqual({ args });
+      expect(applyNormalFormPlan(ref, schema, args, plan).args).toBe(args);
+    }
+    const once = applyNormalFormPlan(ref, schema, spelling, plan);
+    expect(once.args).toEqual(canonical);
+    expect(applyNormalFormPlan(ref, schema, once.args, plan)).toEqual({ args: once.args });
+    expect(runEntropyTrial({ live, artifact: artifact(), traces: traces([spelling]) }).totals.normalizationWin).toBe(1);
   });
 
-  it("reports no evidence without a meaningful artifact", () => {
-    const traces = [trace([op("mcp.report.render", { format: "pdf" })])];
-    expect(runEntropyTrial({ traces, live: live() }).verdict).toBe("no-evidence");
-    const empty: CompiledSurfaceFile = {
-      ...artifact(),
-      actions: [],
-      quarantined: [],
-    };
-    expect(runEntropyTrial({ traces, live: live(), artifact: empty }).verdict).toBe("no-evidence");
-  });
-
-  it("is deterministic for identical inputs", () => {
-    const input = {
-      traces: [
-        trace([
-          op("mcp.report.render", { format: "docx" }),
-          op("pi.bash", { command: "ls" }, "failed", "effect"),
-        ]),
-      ],
-      live: live(),
-      artifact: artifact(),
-    };
-    expect(JSON.stringify(runEntropyTrial(input))).toBe(JSON.stringify(runEntropyTrial(input)));
-  });
-
-  it("replays audited refs verbatim and counts unknown outcomes as costs", () => {
-    const traces = [
-      trace([
-        op("mcp.report.render", {}),
-        op("mcp.report.render", {}),
-        op("mcp.report.render", {}, "failed", "invoke"),
-      ]),
+  it("refuses ambiguous aliases, lossy numbers and partial repairs", () => {
+    const args = [
+      { ...canonical, "output-format": "PDF" },
+      { "output-format": "PDF", "output_format": "HTML", limit: 1 },
+      { ...canonical, limit: "01" }, { ...canonical, limit: "9007199254740993" },
+      { ...spelling, unexpected: true },
     ];
-    const auditCalls = [
-      { ref: "mcp.report.render", args: { format: "pdf" } },
-      { ref: "mcp.report.render", args: { format: "docx" } },
-      { ref: "mcp.report.render", args: { format: "html" } },
-    ];
-    const report = runEntropyTrial({ traces, live: live(), artifact: artifact(), auditCalls });
-    expect(report.totals).toEqual({
-      operations: 3,
-      bothAccept: 2,
-      bothReject: 0,
-      tighteningCost: 1,
-      typedFailureWin: 0,
-      quarantineWin: 0,
-      quarantineCost: 0,
-    });
-    expect(report.divergences).toEqual([
-      { ref: "mcp.report.render", trialClass: "tightening-cost", count: 1 },
-    ]);
-    expect(report.verdict).toBe("costly");
+    expect(runEntropyTrial({ live, artifact: artifact(), traces: traces(args) }).totals).toMatchObject({ bothReject: 5, normalizationWin: 0 });
+  });
+
+  it("makes legacy restrictions inert, including formerly successful quarantined calls", () => {
+    const legacy: CompiledSurfaceFile = {
+      ...emptyCompiledSurface(), version: 1, metricVersion: 2,
+      actions: [{ ref, inputSchema: { type: "null" }, baseSchemaDigest: "stale" }],
+      quarantined: [{ ref, baseSchemaDigest: "stale" }], normalizations: artifact().normalizations!,
+    };
+    const report = runEntropyTrial({ live, artifact: legacy, traces: traces([canonical, spelling], "succeeded") });
+    expect(report).toMatchObject({ verdict: "no-evidence", delta: 0, totals: {
+      bothAccept: 1, bothReject: 1, normalizationWin: 0, quarantineWin: 0, quarantineCost: 0, tighteningCost: 0,
+    } });
+  });
+
+  it("ignores forged and schema-drifted plans", () => {
+    const forged = artifact();
+    forged.normalizations![0]!.rules.pop();
+    for (const input of [
+      { live, artifact: forged },
+      { live: { version: 1 as const, actions: [{ ref, inputSchema: { ...schema, required: ["note"] } }] }, artifact: artifact() },
+    ]) {
+      expect(runEntropyTrial({ ...input, traces: traces([spelling]) })).toMatchObject({ verdict: "no-evidence", totals: { normalizationWin: 0, bothReject: 1 } });
+    }
+  });
+
+  it("reports no evidence with no plans, no calls, or only unrelated calls", () => {
+    expect(runEntropyTrial({ live, traces: traces([canonical]) }).verdict).toBe("no-evidence");
+    expect(runEntropyTrial({ live, artifact: artifact(), traces: [] }).verdict).toBe("no-evidence");
+    expect(runEntropyTrial({ live, artifact: artifact(), traces: [{ operations: [{ ref: "unknown", args: {}, outcome: "succeeded" }] }] }).verdict).toBe("no-evidence");
   });
 });

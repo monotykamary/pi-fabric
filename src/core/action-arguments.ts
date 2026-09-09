@@ -1,4 +1,6 @@
 import { Value } from "typebox/value";
+import { normalizeActiveArguments } from "../entropy/active.js";
+import type { NormalFormWitness } from "../entropy/normal-form.js";
 import { applyActiveArgRepairs, getActiveRepairCompiler } from "../repairs/active.js";
 import { truncateString } from "./action-result.js";
 
@@ -61,17 +63,11 @@ export const repairCatalogInput = (
   const observedUnexpected = extras.length > 0 ? extras.join("\0") : undefined;
   if (extras.length > 0) {
     getActiveRepairCompiler()?.observeInvalidArgs(
-      ref,
-      args,
-      declaredPropertyNames(schema),
-      extras.join(","),
+      ref, args, declaredPropertyNames(schema), extras.join(","),
       { countError: false, extraKeys: extras },
     );
   }
-  return {
-    args: applyActiveArgRepairs(ref, args, schema),
-    observedUnexpected,
-  };
+  return { args: applyActiveArgRepairs(ref, args, schema), observedUnexpected };
 };
 
 export const validateCatalogArgs = (
@@ -79,24 +75,27 @@ export const validateCatalogArgs = (
   schema: Record<string, unknown>,
   args: Record<string, unknown>,
   observedUnexpected: string | undefined,
-): { args: Record<string, unknown>; invalid?: string } => {
+): { args: Record<string, unknown>; invalid?: string; normalization?: NormalFormWitness } => {
   const compiler = getActiveRepairCompiler();
-  const first = applyActiveArgRepairs(ref, args, schema);
-  const invalid = validationMessage(schema, first);
-  if (!invalid) return { args: first };
-  const extras = unexpectedKeys(schema, first).sort();
+  const normalize = (input: Record<string, unknown>) => {
+    const result = normalizeActiveArguments(ref, schema, input);
+    return { args: result.args, ...(result.witness ? { normalization: result.witness } : {}) };
+  };
+  // Provider-owned preparation has already run. Generic conventions may
+  // recover leftover invalid representations, never override an adapter's
+  // interpretation or bypass its preparation errors.
+  const first = normalize(applyActiveArgRepairs(ref, args, schema));
+  const invalid = validationMessage(schema, first.args);
+  if (!invalid) return first;
+  const extras = unexpectedKeys(schema, first.args).sort();
   if (observedUnexpected === undefined || extras.join("\0") !== observedUnexpected) {
     compiler?.observeInvalidArgs(
-      ref,
-      first,
-      declaredPropertyNames(schema),
-      invalid,
+      ref, first.args, declaredPropertyNames(schema), invalid,
       { countError: false, extraKeys: extras },
     );
   }
-  const second = applyActiveArgRepairs(ref, first, schema);
-  const stillInvalid = validationMessage(schema, second);
+  const second = normalize(applyActiveArgRepairs(ref, first.args, schema));
+  const stillInvalid = validationMessage(schema, second.args);
   if (stillInvalid) compiler?.recordInvocationError();
-  return stillInvalid ? { args: second, invalid: stillInvalid } : { args: second };
+  return stillInvalid ? { args: second.args, invalid: stillInvalid } : second;
 };
-

@@ -1,249 +1,89 @@
-// The compiled entropy surface: the durable artifact the autonomous
-// compiler maintains beside the repair table. Every overlay entry records
-// the digest of the live schema it was compiled against, and every consult
-// re-proves that digest against the live declared schema — an entry whose
-// base changed underneath it drops out instead of mis-enforcing. The
-// artifact is clock-free and deterministic: the same evidence compiles to
-// the same bytes.
-
+// Version 2 compiles compatibility normal forms, never schema restrictions.
+// Version 1 restriction artifacts remain readable for migration but are inert.
 import { Value } from "typebox/value";
 import { stableJsonHash } from "../core/stable-hash.js";
-import type {
-  EntropyAuditCall,
-  EntropyProposal,
-  EntropySurfaceSnapshot,
-  EntropyTraceInput,
-} from "./types.js";
+import { ENTROPY_METRIC_VERSION } from "./types.js";
+import { MAX_NORMAL_FORM_PLANS, provesNormalFormPlan, type NormalFormPlan } from "./normal-form.js";
+import type { EntropyAuditCall, EntropyProposal, EntropySurfaceSnapshot, EntropyTraceInput } from "./types.js";
 
-export const COMPILED_SURFACE_VERSION = 1 as const;
+export const COMPILED_SURFACE_VERSION = 2 as const;
 export const MAX_COMPILED_SURFACE_PROPOSALS = 256;
-
 export interface CompiledSurfaceOverlayEntry {
   ref: string;
   inputSchema: Record<string, unknown>;
   baseSchemaDigest: string;
 }
-
-export interface CompiledSurfaceQuarantineEntry {
-  ref: string;
-  baseSchemaDigest: string;
-}
-
-export interface CompiledSurfaceAppliedProposal {
-  kind: EntropyProposal["kind"];
-  ref: string;
-  detail: string;
-}
-
-export interface CompiledSurfaceGateRecord {
-  passed: boolean;
-  beforeScore: number;
-  afterScore: number;
-  reasons: string[];
-}
-
+export interface CompiledSurfaceQuarantineEntry { ref: string; baseSchemaDigest: string }
+export interface CompiledSurfaceAppliedProposal { kind: EntropyProposal["kind"]; ref: string; detail: string }
+export interface CompiledSurfaceGateRecord { passed: boolean; beforeScore: number; afterScore: number; reasons: string[] }
 export interface CompiledSurfaceFile {
-  version: typeof COMPILED_SURFACE_VERSION;
+  version: 1 | typeof COMPILED_SURFACE_VERSION;
   metricVersion: number;
+  /** Legacy restrictions are retained only when reading version 1. Never enforced. */
   actions: CompiledSurfaceOverlayEntry[];
   quarantined: CompiledSurfaceQuarantineEntry[];
+  normalizations?: NormalFormPlan[];
   applied: CompiledSurfaceAppliedProposal[];
   gate: CompiledSurfaceGateRecord;
   evidenceDigest: string;
 }
 
-// Gate user-facing compile notices on enforcement changes, not provenance-only
-// updates to the evidence digest, gate score, or applied ledger.
-export const compiledSurfaceEffectChanged = (
-  before: CompiledSurfaceFile | undefined,
-  after: CompiledSurfaceFile,
-): boolean => stableJsonHash({
-  actions: before?.actions ?? [],
-  quarantined: before?.quarantined ?? [],
-}) !== stableJsonHash({
-  actions: after.actions,
-  quarantined: after.quarantined,
+export const emptyCompiledSurface = (): CompiledSurfaceFile => ({
+  version: COMPILED_SURFACE_VERSION, metricVersion: ENTROPY_METRIC_VERSION,
+  actions: [], quarantined: [], normalizations: [], applied: [],
+  gate: { passed: true, beforeScore: 0, afterScore: 0, reasons: [] },
+  evidenceDigest: stableJsonHash([]),
 });
-
+export const compiledSurfaceEffectChanged = (before: CompiledSurfaceFile | undefined, after: CompiledSurfaceFile): boolean =>
+  stableJsonHash(before?.version === COMPILED_SURFACE_VERSION ? before.normalizations ?? [] : []) !==
+  stableJsonHash(after.version === COMPILED_SURFACE_VERSION ? after.normalizations ?? [] : []);
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
 export const schemaDigest = (schema: unknown): string => stableJsonHash(schema);
 
-// A base digest binds provenance, not authority: an imported or damaged
-// artifact must not replace required fields, types, or other schema guards.
-// Only top-level property enum restrictions may differ from the declaration.
-const isEnumRestriction = (live: unknown, candidate: Record<string, unknown>): boolean => {
-  if (!isPlainRecord(live)) return false;
-  if (schemaDigest(live) === schemaDigest(candidate)) return true;
-  if (!isPlainRecord(live.properties) || !isPlainRecord(candidate.properties)) return false;
-  const restored = { ...candidate.properties };
-  if (Object.keys(restored).length !== Object.keys(live.properties).length) return false;
-  for (const [key, property] of Object.entries(live.properties)) {
-    if (!Object.hasOwn(restored, key)) return false;
-    const overlay = restored[key];
-    if (schemaDigest(property) === schemaDigest(overlay)) continue;
-    if (
-      !isPlainRecord(property) || !isPlainRecord(overlay) ||
-      !Array.isArray(overlay.enum) || overlay.enum.length === 0
-    ) return false;
-    if (Array.isArray(property.enum)) {
-      const allowed = new Set(property.enum.map((value) => stableJsonHash(value)));
-      if (!overlay.enum.every((value) => allowed.has(stableJsonHash(value)))) return false;
-    }
-    const rest = { ...overlay };
-    const base = { ...property };
-    delete rest.enum;
-    delete base.enum;
-    if (schemaDigest(rest) !== schemaDigest(base)) return false;
-    Object.defineProperty(restored, key, {
-      value: property, enumerable: true, configurable: true, writable: true,
-    });
-  }
-  return schemaDigest({ ...candidate, properties: restored }) === schemaDigest(live);
-};
-
-const provesOverlay = (live: unknown, entry: CompiledSurfaceOverlayEntry): boolean =>
-  schemaDigest(live) === entry.baseSchemaDigest && isEnumRestriction(live, entry.inputSchema);
-
-// Overlay consult for one ref: the compiled schema replaces the declared
-// schema only while the base digest still proves the declared surface did
-// not change underneath the compile.
-export const effectiveSchemaFor = (
-  ref: string,
-  liveSchema: unknown,
-  file?: CompiledSurfaceFile,
-): unknown => {
-  const entry = file?.actions.find((candidate) => candidate.ref === ref);
-  if (!entry) return liveSchema;
-  return provesOverlay(liveSchema, entry) ? entry.inputSchema : liveSchema;
-};
-
-// Whole-surface overlay for measurement and export: tightened schemas where
-// the base still matches, quarantined refs hidden where the base still
-// matches. Stale entries fall back to the live surface, never mis-enforce.
-export const applyCompiledSurface = (
-  live: EntropySurfaceSnapshot,
-  file?: CompiledSurfaceFile,
-): EntropySurfaceSnapshot => {
-  if (!file || (file.actions.length === 0 && file.quarantined.length === 0)) return live;
-  const byRef = new Map<string, unknown>(
-    live.actions.map((action) => [action.ref, action.inputSchema]),
-  );
-  const overlayByRef = new Map(file.actions.map((entry) => [entry.ref, entry]));
-  const quarantineByRef = new Map(file.quarantined.map((entry) => [entry.ref, entry]));
-  const actions: EntropySurfaceSnapshot["actions"] = [];
-  for (const action of live.actions) {
-    const overlay = overlayByRef.get(action.ref);
-    if (overlay && provesOverlay(byRef.get(action.ref), overlay)) {
-      actions.push({ ref: action.ref, inputSchema: overlay.inputSchema });
-      continue;
-    }
-    const quarantine = quarantineByRef.get(action.ref);
-    if (quarantine && schemaDigest(byRef.get(action.ref)) === quarantine.baseSchemaDigest) {
-      continue;
-    }
-    actions.push(action);
-  }
-  return { version: 1, actions };
-};
-
-// Name-only quarantine view for catalog filtering: hiding there is
-// advisory, so no digest proof is required. Resolution denial is the
-// digested isQuarantinedRef below.
-export const quarantinedRefNames = (file?: CompiledSurfaceFile): ReadonlySet<string> =>
-  new Set(file?.quarantined.map((entry) => entry.ref));
-
-// Resolution denial with digest proof: a quarantined ref stays callable
-// only when the live schema changed underneath the compile.
-export const isQuarantinedRef = (
-  ref: string,
-  liveSchema: unknown,
-  file?: CompiledSurfaceFile,
-): boolean => {
-  const entry = file?.quarantined.find((candidate) => candidate.ref === ref);
-  if (!entry) return false;
-  return schemaDigest(liveSchema) === entry.baseSchemaDigest;
-};
+// These compatibility APIs deliberately preserve the entire declaration.
+// Neither a legacy artifact nor an imported schema may remove capabilities.
+export const effectiveSchemaFor = (_ref: string, liveSchema: unknown, _file?: CompiledSurfaceFile): unknown => liveSchema;
+export const applyCompiledSurface = (live: EntropySurfaceSnapshot, _file?: CompiledSurfaceFile): EntropySurfaceSnapshot => live;
+export const quarantinedRefNames = (_file?: CompiledSurfaceFile): ReadonlySet<string> => new Set();
+export const isQuarantinedRef = (_ref: string, _liveSchema: unknown, _file?: CompiledSurfaceFile): boolean => false;
 
 export interface MergedCompiledSurface {
   file: CompiledSurfaceFile;
   droppedOverlays: number;
   droppedQuarantines: number;
+  droppedNormalizations: number;
 }
 
-const byRefOrder = (left: { ref: string }, right: { ref: string }): number =>
-  left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0;
-
-// Federation merge: incoming entries earn a slot only where their recorded
-// base digest proves against the live declared surface and the local
-// artifact has nothing to say about that ref (conflicts skip, local wins).
-// Every consult re-proves merged entries against the live schema, so an
-// imported artifact can never enforce a schema the local surface does not
-// still declare. The applied ledger unions by identity, local first,
-// capped at the store's maximum.
+// Import proves the complete rule plan by re-derivation, not merely a base
+// digest. Forged rule kinds/targets, drift, and every legacy restriction drop.
 export const mergeCompiledSurfaces = (
   local: CompiledSurfaceFile | undefined,
   incoming: CompiledSurfaceFile,
   live: EntropySurfaceSnapshot,
 ): MergedCompiledSurface => {
-  const liveByRef = new Map(live.actions.map((action) => [action.ref, action.inputSchema]));
-  const liveDigestOf = (ref: string): string | undefined => {
-    const schema = liveByRef.get(ref);
-    return schema === undefined ? undefined : schemaDigest(schema);
+  const schemas = new Map(live.actions.map((action) => [action.ref, action.inputSchema]));
+  const plans = new Map<string, NormalFormPlan>();
+  let droppedNormalizations = 0;
+  for (const file of [local, incoming]) {
+    if (!file || file.version !== COMPILED_SURFACE_VERSION) continue;
+    for (const plan of file.normalizations ?? []) {
+      if (!provesNormalFormPlan(plan, schemas.get(plan.ref))) { droppedNormalizations++; continue; }
+      if (plans.size >= MAX_NORMAL_FORM_PLANS || plans.has(plan.ref)) continue;
+      plans.set(plan.ref, plan);
+    }
+  }
+  const normalizations = [...plans.values()].sort((a, b) => a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0);
+  return {
+    file: {
+      ...emptyCompiledSurface(), normalizations,
+      applied: normalizations.slice(0, MAX_COMPILED_SURFACE_PROPOSALS).map((plan) => ({ kind: "normal-form", ref: plan.ref, detail: `${plan.rules.length} proven rules` })),
+      evidenceDigest: stableJsonHash(normalizations),
+    },
+    droppedOverlays: (local?.actions.length ?? 0) + incoming.actions.length,
+    droppedQuarantines: (local?.quarantined.length ?? 0) + incoming.quarantined.length,
+    droppedNormalizations,
   };
-  const overlayRefs = new Set((local?.actions ?? []).map((entry) => entry.ref));
-  const quarantineRefs = new Set((local?.quarantined ?? []).map((entry) => entry.ref));
-  const actions = [...(local?.actions ?? [])];
-  const quarantined = [...(local?.quarantined ?? [])];
-  let droppedOverlays = 0;
-  let droppedQuarantines = 0;
-  for (const entry of incoming.actions) {
-    if (overlayRefs.has(entry.ref) || quarantineRefs.has(entry.ref)) continue;
-    if (!provesOverlay(liveByRef.get(entry.ref), entry)) {
-      droppedOverlays++;
-      continue;
-    }
-    actions.push(entry);
-    overlayRefs.add(entry.ref);
-  }
-  for (const entry of incoming.quarantined) {
-    if (overlayRefs.has(entry.ref) || quarantineRefs.has(entry.ref)) continue;
-    if (liveDigestOf(entry.ref) !== entry.baseSchemaDigest) {
-      droppedQuarantines++;
-      continue;
-    }
-    quarantined.push(entry);
-    quarantineRefs.add(entry.ref);
-  }
-  actions.sort(byRefOrder);
-  quarantined.sort(byRefOrder);
-  const applied: CompiledSurfaceAppliedProposal[] = [];
-  const seenApplied = new Set<string>();
-  for (const source of [local?.applied ?? [], incoming.applied]) {
-    for (const entry of source) {
-      const identity = `${entry.kind}:${entry.ref}:${entry.detail}`;
-      if (seenApplied.has(identity)) continue;
-      seenApplied.add(identity);
-      if (applied.length >= MAX_COMPILED_SURFACE_PROPOSALS) break;
-      applied.push(entry);
-    }
-  }
-  const file: CompiledSurfaceFile = {
-    version: COMPILED_SURFACE_VERSION,
-    metricVersion: local?.metricVersion ?? incoming.metricVersion,
-    actions,
-    quarantined,
-    applied,
-    gate: local?.gate ?? incoming.gate,
-    evidenceDigest: stableJsonHash({
-      actions,
-      quarantined,
-      applied,
-      sources: [...(local ? [local.evidenceDigest] : []), incoming.evidenceDigest],
-    }),
-  };
-  return { file, droppedOverlays, droppedQuarantines };
 };
 
 export interface ReplayViolation {
