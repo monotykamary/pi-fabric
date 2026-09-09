@@ -91,6 +91,8 @@
   "dependencies": {
     "@earendil-works/pi-ai": "0.85.1",
     "@jitl/quickjs-singlefile-mjs-release-sync": "^0.32.0",
+    "@lezer/common": "^1.5.2",
+    "@lezer/python": "^1.1.19",
     "@shikijs/langs": "4.4.3",
     "@shikijs/themes": "4.4.3",
     "cross-spawn": "^7.0.6",

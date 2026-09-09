@@ -37,15 +37,23 @@ const streamFixture = () => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("kernel speculation boundaries", () => {
-  it.each(["monty", "cpython"] as const)("Python/%s installs no TS scanner or speculative store", async (pythonRuntime) => {
+  it.each(["monty", "cpython"] as const)("Python/%s loads a Python scanner and speculative store", async (pythonRuntime) => {
     const config = normalizeFabricConfig({ executor: { kernel: "python", pythonRuntime } });
     const registry = new ActionRegistry();
     const install = vi.spyOn(registry, "setSpeculation");
     const scan = vi.spyOn(LiteralCallScanner.prototype, "push");
     const service = new RuntimeStateSpeculation(registry,
-      () => config.executor.kernel === "python" ? undefined : config.speculation, () => undefined);
-    expect(service.tap).toBeUndefined();
-    expect(install).not.toHaveBeenCalled();
+      () => config.speculation, () => undefined, () => true, "python");
+    const speculate = vi.spyOn(registry, "speculate").mockResolvedValue(undefined);
+    expect(service.tap).toBeDefined();
+    expect(install).toHaveBeenCalledOnce();
+    service.tap!.handleMessageUpdate(event("toolcall_start"), context);
+    service.tap!.handleMessageUpdate(event("toolcall_delta", JSON.stringify({ code: 'await pi.read(path="x")' })), context);
+    await vi.waitFor(() => {
+      service.tap!.flushCatchUp(context);
+      expect(speculate).toHaveBeenCalledOnce();
+    });
+    expect(speculate.mock.calls[0]?.slice(0, 2)).toEqual(["pi.read", { path: "x" }]);
     expect(scan).not.toHaveBeenCalled();
     service.reset();
     await registry.close();

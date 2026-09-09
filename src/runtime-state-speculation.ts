@@ -25,6 +25,7 @@ export class RuntimeStateSpeculation {
     readonly readConfig: () => FabricConfig["speculation"] | undefined,
     readonly readCapabilityView: () => FabricInvocationContext["capabilityView"],
     readonly allowRef: (ref: string) => boolean = () => true,
+    kernel: "typescript" | "python" = "typescript",
   ) {
     const speculation = readConfig();
     if (!speculation?.enabled) return;
@@ -57,15 +58,13 @@ export class RuntimeStateSpeculation {
         );
       },
     });
-    // The scanner pulls in the TypeScript compiler; load it in the background
+    // Load only the selected language parser in the background
     // so session startup never pays. Streams that open first are re-scanned in
     // full once the factory lands (their extractors buffered the prefix).
-    void import("./speculation/scanner.js").then(
-      (module) => {
-        this.tap?.setScannerFactory(() => new module.LiteralCallScanner());
-      },
-      () => undefined,
-    );
+    const factory = kernel === "python"
+      ? import("./speculation/python-scanner.js").then((module) => () => new module.PythonLiteralCallScanner())
+      : import("./speculation/scanner.js").then((module) => () => new module.LiteralCallScanner());
+    void factory.then((create) => this.tap?.setScannerFactory(create), () => undefined);
   }
 
   async #launchSpeculation(

@@ -892,12 +892,16 @@ export class FabricRuntimeState {
     this.#speculation = undefined;
     this.#registry?.setSpeculation(undefined);
     const config = this.#config;
-    // The TS scanner cannot model Python bindings or native OS mutations.
+    // Native runtimes can mutate outside registry epochs; only isolated backends speculate.
     // Recreate the tap/store for every policy change so limits, epochs and
     // pending asynchronous scans cannot leak across an execution boundary.
-    const eligible = (): boolean => this.#config?.executor.kernel === "typescript"
-      && (this.#config.schema.mode === "enforce" || this.#config.executor.runtime === "quickjs")
-      && this.#config.speculation.enabled;
+    const eligible = (): boolean => {
+      const current = this.#config;
+      if (!current?.speculation.enabled) return false;
+      return current.executor.kernel === "python"
+        ? current.executor.pythonRuntime === "monty" || current.schema.mode === "enforce"
+        : current.schema.mode === "enforce" || current.executor.runtime === "quickjs";
+    };
     if (!config || !this.#registry || !eligible()) return;
     this.#speculation = new RuntimeStateSpeculation(
       this.#registry,
@@ -909,6 +913,7 @@ export class FabricRuntimeState {
         if (ref.startsWith("pi.") && !current.fullCodeMode && current.schema.mode !== "enforce") return false;
         return current.schema.mode !== "enforce" || schemaRefAllowedInEnforce(ref);
       },
+      config.executor.kernel,
     );
   }
 

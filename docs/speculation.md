@@ -9,28 +9,34 @@ call having executed at its natural program point.
 
 ## Kernel support
 
-sPTC currently supports **TypeScript with the effective QuickJS backend only**
-(including schema enforce mode, which selects QuickJS for TypeScript).
-It has a **TypeScript-only scanner**. Python (Monty and CPython)
-is explicitly bypassed before extraction/scanning or speculative dispatch;
-Python syntax must never be fed through the TypeScript AST as an approximation.
-Normal Python host calls still run the authoritative registry pipeline without
-speculative cache warming. This is not Python sPTC support.
+sPTC supports **TypeScript with effective QuickJS**, **Python/Monty**, and
+**Python/CPython under schema enforce** (the required OS sandbox must be available).
+Native CPython and native TypeScript (Node/Bun outside schema enforce) remain
+bypassed: ambient OS/network mutations bypass registry epochs. Normal host calls
+still execute without speculative warming on those backends.
 
-Kernel/backend and schema/full-code policy transitions must reset both stream
-state and the promise cache before the next program. Reset invalidates pending
+Python uses a lazy-loaded incremental Lezer Python grammar, never the TypeScript
+AST. The scanner requires a completed argument list without parser errors and
+accepts JSON-compatible Python literals, `True`/`False`/`None`, dictionaries,
+lists, tuples, finite numbers/safe integers, and basic quoted/raw/triple strings.
+Keyword arguments, a dictionary plus keywords, and documented Pi positional
+shorthands normalize through the same helper as the Monty bridge; integration
+tests also check consumption through the CPython bridge.
+
+Dynamic expressions, argument unpacking, f/byte strings, unsupported string
+escapes, and calls inside functions/classes/lambdas/comprehensions are skipped.
+Namespace uses other than direct dotted callees conservatively taint that root
+for the stream, including imports, assignments, parameters, loop/with targets,
+destructuring, aliases, and namespace mutation. This may skip safe calls rather
+than speculate on an ambiguous binding. Existing read-only eligibility, live
+policy gates, authoritative registry validation, freshness, and audit rules apply
+unchanged to Python candidates.
+
+Kernel/backend and schema/full-code policy transitions reset both stream state
+and the promise cache before the next program. Reset invalidates pending
 preparation and already-claimed promises as well as retained results. Re-enabling
 speculation or returning to an eligible kernel/backend starts with empty state;
 it does not revive earlier streams or results.
-
-Robust Python support warrants future parser work: an incremental Python-aware
-parser, completed-call detection, Python literal/keyword argument normalization,
-and lexical binding/shadowing analysis shared with the Python bridge contract.
-Regex extraction or parsing Python-looking expressions as TypeScript cannot
-safely establish those properties. Native TypeScript backends (Node/Bun outside
-schema enforce) are explicitly bypassed too: ambient OS writes bypass registry
-mutation epochs, and only `pi.read` currently has external filesystem freshness
-checks. Backend support must not weaken the isolated correctness contract.
 
 The pre-launch gate also checks live policy **before provider lookup**: read or network approval must be `allow`, hidden `pi.*` calls cannot pre-launch in orchestration-only mode, and Schema-blocked refs cannot pre-launch under enforcement. MCP allowlisting alone does not override `ask`/`deny` or Schema policy. The normal invocation repeats its full authorization and approval path before consuming a cached result.
 
@@ -43,7 +49,8 @@ message_update (pi extension event)
 PartialCodeFieldExtractor        src/speculation/partial-json.ts
   │  incrementally unescapes the streamed `"code"` JSON string field
   ▼
-LiteralCallScanner               src/speculation/scanner.ts
+LiteralCallScanner / PythonLiteralCallScanner
+                                 src/speculation/{scanner,python-scanner}.ts
   │  reparses only when appended bytes contain `)`; emits completed
   │  root.fn({...}) calls whose arguments are entirely literals;
   │  namespaces shadowed by local bindings are tainted for the stream
@@ -146,8 +153,8 @@ read; keep the allowlist to stable, idempotent reads.
 - `pi.edit`/`write`/`bash`, `state.transition`/`goal`/`verify`/`checkGoal`,
   every `write`/`execute`/`agent` risk class, and `compact.cancel`
   (reclassified from a historic mislabeled `"read"` to `"write"`).
-- Calls with non-literal arguments, positional or multi-argument calls (their
-  normalization lives on the guest bridge), and calls on namespace roots the
+- Calls with non-literal arguments, TypeScript positional or multi-argument calls
+  (their normalization lives on the guest bridge), and calls on namespace roots the
   program shadows locally. These are Cases 2 and 3 in the blog (shadow-REPL
   dependency resolution) and belong to later work. Literal arguments (Case 1)
   cover the common generated shapes, including `Promise.all` fan-out.
@@ -158,7 +165,7 @@ read; keep the allowlist to stable, idempotent reads.
 ## Cost profile
 
 Worst case per turn: a handful of wasted local reads (or allowlisted MCP
-reads when the model rewrites mid-stream), one TS reparse per `)`-carrying
+reads when the model rewrites mid-stream), one language-parser pass per `)`-carrying
 delta debounced to 20 per second, and a bounded stream buffer. Steady state:
 Tier-A hits make `pi.read` effectively free against generation time, which is
 where fabric programs on thinking models spend wall clock.

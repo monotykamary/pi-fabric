@@ -68,10 +68,10 @@ describe("real runtime kernel policy wiring", () => {
     } finally { await close(); }
   });
 
-  it.each([false, true])("recreates speculation only for isolated TS (starts Python=%s)", async (python) => {
+  it.each([false, true])("recreates speculation only for isolated backends (starts Python=%s)", async (python) => {
     const { runtime, reload, close } = await fixture(python);
     try {
-      expect(Boolean(runtime.speculationTap)).toBe(!python);
+      expect(runtime.speculationTap).toBeDefined();
       reload((config) => { config.executor.kernel = "typescript"; });
       const first = runtime.speculationTap!;
       expect(first).toBeDefined();
@@ -87,8 +87,12 @@ describe("real runtime kernel policy wiring", () => {
       expect(runtime.speculationTap).toBeUndefined();
       reload((config) => { config.executor.kernel = "python"; config.executor.pythonRuntime = "cpython"; });
       expect(runtime.speculationTap).toBeUndefined();
-      reload((config) => { config.executor.pythonRuntime = "monty"; });
+      runtime.setSchemaMode("enforce", "quickjs");
+      expect(runtime.speculationTap).toBeDefined();
+      runtime.setSchemaMode("off", "quickjs");
       expect(runtime.speculationTap).toBeUndefined();
+      reload((config) => { config.executor.kernel = "python"; config.executor.pythonRuntime = "monty"; });
+      expect(runtime.speculationTap).toBeDefined();
       reload((config) => { config.executor.kernel = "typescript"; config.executor.runtime = "quickjs"; config.speculation.enabled = false; });
       expect(runtime.speculationTap).toBeUndefined();
       reload((config) => { config.speculation.enabled = true; config.speculation.maxEntries = 1; });

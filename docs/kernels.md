@@ -138,7 +138,7 @@ Python syntax/runtime errors report user source lines and bounded recovery hints
 
 The [repair and entropy compilers](entropy.md#kernel-boundary) operate on canonical host-call schemas, audits, and valid trace records, not Python source or traceback prose. Their catalog binding, validation, approvals, and quarantine rules remain active for both Python backends. Compiled overlays can restrict enums; they cannot remove required fields or weaken declared types.
 
-[sPTC](speculation.md) currently supports effective TypeScript/QuickJS only. Python and native TypeScript skip speculative dispatch; they still execute normal host calls. Kernel/backend/policy changes clear and replace speculative state. No Python prefetch parser or TypeScript-parser approximation is claimed.
+[sPTC](speculation.md) supports TypeScript/QuickJS, Python/Monty, and Python/CPython under schema enforce (OS sandbox required). Native CPython and native TypeScript skip speculative dispatch because ambient mutations bypass registry epochs; normal host calls still work. Python uses a separate incremental Python grammar scanner with literal/keyword/positional argument normalization and conservative namespace shadowing checks. Kernel/backend/policy changes clear and replace speculative state.
 
 ## Monty subset limitations
 

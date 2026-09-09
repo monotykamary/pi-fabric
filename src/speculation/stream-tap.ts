@@ -3,14 +3,15 @@ import type {
   MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
 import { PartialCodeFieldExtractor } from "./partial-json.js";
-import type { LiteralCallScanner } from "./scanner.js";
 import type { FabricSpeculationCandidate } from "./types.js";
+
+interface CallScanner { push(code: string): FabricSpeculationCandidate[]; }
 
 interface StreamState {
   toolCallId: string;
   isFabricExec: boolean;
   extractor: PartialCodeFieldExtractor;
-  scanner?: LiteralCallScanner;
+  scanner?: CallScanner;
 }
 
 export interface FabricSpeculationTapOptions {
@@ -54,18 +55,18 @@ const PARSE_INTERVAL_MS = 50;
 export class FabricSpeculationStreamTap {
   readonly #options: FabricSpeculationTapOptions;
   readonly #streams = new Map<number, StreamState>();
-  // The scanner depends on the TypeScript compiler; the factory arrives through
+  // Language parsers are lazy; the selected scanner factory arrives through
   // a lazy dynamic import so session startup never pays for it. Streams opened
   // before the factory lands are caught up in full (extractors buffer the
   // whole decoded prefix, so no candidate is lost, only delayed).
-  #createScanner: (() => LiteralCallScanner) | undefined;
+  #createScanner: (() => CallScanner) | undefined;
   #lastParseAt = 0;
 
   constructor(options: FabricSpeculationTapOptions) {
     this.#options = options;
   }
 
-  setScannerFactory(factory: () => LiteralCallScanner): void {
+  setScannerFactory(factory: () => CallScanner): void {
     this.#createScanner = factory;
     if (!this.#options.enabled()) {
       this.reset();

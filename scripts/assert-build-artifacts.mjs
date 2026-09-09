@@ -39,6 +39,7 @@ const lazy = [
   "runtime/quickjs-runtime.js",
   "runtime/type-checker.js",
   "speculation/scanner.js",
+  "speculation/python-scanner.js",
   "ui/dashboard.js",
   "ui/conversation.js",
   "ui/conversation-host.js",

@@ -41,6 +41,7 @@ const lazyEntryPoints = [
   "src/runtime/quickjs-runtime.ts",
   "src/runtime/type-checker.ts",
   "src/speculation/scanner.ts",
+  "src/speculation/python-scanner.ts",
   "src/ui/dashboard.ts",
   "src/ui/conversation.ts",
   "src/ui/conversation-host.ts",
