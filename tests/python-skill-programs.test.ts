@@ -36,7 +36,7 @@ const catalog: SkillHost = async (ref) => {
 };
 
 it("extracts python fences from CRLF checkouts", () => {
-  const lf = fs.readFileSync("skillsets/python/fabric-council/SKILL.md", "utf8");
+  const lf = fs.readFileSync("skillsets/python/fabric-council/SKILL.md", "utf8").replace(/\r\n?/g, "\n");
   expect(extractPythonPrograms(lf.replace(/\n/g, "\r\n"))).toEqual(extractPythonPrograms(lf));
   expect(extractPythonPrograms(lf).length).toBeGreaterThan(0);
 });
