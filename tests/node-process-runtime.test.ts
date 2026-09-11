@@ -36,6 +36,17 @@ return { models, process: typeof process, require: typeof require };
       require: "undefined",
     });
   });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -100])("rejects non-positive timeout %s without spawning", async (timeoutMs) => {
+    const result = await new NodeProcessRuntime().execute(
+      "return 1;",
+      async () => undefined,
+      { ...options, timeoutMs },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toBe("Process timeout must be positive");
+  });
+
 
   it("normalizes the string shorthand for tools.search", async () => {
     const result = await new NodeProcessRuntime().execute(
