@@ -65,5 +65,8 @@ export const normalizeAgentRunRequest = (
     ...(typeof args.schema === "object" && args.schema !== null && !Array.isArray(args.schema)
       ? { schema: args.schema as Record<string, unknown> }
       : {}),
+    ...(typeof args.systemPrompt === "string" && args.systemPrompt.trim()
+      ? { systemPrompt: args.systemPrompt }
+      : {}),
   };
 };

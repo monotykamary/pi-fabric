@@ -51,6 +51,10 @@ const runProperties = {
   },
   worktree: { type: "boolean" },
   schema: { type: "object", description: "Optional JSON Schema for validated structured output" },
+  systemPrompt: {
+    type: "string",
+    description: "Optional extra system prompt body for this child run. Pi runners merge it below component guidance and forward it via --system-prompt; Claude runners receive it via --append-system-prompt. Useful for reliability-focused prompt rules on models with weak behavioral defaults.",
+  },
 };
 
 const runSchema = {

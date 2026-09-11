@@ -83,7 +83,17 @@ describe("agent kernel public contracts", () => {
       expect(Value.Check(schema, { ...required, kernel })).toBe(false);
     }
     expect(Value.Check(schema, { ...required, kernel: "python", pythonRuntime: "monty" })).toBe(false);
+    expect(Value.Check(schema, { ...required, kernel: "python", pythonRuntime: "monty" })).toBe(false);
     expect(Value.Check(schema, { ...required, unknown: true })).toBe(false);
+  });
+
+  it.each(["run", "spawn"])("accepts optional systemPrompt string on agents.%s", (name) => {
+    const schema = AGENTS_ACTION_DESCRIPTORS.find((action) => action.name === name)!.inputSchema;
+    expect(Value.Check(schema, { task: "task" })).toBe(true);
+    expect(Value.Check(schema, { task: "task", systemPrompt: "Be terse." })).toBe(true);
+    for (const bad of [null, 42, true, {}, []]) {
+      expect(Value.Check(schema, { task: "task", systemPrompt: bad })).toBe(false);
+    }
   });
 
   it.each(["ask", "tell"])("does not expose an activation-time language switch on %s", (name) => {
@@ -117,8 +127,16 @@ describe("provider kernel forwarding", () => {
     const { provider, spawn } = setup();
     await provider.invoke("run", { task: "task", kernel }, context);
     expect(spawn.mock.calls[0]![0].kernel).toBe(kernel);
+    expect(spawn.mock.calls[0]![0].kernel).toBe(kernel);
   });
 
+  it("copies systemPrompt into local run requests and drops blank strings", async () => {
+    const { provider, spawn } = setup();
+    await provider.invoke("run", { task: "task", systemPrompt: "  Be honest.  " }, context);
+    expect(spawn.mock.calls[0]![0].systemPrompt).toBe("  Be honest.  ");
+    await provider.invoke("run", { task: "task", systemPrompt: "   " }, context);
+    expect(spawn.mock.calls.at(-1)![0].systemPrompt).toBeUndefined();
+  });
   it.each([undefined, "inherit", "typescript"] as const)("freezes %s before durable one-shot forwarding", async (kernel) => {
     const { provider, residency, root, spawn } = setup();
     await provider.invoke("spawn", { task: "task", residency: "durable", cwd: root, ...(kernel ? { kernel } : {}) }, context);
