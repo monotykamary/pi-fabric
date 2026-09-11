@@ -152,6 +152,14 @@ describe("Fabric configuration", () => {
     });
     expect(floored.executor.hostCallTimeouts).toEqual({ "extensions.subagent": 300_000 });
   });
+  it("floors fractional integers instead of resetting them to defaults", () => {
+    const normalized = normalizeFabricConfig({
+      executor: { timeoutMs: 1500.9, maxOutputChars: 2500.5 },
+    });
+    expect(normalized.executor.timeoutMs).toBe(1500);
+    expect(normalized.executor.maxOutputChars).toBe(2500);
+  });
+
 
   it("normalizes executor runtimes and their memory ceilings", () => {
     const native = normalizeFabricConfig({
