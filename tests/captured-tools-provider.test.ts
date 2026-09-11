@@ -12,6 +12,10 @@ import { DEFAULT_FABRIC_CONFIG } from "../src/config.js";
 import { ActionRegistry } from "../src/core/action-registry.js";
 import { CapturedToolsProvider } from "../src/providers/captured-tools-provider.js";
 import { PiToolsProvider } from "../src/providers/pi-tools-provider.js";
+import { FabricExecutionService } from "../src/execution-service.js";
+import { createFabricExecTool } from "../src/fabric-exec-tool.js";
+import type { FabricState } from "../src/fabric-state.js";
+import { defaultCodePreviewSettings } from "../src/ui/code-preview.js";
 
 const context = {
   cwd: process.cwd(),
@@ -26,6 +30,54 @@ const context = {
 };
 
 describe("CapturedToolsProvider", () => {
+  it("attaches final captured images after result hooks without changing the tool result", async () => {
+    const originalImage = { type: "image" as const, data: "original", mimeType: "image/png" };
+    const finalImage = { type: "image" as const, data: "final", mimeType: "image/png" };
+    const text = { type: "text" as const, text: "accessibility tree" };
+    const definition = defineTool({
+      name: "screenshot", label: "Screenshot", description: "Capture a fixture",
+      parameters: Type.Object({}),
+      async execute() { return { content: [text, originalImage], details: { window: 1 } }; },
+    });
+    const runner = {
+      createContext: () => ({ cwd: process.cwd() }), getActiveTools: () => ["screenshot"],
+      emit: vi.fn(async () => {}), emitToolCall: vi.fn(async () => undefined),
+      emitToolResult: vi.fn(async () => ({ content: [text, finalImage] })),
+    } as unknown as ExtensionRunner;
+    const catalog = new CapturedToolCatalog();
+    catalog.replace([{ definition, sourceInfo: createSyntheticSourceInfo("/extensions/screenshot.ts", { source: "test" }) }], runner, DEFAULT_FABRIC_CONFIG.capture, "/extensions/pi-fabric/index.ts");
+    const provider = new CapturedToolsProvider(catalog);
+    const attachMedia = vi.fn();
+    const result = await provider.invoke("screenshot", {}, { ...context, attachMedia });
+    expect(attachMedia).toHaveBeenCalledExactlyOnceWith([finalImage]);
+    expect(result).toMatchObject({ content: [text, finalImage], text: text.text, details: { window: 1 } });
+    await expect(provider.invoke("screenshot", {}, context)).resolves.toMatchObject({ content: [text, finalImage] });
+    const registry = new ActionRegistry();
+    registry.register(provider);
+    const config = structuredClone(DEFAULT_FABRIC_CONFIG);
+    config.approvals.execute = "allow";
+    const state = {
+      config, ensure: async () => {}, claimHandoff: async () => undefined,
+      execution: new FabricExecutionService(registry, config),
+    } as unknown as FabricState;
+    const tool = createFabricExecTool(state, defaultCodePreviewSettings(), new Map(), (tool) => tool);
+    const output = await tool.execute("capture-e2e", {
+      code: 'await tools.call({ ref: "extensions.screenshot", args: {} }); await tools.call({ ref: "extensions.screenshot", args: {} }); return "done";',
+    }, undefined, undefined, {
+      cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => "fixture" },
+    } as ExtensionContext);
+    expect(output).not.toMatchObject({ isError: true });
+    expect(output.content.filter((part) => part.type === "image")).toEqual([finalImage, finalImage]);
+    vi.mocked(runner.emitToolResult).mockResolvedValueOnce({ content: [text, finalImage], isError: true });
+    const failedOutput = await tool.execute("capture-failed", {
+      code: 'return await tools.call({ ref: "extensions.screenshot", args: {} });',
+    }, undefined, undefined, {
+      cwd: process.cwd(), hasUI: false, sessionManager: { getSessionId: () => "fixture" },
+    } as ExtensionContext);
+    expect(failedOutput).toMatchObject({ isError: true });
+    expect(failedOutput.content.filter((part) => part.type === "image")).toEqual([finalImage]);
+  });
+
   it("prepares, validates, intercepts, and executes a captured tool lazily", async () => {
     const execute = vi.fn(async (_id, params: { value: string }, _signal, onUpdate, ctx) => {
       onUpdate?.({
