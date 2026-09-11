@@ -824,6 +824,22 @@ export class QuickJsRuntime {
           + " For large or quote-heavy content, keep it in top-level payloads and reference π.<key> instead of escaping it inside code.",
       };
     }
+    if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1) {
+      return {
+        value: undefined,
+        logs: [],
+        terminationReason: "runtime_error",
+        error: "QuickJS timeout must be positive",
+      };
+    }
+    if (options.maxLogChars !== undefined && (!Number.isSafeInteger(options.maxLogChars) || options.maxLogChars < 0)) {
+      return {
+        value: undefined,
+        logs: [],
+        terminationReason: "runtime_error",
+        error: "QuickJS log limit must be a nonnegative safe integer",
+      };
+    }
     if (
       !Number.isSafeInteger(options.memoryLimitBytes) ||
       options.memoryLimitBytes < 1 ||
@@ -896,8 +912,8 @@ export class QuickJsRuntime {
     };
     const scheduleDeadline = (): void => {
       if (!rejectDeadline || closing || cancelled || timedOut) return;
-      if (timeout) clearTimeout(timeout);
-      timeout = setTimeout(expireDeadline, Math.max(0, executionDeadlineAt - Date.now()));
+      clearTimeout(timeout);
+      timeout = setTimeout(expireDeadline, Math.min(2_147_483_647, Math.max(0, executionDeadlineAt - Date.now())));
     };
     const extendExecutionTimeout = (
       ref: string,

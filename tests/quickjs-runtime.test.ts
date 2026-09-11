@@ -19,6 +19,28 @@ describe("QuickJsRuntime", () => {
     expect(result.terminationReason).toBe("runtime_error");
     expect(result.error).toContain("WASM32 maximum");
   });
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -5])("rejects non-positive timeout %s like the Python kernels", async (timeoutMs) => {
+    const result = await new QuickJsRuntime().execute(
+      "return 1;",
+      async () => undefined,
+      { ...options, timeoutMs },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toBe("QuickJS timeout must be positive");
+  });
+
+  it("rejects negative log limits like the Monty kernel", async () => {
+    const result = await new QuickJsRuntime().execute(
+      "return 1;",
+      async () => undefined,
+      { ...options, maxLogChars: -10 },
+    );
+
+    expect(result.terminationReason).toBe("runtime_error");
+    expect(result.error).toBe("QuickJS log limit must be a nonnegative safe integer");
+  });
+
 
   it("runs parallel host calls and returns structured data", async () => {
     const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => ({
