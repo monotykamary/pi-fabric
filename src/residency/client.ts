@@ -15,9 +15,11 @@ import type { FabricMainAgentTarget } from "../main-agent.js";
 import { MeshStore, type MeshStateEntry } from "../mesh/store.js";
 import type { FabricParticipantSource } from "../topology/types.js";
 import {
+  abandonResidentRequest,
   RESIDENT_HOST_FORMAT,
   residentDeliveryPrefix,
   residentHostId,
+  sleepUnlessAborted,
   type ResidentAgentMetadata,
   type ResidentCommand,
   type ResidentCommandResponse,
@@ -302,7 +304,7 @@ export class ResidencyClient {
       if (signal?.aborted) throw new Error(`Waiting for durable Fabric agent ${id} was aborted`);
       const status = this.statusAgent(id);
       if (terminal(status.status) && "startedAt" in status) return status as AgentRunResult;
-      await delay(STATUS_POLL_MS);
+      await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
     }
   }
 
@@ -396,19 +398,24 @@ export class ResidencyClient {
     const responsePath = path.join(this.#responsesPath, `${command.requestId}.json`);
     atomicWrite(path.join(this.#requestsPath, `${command.requestId}.json`), command);
     const deadline = Date.now() + COMMAND_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw new Error("Fabric residency request was aborted");
-      const response = readJson<ResidentCommandResponse>(responsePath);
-      if (response?.format === RESIDENT_HOST_FORMAT && response.requestId === command.requestId) {
-        fs.rmSync(responsePath, { force: true });
-        if (!response.ok) throw new Error(response.error ?? "Fabric resident host rejected request");
-        return response;
+    try {
+      while (Date.now() < deadline) {
+        if (signal?.aborted) throw new Error("Fabric residency request was aborted");
+        const response = readJson<ResidentCommandResponse>(responsePath);
+        if (response?.format === RESIDENT_HOST_FORMAT && response.requestId === command.requestId) {
+          fs.rmSync(responsePath, { force: true });
+          if (!response.ok) throw new Error(response.error ?? "Fabric resident host rejected request");
+          return response;
+        }
+        const owner = this.#liveOwner();
+        if (!owner) throw new Error("Fabric resident host exited while processing a request");
+        await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
       }
-      const owner = this.#liveOwner();
-      if (!owner) throw new Error("Fabric resident host exited while processing a request");
-      await delay(STATUS_POLL_MS);
+      throw new Error(`Timed out waiting for Fabric residency request ${command.requestId}`);
+    } catch (error) {
+      abandonResidentRequest(this.#requestsPath, this.#responsesPath, command.requestId);
+      throw error;
     }
-    throw new Error(`Timed out waiting for Fabric residency request ${command.requestId}`);
   }
 
   async #waitForParticipant(id: string, kind: "actor" | "agent"): Promise<void> {

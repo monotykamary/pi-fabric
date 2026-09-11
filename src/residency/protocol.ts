@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type { FabricOwnedModelGuidance } from "../components/model-guidance.js";
 import type { FabricModelCandidate } from "../core/model-resolution.js";
@@ -7,6 +8,47 @@ import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import type { AgentHandleInfo, AgentRunRequest } from "../agents/types.js";
 import type { FabricKernel } from "../runtime/kernel.js";
 import type { MeshIdentity } from "../mesh/store.js";
+export const sleepUnlessAborted = (ms: number, signal?: AbortSignal): Promise<void> =>
+  // Executor form: the configured lib is ES2022, which has no
+  // Promise.withResolvers, and an abort listener plus a timer need shared
+  // completion control.
+  new Promise<void>((resolve, reject) => {
+    const aborted = (): Error =>
+      signal?.reason instanceof Error ? signal.reason : new Error("Fabric residency request was aborted");
+    if (signal?.aborted) {
+      reject(aborted());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(0, ms));
+    timer.unref?.();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(aborted());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+
+/**
+ * Remove an abandoned file-exchange request. The resident host renames
+ * unstarted requests out of `requests/` before running them, so deleting our
+ * file cancels work the host has not picked up yet; a late host response is
+ * removed as well. Deleting a request the host already moved is a no-op, and
+ * in-flight work still runs to completion. Best effort: never throws.
+ */
+export const abandonResidentRequest = (
+  requestsPath: string,
+  responsesPath: string,
+  requestId: string,
+): void => {
+  for (const directory of [requestsPath, responsesPath]) {
+    try {
+      fs.rmSync(path.join(directory, `${requestId}.json`), { force: true });
+    } catch { /* best effort: an abandoned request must not raise a second error */ }
+  }
+};
 
 export const RESIDENT_HOST_FORMAT = 1 as const;
 const RESIDENT_DELIVERY_PREFIX = "residency/deliveries/";

@@ -4,17 +4,16 @@ import path from "node:path";
 import { writeJsonAtomic } from "../core/atomic-write.js";
 import type { FabricActorInfo, FabricActorRequest } from "../actors/types.js";
 import {
+  abandonResidentRequest,
   RESIDENT_HOST_FORMAT,
   residentRoot,
+  sleepUnlessAborted,
   type ResidentCommand,
   type ResidentCommandResponse,
 } from "./protocol.js";
 
 const COMMAND_TIMEOUT_MS = 30_000;
 const STATUS_POLL_MS = 100;
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 const readJson = <T>(filePath: string): T | undefined => {
   try {
@@ -50,7 +49,7 @@ export class ResidentActorClient {
     return new ResidentActorClient(meshRoot, rootId);
   }
 
-  async createActor(request: FabricActorRequest): Promise<FabricActorInfo> {
+  async createActor(request: FabricActorRequest, signal?: AbortSignal): Promise<FabricActorInfo> {
     const response = await this.#send({
       format: RESIDENT_HOST_FORMAT,
       operation: "createActor",
@@ -58,12 +57,12 @@ export class ResidentActorClient {
       rootId: this.#rootId,
       request,
       createdAt: Date.now(),
-    });
+    }, signal);
     if (!response.actor) throw new Error("Resident host returned no actor from createActor");
     return response.actor;
   }
 
-  async removeActor(id: string): Promise<{ removed: true }> {
+  async removeActor(id: string, signal?: AbortSignal): Promise<{ removed: true }> {
     await this.#send({
       format: RESIDENT_HOST_FORMAT,
       operation: "removeActor",
@@ -71,26 +70,32 @@ export class ResidentActorClient {
       rootId: this.#rootId,
       id,
       createdAt: Date.now(),
-    });
+    }, signal);
     return { removed: true };
   }
 
-  async #send(command: ResidentCommand): Promise<ResidentCommandResponse> {
+  async #send(command: ResidentCommand, signal?: AbortSignal): Promise<ResidentCommandResponse> {
     fs.mkdirSync(this.#requestsPath, { recursive: true });
     writeJsonAtomic(path.join(this.#requestsPath, `${command.requestId}.json`), command);
     const responsePath = path.join(this.#responsesPath, `${command.requestId}.json`);
     const deadline = Date.now() + COMMAND_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const response = readJson<ResidentCommandResponse>(responsePath);
-      if (response?.format === RESIDENT_HOST_FORMAT && response.requestId === command.requestId) {
-        fs.rmSync(responsePath, { force: true });
-        if (!response.ok) throw new Error(response.error ?? "Resident host rejected actor request");
-        return response;
+    try {
+      while (Date.now() < deadline) {
+        if (signal?.aborted) throw new Error("Resident host actor request was aborted");
+        const response = readJson<ResidentCommandResponse>(responsePath);
+        if (response?.format === RESIDENT_HOST_FORMAT && response.requestId === command.requestId) {
+          fs.rmSync(responsePath, { force: true });
+          if (!response.ok) throw new Error(response.error ?? "Resident host rejected actor request");
+          return response;
+        }
+        const owner = readJson<{ pid?: number }>(this.#ownerPath);
+        if (!owner?.pid) throw new Error("Root resident host exited during actor request");
+        await sleepUnlessAborted(STATUS_POLL_MS, signal).catch(() => undefined);
       }
-      const owner = readJson<{ pid?: number }>(this.#ownerPath);
-      if (!owner?.pid) throw new Error("Root resident host exited during actor request");
-      await delay(STATUS_POLL_MS);
+      throw new Error("Timed out waiting for resident host actor response");
+    } catch (error) {
+      abandonResidentRequest(this.#requestsPath, this.#responsesPath, command.requestId);
+      throw error;
     }
-    throw new Error("Timed out waiting for resident host actor response");
   }
 }
