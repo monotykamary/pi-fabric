@@ -550,8 +550,8 @@ const booleanValue = (value: unknown, fallback: boolean): boolean =>
   typeof value === "boolean" ? value : fallback;
 
 const boundedInteger = (value: unknown, fallback: number, min: number, max: number): number =>
-  typeof value === "number" && Number.isInteger(value)
-    ? Math.max(min, Math.min(max, value))
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.floor(value)))
     : fallback;
 
 const boundedFloat = (value: unknown, fallback: number, min: number, max: number): number =>
