@@ -48,9 +48,23 @@ export const boundModelOutput = async (
     ? `\n\n[Full output (${fullOutput.length} chars) saved to: ${artifactPath}]`
     : "";
   const bodyBudget = Math.max(1, maxChars - suffix.length);
-  const text = `${truncateMiddle(visible, bodyBudget)}${suffix}`;
+  const body = truncateMiddle(visible, bodyBudget);
+  let text = `${body}${suffix}`;
+  if (text.length > maxChars) {
+    // The suffix carries the artifact path; shrink the body again instead of
+    // cutting into the path. A truncation marker can itself exceed a tiny
+    // rebudget, so fall back to the bare suffix (or its tail), which always
+    // fits and still ends with the path.
+    const rebudget = maxChars - suffix.length;
+    if (rebudget <= 0) {
+      text = suffix.slice(-Math.max(1, maxChars));
+    } else {
+      const shrunk = truncateMiddle(body, rebudget);
+      text = shrunk.length + suffix.length <= maxChars ? `${shrunk}${suffix}` : suffix;
+    }
+  }
   return {
-    text: text.length <= maxChars ? text : truncateMiddle(text, maxChars),
+    text,
     ...(artifactPath ? { artifactPath } : {}),
     originalChars: fullOutput.length,
     omittedChars: Math.max(0, fullOutput.length - Math.min(fullOutput.length, bodyBudget)),
