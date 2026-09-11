@@ -76,6 +76,8 @@ interface ConversationQueueBridgeRow {
 /** Structural subset of the extension's real `DeliveryQueue`. */
 interface ConversationQueueBridgeQueue {
   enqueue(lane: ConversationQueueLane, text: string, images?: readonly unknown[]): ConversationQueueBridgeRow;
+  /** Insert interactive steering into the current run, before future follow-up roots. */
+  enqueueSteer?(text: string, images?: readonly unknown[]): ConversationQueueBridgeRow;
   snapshot(): ConversationQueueBridgeRow[];
   peek(): ConversationQueueBridgeRow | undefined;
   get(id: string): ConversationQueueBridgeRow | undefined;
@@ -302,6 +304,16 @@ class NativeQueueState implements ConversationQueueBridgeQueue {
     };
     this.items.push(item);
     return { ...item, images: [...item.images] };
+  }
+
+  enqueueSteer(text: string, images: readonly unknown[] = []): ConversationQueueBridgeRow {
+    const item = this.enqueue("steer", text, images);
+    const firstRoot = this.items.findIndex((candidate) => candidate.lane === "followUp");
+    if (firstRoot !== -1) {
+      const inserted = this.items.pop()!;
+      this.items.splice(firstRoot, 0, inserted);
+    }
+    return item;
   }
 
   snapshot(): ConversationQueueBridgeRow[] {
@@ -568,7 +580,7 @@ export function createConversationQueue(options: ConversationQueueOptions): Conv
   const orderedRows = (): ConversationQueueRow[] => {
     const held = queue.snapshot().map(decoratedRow);
     // Accepted rows are immutable: outside the editing queue, never selectable.
-    const inFlight: ConversationQueueRow[] = [...dispatched, ...externalPending].map((row) => ({
+    const asDispatched = (row: DispatchedRow): ConversationQueueRow => ({
       id: row.id,
       lane: row.lane,
       text: row.text,
@@ -576,8 +588,11 @@ export function createConversationQueue(options: ConversationQueueOptions): Conv
       paused: false,
       selected: false,
       removed: false,
-    }));
-    return [...inFlight, ...held];
+    });
+    // User-owned rows stay ahead of unmatched native pending (Fabric
+    // participant queues that show at the end of the transcript). A user
+    // steer must not wait behind those at the next turn boundary.
+    return [...dispatched.map(asDispatched), ...held, ...externalPending.map(asDispatched)];
   };
 
   /**
@@ -705,7 +720,9 @@ export function createConversationQueue(options: ConversationQueueOptions): Conv
           error: "Control input (/ commands, ! bash) is Main-only and is not queued from a focused conversation",
         };
       }
-      const row = queue.enqueue(lane, text);
+      const row = lane === "steer" && typeof queue.enqueueSteer === "function"
+        ? queue.enqueueSteer(text)
+        : queue.enqueue(lane, text);
       notify(`Queued ${laneLabel(lane)} → ${targetLabel}`, "info");
       requestRender();
       return { ok: true, id: row.id };
@@ -805,8 +822,9 @@ export function createConversationQueue(options: ConversationQueueOptions): Conv
       // delivery-confirmed, not implied by the outline.
       if (bridge?.createTimelineWidget && bridge.buildTimelineItems) {
         const visibleRows: ConversationQueueBridgeRow[] = [
-          ...[...dispatched, ...externalPending].map((row, index) => ({ id: row.id, lane: row.lane, text: row.text, images: [], sequence: index - dispatched.length })),
+          ...dispatched.map((row, index) => ({ id: row.id, lane: row.lane, text: row.text, images: [], sequence: index - dispatched.length })),
           ...queue.snapshot(),
+          ...externalPending.map((row, index) => ({ id: row.id, lane: row.lane, text: row.text, images: [], sequence: queue.snapshot().length + index + 1 })),
         ];
         const displayQueue = new Proxy(queue, { get(target, key) {
           if (key === "snapshot") return () => visibleRows;

@@ -107,6 +107,16 @@ const stubBridgeListener = (bus: ReturnType<typeof fakeBus>) => {
           state!.rows.push(row);
           return row;
         },
+        enqueueSteer: (text) => {
+          const queue = bridge.createQueue();
+          const row = queue.enqueue("steer", text);
+          const firstRoot = state!.rows.findIndex((candidate) => candidate.lane === "followUp");
+          if (firstRoot !== -1) {
+            const inserted = state!.rows.pop()!;
+            state!.rows.splice(firstRoot, 0, inserted);
+          }
+          return row;
+        },
         snapshot: () => state!.rows.map((row) => ({ ...row, images: [...row.images] })),
         peek: () => {
           const row = state!.rows[0];
@@ -313,6 +323,30 @@ describe("conversation queue dispatch and restoration", () => {
     }
   });
 
+  it("interactive steering joins the current run ahead of queued follow-ups", async () => {
+    const send = vi.fn(async () => undefined);
+    const bus = fakeBus();
+    const unsubscribe = stubBridgeListener(bus);
+    try {
+      const queue = createConversationQueue(baseOptions({ piEvents: bus, send }));
+      queue.stage("run next", "followUp");
+      queue.stage("nudge now", "steer");
+      expect(queue.rows().map((row) => [row.lane, row.text])).toEqual([
+        ["steer", "nudge now"],
+        ["followUp", "run next"],
+      ]);
+      expect(await queue.submit("steer")).toBe(true);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith("nudge now", "steer");
+      expect(queue.rows().map((row) => [row.state, row.text])).toEqual([
+        ["dispatched", "nudge now"],
+        ["queued", "run next"],
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("never crosses a lane boundary or a paused head row", async () => {
     const send = vi.fn(async () => undefined);
     const bus = fakeBus();
@@ -514,14 +548,16 @@ describe("rendering", () => {
   it("uses queue_update rows from other senders without duplicating owned rows", async () => {
     const queue = createConversationQueue(baseOptions());
     await queue.dispatch("mine", "steer");
+    queue.stage("user next", "steer");
     queue.syncPending({ steering: ["mine", "from Main"], followUp: ["later"] });
     const lines = queue.render(80).join("\n");
     expect(lines.match(/Steering: mine/g)).toHaveLength(1);
     expect(lines).toContain("Steering: from Main");
     expect(lines).toContain("Follow-up: later");
-    expect(queue.rows()).toHaveLength(3);
+    expect(queue.rows().map((row) => row.text)).toEqual(["mine", "user next", "from Main", "later"]);
+    expect(queue.rows()).toHaveLength(4);
     queue.syncPending({ steering: [], followUp: [] });
-    expect(queue.rows()).toHaveLength(1);
+    expect(queue.rows().map((row) => row.text)).toEqual(["mine", "user next"]);
   });
 
   it("uses native Pi labels and colors in native fallback mode", () => {
