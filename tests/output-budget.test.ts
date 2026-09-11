@@ -39,6 +39,18 @@ describe("boundModelOutput", () => {
     expect(result.omittedChars).toBeGreaterThan(0);
     expect(writer).toHaveBeenCalledWith(full);
   });
+  it("never cuts the artifact path when the budget barely fits the suffix", async () => {
+    const full = "x".repeat(4_000);
+    const artifactPath = "/tmp/pi-fabric-output/output.txt";
+    const writer = vi.fn(async () => artifactPath);
+    const result = await boundModelOutput(full, 100, full, writer);
+
+    expect(result.text.length).toBeLessThanOrEqual(100);
+    expect(result.text).toContain(artifactPath);
+    expect(result.artifactPath).toBe(artifactPath);
+    expect(result.omittedChars).toBeGreaterThan(0);
+  });
+
 
   it("persists retrievable artifacts with private POSIX permissions", async () => {
     const result = await boundModelOutput("x".repeat(4_000), 1_000);
