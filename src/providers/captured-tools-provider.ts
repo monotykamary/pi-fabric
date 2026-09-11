@@ -244,6 +244,10 @@ export class CapturedToolsProvider implements FabricProvider {
       isError,
     }));
 
+    // Keep observations emitted before a failed batch as well as successful
+    // results. Hooks have already produced the final model-facing content.
+    const images = result.content.filter((part) => part.type === "image");
+    if (images.length > 0) context.attachMedia?.(images);
     if (isError) {
       if (isPiShellToolName(entry.name)) {
         throw piBashResultError(thrown, textFromContent(result.content));
