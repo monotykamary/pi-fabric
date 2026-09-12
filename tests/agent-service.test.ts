@@ -238,9 +238,10 @@ describe("hosted Fabric agent service", () => {
     const execute = vi.fn();
     const instance = service({prepare, execute});
     const provider = createAgentsProvider(createAgentServiceClient(createAgentServiceHandler(instance, "root")));
-    for (const args of [{runner: "claude"}, {runner: "veda"}, {kernel: "python"}, {extensions: false}, {worktree: true}, {transport: "process"}, {residency: "durable"}, {actorId: "x"}, {parentId: "x"}, {principal: "x"}, {sessionFile: "x"}]) {
+    for (const args of [{runner: "claude"}, {runner: "veda"}, {kernel: "python"}, {extensions: false}, {worktree: true}, {transport: "process"}, {actorId: "x"}, {parentId: "x"}, {principal: "x"}, {sessionFile: "x"}]) {
       await expect(Promise.resolve().then(() => provider.invoke("spawn", {task: "forbidden", ...args}, context))).rejects.toThrow("Invalid hosted");
     }
+    await expect(Promise.resolve().then(() => provider.invoke("spawn", {task: "forbidden", residency: "durable"}, context))).rejects.toThrow("topology is unavailable");
     for (const action of ["resume", "steer", "compact", "create", "models", "handoff", "members"]) {
       await expect(Promise.resolve().then(() => provider.invoke(action, {id: "x"}, context))).rejects.toThrow("Unsupported");
     }
@@ -365,6 +366,78 @@ describe("hosted Fabric agent service", () => {
     expect(instance.snapshot().records.map(({record}) => record.status)).toEqual(["completed", "completed"]);
     await instance.close();
     expect(instance.snapshot().records.map(({record}) => record.status)).toEqual(["completed", "completed"]);
+  });
+
+  it("follows up a running child and routes session/peer delivery through host topology", async () => {
+    const host = hanging();
+    const followUp = vi.fn(async () => {});
+    const deliver = vi.fn(async (request) => ({
+      id: request.id,
+      name: request.id === "root" ? "main" : "peer-bot",
+      kind: "root" as const,
+      status: "running",
+      capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">,
+    }));
+    const topology = {
+      self: (callerId: string) => ({id: callerId, name: "main", kind: "root" as const, status: "running", capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">}),
+      sessions: () => [{id: "root", name: "main", kind: "root" as const, status: "running", capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">}, {id: "peer", name: "peer-bot", kind: "root" as const, status: "idle", capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">}],
+      peers: () => [{id: "peer", name: "peer-bot", kind: "root" as const, status: "idle", capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">}],
+      deliver,
+      create: vi.fn(async (request: {name: string}) => ({
+        id: "new-peer",
+        name: request.name,
+        kind: "root" as const,
+        status: "idle",
+        capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">,
+      })),
+      remove: vi.fn(async (request: {id: string; name?: string}) => ({
+        id: request.id,
+        name: request.name ?? "peer-bot",
+        kind: "root" as const,
+        status: "stopped",
+        capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">,
+      })),
+      dispatch: vi.fn(async (request: {request: {name?: string}}) => ({
+        id: "durable-work",
+        name: request.request.name ?? "work",
+        kind: "agent" as const,
+        status: "running",
+        capabilities: ["steer", "followUp"] as Array<"steer" | "followUp">,
+      })),
+    };
+    const instance = service({...host.port, followUp}, {topology});
+    const handle = await instance.spawn("root", {task: "child"});
+    await vi.waitFor(() => expect(host.requests.has(handle.id)).toBe(true));
+    expect(await instance.followUp("root", handle.id, "keep going")).toMatchObject({id: handle.id, status: "running"});
+    expect(followUp).toHaveBeenCalledWith(expect.objectContaining({id: handle.id, message: "keep going"}));
+    const client = createAgentServiceClient(createAgentServiceHandler(instance, "root"), instance.capabilities);
+    const provider = createAgentsProvider(client);
+    expect((await provider.list({}, context)).map((descriptor) => descriptor.name).sort()).toEqual([
+      "create", "followUp", "list", "members", "peers", "remove", "run", "self", "sessions", "spawn", "status", "steer", "stop", "wait",
+    ]);
+    expect(await instance.followUp("root", "peer", "please take this")).toMatchObject({id: "peer", name: "peer-bot"});
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({callerId: "root", id: "peer", operation: "followUp", message: "please take this"}));
+    expect(await instance.steer("root", "main", "nudge self")).toMatchObject({id: "root", name: "main"});
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({id: "root", operation: "steer", message: "nudge self"}));
+    expect(await instance.sessions("root")).toHaveLength(2);
+    expect(await instance.peers("root")).toEqual([expect.objectContaining({id: "peer"})]);
+    expect(await instance.self("root")).toMatchObject({id: "root", kind: "root"});
+    expect(await instance.members("root")).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: "root", kind: "root"}),
+      expect.objectContaining({id: "peer", kind: "root"}),
+      expect.objectContaining({id: handle.id, kind: "agent"}),
+    ]));
+    host.results.get(handle.id)!.resolve({status: "completed", text: "done"});
+    expect(await instance.wait("root", handle.id)).toMatchObject({status: "completed"});
+    expect(await instance.followUp("root", handle.id, "after settle")).toMatchObject({id: handle.id, status: "completed"});
+    expect(followUp).toHaveBeenCalledTimes(2);
+    expect(await instance.create("root", {name: "Researcher", task: "own inbox"})).toMatchObject({id: "new-peer", name: "Researcher"});
+    expect(await instance.remove("root", "peer", "peer-bot")).toMatchObject({id: "peer", status: "stopped"});
+    expect(await instance.spawn("root", {task: "independent", cwd: "proj", residency: "durable"})).toMatchObject({id: "durable-work"});
+    expect(topology.dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      callerId: "root",
+      request: expect.objectContaining({task: "independent", cwd: "proj", residency: "durable"}),
+    }));
   });
 
 });

@@ -25,19 +25,31 @@ Object.assign(properties, {
   systemPrompt: {type: "string"},
 });
 const runSchema = {type: "object", properties, required: ["task"], additionalProperties: false};
+const spawnSchema = {type: "object", properties: {...properties, residency: {type: "string", enum: ["session", "durable"]}}, required: ["task"], additionalProperties: false};
 const id = {type: "string", minLength: 1};
 const object = (properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> => ({type: "object", properties, required, additionalProperties: false});
 
 export function agentServiceDescriptors(capabilities: AgentServiceCapabilities = {}): FabricActionDescriptor[] {
   const descriptors: FabricActionDescriptor[] = [
     {...run, description: "Run one host-authorized Pi child and wait for its result or pause", inputSchema: runSchema},
-    {...native("spawn"), description: "Admit one host-authorized Pi child and return its record", inputSchema: runSchema},
+    {...native("spawn"), description: "Admit one host-authorized Pi child, or residency durable for an independent host worker", inputSchema: spawnSchema},
     ...["wait", "status", "stop"].map((name) => ({...native(name), inputSchema: object({id}, ["id"])})),
     {...native("list"), description: "List only the authenticated caller's direct children", inputSchema: object({})},
   ];
   if (capabilities.steer) descriptors.push({...native("steer"), inputSchema: object({id, message: {type: "string", minLength: 1}}, ["id", "message"])});
+  if (capabilities.followUp) descriptors.push({...native("followUp"), inputSchema: object({id, message: {type: "string", minLength: 1}}, ["id", "message"])});
   if (capabilities.compact) descriptors.push({...native("compact"), inputSchema: object({id, instructions: {type: "string"}}, ["id"])});
   if (capabilities.resume) descriptors.push({name: "resume", description: "Continue a paused, completed or failed direct child from its host checkpoint and wait for result or pause", risk: "agent", inputSchema: object({id, task: {type: "string", minLength: 1}}, ["id"])});
+  if (capabilities.topology) {
+    descriptors.push(
+      {...native("sessions"), inputSchema: object({})},
+      {...native("peers"), inputSchema: object({})},
+      {...native("self"), inputSchema: object({})},
+      {...native("members"), inputSchema: object({})},
+      {...native("create"), description: "Create a lasting session peer in this project", inputSchema: object({name: {type: "string", minLength: 1}, instructions: {type: "string"}, task: {type: "string"}}, ["name"])},
+      {...native("remove"), description: "Stop and remove a lasting session peer created in this project", inputSchema: object({id: {type: "string", minLength: 1}, name: {type: "string"}}, ["id"])},
+    );
+  }
   return descriptors;
 }
 
@@ -55,10 +67,12 @@ export function agentServiceArgs(action: AgentServiceAction, input: Record<strin
 }
 
 export function normalizeAgentServiceRequest(input: AgentServiceRequest): AgentServiceRequest {
-  const args = agentServiceArgs("run", input as unknown as Record<string, unknown>);
+  const {residency, ...rest} = input;
+  const args = agentServiceArgs("run", rest as unknown as Record<string, unknown>);
   const request = normalizeAgentRunRequest(args, {runner: "pi", timeoutMs: 0}) as AgentServiceRequest;
   if (args.images !== undefined) request.images = structuredClone(args.images) as NonNullable<AgentServiceRequest["images"]>;
   if (args.systemPrompt !== undefined) request.systemPrompt = args.systemPrompt as string;
+  if (residency === "session" || residency === "durable") request.residency = residency;
   assertAgentTask(request);
   return structuredClone(request);
 }

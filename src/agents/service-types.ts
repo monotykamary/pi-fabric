@@ -2,7 +2,7 @@ import type { AgentRunRecord, AgentRunRequest, AgentUsage } from "./types.js";
 
 export type AgentServiceRequest = Pick<AgentRunRequest,
   "task" | "name" | "model" | "thinking" | "tools" | "timeoutMs" | "schema" | "images" | "systemPrompt" | "recursive" | "cwd"
-> & { runner?: "pi"; kernel?: "typescript" | "inherit"; extensions?: true; worktree?: false };
+> & { runner?: "pi"; kernel?: "typescript" | "inherit"; extensions?: true; worktree?: false; residency?: "session" | "durable" };
 export type AgentServiceStatus = AgentRunRecord["status"] | "paused";
 export type AgentServiceRecord = Omit<AgentRunRecord, "status" | "transport" | "cwd"> & {
   status: AgentServiceStatus; cwd?: string;
@@ -36,15 +36,61 @@ export interface AgentExecutionPort {
   pause?(request: AgentControlRequest): Promise<void>;
   stop?(request: AgentControlRequest): Promise<void>;
   steer?(request: AgentControlRequest & { message: string }): Promise<void>;
+  followUp?(request: AgentControlRequest & { message: string }): Promise<void>;
   compact?(request: AgentControlRequest & { instructions?: string }): Promise<void>;
   cleanup?(request: AgentControlRequest): Promise<void>;
 }
-export type AgentServiceAction = "run" | "spawn" | "wait" | "status" | "list" | "stop" | "steer" | "compact" | "resume";
-export interface AgentServiceCapabilities { steer?: boolean; compact?: boolean; resume?: boolean }
+/** Host-authored session/peer identity. Same shape the native mesh publishes for roots. */
+export type AgentSessionKind = "root" | "agent" | "actor";
+export type AgentSessionCapability = "steer" | "followUp" | "stop" | "ask";
+export interface AgentSessionRecord {
+  id: string;
+  name: string;
+  kind: AgentSessionKind;
+  status: string;
+  capabilities: AgentSessionCapability[];
+}
+export interface AgentTopologyDeliverRequest {
+  callerId: string;
+  id: string;
+  operation: "steer" | "followUp";
+  message: string;
+  signal?: AbortSignal;
+}
+export interface AgentTopologyCreateRequest {
+  callerId: string;
+  name: string;
+  instructions?: string;
+  task?: string;
+  signal?: AbortSignal;
+}
+export interface AgentTopologyRemoveRequest {
+  callerId: string;
+  id: string;
+  name?: string;
+  signal?: AbortSignal;
+}
+export interface AgentTopologyDispatchRequest {
+  callerId: string;
+  request: AgentServiceRequest;
+  signal?: AbortSignal;
+}
+/** Host directory of live session agents and peers. Child one-shots stay on AgentExecutionPort. */
+export interface AgentTopologyPort {
+  self(callerId: string): AgentSessionRecord | Promise<AgentSessionRecord>;
+  sessions(): AgentSessionRecord[] | Promise<AgentSessionRecord[]>;
+  peers(callerId: string): AgentSessionRecord[] | Promise<AgentSessionRecord[]>;
+  deliver(request: AgentTopologyDeliverRequest): Promise<AgentSessionRecord>;
+  create?(request: AgentTopologyCreateRequest): Promise<AgentSessionRecord>;
+  remove?(request: AgentTopologyRemoveRequest): Promise<AgentSessionRecord>;
+  dispatch?(request: AgentTopologyDispatchRequest): Promise<AgentSessionRecord>;
+}
+export type AgentServiceAction = "run" | "spawn" | "wait" | "status" | "list" | "stop" | "steer" | "compact" | "resume" | "followUp" | "sessions" | "peers" | "self" | "members" | "create" | "remove";
+export interface AgentServiceCapabilities { steer?: boolean; compact?: boolean; resume?: boolean; followUp?: boolean; topology?: boolean }
 export interface AgentServiceEvent {
   version: 1; sequence: number;
   type: "admitted" | "running" | "progress" | "checkpoint" | "settled" | "control";
-  record: AgentServiceRecord; control?: "stop" | "steer" | "compact";
+  record: AgentServiceRecord; control?: "stop" | "steer" | "compact" | "followUp";
 }
 export interface AgentServiceSnapshot {
   version: 1; rootId: string; starts: number; sequence: number;
@@ -58,6 +104,7 @@ export interface AgentServiceOptions {
   assertAuthority?(callerId: string, boundary?: AgentAuthorityBoundary): void | Promise<void>;
   onEvent?(event: AgentServiceEvent): void | Promise<void>;
   snapshot?: AgentServiceSnapshot;
+  topology?: AgentTopologyPort;
   /** Trusted host only: a new root turn rebases lineage and resets admission, never generations. */
   restorePolicy?: "preserve" | "new-root";
 }
@@ -71,7 +118,14 @@ export interface AgentServiceClient {
   status(id: string): Promise<AgentPublicRecord>;
   list(): Promise<AgentPublicRecord[]>;
   stop(id: string): Promise<AgentPublicRecord>;
-  steer(id: string, message: string): Promise<AgentPublicRecord>;
+  steer(id: string, message: string): Promise<AgentPublicRecord | AgentSessionRecord>;
   compact(id: string, instructions?: string): Promise<AgentPublicRecord>;
   resume(id: string, task?: string, signal?: AbortSignal): Promise<AgentPublicRecord>;
+  followUp(id: string, message: string): Promise<AgentPublicRecord | AgentSessionRecord>;
+  sessions(): Promise<AgentSessionRecord[]>;
+  peers(): Promise<AgentSessionRecord[]>;
+  self(): Promise<AgentSessionRecord>;
+  members(): Promise<AgentSessionRecord[]>;
+  create(request: { name: string; instructions?: string; task?: string }, signal?: AbortSignal): Promise<AgentSessionRecord>;
+  remove(id: string, name?: string, signal?: AbortSignal): Promise<AgentSessionRecord>;
 }

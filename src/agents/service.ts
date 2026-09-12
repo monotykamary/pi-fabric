@@ -1,7 +1,7 @@
 import { AgentAdmission, beginAgentSettlement, createAgentLifecycle, finishAgentSettlement, terminalAgentStatuses, waitForAgent, type AgentLifecycleState } from "./lifecycle.js";
 import { validateAgentResult } from "./result.js";
 import { normalizeAgentServiceRequest } from "./service-schema.js";
-import type { AgentAuthorityBoundary, AgentPublicRecord, AgentControlRequest, AgentExecutionEvent, AgentExecutionResponse, AgentServiceCapabilities, AgentServiceEvent, AgentServiceOptions, AgentServiceRecord, AgentServiceRequest, AgentServiceSnapshot } from "./service-types.js";
+import type { AgentAuthorityBoundary, AgentPublicRecord, AgentControlRequest, AgentExecutionEvent, AgentExecutionResponse, AgentServiceCapabilities, AgentServiceEvent, AgentServiceOptions, AgentServiceRecord, AgentServiceRequest, AgentSessionRecord, AgentServiceSnapshot } from "./service-types.js";
 
 type Entry = {
   request: AgentServiceRequest;
@@ -47,7 +47,13 @@ export class AgentService {
     }
     this.#options = {...options, port: options.port};
     this.#admission = new AgentAdmission(options.maxConcurrent ?? 4, options.maxStarts ?? 8, options.maxDepth ?? 3);
-    this.capabilities = Object.freeze({steer: Boolean(options.port.steer), compact: Boolean(options.port.compact), resume: Boolean(options.port.resume)});
+    this.capabilities = Object.freeze({
+      steer: Boolean(options.port.steer || options.topology),
+      compact: Boolean(options.port.compact),
+      resume: Boolean(options.port.resume),
+      followUp: Boolean(options.port.followUp || options.topology),
+      topology: Boolean(options.topology),
+    });
     if (options.snapshot) this.#restore(options.snapshot);
   }
 
@@ -61,8 +67,17 @@ export class AgentService {
     return this.wait(callerId, handle.id, signal);
   }
 
-  async spawn(callerId: string, request: AgentServiceRequest, signal?: AbortSignal): Promise<AgentPublicRecord> {
-    return this.#start(callerId, normalizeAgentServiceRequest(request), undefined, signal);
+  async spawn(callerId: string, request: AgentServiceRequest, signal?: AbortSignal): Promise<AgentPublicRecord | AgentSessionRecord> {
+    const normalized = normalizeAgentServiceRequest(request);
+    if (normalized.residency === "durable") {
+      await this.#authorize(callerId);
+      const dispatch = this.#topology().dispatch;
+      if (!dispatch) throw new Error("Durable hosted spawn is unavailable");
+      const record = await dispatch({callerId, request: normalized, ...(signal ? {signal} : {})});
+      await this.#authorize(callerId);
+      return copy(record);
+    }
+    return this.#start(callerId, normalized, undefined, signal);
   }
 
   async wait(callerId: string, id: string, signal?: AbortSignal): Promise<AgentPublicRecord> {
@@ -91,10 +106,91 @@ export class AgentService {
     return publicRecord(result);
   }
 
-  async steer(callerId: string, id: string, message: string): Promise<AgentPublicRecord> {
-    if (!this.#options.port.steer) throw new Error("Hosted agents.steer is unsupported");
+  async steer(callerId: string, id: string, message: string): Promise<AgentPublicRecord | AgentSessionRecord> {
     if (!message.trim()) throw new Error("Steering message must not be empty");
-    return this.#control(callerId, id, "steer", (request) => this.#options.port.steer!({...request, message}));
+    const child = this.#ownedChild(callerId, id);
+    if (child) {
+      if (!this.#options.port.steer) throw new Error("Hosted agents.steer is unsupported");
+      return this.#control(callerId, child.record.id, "steer", (request) => this.#options.port.steer!({...request, message}));
+    }
+    return this.#deliver(callerId, id, "steer", message);
+  }
+
+  async followUp(callerId: string, id: string, message: string): Promise<AgentPublicRecord | AgentSessionRecord> {
+    if (!message.trim()) throw new Error("Follow-up message must not be empty");
+    const child = this.#ownedChild(callerId, id);
+    if (child) {
+      if (!this.#options.port.followUp) throw new Error("Hosted agents.followUp is unsupported");
+      if (child.record.status === "running" && !child.stopping) {
+        return this.#control(callerId, child.record.id, "followUp", (request) => this.#options.port.followUp!({...request, message}));
+      }
+      await this.#authorize(callerId);
+      await this.#options.port.followUp({...this.#identity(child), message});
+      await this.#authorize(callerId);
+      return publicRecord(child.record);
+    }
+    return this.#deliver(callerId, id, "followUp", message);
+  }
+
+  async sessions(callerId: string): Promise<AgentSessionRecord[]> {
+    await this.#authorize(callerId);
+    return copy(await this.#topology().sessions());
+  }
+
+  async peers(callerId: string): Promise<AgentSessionRecord[]> {
+    await this.#authorize(callerId);
+    return copy(await this.#topology().peers(callerId));
+  }
+
+  async self(callerId: string): Promise<AgentSessionRecord> {
+    await this.#authorize(callerId);
+    if (this.#options.topology) return copy(await this.#options.topology.self(callerId));
+    const child = callerId === this.#options.rootId ? undefined : this.#entries.get(callerId);
+    return {
+      id: callerId,
+      name: child?.record.name ?? "main",
+      kind: callerId === this.#options.rootId ? "root" : "agent",
+      status: child?.record.status ?? "running",
+      capabilities: callerId === this.#options.rootId ? ["steer", "followUp", "stop"] : ["steer", "followUp", "stop"],
+    };
+  }
+
+  async create(callerId: string, request: { name: string; instructions?: string; task?: string }, signal?: AbortSignal): Promise<AgentSessionRecord> {
+    if (!request.name.trim()) throw new Error("Peer name is required");
+    await this.#authorize(callerId);
+    const create = this.#topology().create;
+    if (!create) throw new Error("Hosted agents.create is unavailable");
+    const record = await create({callerId, name: request.name.trim(), ...(request.instructions ? {instructions: request.instructions} : {}), ...(request.task ? {task: request.task} : {}), ...(signal ? {signal} : {})});
+    await this.#authorize(callerId);
+    return copy(record);
+  }
+
+  async remove(callerId: string, id: string, name?: string, signal?: AbortSignal): Promise<AgentSessionRecord> {
+    if (!id.trim()) throw new Error("Peer id is required");
+    await this.#authorize(callerId);
+    const remove = this.#topology().remove;
+    if (!remove) throw new Error("Hosted agents.remove is unavailable");
+    const record = await remove({callerId, id, ...(name ? {name} : {}), ...(signal ? {signal} : {})});
+    await this.#authorize(callerId);
+    return copy(record);
+  }
+
+  async members(callerId: string): Promise<AgentSessionRecord[]> {
+    await this.#authorize(callerId);
+    const sessions = this.#options.topology ? copy(await this.#options.topology.sessions()) : [];
+    const seen = new Set(sessions.map((item) => item.id));
+    const children: AgentSessionRecord[] = [];
+    for (const entry of this.#entries.values()) {
+      if (seen.has(entry.record.id)) continue;
+      children.push({
+        id: entry.record.id,
+        name: entry.record.name,
+        kind: "agent",
+        status: entry.record.status,
+        capabilities: ["steer", "followUp", "stop"],
+      });
+    }
+    return [...sessions, ...children];
   }
 
   async compact(callerId: string, id: string, instructions?: string): Promise<AgentPublicRecord> {
@@ -349,7 +445,7 @@ export class AgentService {
     return work;
   }
 
-  async #control(callerId: string, id: string, control: "steer" | "compact", invoke: (request: AgentControlRequest) => Promise<void>): Promise<AgentPublicRecord> {
+  async #control(callerId: string, id: string, control: "steer" | "compact" | "followUp", invoke: (request: AgentControlRequest) => Promise<void>): Promise<AgentPublicRecord> {
     await this.#authorize(callerId);
     const entry = this.#child(callerId, id);
     if (entry.record.status !== "running" || entry.stopping) throw new Error("Agent is not running");
@@ -380,9 +476,28 @@ export class AgentService {
   }
 
   #child(callerId: string, id: string): Entry {
-    const entry = this.#entries.get(id);
-    if (!entry || entry.record.parentId !== callerId) throw new Error(`Unknown direct child agent: ${id}`);
+    const entry = this.#ownedChild(callerId, id);
+    if (!entry) throw new Error(`Unknown direct child agent: ${id}`);
     return entry;
+  }
+
+  #ownedChild(callerId: string, id: string): Entry | undefined {
+    const entry = this.#entries.get(id);
+    return entry && entry.record.parentId === callerId ? entry : undefined;
+  }
+
+  #topology(): NonNullable<AgentServiceOptions["topology"]> {
+    if (!this.#options.topology) throw new Error("Hosted agent topology is unavailable");
+    return this.#options.topology;
+  }
+
+  async #deliver(callerId: string, id: string, operation: "steer" | "followUp", message: string): Promise<AgentSessionRecord> {
+    const topology = this.#topology();
+    await this.#authorize(callerId);
+    const target = id === "main" ? this.#options.rootId : id;
+    const record = await topology.deliver({callerId, id: target, operation, message});
+    await this.#authorize(callerId);
+    return copy(record);
   }
 
   #depth(callerId: string): number {
