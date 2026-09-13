@@ -356,10 +356,25 @@ interface FabricCapabilityCatalog {
   reasons: string[];
 }
 interface FabricToolsApi {
+interface FabricActionListEnvelope {
+  kind: "pi-fabric.action-list";
+  version: 1;
+  actions: FabricAction[];
+  /** Full visible-action count before paging. */
+  total: number;
+  /** True when total exceeds the returned page: more actions exist. */
+  truncated: boolean;
+  limit: number;
+}
+interface FabricToolsApi {
   providers(): Promise<Array<{ name: string; description: string }>>;
   catalog(args?: { provider?: string; limit?: number }): Promise<FabricCapabilityCatalog>;
-  list(args?: { provider?: string; namespace?: string; query?: string; limit?: number }): Promise<FabricAction[]>;
-  search(query: string): Promise<FabricAction[]>;
+  /**
+   * Capped discovery page: default 100 entries, silently truncated (hard cap
+   * 1000). A short result never proves an action is absent — confirm with
+   * search() or pass envelope: true to get totals and a truncated flag.
+   */
+  list(args?: { provider?: string; namespace?: string; query?: string; limit?: number; envelope?: boolean }): Promise<FabricAction[] | FabricActionListEnvelope>;
   search(args: { query: string; limit?: number }): Promise<FabricAction[]>;
   describe(args: { ref: string }): Promise<FabricAction>;
   call(args: { ref: string; args?: Record<string, unknown> }): Promise<unknown>;

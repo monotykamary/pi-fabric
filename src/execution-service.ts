@@ -27,6 +27,7 @@ import {
 } from "./config.js";
 import {
   ActionRegistry,
+  fabricActionListLimit,
   type FabricCallAudit,
   type FabricRegistryActivityEvent,
 } from "./core/action-registry.js";
@@ -587,15 +588,40 @@ export class FabricExecutionService {
                       ? "resolve"
                       : "invoke",
                   );
-                  const actions = await this.registry.list(
-                    {
-                      ...(typeof args.provider === "string" ? { provider: args.provider } : {}),
-                      ...(typeof args.namespace === "string" ? { namespace: args.namespace } : {}),
-                      ...(typeof args.query === "string" ? { query: args.query } : {}),
-                      ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
-                    },
-                    callContext,
-                  );
+                  const request = {
+                    ...(typeof args.provider === "string" ? { provider: args.provider } : {}),
+                    ...(typeof args.namespace === "string" ? { namespace: args.namespace } : {}),
+                    ...(typeof args.query === "string" ? { query: args.query } : {}),
+                    ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+                  };
+                  // Silent page caps make guests conclude actions are absent
+                  // (tools.list is the trap: servers sorted past the cap look
+                  // missing). envelope: true returns an honest page with totals;
+                  // the bare-array default stays byte-for-byte unchanged.
+                  if (args.envelope === true) {
+                    const limit = fabricActionListLimit(
+                      typeof args.limit === "number" ? args.limit : undefined,
+                    );
+                    // Enumerate past the caller's page (hard ceiling 1000, the
+                    // registry's own) so totals reflect post-permission counts.
+                    const { actions: capped } = await this.registry.listDetailed(
+                      { ...request, limit: 1_000 },
+                      callContext,
+                    );
+                    const visible = capped.filter(
+                      (action) => effectiveFullCodeMode || !fullCodeProvider(action.provider),
+                    );
+                    const page = visible.slice(0, limit);
+                    return {
+                      kind: "pi-fabric.action-list",
+                      version: 1,
+                      actions: page,
+                      total: visible.length,
+                      truncated: visible.length > page.length,
+                      limit,
+                    };
+                  }
+                  const actions = await this.registry.list(request, callContext);
                   return actions.filter(
                     (action) => effectiveFullCodeMode || !fullCodeProvider(action.provider),
                   );

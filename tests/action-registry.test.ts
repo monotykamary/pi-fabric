@@ -5,6 +5,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ActionRegistry,
+  fabricActionListLimit,
   type FabricCallAudit,
 } from "../src/core/action-registry.js";
 import type {
@@ -14,8 +15,8 @@ import type {
 import { setActiveRepairCompiler } from "../src/repairs/active.js";
 import { RepairCompiler } from "../src/repairs/compiler.js";
 import { setActiveCompiledSurface } from "../src/entropy/active.js";
-import { schemaDigest, compileEntropySurface, type CompiledSurfaceFile } from "../src/entropy/index.js";
 import { FabricExecutionTraceRecorder, readFabricExecutionTraceV1 } from "../src/audit/trace.js";
+import { schemaDigest, compileEntropySurface, type CompiledSurfaceFile } from "../src/entropy/index.js";
 
 const provider = (): FabricProvider => ({
   name: "demo",
@@ -1043,3 +1044,29 @@ describe("compiled entropy capability preservation", () => {
     registry.setSpeculation(undefined);
   });
 });
+
+describe("ActionRegistry list pagination", () => {
+  it("keeps list() paging silent while listDetailed() reports totals", async () => {
+    const registry = new ActionRegistry();
+    registry.register(actionProvider("a", "b", "c", "d", "e"));
+    expect(await registry.list({ limit: 2 }, context)).toHaveLength(2);
+    expect(await registry.list({}, context)).toHaveLength(5);
+    const detailed = await registry.listDetailed({ limit: 2 }, context);
+    expect(detailed.actions).toHaveLength(2);
+    expect(detailed.total).toBe(5);
+    expect(await registry.listDetailed({}, context)).toMatchObject({ total: 5 });
+  });
+
+  it("caps list() at the hard ceiling and keeps totals honest", async () => {
+    const registry = new ActionRegistry();
+    const many = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    registry.register(actionProvider(...many));
+    expect(await registry.list({ limit: 1000 }, context)).toHaveLength(12);
+    const detailed = await registry.listDetailed({ limit: 3 }, context);
+    expect(detailed.total).toBe(12);
+    expect(fabricActionListLimit(undefined)).toBe(100);
+    expect(fabricActionListLimit(5000)).toBe(1000);
+    expect(fabricActionListLimit(0)).toBe(1);
+  });
+});
+
