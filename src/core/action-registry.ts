@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+
+/** Effective page size for registry list(): caller default 100, hard cap 1000.
+ *  Exported so guest discovery surfaces slice identically to the registry. */
+export const fabricActionListLimit = (limit?: number): number =>
+  Math.max(1, Math.min(limit ?? 100, 1_000));
 import { repairCatalogInput, validateCatalogArgs, validationMessage } from "./action-arguments.js";
 import {
   MAX_AUDIT_VALUE_CHARS,
@@ -407,10 +412,10 @@ export class ActionRegistry {
   // carry-forward read the live contract. Capability-view paths stay
   // declared everywhere (see describe): committed views pin declared
   // digests, and a surface activation must never invalidate them.
-  async list(
+  async listDetailed(
     request: FabricProviderListRequest & { provider?: string; declared?: boolean },
     context: FabricInvocationContext,
-  ): Promise<ResolvedFabricAction[]> {
+  ): Promise<{ actions: ResolvedFabricAction[]; total: number; truncated: boolean }> {
     if (context.capabilityView) {
       const refs = Object.keys(context.capabilityView.bindings)
         .filter((ref) => !request.provider || ref.startsWith(`${request.provider}.`))
@@ -418,12 +423,13 @@ export class ActionRegistry {
         .sort();
       const actions = await Promise.all(refs.map((ref) => this.describe(ref, context)));
       const query = request.query?.normalize("NFKC").trim().toLowerCase();
-      return actions
+      const filtered = actions
         .filter((action) => !request.namespace || action.namespace === request.namespace)
         .filter((action) =>
           !query || `${action.ref} ${action.description}`.toLowerCase().includes(query),
-        )
-        .slice(0, Math.max(1, Math.min(request.limit ?? 100, 1_000)));
+        );
+      const page = filtered.slice(0, fabricActionListLimit(request.limit));
+      return { actions: page, total: filtered.length, truncated: filtered.length > page.length };
     }
     const providers = request.provider
       ? [this.#requireProvider(request.provider)]
@@ -453,8 +459,16 @@ export class ActionRegistry {
           });
       }),
     );
-    const limit = Math.max(1, Math.min(request.limit ?? 100, 1_000));
-    return lists.flat().slice(0, limit);
+    const all = lists.flat();
+    const page = all.slice(0, fabricActionListLimit(request.limit));
+    return { actions: page, total: all.length, truncated: all.length > page.length };
+  }
+  async list(
+    request: FabricProviderListRequest & { provider?: string; declared?: boolean },
+    context: FabricInvocationContext,
+  ): Promise<ResolvedFabricAction[]> {
+    const { actions } = await this.listDetailed(request, context);
+    return actions;
   }
 
   async catalog(

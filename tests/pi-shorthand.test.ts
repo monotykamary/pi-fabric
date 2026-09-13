@@ -489,5 +489,31 @@ describe("tools discovery proxy", () => {
     expect(value.search).toBe("extensions.fovea_focus");
     expect(value.err).toContain("tools.read is not available");
     expect(value.err).toContain("pi.read");
+    expect(value.err).toContain("pi.read");
+  });
+  it("passes list envelope requests through to the host verbatim", async () => {
+    const hostCall = vi.fn(async (ref: string, args: Record<string, unknown>) => {
+      if (ref === "fabric.$list") {
+        return {
+          kind: "pi-fabric.action-list",
+          version: 1,
+          actions: [{ ref: "demo.echo", name: "echo", description: "Echo a string", provider: "demo", namespace: "demo", risk: "read", inputSchema: {} }],
+          total: 421,
+          truncated: true,
+          limit: 100,
+        };
+      }
+      throw new Error("Unexpected call: " + ref);
+    });
+    const result = await new QuickJsRuntime().execute(
+      'const page = await tools.list({ envelope: true });' +
+        'return { kind: page.kind, truncated: page.truncated, total: page.total, first: page.actions[0].ref };',
+      hostCall,
+      options,
+    );
+    expect(result.error).toBeUndefined();
+    expect(hostCall.mock.calls[0]?.[0]).toBe("fabric.$list");
+    expect(hostCall.mock.calls[0]?.[1]).toEqual({ envelope: true });
+    expect(result.value).toEqual({ kind: "pi-fabric.action-list", truncated: true, total: 421, first: "demo.echo" });
   });
 });
