@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createSyntheticSourceInfo,
   defineTool,
@@ -265,6 +266,86 @@ describe("registered extension tool capture", () => {
       }
     } finally {
       await rm(bundleDir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures the embedded host realm's ExtensionRunner (pi-web sessiond)", async () => {
+    // Embedded hosts (pi-web sessiond) run sessions in-process against their
+    // own node_modules copy of the pi package while this extension runs from a
+    // separate package realm, so the live ExtensionRunner is a distinct class
+    // identity that neither PI_PACKAGE_DIR, the argv[1] walk-up, nor the
+    // in-realm fallback import can find. Without entry-realm resolution the
+    // hub patches a dead class and the captured catalog stays empty —
+    // extensions.* vanishes from the guest.
+    const hostDir = await mkdtemp(path.join(tmpdir(), "fabric-embedded-"));
+    const savedArgv1 = process.argv[1]!;
+    try {
+      const packageRoot = path.join(hostDir, "node_modules", "@earendil-works", "pi-coding-agent");
+      await mkdir(path.join(packageRoot, "dist"), { recursive: true });
+      await mkdir(path.join(hostDir, "dist", "server"), { recursive: true });
+      await writeFile(
+        path.join(hostDir, "package.json"),
+        JSON.stringify({ name: "@example/embedded-host" }),
+      );
+      await writeFile(path.join(hostDir, "dist", "server", "entry.js"), "");
+      await writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "@earendil-works/pi-coding-agent",
+          type: "module",
+          main: "dist/index.js",
+        }),
+      );
+      await writeFile(
+        path.join(packageRoot, "dist", "index.js"),
+        [
+          "export class ExtensionRunner {",
+          "  getAllRegisteredTools() {",
+          "    const registered = [];",
+          "    for (const extension of this.extensions ?? []) {",
+          "      for (const tool of extension.tools.values()) registered.push(tool);",
+          "    }",
+          "    return registered;",
+          "  }",
+          "}",
+        ].join("\n") + "\n",
+      );
+
+      process.argv[1] = path.join(hostDir, "dist", "server", "entry.js");
+      const fabricTool = tool("fabric_exec");
+      const catalog = new CapturedToolCatalog();
+      const controller = await installRegisteredToolCapture({
+        anchorDefinition: fabricTool,
+        catalog,
+      });
+      controllers.push(controller);
+
+      const hostModule = (await import(
+        pathToFileURL(path.join(packageRoot, "dist", "index.js")).href
+      )) as {
+        ExtensionRunner: abstract new () => { getAllRegisteredTools(): RegisteredTool[] };
+      };
+      const HostRunner = hostModule.ExtensionRunner;
+      expect(HostRunner).not.toBe(ExtensionRunner);
+
+      const runner = Object.create(HostRunner.prototype) as unknown as ExtensionRunner;
+      (runner as unknown as { extensions: Array<{ tools: Map<string, RegisteredTool> }> })
+        .extensions = [{
+        tools: new Map([
+          ["fabric_exec", registered(fabricTool, "/extensions/pi-fabric/index.ts")],
+          ["box_list", registered(tool("box_list"), "/extensions/pi-box/index.ts")],
+        ]),
+      }];
+
+      expect(catalog.size).toBe(0);
+      expect(runner.getAllRegisteredTools().map((entry) => entry.definition.name)).toEqual([
+        "fabric_exec",
+        "box_list",
+      ]);
+      expect(catalog.list().map((entry) => entry.name)).toEqual(["box_list"]);
+    } finally {
+      process.argv[1] = savedArgv1;
+      await rm(hostDir, { recursive: true, force: true });
     }
   });
 });

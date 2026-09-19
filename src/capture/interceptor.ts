@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -123,21 +124,16 @@ const captureHub = (Runner: ExtensionRunnerConstructor): ToolCaptureHub => {
   return hub;
 };
 
-const hostPackageRoot = (): string | undefined => {
-  const cliPath = process.argv[1];
-  if (!cliPath) return undefined;
-  let directory: string;
-  try {
-    directory = path.dirname(realpathSync(cliPath));
-  } catch {
-    return undefined;
-  }
+const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
+
+const piPackageRootAbove = (startDirectory: string): string | undefined => {
+  let directory = startDirectory;
   while (directory !== path.dirname(directory)) {
     const manifestPath = path.join(directory, "package.json");
     if (existsSync(manifestPath)) {
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
-        if (manifest.name === "@earendil-works/pi-coding-agent") return directory;
+        if (manifest.name === PI_PACKAGE_NAME) return directory;
       } catch { /* unreadable or invalid manifest; keep searching */ }
     }
     directory = path.dirname(directory);
@@ -145,10 +141,53 @@ const hostPackageRoot = (): string | undefined => {
   return undefined;
 };
 
+const hostPackageRoot = (): string | undefined => {
+  const cliPath = process.argv[1];
+  if (!cliPath) return undefined;
+  try {
+    return piPackageRootAbove(path.dirname(realpathSync(cliPath)));
+  } catch {
+    return undefined;
+  }
+};
+
+// Embedded hosts (pi-web sessiond, SDK embeds) instantiate ExtensionRunner from
+// their own node_modules copy while this extension runs from a separate package
+// realm: the in-realm fallback import below resolves this extension's private
+// dependency and patches a class identity the live runner never uses, leaving
+// the captured catalog permanently empty (extensions.* exposes nothing). Node
+// caches modules by absolute path, so locating the host's copy through the
+// process entry's module search path and importing it yields the very class
+// the host instantiates.
+const entryRealmPackageRoot = (): string | undefined => {
+  const cliPath = process.argv[1];
+  if (!cliPath) return undefined;
+  let entryDirectory: string;
+  try {
+    entryDirectory = path.dirname(realpathSync(cliPath));
+  } catch {
+    return undefined;
+  }
+  // The package exports map is ESM-only, so plain resolve() fails with
+  // ERR_PACKAGE_PATH_NOT_EXPORTED; resolve.paths() lists the node_modules
+  // directories Node would search regardless of exports.
+  const searchPaths = createRequire(path.join(entryDirectory, "probe.js"))
+    .resolve.paths(PI_PACKAGE_NAME);
+  for (const searchPath of searchPaths ?? []) {
+    const manifestPath = path.join(searchPath, PI_PACKAGE_NAME, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: unknown };
+      if (manifest.name === PI_PACKAGE_NAME) return path.join(searchPath, PI_PACKAGE_NAME);
+    } catch { /* unreadable or invalid manifest; keep searching */ }
+  }
+  return undefined;
+};
+
 const extensionRunnerConstructors = async (): Promise<ExtensionRunnerConstructor[]> => {
   const constructors = new Set<ExtensionRunnerConstructor>();
   const packageRoots = new Set(
-    [process.env.PI_PACKAGE_DIR, hostPackageRoot()].filter(
+    [process.env.PI_PACKAGE_DIR, hostPackageRoot(), entryRealmPackageRoot()].filter(
       (root): root is string => typeof root === "string" && Boolean(root),
     ),
   );
