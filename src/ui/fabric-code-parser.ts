@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import type { SyntaxNodeRef } from "@lezer/common";
 import type { FabricKernel } from "../runtime/kernel.js";
 
 const require = createRequire(import.meta.url);
@@ -47,7 +48,7 @@ const readEscape = (source: string, index: number): { value: string; next: numbe
 const tokenizePython = (source: string): Token[] => {
   const tokens: Token[] = [];
   (pythonParser ??= (require("@lezer/python") as typeof import("@lezer/python")).parser).parse(source).iterate({
-    enter(node) {
+    enter(node: SyntaxNodeRef) {
       if (node.name === "Comment" || node.name === "FormatString") return false;
       const text = source.slice(node.from, node.to);
       if (node.name === "String") {
