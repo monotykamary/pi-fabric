@@ -302,7 +302,8 @@ const main = async (): Promise<void> => {
       ? claudeCli!.buildClaudeArguments({
           tools: options.tools,
           extensions: options.extensions,
-          persistentSession: Boolean(options.sessionFile),
+          // Actors and handoffs already have a session file; one-shot Claude runs opt in explicitly.
+          persistentSession: Boolean(options.sessionFile) || options.persistSession === true,
           ...(options.model ? { model: options.model } : {}),
           ...(thinking ? { thinking } : {}),
           ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
