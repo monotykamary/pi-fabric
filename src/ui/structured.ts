@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import type { FabricResultFormat } from "../config.js";
 import { countNewlines } from "../util.js";
 
@@ -17,7 +18,8 @@ const normalizeJsonValue = (value: unknown): unknown | undefined => {
 export const formatJsonAsYaml = (value: unknown): string | undefined => {
   const normalized = normalizeJsonValue(value);
   if (normalized === undefined) return undefined;
-  return (yaml ??= require("yaml") as typeof import("yaml")).stringify(normalized, { indent: 2, lineWidth: 0 }).trimEnd();
+  // Compiled Bun hosts need the extension loader to resolve bare package names.
+  return (yaml ??= require(fileURLToPath(import.meta.resolve("yaml"))) as typeof import("yaml")).stringify(normalized, { indent: 2, lineWidth: 0 }).trimEnd();
 };
 
 export interface FormattedFabricValue {
