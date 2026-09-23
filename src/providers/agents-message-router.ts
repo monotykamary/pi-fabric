@@ -84,6 +84,30 @@ export class AgentMessageRouter {
       if (!(error instanceof Error && /Unknown Fabric agent/.test(error.message))) throw error;
     }
 
+    // Remote root sessions have no local Main match and are not actors.
+    const remoteRoot = this.participants.get(id);
+    if (remoteRoot?.kind === "root" && !remoteRoot.local) {
+      if (!remoteRoot.capabilities.includes(kind)) {
+        throw new Error(`Fabric participant ${remoteRoot.id} does not support ${kind}`);
+      }
+      if (!this.control || remoteRoot.controlProtocol !== "v1") {
+        throw new Error(`Fabric root ${remoteRoot.id} has no control channel`);
+      }
+      return this.control.request(
+        remoteRoot.ownerHostId,
+        remoteRoot.id,
+        kind,
+        {
+          message,
+          data,
+          ...(typeof options.triggerTurn === "boolean"
+            ? { triggerTurn: options.triggerTurn }
+            : {}),
+        },
+        remoteRoot.ownerIdentityId,
+      );
+    }
+
     // Persistent actors consume both delivery modes through their serial mailbox.
     this.actorManager.validateDirectMessage(message, data);
     let target: { actor?: FabricActorInfo; participant?: FabricParticipantInfo };
