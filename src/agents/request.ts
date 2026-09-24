@@ -75,6 +75,9 @@ export const normalizeAgentRunRequest = (
     ...(args.residency === "session" || args.residency === "durable"
       ? { residency: args.residency }
       : {}),
+    ...(typeof args.persistSession === "boolean"
+      ? { persistSession: args.persistSession }
+      : {}),
     ...(typeof args.schema === "object" && args.schema !== null && !Array.isArray(args.schema)
       ? { schema: args.schema as Record<string, unknown> }
       : {}),
