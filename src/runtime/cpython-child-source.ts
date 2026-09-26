@@ -252,7 +252,7 @@ async def _main():
         function.body = parsed.body or function.body
         function.end_lineno = max(2, len(source.splitlines()))
         program = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-        namespace = {name: _Proxy(name) for name in ("pi", "tools", "mcp", "extensions", "memory", "state", "schema", "components", "compact", "prewalk", "agents", "mesh")}
+        namespace = {name: _Proxy(name) for name in ("pi", "tools", "mcp", "extensions", "memory", "state", "schema", "components", "compact", "cache", "prewalk", "agents", "mesh")}
         payloads = _Payloads(request.get("strings", {}))
         namespace.update({"π": payloads, "payloads": payloads, "asyncio": asyncio, "__name__": "__fabric_guest__"})
         exec(compile(program, "fabric-exec.py", "exec"), namespace)

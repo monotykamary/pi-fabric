@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type * as MontyNative from "@pydantic/monty/node";
 import { pythonArgumentsFor } from "./python-arguments.js";
 
-const ROOTS = ["pi", "tools", "mcp", "extensions", "memory", "state", "schema", "components", "compact", "prewalk", "agents", "mesh"];
+const ROOTS = ["pi", "tools", "mcp", "extensions", "memory", "state", "schema", "components", "compact", "cache", "prewalk", "agents", "mesh"];
 const DISCOVERY = new Set(["providers", "catalog", "list", "search", "describe", "call", "models", "progress"]);
 const FORBIDDEN = new Set(["constructor", "prototype", "__proto__", "arguments", "caller"]);
 /** Explicit capability wrappers, not arbitrary host objects or guest magic methods. */

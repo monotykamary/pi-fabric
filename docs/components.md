@@ -45,6 +45,7 @@ fabric.provider.mesh
 fabric.provider.state
 fabric.provider.schema
 fabric.provider.compact
+fabric.provider.cache
 fabric.provider.agents
 fabric.provider.memory
 fabric.provider.jev
@@ -250,6 +251,8 @@ export default function extension(pi: ExtensionAPI) {
 Append contributions are ordered by component ID and label, not activation timing. Each registration is a transactional, commutative component effect. It becomes visible only when activation commits, disappears immediately when unload begins, rolls back on activation failure, and can be removed early through the disposer returned by `context.guide()`. A component may register at most 64 entries, each entry is capped at 32,000 characters, and its combined guidance is capped at 64,000 characters. One supervisor accepts at most 1,024 registrations and 1,000,000 stored guidance characters; one resolved prompt projection is capped at 64,000 characters. Status reports selectors, placement, character count, and a content hash. It omits the prompt text.
 
 ### Prompt-cache and cold-prefill behavior
+
+[Prompt-cache observations and scoped warming](prompt-cache.md) expose runtime interest separately from the stable prompt projection described here.
 
 With an unchanged host prompt, skill catalog, model, target, Fabric mode, core-override catalog, and committed component projection, Fabric emits a byte-identical system prompt. Slot order is fixed, append entries sort by component ID and label, and no component revision, timestamp, run ID, message ID, or projection hash enters the model-visible text. Fabric appends its stable sections in this order: kernel, resolved slots, Schema notice, core-override guidance, and component appends. Turn-derived skill dependency guidance comes last. A turn that adds such guidance therefore retains the ordinary turn's complete system prompt as its cacheable prefix. Turn-derived guidance stays in a transcript message and does not mutate that system prefix.
 

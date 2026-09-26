@@ -125,6 +125,7 @@ describe("Fabric runtime provider components", () => {
         initialized: true,
         active: [
           "fabric.provider.agents",
+          "fabric.provider.cache",
           "fabric.provider.compact",
           "fabric.provider.extensions",
           "fabric.provider.jev",
@@ -159,6 +160,7 @@ describe("Fabric runtime provider components", () => {
             "state",
             "schema",
             "compact",
+            "cache",
             "prewalk",
             "agents",
             "memory",
@@ -201,6 +203,16 @@ describe("Fabric runtime provider components", () => {
       expect(runtime.modelGuidance()).toContainEqual(expect.objectContaining({
         label: "jev-programs", content: expect.stringContaining("tasks.wait/watch"),
       }));
+      const cacheProbe = await runtime.execution.execute({
+        code: `const observation = await cache.status();
+          const hold = await cache.hold({durationMs:1000});
+          return {supported:observation.supported,hold:hold.status};`,
+        context, signal: undefined, parentToolCallId: "cache-probe", onPartial() {},
+      });
+      expect(cacheProbe.success, cacheProbe.error ?? JSON.stringify(cacheProbe.typeErrors)).toBe(true);
+      expect(cacheProbe.value).toEqual({supported:false,hold:"unsupported"});
+      await runtime.registry.invoke("components.reload", {id:"fabric.provider.cache"}, invocation);
+      expect(await runtime.registry.invoke("cache.status", {}, invocation)).toMatchObject({supported:false,leases:[]});
       // Configuration can precede extension discovery. The host knows no device API.
       expect(runtime.components.status("optional-device").state).toBe("waiting");
       expect(runtime.registry.has("devicefixture")).toBe(false);

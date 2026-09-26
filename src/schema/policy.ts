@@ -15,6 +15,7 @@ const allowedEnforceRefs = new Set([
   "mesh.get",
   "mesh.list",
   "compact.status",
+  "cache.status",
   "components.list",
   "components.describe",
   "components.status",

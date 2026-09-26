@@ -167,6 +167,7 @@ export class RuntimeStateBuiltins {
       ...(config.mesh.enabled ? ["mesh", "state"] : ["mesh", "state"].filter((name) => this.managedHost?.has(name))),
       "schema",
       "compact",
+      ...(!this.managedHost ? ["cache"] : []),
       "prewalk",
       "agents",
       ...(!this.managedHost && config.jev.enabled && config.schema.mode !== "enforce" ? ["jev"] : []),

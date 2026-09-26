@@ -22,6 +22,12 @@ const run = (code: string, host: FabricHostCall = echo, extra: Partial<FabricSan
 afterEach(() => vi.restoreAllMocks());
 
 describe.skipIf(Boolean(missing))(`MontyRuntime native 0.0.23${missing ? " (" + missing + ")" : ""}`, () => {
+  it("routes the cache primitive through the same host bridge", async () => {
+    expect(await run('return await cache.status(target="self")')).toMatchObject({
+      terminationReason: "completed", value: { ref: "cache.status", args: { target: "self" } },
+    });
+  });
+
   it("executes async bodies, normalizes nested dictionaries and starts fresh sessions", async () => {
     const runtime = new MontyRuntime();
     const result = await runtime.execute('local = 12\nreturn {"items": [1, {"nested": True}], "call": await schema.status()}', echo, options);

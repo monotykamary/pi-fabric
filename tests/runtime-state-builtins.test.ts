@@ -64,7 +64,7 @@ describe("runtime built-in installation policy", () => {
       ...options, mesh: { enabled: false }, memory: { enabled: false },
     }));
     const [names, actualRegistry] = manifest.assertActive.mock.calls[0] as unknown as [Set<string>, ActionRegistry];
-    expect([...names]).toEqual([...expected, "mcp", "schema", "compact", "prewalk", "agents", ...(options.schema.mode !== "enforce" ? ["jev"] : [])]);
+    expect([...names]).toEqual([...expected, "mcp", "schema", "compact", "cache", "prewalk", "agents", ...(options.schema.mode !== "enforce" ? ["jev"] : [])]);
     expect(actualRegistry).toBe(registry);
   });
 
