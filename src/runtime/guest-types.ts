@@ -74,6 +74,8 @@ interface FabricAgentRequest {
   instructions?: string;
   timeout_ms?: number;
   residency?: FabricParticipantResidency;
+  /** Opt in to session persistence for hook-based observability and external trace ingestion. */
+  persistSession?: boolean;
 }
 interface FabricHandoffCall {
   readonly ref: string;

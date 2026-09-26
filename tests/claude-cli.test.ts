@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeUserMessage } from "../src/agents/claude-cli.js";
+import { buildClaudeArguments, claudeUserMessage } from "../src/agents/claude-cli.js";
 
 describe("Claude stream-json messages", () => {
   it("maps Fabric image blocks to Claude base64 content blocks", () => {
@@ -23,5 +23,17 @@ describe("Claude stream-json messages", () => {
         ],
       },
     });
+  });
+});
+
+describe("Claude session persistence", () => {
+  const options = { tools: ["read"], extensions: false, persistentSession: false };
+
+  it("disables transcript persistence by default", () => {
+    expect(buildClaudeArguments(options)).toContain("--no-session-persistence");
+  });
+
+  it("omits the disable flag when explicitly opted in", () => {
+    expect(buildClaudeArguments({ ...options, persistentSession: true })).not.toContain("--no-session-persistence");
   });
 });

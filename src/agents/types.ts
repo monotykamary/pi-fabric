@@ -64,6 +64,8 @@ export interface AgentRunRequest {
   residency?: FabricParticipantResidency;
   schema?: Record<string, unknown>;
   systemPrompt?: string;
+  /** Opt in to Claude Code transcript persistence for hook-based observability. */
+  persistSession?: boolean;
   sessionFile?: string;
   actorId?: string;
   actorName?: string;
@@ -211,6 +213,7 @@ export interface AgentWorkerOptions {
   model?: string;
   thinking?: string;
   systemPrompt?: string;
+  persistSession?: boolean;
   sessionFile?: string;
   sessionExportFile?: string;
   actorId?: string;
